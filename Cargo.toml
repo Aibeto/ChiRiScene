@@ -48,6 +48,12 @@ fluent = "0.17.0"
 fluent-bundle = "0.16.0"
 intl-memoizer = "0.5.3"
 
+# --- 日志归档压缩（内置库，不依赖设备 gzip/lz4 二进制；2026-09-25）---
+# flate2 走 rust_backend（miniz_oxide，纯 Rust，免链系统 zlib）；
+# lz4_flex 为纯 Rust 的 lz4 帧格式实现，产物与标准 lz4 工具互通
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+lz4_flex = "0.11"
+
 [profile.release]
 strip = true
 opt-level = "z"

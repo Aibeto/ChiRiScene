@@ -138,12 +138,15 @@ export async function pollExport(job: ExportJob): Promise<ReadResult<ExportProbe
     }
     const progress: ExportProgress = { done: num('d'), total: num('t'), bytes: num('b') }
     if (/^s:gz$/m.test(out)) return ok({ phase: 'done-gz', progress })
-    if (/^s:tar$/m.test(out)) return ok({ phase: 'done-tar', progress })
+    // fail 必须先于 s:tar 判定：压缩失败时脚本保留 .tar 并删 .mode（2026-09-25
+    // 起两条 gzip 路径同语义），轮询输出会同时含 s:tar 与 s:fail——s:tar 先命中
+    // 会把「压缩失败」静默当成「未压缩完成」上报，违背「UI 如实告知」口径
     const fail = /^s:fail:(\d+)/m.exec(out)
     if (fail) {
       const phase = fail[1] === '5' ? 'empty' : fail[1] === '3' ? 'no-logd' : 'failed'
       return ok({ phase, progress })
     }
+    if (/^s:tar$/m.test(out)) return ok({ phase: 'done-tar', progress })
     return ok({ phase: 'running', progress })
   } catch (e) {
     return failed<ExportProbe>(e instanceof Error ? e.message : String(e))

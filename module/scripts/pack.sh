@@ -5,9 +5,8 @@
 #
 # 用法：
 #   pack.sh archive <staging_dir> <out_tar>
-#       把 staging_dir 打成 out_tar。out_tar 以 .tar.lz4 结尾时先打无压缩 tar
-#       再 lz4 压缩（lz4 不可用回落保留 .tar）；不带 .lz4 时维持无压缩 .tar。
-#       目标名由调用方定，便于唯一化。
+#       把 staging_dir 打成 out_tar（无压缩；目标名由调用方定，便于唯一化）。
+#       lz4 压缩由调用方（chiri daemon 内置 lz4_flex）完成，不在本脚本内。
 #       成功 exit 0；失败 exit 1（调用方负责保留 staging 并留痕）。
 #   pack.sh export <src_dir> <dest_base> <fail_file> <progress_file> <total_file>
 #       把 src_dir 打成 <dest_base>.tar.gz：先写 <dest_base>.tar，gzip 压缩后
@@ -19,11 +18,18 @@
 #
 # tar 选择顺序：模块自带 core/bin/tar（外部二进制，优先）→ /system/bin/tar →
 # toybox tar → busybox tar。
-# gzip 选择顺序：gzip → busybox gzip；都没有则保留 .tar。
-# lz4 选择顺序：lz4 → busybox lz4；都没有则 archive 回落保留 .tar。
+# gzip 选择顺序：模块内置 core/bin/chiri gzip（纯 Rust flate2，主选——设备
+# 没有 gzip 二进制也能压缩）→ 系统 gzip → busybox gzip；都没有则保留 .tar。
 
 SELF_DIR=${0%/*}
 MODDIR=${SELF_DIR%/*}
+
+# 模块二进制（工具模式：`chiri gzip <file>` 就地生成 <file>.gz 并删源），
+# 语义与 `gzip -f` 一致，详见 src/logger.rs compress_cli
+CHIRI_BIN=""
+if [ -x "$MODDIR/core/bin/chiri" ]; then
+  CHIRI_BIN="$MODDIR/core/bin/chiri"
+fi
 
 TAR_BIN=""
 if [ -x "$MODDIR/core/bin/tar" ]; then
@@ -45,13 +51,6 @@ elif [ -n "$BUSYBOX" ] && "$BUSYBOX" gzip --help >/dev/null 2>&1; then
   GZ_BIN="$BUSYBOX gzip"
 fi
 
-LZ4_BIN=""
-if command -v lz4 >/dev/null 2>&1; then
-  LZ4_BIN="lz4"
-elif [ -n "$BUSYBOX" ] && "$BUSYBOX" lz4 --help >/dev/null 2>&1; then
-  LZ4_BIN="$BUSYBOX lz4"
-fi
-
 case "$1" in
   archive)
     D=$2
@@ -59,20 +58,9 @@ case "$1" in
     [ -d "$D" ] || exit 1
     [ -n "$T" ] || exit 1
     [ -d "${T%/*}" ] || mkdir -p "${T%/*}" || exit 1
-    # T 以 .tar.lz4 结尾：先打无压缩 .tar，lz4 可用则压成 .tar.lz4；不可用
-    # （或压缩失败）则回落保留 .tar——调用方按「T 或 T 去掉 .lz4 存在」判成功
-    BASE=${T%.lz4}
-    # .part 写入 + 原子改名：中途失败不留半截产物
-    $TAR_BIN -cf "$BASE.part" -C "$D" . || { rm -f "$BASE.part"; exit 1; }
-    if [ "$BASE" != "$T" ] && [ -n "$LZ4_BIN" ]; then
-      if $LZ4_BIN -f "$BASE.part" "$T.part"; then
-        rm -f "$BASE.part"
-        mv -f "$T.part" "$T" || { rm -f "$T.part"; exit 1; }
-        exit 0
-      fi
-      rm -f "$T.part"
-    fi
-    mv -f "$BASE.part" "$BASE" || { rm -f "$BASE.part"; exit 1; }
+    # .part 写入 + 原子改名：中途失败不留半截 .tar
+    $TAR_BIN -cf "$T.part" -C "$D" . || { rm -f "$T.part"; exit 1; }
+    mv -f "$T.part" "$T" || { rm -f "$T.part"; exit 1; }
     exit 0
     ;;
   export)
@@ -96,7 +84,19 @@ case "$1" in
     : > "$PROG"
     $TAR_BIN -cvf "$BASE.tar.part" -C "$SRC" . >> "$PROG" 2>&1 || { rm -f "$BASE.tar.part"; echo 4 > "$FAIL"; exit 4; }
     mv -f "$BASE.tar.part" "$BASE.tar" || { rm -f "$BASE.tar.part"; echo 4 > "$FAIL"; exit 4; }
-    if [ -n "$GZ_BIN" ]; then
+    if [ -n "$CHIRI_BIN" ]; then
+      # 内置压缩：模块二进制工具模式（flate2 纯 Rust），设备无 gzip 二进制
+      # 也能产出 .tar.gz；`chiri gzip <file>` 成功即生成 <file>.gz 并删源
+      MODE="$FAIL.mode"
+      echo gz > "$MODE"
+      if "$CHIRI_BIN" gzip "$BASE.tar" 2>>"$PROG"; then
+        rm -f "$BASE.tar" "$MODE"
+      else
+        rm -f "$MODE"
+        echo 4 > "$FAIL"
+        exit 4
+      fi
+    elif [ -n "$GZ_BIN" ]; then
       # 压缩中标记：调用方（WebUI）据此区分「gzip 进行中」与「无 gzip 的完成态」
       # （两者都会看到 .tar 存在）
       MODE="$FAIL.mode"

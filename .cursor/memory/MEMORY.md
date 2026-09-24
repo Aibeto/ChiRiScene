@@ -21,11 +21,13 @@
   背景：超大 devimp 归档（114MB）曾把同批 daemon.log/status.csv 归档挤掉（logd_0924-173105 包）。
   目录预算同日扩容：`LOGD_MAX_BYTES` / `DEVIMP_DIR_MAX_BYTES` 128→256MB、TARGET 96→200MB。
   详见 docs/agents/02-convention.md 归档条与「被挤掉」历史坑。
-- **归档格式（2026-09-25，契约变更）**：启动归档两目录产物均为 **`logd/<ts>.tar.lz4`** 与
-  **`logd/devimp_<ts>.tar.lz4`**（`pack.sh archive` 内 `lz4 -f` 帧格式）；设备无 lz4 时**回落未压缩 `.tar`**。
-  导出包 `logd_*.tar.gz` 外层仍是 gzip（`pack.sh export`）。**分析侧禁止按扩展名判断内层形态**——
-  内层成员两种都可能（还可能是错标），一律嗅探 magic。实测 logd_0925-045336 内层仍为纯 `.tar`
-  ⇒ 该设备走的是 lz4 回落分支，**真机 `.tar.lz4` 至今未被验证过**。解压用 `scripts/devimp/dvlz4.py`。
+- **归档格式（2026-09-25，契约变更；同日改内置库）**：启动归档两目录产物均为 **`logd/<ts>.tar.lz4`** 与
+  **`logd/devimp_<ts>.tar.lz4`**——pack.sh archive 只打无压缩 tar，**Rust 内置 `lz4_flex` 流式压缩**
+  （不依赖设备 lz4 二进制；仅 lz4 落盘 I/O 失败才回落 `.tar`）。导出包 `logd_*.tar.gz` 的 gzip 主选走
+  **模块二进制工具模式 `core/bin/chiri gzip <file>`**（main.rs [toolbox] 分发，flate2 纯 Rust；系统
+  gzip/busybox 兜底）。**分析侧禁止按扩展名判断内层形态**——一律嗅探 magic。实测 logd_0925-045336
+  内层仍为纯 `.tar`（旧 lz4-二进制回落分支的产物），**内置库分支产出的真机 `.tar.lz4` 待下次归档验证**。
+  解压用 `scripts/devimp/dvlz4.py`。
 
 - **devimp 分析走预置脚本（2026-09-25）**：一律用 `python scripts/devimp/dvrun.py <logd_*.tar.gz>`
   （或 `scripts\devimp-run.cmd`）一条命令跑完 extract/analyze/main/aff/status，产出落 `devimpbin/<MMDD-HHMMSS>/`

@@ -24,6 +24,23 @@ use std::thread;
 // main.rs 即 root 模块，可直接使用，不能再用 use crate::fluent_args 重复导入（E0255）。
 
 fn main() -> Result<()> {
+    // [toolbox] 内置压缩工具模式（2026-09-25）：`chiri gzip <file>` /
+    // `chiri lz4 <src> <dst>`。pack.sh 在导出时调用（见 pack.sh 的
+    // CHIRI_BIN），用 flate2 / lz4_flex 纯 Rust 内置库压缩，设备没有 gzip/lz4
+    // 二进制也能产出 .tar.gz / .tar.lz4。必须在 daemonize 之前分发：CLI 需要
+    // 完整的 stdout/stderr 与退出码。看门狗拉起守护进程时 arg1 是模块目录
+    // （绝对路径），与这两个子命令字面量不可能冲突。其余情况 arg1 即 chdir
+    // 路径，走守护进程流程。
+    if let Some(cmd) = std::env::args().nth(1) {
+        match cmd.as_str() {
+            "gzip" | "lz4" => {
+                let rest: Vec<String> = std::env::args().skip(2).collect();
+                std::process::exit(crate::logger::compress_cli(&cmd, &rest));
+            }
+            _ => {} // 守护进程模式：arg1 是 chdir 路径
+        }
+    }
+
     // [daemonize]
     // 0. 进程自保：脱离派生方的会话与管道。
     //    背景：模块热更新 / Action 按钮重启调度时，看门狗与 daemon 由管理器
@@ -104,7 +121,8 @@ fn main() -> Result<()> {
     let log_dir = root.join("logs");
     // 启动归档：把上一轮整个 logs/ 与 devimp/ 分别重命名为临时目录并交单个
     // 子线程异步打包为 logd/<ts>.tar.lz4 与 logd/devimp_<ts>.tar.lz4（pack.sh
-    // 内 lz4 不可用回落 .tar；watchdog.pid 复制回新建的 logs/ 供 stopScheduler
+    // 打无压缩 tar 后由 Rust 内置 lz4_flex 压缩，不依赖设备 lz4 二进制，压缩
+    // 失败回落保留 .tar；watchdog.pid 复制回新建的 logs/ 供 stopScheduler
     // 定位看门狗）；打包完成后执行
     // logd/ 与 devimp/ 各自独立的预算清理（各自 >128MB 时删本目录最旧文件到 <96MB）。
     // 本进程日志写入新建的 logs/；devimp/ 仅在 dev_record 开启时由写入路径惰性创建

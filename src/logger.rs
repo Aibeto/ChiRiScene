@@ -1822,10 +1822,11 @@ pub fn aff_snapshot(rows: &[String]) {
 //    路径惰性创建，dev_record 关闭时不得留痕，含空目录）；
 // 2. **复制回 watchdog.pid** 到新建的 logs/——看门狗先于本进程启动、WebUI
 //    stopScheduler 靠 logs/watchdog.pid 定位并终止看门狗，归档不能带走它；
-// 3. 单个一次性子线程把两个临时目录串行打包为 tar.lz4（打包由外部
-//    脚本 scripts/pack.sh 完成（对外暴露的稳定接口、构建流程不得修改；优先
-//    模块自带 core/bin/tar，回退系统 tar。lz4 不可用时脚本回落保留 .tar；
-//    2026-09-17 起不再由 Rust 手写 ZIP）），
+// 3. 单个一次性子线程把两个临时目录串行打包：先由外部脚本 scripts/pack.sh
+//    （对外暴露的稳定接口、构建流程不得修改；优先模块自带 core/bin/tar，回退
+//    系统 tar）打成**无压缩 tar**，再用 Rust 内置 lz4_flex 压成 `.tar.lz4`
+//    并删除中间 tar（**不依赖设备 lz4 二进制**；lz4 落盘失败回落保留 .tar；
+//    2026-09-17 起不再由 Rust 手写 ZIP），
 //    成功后删除临时目录并自然退出（无常驻线程）；失败保留对应临时目录并写入
 //    ARCHIVE_FAILED.txt 供事后排查（此时 logger 尚未 init，无法打点）；
 // 4. 打包完成后执行目录预算清理：logd/ 与 devimp/ 各自超过
@@ -2347,10 +2348,11 @@ fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
 }
 
 /// 调用外部打包脚本（`module/scripts/pack.sh`，对外暴露的稳定接口，构建流程
-/// 不得修改）把 staging 目录打成 tar.lz4（脚本内 lz4 不可用时回落无压缩 .tar）。
-/// 脚本优先用模块自带 `core/bin/tar`（外部引入的二进制），回退系统 tar。
-/// 成功判据：退出码 0 且目标文件（.tar.lz4 或回落 .tar）存在。
-/// 脚本缺失 / tar 全部不可用 → false，调用方保留 staging 并留痕。
+/// 不得修改）把 staging 目录打成**无压缩 tar**。脚本优先用模块自带
+/// `core/bin/tar`（外部引入的二进制），回退系统 tar。lz4 压缩由调用方在拿到
+/// tar 后用内置 lz4_flex 完成（见 `pack_or_keep`），不依赖设备 lz4 二进制。
+/// 成功判据：退出码 0 且目标文件存在。脚本缺失 / tar 全部不可用 → false，
+/// 调用方保留 staging 并留痕。
 fn pack_dir_tar(root: &Path, dir: &Path, out_tar: &Path) -> bool {
     let script = root.join("scripts/pack.sh");
     let ok = std::process::Command::new("/system/bin/sh")
@@ -2361,21 +2363,109 @@ fn pack_dir_tar(root: &Path, dir: &Path, out_tar: &Path) -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
-    if !ok {
-        return false;
-    }
-    if out_tar.exists() {
-        return true;
-    }
-    // 回落产物：脚本没找到 lz4 时保留同名无压缩 .tar
-    let plain = out_tar.to_string_lossy().strip_suffix(".lz4").map(PathBuf::from);
-    plain.is_some_and(|p| p.exists())
+    ok && out_tar.exists()
 }
 
-/// 打包单个 staging 目录：成功删除目录，失败写 ARCHIVE_FAILED.txt 保留待查
-/// （此时 logger 尚未 init，无法打点）。
-fn pack_or_keep(root: &Path, dir: &Path, out_tar: &Path) {
-    if pack_dir_tar(root, dir, out_tar) {
+/// Rust 内置压缩（2026-09-25）：flate2（rust_backend，miniz_oxide 纯 Rust）与
+/// lz4_flex（纯 Rust lz4 帧格式，产物与标准 lz4 工具互通），全部流式
+/// `io::copy`，不整读文件进内存（归档可达 100MB+）。失败删除半截目标文件。
+fn compress_gzip(src: &Path, dst: &Path) -> bool {
+    match (fs::File::open(src), fs::File::create(dst)) {
+        (Ok(mut fin), Ok(fout)) => {
+            let mut enc = flate2::write::GzEncoder::new(fout, flate2::Compression::new(6));
+            let ok = std::io::copy(&mut fin, &mut enc)
+                .and_then(|_| enc.finish().map(|_| ()))
+                .is_ok();
+            if ok {
+                true
+            } else {
+                let _ = fs::remove_file(dst);
+                false
+            }
+        }
+        _ => false,
+    }
+}
+
+fn compress_lz4(src: &Path, dst: &Path) -> bool {
+    match (fs::File::open(src), fs::File::create(dst)) {
+        (Ok(mut fin), Ok(fout)) => {
+            let mut enc = lz4_flex::frame::FrameEncoder::new(fout);
+            // finish(self) 返回 lz4_flex 自家的 frame::Error，不与 io::Error
+            // 同型，不能链进 io::Result，分开判
+            let ok = match std::io::copy(&mut fin, &mut enc) {
+                Ok(_) => enc.finish().is_ok(),
+                Err(_) => false,
+            };
+            if ok {
+                true
+            } else {
+                let _ = fs::remove_file(dst);
+                false
+            }
+        }
+        _ => false,
+    }
+}
+
+/// 内置压缩工具入口（main.rs [toolbox] 分发）：`chiri gzip <file>` 生成
+/// `<file>.gz` 并删除源文件（语义与 `gzip -f` 一致，供 pack.sh export 调用）；
+/// `chiri lz4 <src> <dst>` 压缩到指定目标（备用入口，当前启动归档直接进程内
+/// 调 `compress_lz4`，不走本入口）。返回进程退出码：0 成功、1 压缩失败、
+/// 2 用法错误。
+pub fn compress_cli(cmd: &str, args: &[String]) -> i32 {
+    match cmd {
+        "gzip" => match args.first() {
+            Some(s) if !s.is_empty() => {
+                let src = PathBuf::from(s);
+                let Some(dst) = src.to_str().map(|p| PathBuf::from(format!("{p}.gz"))) else {
+                    return 2;
+                };
+                if compress_gzip(&src, &dst) {
+                    let _ = fs::remove_file(&src);
+                    0
+                } else {
+                    eprintln!("chiri gzip: compress {s} failed");
+                    1
+                }
+            }
+            _ => {
+                eprintln!("usage: chiri gzip <file>");
+                2
+            }
+        },
+        "lz4" => match (args.first(), args.get(1)) {
+            (Some(s), Some(d)) if !s.is_empty() && !d.is_empty() => {
+                if compress_lz4(Path::new(s), Path::new(d)) {
+                    0
+                } else {
+                    eprintln!("chiri lz4: compress {s} -> {d} failed");
+                    1
+                }
+            }
+            _ => {
+                eprintln!("usage: chiri lz4 <src> <dst>");
+                2
+            }
+        },
+        _ => 2,
+    }
+}
+
+/// 打包单个 staging 目录：pack.sh 先打无压缩 tar（目标名去掉 `.lz4`），再用
+/// 内置 lz4_flex 压成 `out_final`（.tar.lz4）并删除中间 tar；lz4 落盘失败
+/// （纯 I/O 错误，无环境依赖）回落保留 `.tar`。tar 打包失败写
+/// ARCHIVE_FAILED.txt 保留待查（此时 logger 尚未 init，无法打点）。
+fn pack_or_keep(root: &Path, dir: &Path, out_final: &Path) {
+    let Some(tar_str) = out_final.to_str().and_then(|s| s.strip_suffix(".lz4")) else {
+        return;
+    };
+    let tar_path = PathBuf::from(tar_str);
+    if pack_dir_tar(root, dir, &tar_path) {
+        if compress_lz4(&tar_path, out_final) {
+            let _ = fs::remove_file(&tar_path);
+        }
+        // lz4 失败：保留 .tar 作为最终产物（回落，见上）
         let _ = fs::remove_dir_all(dir);
     } else {
         let _ = fs::write(
