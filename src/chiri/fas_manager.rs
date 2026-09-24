@@ -15,7 +15,6 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use log::info;
@@ -23,6 +22,7 @@ use log::info;
 use crate::chiri::governor::GovernorGuard;
 use crate::fluent_args;
 use crate::i18n::t_with_args;
+use crate::monitor::FasSignal;
 use crate::scheduler::fas::FasController;
 
 /// 活跃实例温度刷新周期（喂给 FAS 引擎内部限温逻辑，core_temp_threshold=0 时无效）
@@ -55,17 +55,18 @@ pub struct FasManager {
     /// 每次刷新经 `utils::battery_temp_divisor()` 取全局预识别结论（CLG 热保护
     /// 同源），避免两处口径漂移；None = 无温度源（引擎侧护栏失效，不影响其余功能）
     temp_path: Option<PathBuf>,
-    /// FAS 前台激活共享标志（monitor 层 fps_monitor 消费）：activate 置位、
-    /// deactivate 清零——fps_monitor 据此推迟/摘除 eBPF uprobe（反偷跑门控）
-    fas_active_flag: Arc<AtomicBool>,
+    /// FAS 前台激活信号（monitor 层 fps_monitor 等待消费）：activate 置位、
+    /// deactivate 清零——fps_monitor 据此推迟/摘除 eBPF uprobe（反偷跑门控），
+    /// 且置位瞬间即唤醒待机线程（见 `crate::monitor::FasSignal`）
+    fas_signal: Arc<FasSignal>,
 }
 
 impl FasManager {
     /// temp_path：FAS 专用温度源节点。温度看电池不看处理器——电池温度是
     /// 热安全边界（阈值按 ℃ 配置），处理器长期 95℃ 属正常工作区，不作为
     /// 降频依据。None = 无温度源（内部限温关闭，不影响其余功能）。
-    /// fas_active_flag 由 main.rs 创建、monitor 与 chiri 两层共享。
-    pub fn new(temp_path: Option<PathBuf>, fas_active_flag: Arc<AtomicBool>) -> Self {
+    /// fas_signal 由 main.rs 创建、monitor 与 chiri 两层共享。
+    pub fn new(temp_path: Option<PathBuf>, fas_signal: Arc<FasSignal>) -> Self {
         Self {
             instance: None,
             exit_deadline: None,
@@ -74,7 +75,7 @@ impl FasManager {
             last_temp: 0.0,
             last_temp_read: Instant::now(),
             temp_path,
-            fas_active_flag,
+            fas_signal,
         }
     }
 
@@ -110,7 +111,7 @@ impl FasManager {
             // 同包续期：刷新 set_game 并取消延迟退出
             inst.controller.set_game(pid, pkg);
             self.exit_deadline = None;
-            self.fas_active_flag.store(true, Ordering::Release);
+            self.fas_signal.set(true);
             return true;
         }
 
@@ -140,7 +141,7 @@ impl FasManager {
             migration_cost_restore,
         });
         self.exit_deadline = None;
-        self.fas_active_flag.store(true, Ordering::Release);
+        self.fas_signal.set(true);
         match switch_from.as_deref() {
             Some(old) => info!(
                 "{}",
@@ -162,7 +163,7 @@ impl FasManager {
     }
 
     /// C2：立即去激活（reset_all_freqs + clear_game + governor 按快照恢复），并清零
-    /// fas_active 共享标志（fps_monitor 摘除 uprobe 回到零开销待机）。
+    /// fas_signal 共享信号（fps_monitor 摘除 uprobe 回到零开销待机）。
     /// 无活跃实例时为 no-op。延迟退出请求一并取消。
     /// info 打点 scheduler-fas-deactivate（pkg）+ main_event("fas", pkg, "deactivate")。
     // [deactivate]
@@ -171,7 +172,7 @@ impl FasManager {
             return;
         };
         self.exit_deadline = None;
-        self.fas_active_flag.store(false, Ordering::Release);
+        self.fas_signal.set(false);
         // 迁移成本先于频率恢复，让后续 governor 快照到系统原状
         if let Some(orig) = inst.migration_cost_restore.take() {
             let _ = crate::utils::try_write_file(MIGRATION_COST_PATH, &orig);

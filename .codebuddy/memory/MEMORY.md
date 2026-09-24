@@ -17,7 +17,7 @@
 
 ### 文件接触点
 
-`daemon.lock`（单实例锁，WebUI 不读写）· `LiveTime.chr`（只读心跳，15s 写 `MM:SS`，差 >20s 判停止）· `active_config.chr`/`current_mode.chr`/`PowerAVG.chr`（只读）· `config/{rel}`（读写）· `rules.yaml`/`special_tuned.yaml`/`fas_whitelist.yaml`（只读，仅 Chiri 生成）· `logs/daemon.log`（只读，仅本次运行）· `logs/status.csv`(+`.1`) · `logs/watchdog.pid`（读+删）· `rhine.chr`（读写）+`rhine-back.chr`（快照）· `down.chr`（读写，`down`=停摆）。附：`devimp/`、`logd/`、`config/{soc}/`。
+`daemon.lock`（单实例锁，WebUI 不读写）· `LiveTime.chr`（只读心跳，15s 写 `MM:SS`，差 >20s 判停止）· `active_config.chr`/`current_mode.chr`/`PowerAVG.chr`（只读）· `config/{rel}`（读写）· `rules.yaml`/`special_tuned.yaml`/`fas_whitelist.yaml`（只读，仅 Chiri 生成）· `logs/daemon.log`（只读，仅本次运行）· `logs/status.csv`(+`.1`) · `logs/watchdog.pid`（读+删）· `rhine.chr`（读写）+`rhine-back.chr`（快照）· `down.chr`（读写，`down`=停摆）。附：`devimp/`（**惰性创建**：仅 dev_record 开启后的首次写入代建，关闭时应不存在）、`logd/`、`config/{soc}/`。
 
 读取失败三态必须分开：正常空值 / 合法缺失（非 Chiri 无白名单、无 status.csv）/ 读取失败（界面明确报错，不得伪装成空值）。
 
@@ -56,9 +56,14 @@
 - `daemon.log` ≤50MB + 3 备份；行格式 `[YYYY-MM-DD HH:MM:SS] [LEVEL] [module] msg`（本地时间），模块剥 crate 前缀。
 - `status.csv` ≤8MB + `.1`，每秒一行 **22 列**（末列 `fps` 仅 FAS 激活有值）；新增列一律追加末尾；全精度写入、显示层 `toFixed(1)`。两者都不可整读。
 - 启动：先判短会话（首行距启动 <30s → 清空不打包；解析失败按非短会话），再把上轮打包进 `logd/`（`pack.sh` 走外部 tar，**不得改**；导出 = logd→tar→**gzip**→删中间产物）。
-- 预算：`logd/`、`devimp/` 各自 >128MB 删本目录最旧到 <96MB（最新永不删）。写路径记账 ≥128MB 即 `exit(0)`。
+- 预算（2026-09-24 由 128/96 扩容为 256/200MB）：`logd/`、`devimp/` **各自独立计量**，各自 >256MB 才清理到 <200MB。**两目录清理语义不同**：logd/ 走 `enforce_logd_limit` 按**归档批次原子删**（`<ts>.tar` 与 `devimp_<ts>.tar` 同进退、最新批次永不删；最新批次自身 ≥200MB 时退化为收到 256MB 即停，不为凑目标陪葬旧批次）；devimp/ 仍按单文件 mtime 删（活跃 + 最新一份永不删）。历史坑：旧「只保最新一个文件」会把同批 ~1MB 的 `<ts>.tar`（daemon.log/status.csv 唯一载体）连同旧批次删掉，导出包只剩 devimp tar。
+- 写路径记账 ≥128MB（`LOG_RESTART_THRESHOLD_BYTES`，**未随预算扩容**；devimp 单文件软上限同为 128MB、按数量保留 20 份）即 `exit(0)`，**无看门狗时不退出**：`watchdog_pid()` = 「`logs/watchdog.pid` 内容 == `getppid()`」∪「脱管 shell」（`detached_shell_parent`：comm 属 shell 家族且 `/proc/<ppid>/stat` 祖字段 ==1）；两条都不成立则计数清零并打一条 warn `logger-log-restart-suppressed`（2026-09-24 起，旧实现静默失效、零痕迹）。`ensure_watchdog_pid_file` 重建时只用脱管 shell 判据（文件正缺失，pidfile 无从匹配）。
+- TODO: 真机确认 `detached_shell_parent` 在 `service.sh`/`action.sh` 的两级进程链（setsid → `sh -c` → `sh -c` → daemon）下是否成立：只有外壳对 `-c` 末尾单命令做 exec 优化时 daemon 父 sh 的父才是 1，否则祖父 = 外层 sh ≠ 1 → 判据恒 false → 到达门限也不重启归档（常态走 pidfile 兜住，仅 `logs/` 被删后暴露）。
 - **定版手段（离线第一件事）**：devimp 文件头三行 `# module=ChiRi Canary <ver> (versionCode N)` / `# soc=… board=… model=…` / `# android=… kernel=…` 一直存在；daemon.log 另有 `[Main] 模块版本:` 行（2026-09-22 新增）。**同名 tar 里可能混着不同版本/不同机型**，先定版再比数据。
 - devimp/ 双文件（2026-09-22 拆分，原 devimp*<pkg>* 单文件）：`main_<pkg>_<MMDD-HHmmss>.log`（44 列 CSV v2026-09-22，tick/snap/event）+ `aff_<MMDD-HHmmss>.log`（文本帧：@A 动作帧含 `result=ok|e{errno}`、@S 每秒快照帧 top-N〔meta `devimp_top_n` 缺省 10 clamp 1..=64〕+前台/被管线程下钻；`\x01` 保留二进制帧位）。目录/归档 tar/记账键保留 devimp 名；锁 6 把（+AFF_TH_STATE）；t 行 pid=0=归属未知、uclamp 恒 -1。
+- **`devimp/` 目录惰性创建（2026-09-24）**：唯一创建者是 `main_open`/`aff_open`（都在 `diag_active()` 门控内的写入路径上）；归档 rename 后**不预建空目录**，短会话清空后连空目录一并 `remove_dir`，`diag_prepare` 遇目录不存在即早退（不代创建）。硬口径：**dev_record 关闭时不得出现 `devimp/`，连空目录也算留痕**。
+- **`@S` 的 `t` 行是差分集（2026-09-24 起，离线判读必读）**：每帧只写 ① 前台进程**全部**线程 ② 被管线程表里**被动过**的条目（`home≥0` 或 `group_bind≠None`）③ 本帧 `u`/`core`/`home`/`pin`/`pid`/`comm` 任一有变化的长尾线程（后两项是线程身份，2026-09-25 补入差分：tid 会被别的进程/线程复用，身份变了必须重新落行；comm 比对用 `sample_one_tid` 的原始 stat 值而非 `aff_token` 归一化串）；**缺失的 tid = 与上一帧完全相同**。`AFF_LONGTAIL_REFRESH_FRAMES=30`（1s/帧 = 30s）做全量刷新防漂移，长尾一旦有变化则续 30 帧热窗逐帧采样，之后退冷回 30 帧一次。③ 的 `u` 是自上次落盘（最多 30s）窗口的均值，①② 仍是 1s 窗口值——长尾里的短促占用会被抹平，勿拿它做短时尖峰归因。
+- t 行归属 PID（2026-09-24）：后台候选建档时经 `read_tgid` 尽力补真实 tgid，前台条目建档写 `fg_pid`；**身份判据是 `ThreadState.is_fg`，不是 `pid>0`**（`managed_pids()` 只收前台归属条目）。pid=0 仍是「归属未知」。
 
 ### PowerAVG
 

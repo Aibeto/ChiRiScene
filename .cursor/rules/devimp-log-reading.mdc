@@ -1,0 +1,41 @@
+---
+description: 判读 devimp 日志包字段语义（@S/@A 帧、deb_up/deb_down、cur_freq_khz、batt_i、migrations、max_util）或据 devimp 数据下功耗/调度结论时
+globs: devimpbin/**
+alwaysApply: false
+---
+
+# devimp 日志判读口径（最易读错的几条）
+
+判读全集以 `.cursor/commands/devimp-log-analysis.md` 为准，本规则只留最容易读错的铁律。
+数字读错会直接导出错误结论。
+
+## 铁律
+
+1. `@S` 帧是**差分集**：前台线程与被管条目（pinned）每帧全量，长尾只在 `u/core/home/pin`
+   变化时落行，每 30 帧全量刷新一次。**缺失行 = 与上一帧相同**，勿按「行数 = 线程数」
+   重建状态；刷新帧内长尾 `u` 是 <=30s 均值。
+2. 清理类动作是 `<场景>_bulk` 汇总（`value` = 本次条数），统计清理规模读 bulk 帧累加；
+   逐条 `bind_release` 只代表**真有内核动作**的条目。
+3. `deb_up`/`deb_down` = up_wait/down_wait 连续方向 tick 计数（升降频速率限制），
+   不是错误计数。「decision=down 但 cur_freq 不动」多为触摸地板/热 clamp 在 flush 里钉住，
+   不是写频失败、也不是假 down。
+4. `cur_freq_khz`/`max_freq_khz` 是调度器写入的**决策值**（scaling_max 上限），不是实际频率；
+   实际频率看 snap 行 `cpu_cur_khz`，二者比率 = cap%。
+5. 44 列 devimp 的 `batt_i` 疑似整数化（值域仅 0/1/2/3）：[BAD] 严格排除 `batt_i==0`
+   会误删约 58% 样本（恰是 <0.5A 轻载秒），P_avg 系统性高估（aweme 3.35W vs 真值 2.14W）。
+   [GOOD] 此类包功耗以 status.csv 的 `charge` + `batt_power_w` 为准，devimp 功耗列只做交叉验证。
+6. `migrations`/`wakeups` 是 2s 增量原始值，换算每秒要 **除以 2**。
+7. `max_util` 双语义：CLG 行 = 平滑前原始 util，tuned（akmode/playback）行 = 平滑后决策负载，
+   二次平滑前先分行来源。
+8. `@A result=e0` 不是成功——errno 拿不到时写 `e0`；`e3`（ESRCH，线程已退出）属正常，
+   `e22`（EINVAL）偶发。
+9. `cap=85` 不等于已压制：`free_above` 是豁免档不是温度带，压制只落在
+   `(soft_perf_cap, free_above)`；tuned 段 cap 列为 `-`。
+
+## 正反例
+
+```text
+[BAD] 「@A 里 bind_release 3.4 万次 = 3.4 万次 sysfs 写放大，需限频清理」
+[GOOD] 其中仅 291 个 tid（4.0%）真动过核，其余走 group_bind==None 早退零 sysfs——
+      是日志噪声不是写放大，优先级按日志减量评估
+```

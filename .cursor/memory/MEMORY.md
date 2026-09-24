@@ -14,6 +14,51 @@
   `@typescript/native` 接入，根 typescript 保持 6 系列（svelte-check 对等依赖只认 5/6 系列）；别名与 `--tsgo`
   成对，缺任一 svelte-check 直接报错退出。
 
+## 契约要点
+
+- logd/ 归档预算清理（2026-09-24 起）：`enforce_logd_limit` 按**归档批次原子删**——
+  `<ts>.tar` 与 `devimp_<ts>.tar` 同进退、最新批次永不删，最新批次 ≥200MB 时收到 256MB 即停。
+  背景：超大 devimp 归档（114MB）曾把同批 daemon.log/status.csv 归档挤掉（logd_0924-173105 包）。
+  目录预算同日扩容：`LOGD_MAX_BYTES` / `DEVIMP_DIR_MAX_BYTES` 128→256MB、TARGET 96→200MB。
+  详见 docs/agents/02-convention.md 归档条与「被挤掉」历史坑。
+- 日志打包门限（128MB，**未变**）的看门狗判定（2026-09-24 重做）：pidfile 铁证
+  （`logs/watchdog.pid` == getppid()）∪ 脱管 shell（comm 属 shell 家族且祖字段 ==1）；
+  达门限被抑制时打点 `logger-log-restart-suppressed` warn，不再静默清零（旧 comm∈{sh,mksh}
+  白名单会把调试直跑误判成有监督、把 busybox/ash 父或 /proc 读失败误判成无监督）。
+
+- FAS 防篡改强制重写（2026-09-24 改）：`freq_force_reapply_interval` 由「帧」改「**秒**」（默认 30、
+  `normalize()` 钳 ≥1，旧实现 0 会 `% 0` panic）；`force_reapply()` 去掉两次无用的 `re_unmount()`
+  （只 `umount2` 不重开 fd、对写入零贡献；`verify_prev_freq` 那次保留）。收益：120fps 下
+  强制重写路径由 24 写 + 24 `umount2`/s 降到 0.2 写/s、0 `umount2`，并与刷新率解耦。
+  `mdocs/TechAnalyze.md`、`README.en.md` 的单位说明已同步为秒。
+
+- aff 减量（2026-09-24，四文件）：① `@S` 线程快照改**差分帧**——前台线程与被管条目
+  （`pinned`）每帧全量，长尾只在 `u/core/home/pin` 变化时落行、每 30 帧全量刷新一次
+  （**缺失行 = 与上帧相同**，长尾 `u` 为 ≤30s 均值）；每帧 t 行 767→约 374、stat 读 −52%、
+  aff_ 121MB/42min → ~62MB（128MB 门限重启周期 42min → ~1.2h）。② 清理类动作汇总为
+  `<场景>_bulk`（`value`=条数），逐条 `bind_release` 只剩真有内核动作的条目。③ `t` 行 pid 由
+  `/proc/<tid>/status` Tgid 补全（旧包 54% `pid=0`）。④ `threads` 表新增 `is_fg`，四处
+  「`pid>0` 当前台哨兵」的判据改看它（等价重构，调度决策未变）。⑤ bg uclamp 值守卫：
+  同值不写、60s 强制再断言（~1 次/s → 1 次/60s），`uclamp` 帧只在真写时产生。
+  判读口径见 `.cursor/commands/devimp-log-analysis.md` 已知坑 13/14。
+
+- devimp 目录懒创建与零写入（2026-09-24）：`devimp/` **唯一创建者 = `main_open`/`aff_open`**（两者都在
+  `diag_active()` 门控内）；`diag_prepare` 目录不存在即早退、启动归档不预建、短会话清空后连空目录
+  `remove_dir`——**dev_record 关闭时不产生任何数据（含空目录）**。`set_diag_package` 加 `diag_active()`
+  门控（关时零锁零分配；重开后下一秒仍按包名切 main_ 文件）。`current_mode.chr` 5s 自愈改 `ModeFile`
+  （记账 + 磁盘内容双重比对，跳过时 5 syscall → 1 read；`remove()` 清记账防文件空窗）。
+- 前台 PID 广播改推送（2026-09-24）：`monitor/mod.rs` 的 `pid_watcher`（500ms 轮询原子量）已删，
+  改在 `app_detect` 的 `set_current_package` 生效点就地 `pid_tx.send`（发送条件与原线程逐位一致：
+  pid 变化且 >0）；cpu_monitor / fps_monitor 消费同一 watch 通道，稳态唤醒 2 次/s → 0。同批监控侧另有屏幕节点清单缓存 **10 分钟 TTL**（2026-09-24 已落，`monitor/screen_detect.rs` `SCREEN_NODES_TTL=600s`）：命中零分配零 syscall，TTL 到期或全不可读即重枚举，投票/每轮新鲜读口径不变。
+
+- FAS 激活信号（2026-09-24）：`monitor::FasSignal`（`Mutex<()>` 判谓词 + `Condvar`，
+  **`set` 的 store 与 `notify_all` 同锁**防丢唤醒）取代裸 `Arc<AtomicBool>`；生产方
+  `fas_manager` 三处（activate/续期/`deactivate_active`），消费方 `fps_probe` 待机与
+  `mod.rs` 首激活门控——稳态唤醒 2 次/s → 0。**勿退回裸原子量轮询**：FAS 会在前台 PID
+  未变时重新激活（息屏释放、冷却结束），只等 PID 会漏唤醒。
+
+- ChiRi 默认全局唯一调度程序（口径，2026-09-24）：设备上**不存在常态竞争的厂商守护进程/第三方调度模块**；防篡改/周期重写（fast/power_base 5s、FAS 30s 强制重写、CLG 1s、bg uclamp 60s 再断言等）一律是**异常兜底**——防的是残留旧模块、手动调试、内核异常态下的异常改写，文档/汇报勿再写成厂商对抗。
+
 ## 进行中
 
 - daemon-perf-opt 五阶段性能优化计划：`.cursor/docs/daemon-perf-opt-plan.md`

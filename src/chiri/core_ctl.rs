@@ -4,19 +4,20 @@
 ///
 /// 三态状态机（互斥，按「最近一次 apply」切换，内部去重）：
 /// - **Boost**（boost/vector/特调）：各 cluster 的 core_ctl `min_cpus` 抬到
-///   全组常在线，防止厂商热插拔把大核下线、与 ChiRi 升降频决策打架；
+///   全组常在线，防止低负载时热插拔回滞把大核下线、与 ChiRi 升降频决策打架；
 /// - **Scenemode 离线**（息屏 5 分钟后的深度省电）：解除 boost 后直接写
 ///   `/sys/devices/system/cpu/cpuN/online`——**小核 + 大核全开常驻**（频率
 ///   上限由 scenemode CLG 配置压制），仅 prime 整簇断电消除空转漏电流；
 ///   另将编号最大的小核**独占**给调度服务（从业务 cpuset 组移除 + 自身线程
 ///   移入根组 + 全线程自钉）；逐核写后回读验证，失败的核跳过；周期重入时
-///   纠偏（厂商守护进程偷偷拉起的核会被重新下线、框架加回保留核会被重新移除）；
+///   纠偏（被异常拉起的核重新下线、被加回的保留核重新移除——ChiRi 默认是全局
+///   唯一调度程序，节点被改写属异常态：残留旧模块/手动调试/内核异常）；
 /// - **Normal**：恢复全部快照（min_cpus / online）。
 ///
 /// 为什么用 min_cpus/online 而不是逐核"按需唤醒"：唤醒大核要拉电压轨、重建
-/// L2，为一个后台线程点亮大核净亏能；且直接写 online 会与厂商热插拔守护进程
-/// 打架（对方会再下线）。需要更多在线核时的正确姿势是抬 core_ctl min_cpus
-/// （Boost 态），让厂商内核按自己的回滞策略管理唤醒。
+/// L2，为一个后台线程点亮大核净亏能；且直接写 online 会与内核热插拔回滞策略
+/// 打架（低负载判定会再下线）。需要更多在线核时的正确姿势是抬 core_ctl min_cpus
+/// （Boost 态），让内核按自己的回滞策略管理唤醒。
 ///
 /// cluster 发现：遍历 cpufreq policy → related_cpus 首个 CPU 的
 /// `/sys/devices/system/cpu/cpuN/core_ctl`（每个 policy 只注册一份，天然去重）。
@@ -185,7 +186,8 @@ impl CoreCtlManager {
         };
         if target == self.state {
             if target == STATE_SCENEMODE {
-                // 维持期纠偏：厂商热插拔守护进程可能把核悄悄拉回来
+                // 维持期纠偏：下线的核可能被异常拉回（残留旧模块/手动调试/内核
+                // 异常态；ChiRi 默认无竞争者），重新收敛回离线
                 self.reassert_offline();
             } else if !self.offlined.is_empty() {
                 // 恢复失败残留核的周期重试（NONE 与 BOOST 稳态）：亮屏恢复/
@@ -299,7 +301,7 @@ impl CoreCtlManager {
                 );
                 continue;
             }
-            // 回读验证：防内核静默拒绝（热插拔锁/厂商守护进程）
+            // 回读验证：防内核静默拒绝（热插拔锁等异常态）
             let now = fs::read_to_string(&path)
                 .ok()
                 .map(|s| s.trim().to_string())
@@ -588,7 +590,7 @@ impl CoreCtlManager {
                 continue;
             }
             if !write_back(&path) && !write_back(&path) {
-                // 启动期失败打 warn：热插拔锁/厂商守护进程可能拒绝，
+                // 启动期失败打 warn：热插拔锁等异常态可能拒绝写入，
                 // 后续亮屏/ModeChange 路径的 restore_online 仍会按快照兜底
                 warn!(
                     "{}",

@@ -1,0 +1,45 @@
+---
+description: 在 src/ 新增周期任务、轮询、条件等待或重复 sysfs/文件写入（频率、uclamp、模式文件）时；改主循环 recv_timeout 的 wait 计算或 Condvar 唤醒逻辑时
+globs: src/**/*.rs
+alwaysApply: false
+---
+
+# 事件驱动与值未变不写
+
+性能敏感路径一律推送事件；固定节拍里的幂等重写、空轮询、盲等待都是错的。
+原则全文见 `docs/agents/02-convention.md` 事件循环低开销条。
+
+## 硬规则
+
+1. 新增周期任务必须把它的 deadline 纳入主循环 `recv_timeout` 的 wait 取 min
+   （与 telemetry 1s / thermal+亲和 2s / mode file 5s / fast_lock 5s 并列，`EVENT_POLL_MS` 兜底），
+   否则任务粒度被拖到兜底上限。
+2. 值未变不写：写 sysfs/文件前比对目标值，未变即跳过。需要防篡改重断言的给「强制间隔」
+   （bg uclamp 60s 一次），不是每秒恒写。
+3. 周期自愈写之前先做「记账 + 磁盘内容」双重比对，一致即只读跳过（`current_mode.chr`：
+   跳过时 5 syscall -> 1 read）；状态删除时清记账防文件空窗。
+4. Condvar/条件等待：**store 与 notify 必须同锁**，防「判谓词 -> 入睡」窗口丢唤醒。
+5. 能等事件就等事件（watch 通道、Condvar、inotify），勿退回裸原子量轮询。
+
+## 今天的实例（2026-09-24，均为已落地改动）
+
+| [BAD] 旧行为 | [GOOD] 现行为 |
+|---|---|
+| `pid_watcher` 线程 500ms 轮询原子量广播前台 PID | `set_current_package` 生效点就地 `pid_tx.send`，稳态唤醒 2 次/s -> 0 |
+| fps 待机每 500ms 查 `AtomicBool` | `monitor::FasSignal`（Mutex 判谓词 + Condvar），只在 FAS 状态跃迁时唤醒 |
+| bg uclamp 每秒恒写同值（~1 次/s） | 同值不写、60s 强制再断言，`uclamp` 帧只在真写时产生 |
+| `current_mode.chr` 5s 无条件重写（5 syscall） | ModeFile 记账 + 磁盘内容比对，一致即 1 read 跳过 |
+
+```rust
+// [GOOD] store 与 notify 同锁（FasSignal::set 形态）
+let mut active = self.inner.lock().unwrap();
+*active = true;
+self.cv.notify_all(); // 判谓词与入睡同锁，不丢唤醒
+
+// [BAD] 先改原子量后通知：等待方刚判完 false 入睡即丢唤醒
+ACTIVE.store(true, SeqCst);
+CV.notify_all();
+```
+
+[NOTE] FAS 会在前台 PID 未变时重新激活（息屏释放、冷却结束）——只等 PID 变化会漏唤醒，
+FAS 收不到帧。等待条件要按「状态跃迁」建模，不要按「上游输入变了」建模。

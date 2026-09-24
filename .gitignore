@@ -65,6 +65,7 @@ webui/*.ntvs*
 webui/*.njsproj
 webui/*.sln
 webui/*.sw?
+webui/.svelte-check/
 # 构建期拉取的字体（见 webui/scripts/fetch-fonts.mjs），二进制不入库
 webui/src/assets/fonts/poppins-*.woff2
 webui/src/assets/fonts/noto-sans-sc-*.woff2

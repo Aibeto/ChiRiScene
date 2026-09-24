@@ -1,0 +1,43 @@
+---
+description: 修改 src/ Rust 代码后用 cargo check 验证编译、核对构建输出是否真编译了改动，或在 Windows 开发机上强制重编译时
+globs: src/**/*.rs
+alwaysApply: false
+---
+
+# cargo check 自证纪律
+
+增量缓存会让你「改了但没编译」——exit 0 不等于改动编译通过。
+
+## 硬规则
+
+1. 改完 Rust 必须跑 `cargo check -p chiri --target aarch64-linux-android`，并确认输出里
+   **真的出现 `Checking chiri`**。只看到 `Finished`（没有 Checking 行）= 命中缓存、
+   你的改动根本没进编译，结论无效。
+2. 怀疑缓存假绿就强制重编：Windows 的 cmd 没有 `touch`，用 PowerShell 把 mtime 前移再查：
+
+   ```powershell
+   (Get-Item src/monitor/mod.rs).LastWriteTime = Get-Date
+   cargo check -p chiri --target aarch64-linux-android
+   ```
+
+3. 重要改动建议做一次报错定位自证：在自己改的文件里临时插一处类型错误
+   （如 `let _: u32 = "x";`），确认 rustc 报错**定位到该文件**，删掉后重查通过——
+   证明编译器真的在看这份代码。
+4. 本机（Windows）预期噪音：build.rs 的 eBPF 占位提示不是代码问题；
+   达标口径 = **exit 0 + 0 条 rustc warning**。
+5. 多批次/多子代理改动收口：对最后改过的文件做 mtime 前移后统一再 check 一次，
+   确认每个批次都编译进来（单次输出可含多行 Checking）。
+
+## 正反例
+
+```powershell
+# [BAD] 只看退出码就宣布完成（可能全程命中缓存没编译）
+cargo check -p chiri --target aarch64-linux-android; echo $LASTEXITCODE
+
+# [GOOD] 输出核对：有 Checking、有 Finished、无 warning
+cargo check -p chiri --target aarch64-linux-android 2>&1 | Tee-Object check.log
+Select-String -Path check.log -Pattern 'Checking chiri|warning|error'
+```
+
+[NOTE] 改动只在 `module/config/` 的 yaml 时同样要重编：配置是编译期嵌入的，
+build.rs 的 `rerun-if-changed=module/config` 会触发重编，但同样要看到 `Checking chiri` 才算生效。

@@ -38,7 +38,8 @@ use crate::chiri::config::AffinityConfig;
 use crate::utils::{FastReader, SysPathExist};
 use log::{debug, info};
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::fluent_args;
@@ -71,17 +72,68 @@ const BACKGROUND_GROUPS: [&str; 3] = ["background", "system-background", "restri
 /// 感知"的体验；只压纯应用后台与受限组
 const BG_DEMOTE_GROUPS: [&str; 2] = ["background", "restricted"];
 
+/// 后台组 `cpu.uclamp.max` 的「值未变不写」守卫状态：**纯原子量**，不在 apply
+/// 周期路径上取锁（口径同 `logger::diag_active` 的「高频只读原子量」）。
+/// 编码：0 = 尚未写入（首启必写）；1..=101 = 数值 pct+1；`BG_UCLAMP_MAX_CODE` = `max`。
+static BG_UCLAMP_CODE: AtomicU64 = AtomicU64::new(0);
+/// 上次**实际**写入时刻（相对 `BG_UCLAMP_EPOCH` 的毫秒；`Instant` 不能进原子量）
+static BG_UCLAMP_AT_MS: AtomicU64 = AtomicU64::new(0);
+/// 计时基准（首次调用时初始化一次）
+static BG_UCLAMP_EPOCH: OnceLock<Instant> = OnceLock::new();
+
+/// `max` 的守卫编码（数值 pct 最大 100 → 编码最大 101，无冲突）
+const BG_UCLAMP_MAX_CODE: u64 = u64::MAX;
+
+/// 值未变时的强制重写间隔：ChiRi 默认是全局唯一调度程序，cgroup 节点被改写属
+/// 异常态（残留旧模块/手动调试/内核异常），只靠「值变了才写」等于永久放弃纠偏；
+/// 60s 一次再断言是异常兜底（不是常态对抗），又把稳态写入
+/// 从 ~1 次/s 降到 1 次/60s（实测 bg_apply 2450 次/42min 全是同值重写）。
+const BG_UCLAMP_REASSERT: Duration = Duration::from_secs(60);
+
+/// 值字符串 → 守卫编码；解析失败返回 0（= 「未知，必须写」，退化为改造前行为）。
+/// 只服务本文件两个调用点（`{pct}.00` 与 `max`），不做通用浮点解析。
+fn bg_uclamp_code(val: &str) -> u64 {
+    if val == "max" {
+        return BG_UCLAMP_MAX_CODE;
+    }
+    val.split('.')
+        .next()
+        .and_then(|s| s.parse::<u32>().ok())
+        .map(|p| p as u64 + 1)
+        .unwrap_or(0)
+}
+
 /// 写后台组的 `cpu.uclamp.max`：**候选组逐个写、不去预判存在性**——Android 的
 /// restricted 组由 init 按需创建（部分机型没有，或运行期才出现），写入失败本身
 /// 就是「该组不可用」的权威证据；预判会让日志与真实情况脱节，也把失败吞掉。
 /// 日志口径见 `utils::write_nodes`：单组失败 debug、全组失败 warn（一次）。
 /// 每节点补一条 @A uclamp 帧（write_nodes 只回成功列表，失败无 errno 记 e0）。
+///
+/// 本函数是真实内核写入（不是诊断日志），守卫逻辑与 dev_record 开关无关：
+/// 值未变且距上次实写不足 `BG_UCLAMP_REASSERT` 时整段跳过——不改内核、不打帧。
 fn write_bg_uclamp_max(val: &str, reason: &str) {
+    let code = bg_uclamp_code(val);
+    let now = Instant::now();
+    let now_ms = now
+        .duration_since(*BG_UCLAMP_EPOCH.get_or_init(|| now))
+        .as_millis() as u64;
+    let last_ms = BG_UCLAMP_AT_MS.load(Ordering::Relaxed);
+    if code != 0
+        && code == BG_UCLAMP_CODE.load(Ordering::Relaxed)
+        && now_ms.saturating_sub(last_ms) < BG_UCLAMP_REASSERT.as_millis() as u64
+    {
+        return;
+    }
     let items: Vec<(String, String)> = BG_DEMOTE_GROUPS
         .iter()
         .map(|g| (format!("/dev/cpuctl/{g}/cpu.uclamp.max"), val.to_string()))
         .collect();
     let written = crate::utils::write_nodes(&items, "bg-uclamp-max");
+    // 状态在写之后更新；写失败也更新——同值下一周期即跳过，60s 兜底会再断言
+    // 一次，而失败组本身在下方 @A 帧 result=e0 里可见，观测不受影响
+    BG_UCLAMP_CODE.store(code, Ordering::Relaxed);
+    BG_UCLAMP_AT_MS.store(now_ms, Ordering::Relaxed);
+    // 打点与写入同门控：跳过写入时也不产生帧，否则同值重写仍会把 aff 文件刷满
     if crate::logger::diag_active() {
         for (path, _) in &items {
             let result = if written.iter().any(|w| w == path) {
@@ -578,6 +630,19 @@ fn read_cmdline(pid: i32) -> String {
         .to_string()
 }
 
+/// 读线程归属进程 PID（`/proc/<tid>/status` 的 `Tgid:` 行）。
+/// 目的：后台候选线程建档时把归属记全——@S 的 t 行 `pid=0` 表示「归属未知」，
+/// 实测 54% 的 t 行落在这个值上，根因就是后台候选 insert 时一律写 0。
+/// 只在**首见建档**时读一次（分片扫描下每轮新增 ≤ `BG_SCAN_WINDOW` 个），
+/// 不进周期路径；读不到（线程已退出/节点不可读）返回 None，调用方保持 0，
+/// 不臆造别的哨兵值（0 的既有语义就是「归属未知」）。
+fn read_tgid(tid: i32) -> Option<i32> {
+    let text = std::fs::read_to_string(format!("/proc/{tid}/status")).ok()?;
+    text.lines()
+        .find_map(|l| l.strip_prefix("Tgid:"))
+        .and_then(|v| v.trim().parse::<i32>().ok())
+}
+
 /// 解析 cpuset 风格 CPU 列表为位图
 fn parse_cpu_bitmap(s: &str, max_cpu: usize) -> Vec<bool> {
     let mut bits = vec![false; max_cpu];
@@ -684,8 +749,15 @@ fn clk_tck() -> f32 {
 
 /// 线程放置状态
 struct ThreadState {
-    /// 归属进程 PID（后台候选建档时为 0）
+    /// 归属进程 PID：前台条目 = 建档时的 `fg_pid`；后台候选建档时经
+    /// `read_tgid` 尽力解析（@S t 行归属），拿不到保持 0
+    /// —— 0 的既有语义即「归属未知」，勿改成别的哨兵值
     pid: i32,
+    /// 是否前台归属条目（唯一权威判据）：true = 由前台 `fg_pid` 建档，之后只在
+    /// 前台扫描「收养」时转 true。为什么单独存一个 bool 而不看 `pid > 0`：
+    /// `pid` 现在也承载后台候选的真实 tgid，若仍拿「pid>0」当「前台线程」哨兵，
+    /// 后台候选会被 departed 清理与后台 promote 过滤误当成前台条目处理
+    is_fg: bool,
     /// 线程名（首见 stat 采样缓存，devimp place 行复用，避免重复读 stat）
     comm: String,
     /// 前台关键线程（prime 池）；后台为 false
@@ -1145,16 +1217,29 @@ impl AffinityManager {
         res
     }
 
-    /// 清理线程：迁回原组 + 恢复全核 + 移除状态。恢复动作逐条落 @A 帧，
-    /// 末尾一条 act=bind_release 汇总帧（reason = 触发场景）；返回首个失败
-    /// errno（全成功 None）供 release 汇总。恢复写失败且线程仍在（非 ESRCH）
-    /// 时**保留状态条目**——掩码/组还在被管态，清条目 = 状态表与内核永久分叉；
-    /// 保留后 departed/gone/stale 清理路径会再次触发本函数重试。
-    fn cleanup_thread(&mut self, tid: i32, reason: &str) -> Option<i32> {
-        let (moved, orig, home, pid) = match self.threads.get(&tid) {
-            Some(st) => (st.moved_group, st.orig_group, st.home, st.pid),
-            None => return None,
+    /// 清理线程（单条）：迁回原组 + 恢复全核 + 移除状态。返回
+    /// `(首个失败 errno, 是否「无副作用条目」)`——后者交 `cleanup_threads`
+    /// 汇总，见该函数。恢复写失败且线程仍在（非 ESRCH）时**保留状态条目**
+    /// ——掩码/组还在被管态，清条目 = 状态表与内核永久分叉；保留后
+    /// departed/gone/stale 清理路径会再次触发本函数重试。
+    fn cleanup_thread(&mut self, tid: i32, reason: &str) -> (Option<i32>, bool) {
+        let (moved, orig, home, pid, group_bind) = match self.threads.get(&tid) {
+            Some(st) => (
+                st.moved_group,
+                st.orig_group,
+                st.home,
+                st.pid,
+                st.group_bind,
+            ),
+            None => return (None, false),
         };
+        // 「无副作用条目」判据：从未迁组、未钉核、未组绑定——该条目自建档起没对
+        // 内核写过任何东西，清理时下面两个恢复调用也都是空转（home<0 且
+        // group_bind=None 时 unpin/restore_group_mask 无写入），逐条 bind_release
+        // 帧纯属噪声。实测被清理的 7233 个 tid 里只有 291 个（4%）真被
+        // pin/move_group/restore 动过，其余 96% 都是这一类（fg 扫描见即建档 +
+        // THREAD_STALE 30s 过期），占 @A 帧绝大多数
+        let noop = !moved && home < 0 && group_bind == GroupBind::None;
         let mut err: Option<i32> = None;
         // 任一恢复写失败且非 ESRCH → 保留条目待重试
         let mut retain = false;
@@ -1189,7 +1274,9 @@ impl AffinityManager {
             err = err.or(Some(e.raw_os_error().unwrap_or(0)));
             retain |= e.raw_os_error() != Some(libc::ESRCH);
         }
-        if crate::logger::diag_active() {
+        // 逐条 bind_release 帧只留给真正动过的条目（pid/comm/errno 有信息量，不可
+        // 合并）；无副作用条目由 cleanup_threads 汇总成一条 bulk 帧
+        if crate::logger::diag_active() && !noop {
             let comm = self.thread_comm(tid);
             let result = match err {
                 None => "ok".to_string(),
@@ -1209,6 +1296,39 @@ impl AffinityManager {
         }
         if !retain {
             self.threads.remove(&tid);
+        }
+        (err, noop)
+    }
+
+    /// 批量清理（同一场景的多个 tid）：逐条走 `cleanup_thread`，把其中的
+    /// **无副作用条目**汇成一条 bind_release 帧（`dst=bulk`、`value=条数`、
+    /// `reason=<场景>_bulk`，pid/tid 填 0 = 无单条归属）。动机与量化：stale
+    /// 路径实测 33798 条/42min（≈13 条/s，占 @A 帧 67%），其中 96% 只被建档；
+    /// 合并后每次扫描至多一条，清理帧量从 ~17 条/s 降到「有真动作时才有」，
+    /// 这些条目的帧格式化与落盘（含 devimp 记账）也随之消失。
+    /// 返回首个失败 errno（retain/ESRCH 语义全在 cleanup_thread 内部，不受影响）。
+    fn cleanup_threads(&mut self, tids: &[i32], reason: &str) -> Option<i32> {
+        let mut err: Option<i32> = None;
+        let mut noop = 0u32;
+        for &tid in tids {
+            let (e, was_noop) = self.cleanup_thread(tid, reason);
+            err = err.or(e);
+            if was_noop {
+                noop += 1;
+            }
+        }
+        if noop > 0 && crate::logger::diag_active() {
+            crate::logger::aff_action(
+                "bind_release",
+                0,
+                0,
+                "-",
+                "-",
+                "bulk",
+                &noop.to_string(),
+                "ok",
+                &format!("{reason}_bulk"),
+            );
         }
         err
     }
@@ -1245,18 +1365,17 @@ impl AffinityManager {
         // 旧前台应用已转后台但线程仍持有大核单核掩码——Android 会把上一个应用
         // 短暂留在 top-app/foreground cpuset，掩码与大核相交则继续生效：
         // 8550 只有一颗 prime，新前台关键线程会被选到同核互踩；连续快速切换
-        // 还会让 core_pinned 计数漂移累积。按 pid 归属立即清理（pid>0 且
-        // ≠ 当前前台 = 旧前台线程；后台 promote 线程 pid==0 不受影响）。
+        // 还会让 core_pinned 计数漂移累积。按前台归属立即清理（is_fg 且
+        // ≠ 当前前台 = 旧前台线程；后台条目 is_fg=false 不受影响，含已 promote 的
+        // —— 它们的 pid 现在也可能非 0，故判据不能再看 pid>0）。
         // 幂等：稳态下该过滤器为空集，仅遍历小状态表，零文件 IO。
         let departed: Vec<i32> = self
             .threads
             .iter()
-            .filter(|(_, st)| st.pid > 0 && st.pid != fg_pid)
+            .filter(|(_, st)| st.is_fg && st.pid != fg_pid)
             .map(|(tid, _)| *tid)
             .collect();
-        for tid in departed {
-            self.cleanup_thread(tid, "departed");
-        }
+        self.cleanup_threads(&departed, "departed");
 
         // —— 前台：每轮 1 次 read_dir，新增线程才读 stat ——
         if fg_pid > 0 {
@@ -1307,6 +1426,7 @@ impl AffinityManager {
                             let fresh = !self.threads.contains_key(&tid);
                             let st = self.threads.entry(tid).or_insert_with(|| ThreadState {
                                 pid: fg_pid,
+                                is_fg: true,
                                 comm: String::new(),
                                 is_key: false,
                                 home: -1,
@@ -1324,8 +1444,11 @@ impl AffinityManager {
                                 prev_home_at: now,
                                 last_hold_log: now - HOLD_LOG_COOLDOWN,
                             });
-                            // tid 归属变化（PID 复用）视作新线程
-                            if st.pid != fg_pid {
+                            // 归属变化（前台换 PID 后复用 tid，或后台候选被前台扫描
+                            // 收养）视作新线程：`!is_fg` 覆盖后者——后台候选虽有真实
+                            // tgid，身份仍是后台，收养后必须按前台身份重新采样
+                            if !st.is_fg || st.pid != fg_pid {
+                                st.is_fg = true;
                                 st.pid = fg_pid;
                                 st.comm.clear();
                                 st.home = -1;
@@ -1519,16 +1642,15 @@ impl AffinityManager {
                                 }
                             }
                         }
-                        // 已消失线程：立即清理释放钉核计数
+                        // 已消失线程：立即清理释放钉核计数（is_fg 判据：pid 可能
+                        // 与前台进程相同但归属后台组，不能混进前台树的 seen 判定）
                         let gone: Vec<i32> = self
                             .threads
                             .iter()
-                            .filter(|(tid, st)| st.pid == fg_pid && !seen.contains(tid))
+                            .filter(|(tid, st)| st.is_fg && st.pid == fg_pid && !seen.contains(tid))
                             .map(|(tid, _)| *tid)
                             .collect();
-                        for tid in gone {
-                            self.cleanup_thread(tid, "gone");
-                        }
+                        self.cleanup_threads(&gone, "gone");
 
                         // —— default 小核高水位：非关键前台线程升核（限量采样） ——
                         // 对应 8550 实测「单颗小核被一个非关键前台线程打满、big 3+ 核
@@ -1542,12 +1664,10 @@ impl AffinityManager {
                         let gone: Vec<i32> = self
                             .threads
                             .iter()
-                            .filter(|(_, st)| st.pid == fg_pid)
+                            .filter(|(_, st)| st.is_fg && st.pid == fg_pid)
                             .map(|(tid, _)| *tid)
                             .collect();
-                        for tid in gone {
-                            self.cleanup_thread(tid, "gone");
-                        }
+                        self.cleanup_threads(&gone, "gone");
                     }
                 }
             }
@@ -1698,9 +1818,10 @@ impl AffinityManager {
                     self.bg_cursor %= n;
                     let end = (self.bg_cursor + BG_SCAN_WINDOW).min(n);
                     for (tid, group) in &bg[self.bg_cursor..end] {
-                        // 已 promote / 前台线程跳过（前者走复查，后者走前台路径）
+                        // 已 promote / 前台线程跳过（前者走复查，后者走前台路径）。
+                        // is_fg 而非 pid>0：后台候选 pid 已补真实 tgid，判据必须看归属
                         if let Some(st) = self.threads.get(tid) {
-                            if st.promoted || st.pid > 0 {
+                            if st.promoted || st.is_fg {
                                 continue;
                             }
                         }
@@ -1719,12 +1840,14 @@ impl AffinityManager {
                             self.bg_checked.insert(*tid);
                         }
                         let busy = match self.threads.get_mut(tid) {
-                            // 首见：建档并记基准，本轮无 util 不判 promote
+                            // 首见：建档并记基准，本轮无 util 不判 promote。
+                            // pid 尽力补全（@S t 行归属）；is_fg=false 标明后台身份
                             None => {
                                 self.threads.insert(
                                     *tid,
                                     ThreadState {
-                                        pid: 0,
+                                        pid: read_tgid(*tid).unwrap_or(0),
+                                        is_fg: false,
                                         comm: s.comm,
                                         is_key: false,
                                         home: -1,
@@ -1831,9 +1954,7 @@ impl AffinityManager {
             .filter(|(_, st)| now.duration_since(st.last_seen) > THREAD_STALE)
             .map(|(tid, _)| *tid)
             .collect();
-        for tid in stale {
-            self.cleanup_thread(tid, "stale");
-        }
+        self.cleanup_threads(&stale, "stale");
     }
 
     /// default 小核高水位下的非关键前台线程升核（normal_busy）。
@@ -2225,7 +2346,8 @@ impl AffinityManager {
                     .map(|s| s.trim().to_string());
             }
             // 每轮重写（非幂等短路）：与 mode file/fast_lock 的周期重写同口径，
-            // 兼作防外部守护进程篡改的再断言——特调期间每 2s 收敛回 100
+            // 兼作防篡改的异常兜底再断言（默认无竞争者，节点被改写属异常态）——
+            // 特调期间每 2s 收敛回 100
             let res = logged_write(UCLAMP_MAX_PATH, "100.00");
             if crate::logger::diag_active() {
                 crate::logger::aff_action(
@@ -2277,10 +2399,7 @@ impl AffinityManager {
     /// （result = 各线程恢复写入的首个失败 errno，全成功 ok）。
     fn release_impl(&mut self, reason: &str) {
         let tids: Vec<i32> = self.threads.keys().copied().collect();
-        let mut err: Option<i32> = None;
-        for tid in tids {
-            err = err.or(self.cleanup_thread(tid, reason));
-        }
+        let err = self.cleanup_threads(&tids, reason);
         if let Some(snap) = self.snapshot.take() {
             write_cpuset_paths_items(&snap);
         }
@@ -2303,7 +2422,8 @@ impl AffinityManager {
     }
 
     /// 快照取数：导出线程状态表 (tid, pid, home, pinned)。
-    /// pid 未知（后台候选建档）填 0；pinned = 单核钉定或性能核组绑定。
+    /// pid 未知（后台候选建档时 read_tgid 也拿不到）仍填 0——0 即「归属未知」。
+    /// pinned = 单核钉定或性能核组绑定。
     pub fn thread_diag(&self) -> Vec<(i32, i32, i16, bool)> {
         self.threads
             .iter()
@@ -2318,11 +2438,15 @@ impl AffinityManager {
             .collect()
     }
 
-    /// 快照取数：被管线程所属 pid 集合（去重排序；无 pid 信息的不计）
+    /// 快照取数：被管线程所属 pid 集合（去重排序）。口径保持改造前一致——
+    /// 只收**前台归属**条目（is_fg）：后台候选虽然现在也带真实 tgid，但它们不是
+    /// @S 的「被管进程」口径（p 行会随之多出若干无关进程 + 每进程一次
+    /// getaffinity，与本次「减量」目标相悖）。
     pub fn managed_pids(&self) -> Vec<i32> {
         let mut pids: Vec<i32> = self
             .threads
             .values()
+            .filter(|st| st.is_fg)
             .map(|st| st.pid)
             .filter(|&p| p > 0)
             .collect();

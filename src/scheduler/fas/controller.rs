@@ -62,7 +62,9 @@ pub struct FasController {
 
     // 时间
     pub(super) init_time: Instant,
-    pub(super) freq_force_counter: u32,
+    /// 上一次「防篡改强制重写」的时刻（间隔见 FasRulesConfig::freq_force_reapply_interval，
+    /// 单位秒；早期实现是帧计数器，随刷新率放大，见 policy_mgmt::apply_freqs 的注释）
+    pub(super) freq_force_timer: Instant,
 
     // 缓存
     pub(super) cached_norm: f32,
@@ -139,7 +141,7 @@ impl FasController {
             jank_cooldown: 0,
             jank_streak: 0,
             init_time: Instant::now(),
-            freq_force_counter: 0,
+            freq_force_timer: Instant::now(),
             cached_norm: 1.0,
             cached_budget_ms: 16.67,
             cached_ema_budget: 17.54,
@@ -387,7 +389,7 @@ impl FasController {
         self.downgrade_boost_remaining = 0;
         self.jank_cooldown = 0;
         self.jank_streak = 0;
-        self.freq_force_counter = 0;
+        self.freq_force_timer = Instant::now();
         self.floor_stuck_frames = 0;
         self.ema_fg_util = 0.0;
         self.post_jank_perf_floor = 0.0;

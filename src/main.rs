@@ -13,6 +13,7 @@ mod scheduler;
 pub mod utils;
 mod webui_asset;
 use crate::i18n::{load_language, t, t_with_args};
+use crate::monitor::FasSignal;
 use anyhow::Result;
 use log::{debug, error, info};
 use std::sync::atomic::AtomicBool;
@@ -105,13 +106,17 @@ fn main() -> Result<()> {
     // 子线程异步打包为 logd/<ts>.tar 与 logd/devimp_<ts>.tar（tar 无压缩；
     // watchdog.pid 复制回新建的 logs/ 供 stopScheduler 定位看门狗）；打包完成后执行
     // logd/ 与 devimp/ 各自独立的预算清理（各自 >128MB 时删本目录最旧文件到 <96MB）。
-    // 本进程日志全部写入新建的 logs/、devimp/，互不干扰；devimp/ 为双诊断文件——
+    // 本进程日志写入新建的 logs/；devimp/ 仅在 dev_record 开启时由写入路径惰性创建
+    // （归档后不预建空目录，见下），两目录互不干扰。devimp/ 为双诊断文件——
     // main_<pkg>_<MMDD-HHmmss>.log（主诊断，tick/snap/event）+ aff_<MMDD-HHmmss>.log
     // （线程流，@A 动作帧 + @S 每秒快照帧），归档时一并进 devimp_<ts>.tar。
     // 必须在 create_dir_all(log_dir)/logger::init 之前执行，保证新旧文件分离。
     let (archived_zip, archived_devimp) = logger::archive_on_startup(&root);
     std::fs::create_dir_all(&log_dir)?;
-    // devimp 目录已随归档新建；此处仅做容量清理兜底（归档失败时旧文件仍在）
+    // devimp/ 目录不在这里创建（dev_record 关闭时不得产生任何数据，含空目录）。
+    // 真正要写入它的路径（logger 的 main_open / aff_open）会在写入前自行
+    // create_dir_all，且只在 diag_active() 下才走到；此处仅对「已存在的 devimp/」
+    // 做容量清理兜底（归档 rename 失败时旧文件仍在原目录）。
     logger::diag_prepare();
 
     // [soc_check]
@@ -378,11 +383,12 @@ fn main() -> Result<()> {
     // cpu_monitor 据此在 120ms 与 40ms 采样间隔间切换
     let ak_active = Arc::new(AtomicBool::new(false));
 
-    // FAS 前台激活共享标志：FasManager 激活/去激活时置位，fps_monitor 据此
-    // 门控 eBPF 探针——FAS 未激活时不建 tokio runtime、不加载 eBPF、不挂
+    // FAS 前台激活信号：FasManager 激活/去激活时置位并唤醒等待者，fps_monitor
+    // 据此门控 eBPF 探针——FAS 未激活时不建 tokio runtime、不加载 eBPF、不挂
     // uprobe（此前 daemon 启动即对前台应用挂 queueBuffer uprobe，非 FAS
     // 会话每帧白付一次探针开销）。由 main.rs 创建，monitor 与 chiri 各持克隆。
-    let fas_active = Arc::new(AtomicBool::new(false));
+    // 类型为 FasSignal（而非裸 AtomicBool）——见 monitor 的 [fas_signal]。
+    let fas_signal = Arc::new(FasSignal::new(false));
 
     // [scheduler_start]
     // 6. 启动 ChiRi 调度器（Yumi 兜底已移除：非 ChiRi SoC 不接管 CPU，
@@ -394,7 +400,7 @@ fn main() -> Result<()> {
             rx,
             Arc::new(RwLock::new(cfg)),
             ak_active.clone(),
-            fas_active.clone(),
+            fas_signal.clone(),
             // 启动期收敛后的实验室模式：监听线程据此判断「文件没变就不重复套用」
             rhine_report.enabled.clone(),
         ))
@@ -424,7 +430,7 @@ fn main() -> Result<()> {
     let monitor_thread = thread::Builder::new()
         .name("monitor_core".to_string())
         .spawn(move || {
-            if let Err(e) = monitor::start_monitor(tx, ak_active, sample_ms_normal, fas_active) {
+            if let Err(e) = monitor::start_monitor(tx, ak_active, sample_ms_normal, fas_signal) {
                 error!(
                     "{}",
                     t_with_args(

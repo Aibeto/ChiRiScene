@@ -1077,8 +1077,8 @@ impl AffinityConfig {
     }
 }
 
-/// core_ctl（厂商核心在线控制器）接管配置（feature.yaml `CoreCtl` 段）。
-/// boost 模式下把各 cluster 的 min_cpus 抬到全组常在线，防厂商热插拔与
+/// core_ctl（内核核心在线控制器）接管配置（feature.yaml `CoreCtl` 段）。
+/// boost 模式下把各 cluster 的 min_cpus 抬到全组常在线，防低负载热插拔与
 /// ChiRi 调频打架；退出 boost 恢复快照。仅动 min_cpus。
 // [corectl_config]
 #[derive(Debug, Deserialize, Clone)]

@@ -6,7 +6,6 @@ use std::num::NonZeroU32;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::ptr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError};
 use std::time::Duration;
 
@@ -21,6 +20,7 @@ use tokio::sync::watch;
 use crate::common::DaemonEvent;
 use crate::fluent_args;
 use crate::i18n::{t, t_with_args};
+use crate::monitor::FasSignal;
 
 // [consts]
 
@@ -244,7 +244,7 @@ impl FpsManager {
 pub async fn start_fps_loop(
     tx: SyncSender<DaemonEvent>,
     rx_pid: watch::Receiver<u32>,
-    fas_active: Arc<AtomicBool>,
+    fas_signal: Arc<FasSignal>,
 ) -> Result<(), anyhow::Error> {
     info!("{}", t("fps-monitor-init"));
 
@@ -331,20 +331,26 @@ pub async fn start_fps_loop(
             }
 
             loop {
-                // [gate] 
+                // [gate]
                 // FAS 激活门控（反偷跑核心）
-                // fas_active=false：不做任何 PID 消费/帧投喂，仅 500ms 周期
-                // 检查标志；若上一会话的 uprobe 仍挂着，先 detach 回到零开销
-                // 待机。置位后补挂当前前台 PID——桥接任务只转发 PID **变化**，
-                // FAS 应用在激活前已在前台（无后续变化事件）时必须从 watch
-                // 直接借当前值，否则首个会话永远挂不上探针。
-                let fas_on = fas_active.load(Ordering::Acquire);
-                if !fas_on {
+                // fas_signal 未激活：不做任何 PID 消费/帧投喂；若上一会话的
+                // uprobe 仍挂着，先 detach 回到零开销待机，再**阻塞等待激活
+                // 信号**（事件驱动，稳态 0 次周期唤醒——改造前是 500ms 轮询）。
+                // 唤醒后不在此处补挂、直接回到循环顶部：那里的 `!has_active_probe()`
+                // 分支会从 watch 直接借当前前台 PID（桥接任务只转发 PID **变化**，
+                // 而 FAS 应用可能在激活前就已在前台、没有后续变化事件，必须读
+                // 当前值，否则首个会话永远挂不上探针）。
+                //
+                // 为什么等的是「信号」而不是「前台 PID」：FAS 会在 PID 未变的
+                // 情况下被重新激活（息屏释放后回到前台、15s 冷却期结束时调度
+                // 线程自行 activate），只等 PID 会漏唤醒——FAS 激活后收不到帧。
+                // 等待载体见 `crate::monitor::FasSignal`（含丢唤醒竞态推理）。
+                if !fas_signal.is_active() {
                     if manager.has_active_probe() {
                         // 纯 detach：摘除探针 + 复位状态（has_active_probe → false）
                         let _ = manager.switch_pid(0);
                     }
-                    std::thread::sleep(Duration::from_millis(500));
+                    fas_signal.wait_until_active();
                     continue;
                 }
                 if !manager.has_active_probe() {

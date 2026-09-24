@@ -1,0 +1,75 @@
+---
+description: 终端使用纪律（含子代理传棒）：优先文件工具 Read/Grep/Glob/StrReplace；每个任务终端调用默认上限 3 次，超出须说明理由；一个任务共用一个 scratch 文件并追加，禁止一命令一文件；收尾必须清理自己产生的临时产物
+alwaysApply: true
+---
+
+# 终端使用纪律
+
+[tag] 总则
+
+1. 尽量不使用命令行或终端；**仅在可能节省 tokens 时**才调用。
+2. **次数预算（硬性）**：每个任务（每个 Agent 回合、每个子代理各自独立计数）终端调用
+   **默认上限 3 次**；第 4 次起必须在本轮回复里写明为什么非用不可。
+3. 一次调用打包解决多个问题；一个任务共用**一个** scratch 文件。
+4. 收尾**必须清理**自己产生的临时文件。
+
+## [tag] 默认不用 shell
+
+读文件用 Read，搜内容用 Grep，找文件用 Glob，改文件用 StrReplace/Edit。
+shell 做同样的事（type / Select-String / dir / findstr / 找行号）输出不可控，还要再解析一遍。
+
+- 正例：Read 读 main.rs 前 50 行；Grep 定位 `fn cleanup_thread`。
+- 反例：`type src\main.rs` 全量回显后自己找行号。
+
+## [tag] 次数预算怎么花
+
+典型分配：1 次「批量信息采集」（git diff / 目录清单 / 环境探测）+ 1 次「构建或测试」+
+1 次「脚本 / 解压 / 文件工具做不到的事」。文件工具能做的**一律不计入**这 3 次。
+
+- 正例：一次 `git diff > scratch` 拿到全部改动，之后全程 Read/Grep 分段读，不再开 shell。
+- 反例（实测反模式）：一轮审查开 50+ 次调用、产出 50+ 个 `tmp_*.txt`
+  （`tmp_aff_a..n`、`tmp_mod_a..e`、`tmp_rv_<每个源文件>.rs.txt`、`tmp_check2/3/4.log`）——
+  一个命令一个文件、一个源文件一次 dump，纯浪费且留下垃圾。
+
+## [tag] 一个任务一个 scratch 文件
+
+- 固定一个路径（如 `devimpbin/tmp_<任务tag>.txt` 或临时目录），**所有**命令输出用 `>>` 追加进去。
+- 正例：`cmd /c "git diff > devimpbin\tmp_rev.txt 2>&1 & cargo check -p chiri --target aarch64-linux-android >> devimpbin\tmp_rev.txt 2>&1"`
+  —— 一次调用完成两件事、只落一个文件。
+- 反例：给 `src/` 下每个文件各建一个 diff dump 文件。
+
+## [tag] 长输出必落盘再读
+
+`cmd /c "… > file"` 落盘后用 Read 分段读；PowerShell 直跑长 stdout 会被截断、中文在控制台乱码。
+终端输出只取尾部/摘要，别整屏回显。
+
+- 正例：`cmd /c "cargo test > scratch.txt 2>&1"` 后 Read 尾部 30 行。
+- 反例：直跑 `cargo test` 让全量进度刷屏进上下文。
+
+## [tag] shell 输出也是 token
+
+命令、报错、进度噪声都计入上下文；宁可先 Write 一个小 .py/.ps1 再跑，也别在命令行堆长内联脚本
+（引号转义还会吃掉内容，实测刷过两万多字节报错）。
+
+- 正例：Write 一个 `devimpbin/tmp_check.ps1` 再执行并把输出落盘到同一个 scratch。
+- 反例：命令行里塞几十行内联 PowerShell（`$_`、引号被外层吃掉）。
+
+## [tag] 派子代理时的传棒（必须）
+
+派活时在 prompt 里显式写明，否则子代理会按自己的习惯刷调用：
+
+1. 终端调用**上限次数**（默认 3，复杂任务可以酌情增加，并写明这几次用来做什么）；
+2. scratch 文件的**固定路径**与「所有输出追加到同一个文件，禁止一命令一文件」；
+3. **收尾前删除**自己产生的 `tmp_*` / `*.log`（用一次终端调用批量删）；
+4. 交付时**报告**：本轮终端调用次数、scratch 是否已清理。
+
+主代理收口检查：`git status` 与工作区不应新增 `tmp_*` / 日志垃圾（即使目录已被 gitignore，
+同样要清理——残留会污染后续任务的判读）。
+
+## [tag] 收尾自检
+
+- 本轮终端调用几次？≥4 次有没有在回复里写明理由？
+- scratch 文件删了吗？工作区有无遗留 `tmp_*` / `*.log`？
+- 有没有本可以用 Read / Grep / Glob 完成、却开了 shell 的？
+
+[tag] 收束：能不用 shell 就不用；要用就一次把多件事办完，只落一个文件，用完删掉。

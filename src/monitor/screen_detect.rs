@@ -9,9 +9,9 @@ use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::SyncSender;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::common::DaemonEvent;
 use crate::fluent_args;
@@ -42,8 +42,9 @@ fn update_state_if_changed(state_arc: &Arc<Mutex<bool>>, new_state: bool, source
         return false;
     }
     if !new_state {
-        // 亮→息翻转尝试：全节点投票，OFF 票超过半数才确认
-        let votes = tally_screen_nodes();
+        // 亮→息翻转尝试：全节点投票（节点清单走缓存，状态仍是新鲜读），OFF 票超过半数才确认
+        let nodes = screen_nodes();
+        let votes = tally_screen_nodes(&nodes);
         if !screen_off_confirmed(&votes) {
             if let Some(node) = &votes.on_node {
                 if !VETO_WARNED.swap(true, Ordering::Relaxed) {
@@ -185,6 +186,55 @@ static NO_SOURCE_LOGGED: AtomicBool = AtomicBool::new(false);
 static VETO_WARNED: AtomicBool = AtomicBool::new(false);
 
 // [select]
+/// 候选节点清单缓存：候选节点由内核/驱动在启动期创建，拓扑运行期基本不变，
+/// 而自愈校验每轮都要全量枚举（最多 5 次 read_dir + 每候选 1~3 次 Path::exists()）。
+/// 缓存的是**节点清单**而不是屏幕状态：每轮仍是逐节点新鲜读，
+/// `read_screen_state` 与投票口径（含自愈判定）逐字节不变。
+/// 缓存条目带**创建时刻**，两条刷新路径（重枚举入口）：
+/// 1. **TTL 到期**（[`SCREEN_NODES_TTL`]，10 分钟）：命中时距创建超过 TTL 即当作
+///    未命中重新枚举——开机早期只枚举到部分节点（如背光节点还没被显示驱动创建、
+///    leds/drm 已在）时，残缺清单不会被永久固化，最迟 10 分钟被重新枚举补全；
+/// 2. **全不可读即失效**（[`invalidate_screen_nodes`]）：某轮投票**一个有效读数
+///    都没有**——节点可能因权限变化/模块加载而改观，这是更快的自愈路径。
+/// 枚举为空则不写缓存（无源机型每轮照旧重试，与不缓存时一致）。
+/// TTL 判定是惰性的：只在既有取清单调用点顺带判，不新增周期唤醒。
+static SCREEN_NODES: LazyLock<Mutex<Option<(Instant, Arc<Vec<(PathBuf, ScreenSourceKind)>>)>>> =
+    LazyLock::new(|| Mutex::new(None));
+
+/// 节点清单缓存 TTL = 10 分钟。为什么取 10 分钟：节点拓扑只在驱动加载/模块开关
+/// 时变化（集中在开机早期），10 分钟相对这类变化足够稀疏——命中路径零分配零
+/// syscall（只多一次 `Instant` 时钟读取），又能让开机早期的残缺清单在合理时间内
+/// 被重新枚举补全。
+const SCREEN_NODES_TTL: Duration = Duration::from_secs(600);
+
+/// 取候选节点清单（TTL 内命中缓存时只做一次引用计数递增 + 一次 `Instant` 时钟
+/// 读取，零分配零 syscall）。返回 `Arc` 快照并**立刻释放缓存锁**：投票要逐个读
+/// 节点文件，持锁会把 uevent 线程的翻转投票堵在锁上。
+/// TTL（[`SCREEN_NODES_TTL`]）到期当作未命中：重新枚举并刷新创建时刻——
+/// 判定就在这个既有调用点顺带做，无独立刷新线程。
+fn screen_nodes() -> Arc<Vec<(PathBuf, ScreenSourceKind)>> {
+    {
+        let guard = SCREEN_NODES.lock().unwrap();
+        if let Some((created, nodes)) = guard.as_ref() {
+            if created.elapsed() <= SCREEN_NODES_TTL {
+                return Arc::clone(nodes);
+            }
+            // TTL 到期：落到底下重新枚举（本块末尾释放锁，枚举不持锁）
+        }
+    }
+    let nodes = Arc::new(enumerate_screen_nodes());
+    if !nodes.is_empty() {
+        *SCREEN_NODES.lock().unwrap() = Some((Instant::now(), Arc::clone(&nodes)));
+    }
+    nodes
+}
+
+/// 丢弃节点清单缓存：下一轮重新枚举（投票一个有效读数都没有时调用；
+/// 另一条刷新路径是 TTL 到期，见 [`SCREEN_NODES`]）
+fn invalidate_screen_nodes() {
+    *SCREEN_NODES.lock().unwrap() = None;
+}
+
 /// 按可靠性优先级枚举全部候选屏幕状态节点（有序）：
 /// 1. `/sys/class/backlight`（QCOM/通用内核）——具备状态节点（bl_power、
 ///    actual_brightness，或只有 brightness）的设备；
@@ -273,16 +323,17 @@ struct ScreenVotes {
     on_node: Option<String>,
 }
 
-/// 全节点投票：枚举全部候选节点，逐个用 [`read_screen_state`] 读，
+/// 全节点投票：对给定候选节点清单逐个用 [`read_screen_state`] 读，
 /// 不可读的直接跳过——各源读取口径只在 read_screen_state 一处，避免两套逻辑漂移。
-fn tally_screen_nodes() -> ScreenVotes {
+/// 清单由 [`screen_nodes`] 提供（缓存枚举结果，本函数不做任何枚举）。
+fn tally_screen_nodes(nodes: &[(PathBuf, ScreenSourceKind)]) -> ScreenVotes {
     let mut votes = ScreenVotes {
         off: 0,
         on: 0,
         on_node: None,
     };
-    for (dev, kind) in enumerate_screen_nodes() {
-        match read_screen_state(kind, &dev) {
+    for (dev, kind) in nodes {
+        match read_screen_state(*kind, dev) {
             Some(true) => {
                 votes.on += 1;
                 if votes.on_node.is_none() {
@@ -385,23 +436,29 @@ fn read_backlight_state(dev: &Path) -> Option<bool> {
 /// 由 app_detect 主循环每轮调用一次：**全节点投票**，票数为唯一判断标准，
 /// 结论与 arc 不一致时经 [`update_state_if_changed`] 校正。无有效读数或票数
 /// 平手时不改判，不干扰 uevent 主路径。
+/// 候选节点清单取自 [`screen_nodes`]（TTL 内命中缓存零分配零 syscall；枚举只在
+/// 首轮/TTL 到期/失效后做，每轮仍是新鲜读），全部不可读时立即失效重枚举——
+/// 自愈节拍与节拍内的读次数都不变。
 ///
 /// 诊断打点（防刷屏）：① 首次发现可读节点时 info 打点源类别与路径——「屏幕
 /// 状态读不到」时从 daemon.log 即可确认设备实际可用的检测源；② 全部节点缺失
 /// 或全不可读时 info 告警一次（恢复后复位）。
 pub fn verify_screen_state(state_arc: &Arc<Mutex<bool>>) {
-    let nodes = enumerate_screen_nodes();
+    let nodes = screen_nodes();
     if nodes.is_empty() {
         if !NO_SOURCE_LOGGED.swap(true, Ordering::Relaxed) {
             info!("{}", t("screen-detect-no-source"));
         }
         return;
     }
-    // 全节点投票：票数为唯一判断标准
-    let votes = tally_screen_nodes();
+    // 全节点投票（节点清单走缓存）：票数为唯一判断标准
+    let votes = tally_screen_nodes(&nodes);
     let valid = votes.off + votes.on;
     if valid == 0 {
-        // 全部不可读：没有证据就不改判（恢复后复位，便于下次告警）
+        // 全部不可读：没有证据就不改判（恢复后复位，便于下次告警）；
+        // 同时丢弃清单缓存——下一轮重枚举，避免节点拓扑变化（模块加载/权限）后
+        // 卡在一份读不出任何东西的失效清单上
+        invalidate_screen_nodes();
         if !NO_SOURCE_LOGGED.swap(true, Ordering::Relaxed) {
             info!("{}", t("screen-detect-no-source"));
         }

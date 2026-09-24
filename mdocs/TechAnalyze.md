@@ -1268,7 +1268,7 @@ _地板死锁自救_：`perf ≤ floor + 0.01` 且 `avg < target × 0.50` 连续
 
 `apply_freqs` 做三件事。
 
-**强制重写**：每 `freq_force_reapply_interval`（默认 30）次强制重写一次，防厂商篡改。
+**强制重写**：每 `freq_force_reapply_interval` 秒（默认 30，最小 1）强制重写一次，防篡改（异常兜底收敛：默认无竞争者，节点被改写属异常态——残留旧模块、手动调试、内核异常态）。2026-09-24 起为**时间基准**（`Instant`），此前按帧计数——120fps 下等效 0.25s 一次，会随刷新率线性放大（并伴随每次两次无用的 `umount2`），高刷机属实打实的浪费。
 
 **利用率软封顶**：
 
@@ -1410,7 +1410,7 @@ core_temp_threshold: 45.0
 
 该顺序保证任意中间态均合法。写入失败时快照保留并重试（通过 `retain` 保留失败项）。
 
-**防篡改**：`tick()` 每 5 秒（`REWRITE_INTERVAL`）无条件重写 `max = hw_max`、`min = hw_max`。此处使用 `write_value_force`，**不经过 `current_freq` 去重**，原因是厂商可能将值改回，去重会导致漏写。`tick()` 返回距下次重写的剩余时间，供主事件循环纳入 deadline 计算。
+**防篡改**：`tick()` 每 5 秒（`REWRITE_INTERVAL`）无条件重写 `max = hw_max`、`min = hw_max`。此处使用 `write_value_force`，**不经过 `current_freq` 去重**，原因是节点可能被异常改回（默认无竞争者，改写属异常态），去重会导致漏写。`tick()` 返回距下次重写的剩余时间，供主事件循环纳入 deadline 计算。
 
 README 中关于 vector 的说明为「请谨慎使用，此模式下 CPU 频率可能会锁定为最大」，代码实现与之一致。
 
@@ -1750,7 +1750,7 @@ boost 模式下若 cpuset 可用，关键线程**不写掩码**：cpuset 已将�
 
 **cluster 发现**：遍历所有 cpufreq policy，读 `policy{id}/related_cpus`（失败回退 `affected_cpus`），取第一个 CPU，节点目录是 `/sys/devices/system/cpu/cpu{first}/core_ctl`。只有能读到 `min_cpus` 的才算数。
 
-**只改 `min_cpus` 一个参数**，其它一律不动。这是个保守的选择，避免和厂商的热管理打架
+**只改 `min_cpus` 一个参数**，其它一律不动。这是个保守的选择，避免和系统热管理打架
 
 | 状态      | 行为                                          |
 | --------- | --------------------------------------------- |
@@ -1758,7 +1758,7 @@ boost 模式下若 cpuset 可用，关键线程**不写掩码**：cpuset 已将�
 | Normal    | `min_cpus` 回写快照值                         |
 | Scenemode | prime 簇逐核写 `online = 0`（**当前不可达**） |
 
-**scenemode 的离线操作**（保留代码，但调用点恒传 `false`）：目标只包含 prime 簇，且剔除 CPU0。逐核写 `/sys/devices/system/cpu/cpuN/online = 0` 并**回读验证**。成功后记录原始值供恢复。`reassert_offline` 每 2 秒纠偏一次，防止厂商把核拉回来。
+**scenemode 的离线操作**（保留代码，但调用点恒传 `false`）：目标只包含 prime 簇，且剔除 CPU0。逐核写 `/sys/devices/system/cpu/cpuN/online = 0` 并**回读验证**。成功后记录原始值供恢复。`reassert_offline` 每 2 秒纠偏一次，防止核被内核热插拔拉回来。
 
 这段逻辑本身是完整的，问题在调用侧：`set_power_state` 的 scenemode 参数在 4 个调用点全是 `false`，`STATE_SCENEMODE` 分支进不去。scenemode 现在的实际行为是交还线程摆放、core_ctl 回 Normal，只压频率上限。
 
@@ -1815,16 +1815,16 @@ boost 模式下若 cpuset 可用，关键线程**不写掩码**：cpuset 已将�
 
 ### 7.2 防篡改
 
-厂商的 perfmgr 会主动改这些 sysfs 节点。ChiRi 的应对是周期性重写：
+ChiRi 默认是设备上唯一的调度/调频接管程序，常态没有竞争者会改这些 sysfs 节点；节点被改写属异常态（残留旧模块、手动调试、内核异常态）。周期性重写是异常兜底，把节点收敛回目标值：
 
 | 模块       | 重写周期          | 方式                        |
 | ---------- | ----------------- | --------------------------- |
 | fast_lock  | 5s                | `write_value_force`，不去重 |
 | CLG worker | 1s（超时分支）    | 重写当前频率                |
-| FAS        | 30 次 apply_freqs | 强制重写                    |
+| FAS        | 30s（时间基准）   | 强制重写（2026-09-24 前按帧计数） |
 | 模式文件   | 5s                | 自愈重写                    |
 
-CLG 那条注释说明了为什么 1 秒粒度够用：「厂商篡改也是秒级」。
+CLG 那条注释说明了为什么 1 秒粒度够用：「异常改写也是秒级动作」。
 
 ### 7.3 启动残留清理
 

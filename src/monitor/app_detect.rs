@@ -10,6 +10,7 @@ use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
+use tokio::sync::watch;
 
 use super::config::{self, RulesConfig};
 use crate::common::DaemonEvent;
@@ -444,11 +445,16 @@ pub fn watch_config_file(
 }
 
 // [loop]
+/// `pid_tx`：前台 PID 变化广播源（cpu_monitor / fps_monitor 消费同一 watch 通道）。
+/// 原实现是 mod.rs 里一个 500ms 空转线程（pid_watcher）轮询 `CURRENT_PID` 原子量再转发；
+/// 现改为在 `set_current_package` 生效处直接推送——`CURRENT_PID` 只有这一个写入点，
+/// 推送时机与语义完全等价（且省掉最多 500ms 的中转延迟与一个常驻线程）。
 pub fn app_detection_loop(
     config_arc: Arc<Mutex<RulesConfig>>,
     screen_state_arc: Arc<Mutex<bool>>,
     force_refresh_arc: Arc<AtomicBool>,
     tx: SyncSender<DaemonEvent>,
+    pid_tx: watch::Sender<u32>,
 ) -> Result<(), Box<dyn Error>> {
     info!("{}", t("app-detect-loop-started"));
 
@@ -498,9 +504,12 @@ pub fn app_detection_loop(
             continue;
         }
 
-        // 合并锁获取：一次拿完所有需要的数据
-        let config_snapshot = config_arc.lock().unwrap().clone();
-        let ignored_apps = config_snapshot.ignored_apps.clone();
+        // 只取本轮扫描需要的 ignored_apps（一次 Vec<String> 克隆），**不整份克隆
+        // RulesConfig**：app_modes 是 HashMap，整份克隆每轮都要复制整张表（含每个
+        // 键值 String），而它只在包名变化/强制刷新那一小撮轮次才用得上（见下方
+        // determine_mode 处的二次短锁）。guard 不跨文件读持有：cgroup 扫描是文件 IO，
+        // 拉长持锁会让 config_watcher 的写入空等。
+        let ignored_apps = config_arc.lock().unwrap().ignored_apps.clone();
 
         let (detected_pkg, detected_pid) = get_focused_app_from_cgroup(&ignored_apps)
             .unwrap_or_else(|_| (last_package.clone(), get_current_pid()));
@@ -563,9 +572,30 @@ pub fn app_detection_loop(
                         )
                     )
                 );
+                let prev_pid = get_current_pid();
                 set_current_package(&final_pkg, final_pid);
-                // 使用已获取的 config_snapshot，不再重复加锁
-                let new_mode = determine_mode(&config_snapshot, &final_pkg);
+                // 前台 PID 变化即时广播（cpu_monitor / fps 共用）：只在 pid 真正变化且
+                // 有效时发，与旧 pid_watcher 的发送条件逐位一致
+                if final_pid != prev_pid && final_pid > 0 {
+                    debug!(
+                        "{}",
+                        t_with_args(
+                            "cpu-monitor-fg-pid-updated",
+                            &fluent_args!(
+                                "old" => prev_pid.to_string(),
+                                "new" => final_pid.to_string()
+                            )
+                        )
+                    );
+                    let _ = pid_tx.send(final_pid as u32);
+                }
+                // 模式判定要读整份规则（global_mode / app_modes / dynamic_enabled）：
+                // 现取一次短锁即可。**不能**把 guard 跨上面的 cgroup 扫描持有，也不
+                // 缓存整份配置——判定只发生在包名变化/强制刷新时，稳态每轮不碰锁。
+                let new_mode = {
+                    let cfg = config_arc.lock().unwrap();
+                    determine_mode(&cfg, &final_pkg)
+                };
 
                 // force_refresh（配置重载/亮屏恢复）只驱动外层重新计算模式；
                 // 模式未变时不重发 ModeChange，避免 "default -> default" 冗余事件。

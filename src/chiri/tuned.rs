@@ -414,10 +414,17 @@ impl TunedGovernor {
 
         let ranges = crate::common::chiri_core_ranges();
         let now = Instant::now();
-        let cfg = self.cfg.clone();
+        // 借用配置，不克隆：SpecialTunedConfig 的唯一堆字段是 per_cluster
+        // （HashMap<String, _>，键为核心组名），每 tick（特调 40ms = 25 tick/s）
+        // 克隆一次就要连带复制整张表。gated_write 是关联函数（只借
+        // &mut ClusterState）不借 &mut self，与 &self.cfg 的不可变借用不冲突。
+        let cfg = &self.cfg;
 
-        // main_ tick 行数据（每核心组一行）：cluster / util / decision / cur_max / hw_max
-        let mut main_rows: Vec<(&'static str, String, &str, u32, u32)> = Vec::new();
+        // main_ tick 行数据（每核心组一行）：cluster / util / decision / cur_max / hw_max。
+        // **只在开发记录开启时收集**（硬口径：dev_record 关闭时 devimp 路径零开销、
+        // 零分配、零写入）：关闭时这里是空 Vec，连 format! 都不发生。
+        let diag = crate::logger::diag_active();
+        let mut main_rows: Vec<(&'static str, String, &'static str, u32, u32)> = Vec::new();
 
         for c in &mut self.clusters {
             let range: &std::ops::Range<usize> = if c.core_name == "little" {
@@ -507,13 +514,15 @@ impl TunedGovernor {
                 decision = "hold";
             }
 
-            main_rows.push((
-                c.core_name,
-                format!("{:.2}", util),
-                decision,
-                c.current_max,
-                hw_max,
-            ));
+            if diag {
+                main_rows.push((
+                    c.core_name,
+                    format!("{:.2}", util),
+                    decision,
+                    c.current_max,
+                    hw_max,
+                ));
+            }
         }
 
         // main_ tick 行（开发记录开启时才有 IO）：
@@ -522,7 +531,7 @@ impl TunedGovernor {
         // **util 列写决策用的负载**：util_smoothing < 1 时为 EMA 平滑后的值
         // （见上方 util 计算处的注释）——2026-09-17 起语义变化，离线回放该列时
         // 不能再当原始 util 二次平滑。
-        if crate::logger::diag_active() {
+        if diag {
             for (name, util, decision, cur_max, hw_max) in &main_rows {
                 crate::logger::main_tick(
                     name,
@@ -544,12 +553,20 @@ impl TunedGovernor {
 
         self.log_counter += 1;
         // debug 心跳（独立于开发诊断，日志通道随时可用）：每 25 tick 汇总各簇
-        // util/max，供诊断关闭时观测负载直拉行为
+        // util/max，供诊断关闭时观测负载直拉行为。
+        // 汇总改从 clusters 现算（ema_util / current_max 就是本 tick 决策所用的值）：
+        // dev_record 关闭时 main_rows 是空表，不能再当数据源。
         if self.log_counter % 25 == 0 && log::log_enabled!(log::Level::Debug) {
-            let summary = main_rows
+            let summary = self
+                .clusters
                 .iter()
-                .map(|(name, util, _d, cur_max, _hw)| {
-                    format!("{}={}MHz({})", name, cur_max / 1000, util)
+                .map(|c| {
+                    format!(
+                        "{}={}MHz({:.2})",
+                        c.core_name,
+                        c.current_max / 1000,
+                        c.ema_util
+                    )
                 })
                 .collect::<Vec<_>>()
                 .join(" ");

@@ -3,7 +3,8 @@
 /// 极速模式（fast）专属锁频器：与 CLG 完全独立，不读 yaml 调频参数。
 /// 接管时把所有 cluster 的 scaling_min_freq / scaling_max_freq 都锁到硬件最高频
 /// （min=max=hw_max，schedutil 无调频空间），release 时恢复系统原始状态。
-/// 每 5 秒重写一次频率，防止系统/厂商守护进程篡改。
+/// 每 5 秒重写一次频率兜底收敛：ChiRi 默认是全局唯一调度程序，锁频值被改写属
+/// 异常态（残留旧模块/手动调试/内核异常），周期重写是兜底，不是常态对抗。
 use crate::utils::FastWriter;
 use log::{debug, info, warn};
 use std::fs;
@@ -11,7 +12,7 @@ use std::fs;
 use crate::fluent_args;
 use crate::i18n::{t, t_with_args};
 
-/// 每 5 秒重写一次频率，防止外部篡改
+/// 防篡改重写间隔（5s）：把锁频值收敛回目标的兜底节拍
 const REWRITE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
 // [types]
@@ -208,7 +209,8 @@ impl FastLock {
         self.active = false;
     }
 
-    /// 每 5 秒重写一次 target（vector=hw_max、frozen=hw_min），防止篡改频率。
+    /// 每 5 秒重写一次 target（vector=hw_max、frozen=hw_min），兜底收敛被异常
+    /// 改写的节点（默认无竞争者，改写属异常态——残留旧模块/手动调试/内核异常）。
     /// 由 scheduler_ipc 在事件循环中调用。
     /// 返回距下次重写的剩余时间（非激活状态返回 None），供事件循环
     /// 计算动态阻塞超时（sleep 到最近 deadline，空闲不空转）。

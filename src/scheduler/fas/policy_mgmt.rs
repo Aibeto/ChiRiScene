@@ -4,7 +4,7 @@ use crate::fas_types::{ClusterProfile, FasRulesConfig};
 use crate::utils::FastWriter;
 use log::{info, warn};
 use std::fs;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::fluent_args;
 use crate::i18n::{t, t_with_args};
@@ -168,8 +168,21 @@ impl FasController {
     // 利用 core_utils 判断 cluster 负载，低负载 cluster 用 relaxed 模式
 
     pub fn apply_freqs(&mut self) {
-        self.freq_force_counter = self.freq_force_counter.wrapping_add(1);
-        let force = self.freq_force_counter % self.cfg.freq_force_reapply_interval == 0;
+        // 防篡改强制重写的节拍（异常兜底收敛，默认无竞争者）—— 时间基准，非帧计数
+        //
+        // 早期实现：`freq_force_counter += 1; force = counter % interval == 0`。
+        // 但 apply_freqs 在 update_frame 末尾被调用（每帧一次，见 frame_pipeline.rs 的
+        // `self.apply_freqs()`），计数器单位是**帧**而不是时间：120fps 下 30 帧 ≈ 0.25s
+        // （4 次/s）、144fps 下 30 帧 ≈ 0.21s（4.8 次/s），节拍随刷新率线性放大，
+        // 高刷机上强制重写被放大到每秒数十次（每次都伴随 umount2 + 每 cluster 两次写频）。
+        // 改为时间基准后语义为「最多每 freq_force_reapply_interval 秒强制重写一次」，
+        // 配置项名与数值都不变，只是把单位由「帧」修正为「秒」，与刷新率彻底解耦。
+        // 注意 normalize() 已把该值钳到 ≥ 1，避免 0 导致判定恒真
+        let force = self.freq_force_timer.elapsed()
+            >= Duration::from_secs(self.cfg.freq_force_reapply_interval as u64);
+        if force {
+            self.freq_force_timer = Instant::now();
+        }
 
         let mut effective_perf = self.perf_index.clamp(0.0, 1.0);
 

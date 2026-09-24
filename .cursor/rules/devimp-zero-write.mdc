@@ -1,0 +1,54 @@
+---
+description: 新增/修改 devimp 诊断日志写入、diag_active 门控、devimp/ 目录创建逻辑（logger.rs、src/chiri/ 诊断打点）时，保证 meta.dev_record 关闭时零写入零痕迹
+globs: src/**/*.rs
+alwaysApply: false
+---
+
+# dev_record 零写入约束
+
+devimp/ 全目录受 `meta.dev_record`（进程级 `diag_active()`）总闸约束：
+**关闭时不得产生任何数据，包括空目录**。背景见 `docs/agents/02-convention.md` 开发诊断日志条。
+
+## 硬规则
+
+1. 所有诊断打点必须在 `diag_active()` 门控内，`format!`/`collect`/`join` 的求值也要在门控内——
+   先构造后判开关，关闭时每 tick 仍白付分配。
+2. `devimp/` 目录唯一创建者 = `main_open` / `aff_open`（两者都在 `diag_active()` 门控内），
+   其它任何路径不得 `create_dir*`。启动归档不预建目录。
+3. `diag_prepare` 目录不存在即早退（清理只针对已有目录）。
+4. 短会话清空后连空目录一起 `remove_dir`，不留空壳。
+5. 一次性入口（如 `set_diag_package`）同样加 `diag_active()` 门控：关闭时零锁零分配；
+   重开后下一秒照常按包名切 main_ 文件。
+6. frozen 模式下 `diag_active()` 为 false、main_ 与 aff_ 同停写，勿另开旁路写入。
+
+## 正反例
+
+```rust
+// [BAD] 先算后判：关闭时仍每 tick 一次 format! 分配
+let line = format!("ts={} perf={}", ts, perf);
+if diag_active() { main_write_line(&line); }
+
+// [GOOD] 门控包住求值
+if diag_active() {
+    let line = format!("ts={} perf={}", ts, perf);
+    main_write_line(&line);
+}
+```
+
+```rust
+// [BAD] 顺手补目录，谁都能创建
+fs::create_dir_all("devimp")?;
+main_open();
+
+// [GOOD] 创建只在 open 路径且在门控内
+fn main_open() -> Option<File> {
+    if !diag_active() { return None; }
+    fs::create_dir_all(devimp_dir()).ok()?;
+    // ...
+}
+```
+
+## 自查
+
+- dev_record 关闭跑一轮：模块根下不出现 `devimp/`，`logd/` 归档不带 `devimp_*.tar`。
+- dev_record 开启后重开（关闭过一段时间）：首帧全量、按当前包名继续，无缺帧空窗。

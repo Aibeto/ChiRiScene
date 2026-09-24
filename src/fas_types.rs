@@ -195,6 +195,15 @@ pub struct FasRulesConfig {
     #[serde(default = "d_switch_perf")]
     pub app_switch_resume_perf: f32,
 
+    /// 防篡改强制重写间隔（**秒**，最小 1）：语义是「最多每 N 秒把当前锁频值无条件重写一遍」，
+    /// 把被改写/压制的 scaling_min_freq / scaling_max_freq 收敛回目标——ChiRi 默认是全局
+    /// 唯一调度程序，节点被改写属异常态（残留旧模块/手动调试/内核 thermal、QoS 收窄），
+    /// 本机制是兜底收敛，不是与常驻竞争者的常态对抗。
+    ///
+    /// 历史口径修正：早期实现按「帧」计数（`freq_force_counter % interval == 0`，
+    /// `apply_freqs` 每帧末被调用），120fps 下 30 帧 ≈ 0.25s（4 次/s）、144fps ≈ 0.21s（4.8 次/s），
+    /// 重写（含 umount2 与每 cluster 两次写频）频率随刷新率线性放大。
+    /// 现改为时间基准，配置项名与数值含义不变（默认 30），仅单位由「帧」修正为「秒」。
     #[serde(default = "d_force_int")]
     pub freq_force_reapply_interval: u32,
     #[serde(default = "d_max_frame")]
@@ -328,6 +337,7 @@ fn d_switch_ms() -> f32 {
 fn d_switch_perf() -> f32 {
     0.60
 }
+/// 防篡改强制重写间隔默认 30 —— 单位为秒（见字段说明；旧实现单位是帧，30 帧 ≈ 0.25s@120fps）
 fn d_force_int() -> u32 {
     30
 }
@@ -337,7 +347,7 @@ fn d_max_frame() -> f32 {
 fn d_cold_ms() -> u64 {
     3500
 }
-/// 写频后校验间隔（秒）：更快发现内核频率覆写（thermal cap / QoS）。
+/// 写频后校验间隔（秒）：更快发现锁频值被压到目标以下（内核 thermal cap / QoS 收窄等）。
 /// 仅在写频事件后触发一次读数，非周期轮询，调小无长期开销
 fn d_verify_interval() -> u32 {
     1
@@ -467,6 +477,12 @@ impl FasRulesConfig {
         }
         // 延迟退出：1s 下限防抖，10 分钟上限防呆（配得再大也不该常驻接管）
         self.deactivate_delay_secs = self.deactivate_delay_secs.clamp(1, 600);
+        // 防篡改强制重写间隔：最小 1 秒。
+        // 旧实现用 `freq_force_counter % interval`，interval = 0 时是除零 panic，
+        // 调度线程一 panic 就被看门狗反复重启（整个 FAS 停摆）；
+        // 改成时间基准后 0 虽不再 panic，但会让「已到期」判定恒真（每帧都强制重写），
+        // 所以同样必须钳到 ≥ 1
+        self.freq_force_reapply_interval = self.freq_force_reapply_interval.max(1);
     }
 
     /// 将旧的 per_app_margins 迁移到 per_app_profiles

@@ -192,8 +192,8 @@ static LOG_RESTARTING: AtomicBool = AtomicBool::new(false);
 /// 达到门限即退出进程，由看门狗 3s 后拉起走启动归档。
 ///
 /// - 无看门狗（`watchdog_pid()` 为 None：调试直跑 / 孤儿态）**不退出**——退出后
-///   无人拉起、调度会永久停止；此时计数清零，等下一个 128MB 再判（避免每行写
-///   都去读 /proc）；
+///   无人拉起、调度会永久停止；此时计数清零、打点一条 warn（2026-09-24 起，
+///   防「达到门限但永不重启归档」静默失效），等下一个门限再判；
 /// - 退出前打点的日志本身也走本函数（同一条写路径），以 `LOG_RESTARTING` 防重入；
 /// - **调用方不得持有 appender 锁**：本函数可能经 `log::info!` 重入 append，
 ///   在持锁状态下调用会对同一把非重入 Mutex 死锁（status/main/aff 写入路径
@@ -211,6 +211,18 @@ fn note_write(counter: &AtomicU64, dir: &str, bytes: u64) {
         return;
     }
     if watchdog_pid().is_none() {
+        // 抑制必须可见（2026-09-24）：旧实现静默清零，「达到门限但永不重启」
+        // 零痕迹无从排查；打点频率 = 每门限事件一次（128MB × 各目录），可忽略
+        log::warn!(
+            "{}",
+            t_with_args(
+                "logger-log-restart-suppressed",
+                &fluent_args!(
+                    "dir" => dir,
+                    "mb" => (total / (1024 * 1024)).to_string()
+                )
+            )
+        );
         counter.store(0, Ordering::Relaxed);
         return;
     }
@@ -720,8 +732,9 @@ fn local_hms(_epoch: i64) -> Option<(u32, u32, u32)> {
 //
 // 供离线分析改善调度的按核诊断数据，与 status.csv 分离：
 // - 独立目录 `devimp/`（模块根，与 logs/ 平级），**启动时随 logs/ 一起归档**到
-//   logd/devimp_<MMDD-HHmmss>.tar（子线程异步打包），归档后新建空目录接住
-//   本进程写入（目录/归档/记账派生物保留 devimp 名）；
+//   logd/devimp_<MMDD-HHmmss>.tar（子线程异步打包）；归档后**不预建空目录**——
+//   由首次写入的 main_open / aff_open 惰性 create_dir_all（开关关闭时不得留痕，
+//   含空目录），目录/归档/记账派生物保留 devimp 名；
 // - **main_ 按前台包名分组**：文件名 `main_<包名>_<MMDD-HHmmss>.log`（本地时间，
 //   人眼可辨），首次写入惰性创建（整轮未开启 DEV 则不产生文件）；scheduler_ipc
 //   每秒经 set_diag_package 同步前台包名，包名变化即关闭当前文件、下次写入
@@ -737,7 +750,8 @@ fn local_hms(_epoch: i64) -> Option<(u32, u32, u32)> {
 //   文件；尚无任何包名时文件名包名段为 `nopkg`（避免空段产生 `main__`）；
 // - 单文件软上限 128MB：触顶自动换新时间戳文件继续写（修复旧版触顶后
 //   静默停写直到进程重启的问题），不丢数据不 panic；
-// - 启动时 diag_prepare() 清理旧文件；写入巡检（每 256 行）在换新文件
+// - 启动时 diag_prepare() 对**已存在**的目录清理旧文件（目录不存在即早退、
+//   不代创建）；写入巡检（每 256 行）在换新文件
 //   时同样清理，仅保留最近 DEVIMP_KEEP_FILES 份（main_*.log 与 aff_*.log
 //   合并计数，文件名含包名段、字典序不再等于时间序，按文件 mtime 排序，
 //   当前活跃文件不清理；旧 devimp_*.log 不迁移，随启动归档自然过期）；
@@ -792,6 +806,16 @@ pub fn set_diag_mode(mode: &str) {
 ///   package 列数据源，晚于文件切换更新可保证切换边界处
 ///   「行的 package 列」与「所在文件」永不错位（详见函数体注释）。
 pub fn set_diag_package(pkg: &str) {
+    // dev_record 关闭时整套诊断写入停摆（关时不得产生任何数据）：本函数的
+    // 两个消费者都只在诊断路径上——`MainRow::new` 读 DIAG_FG_PKG 填 package 列、
+    // main_ 文件按包名切换，没有非诊断消费者。故这里直接返回，省掉每秒一次的
+    // 两把锁（MAIN_WRITER/DIAG_FG_PKG）获取与包名 String 分配/过滤。
+    // 重开 dev_record 后下一秒调用恢复：pkg_seg 仍是关闭前的值，与新前台包名比对
+    // 后照常切文件——「包名变化即换 main_ 文件」的语义不受影响（期间诊断行本就没写，
+    // 不存在行归属错位的窗口）；DIAG_FG_PKG 的陈旧值也无人读取（读取方都在 diag_active 门控下）。
+    if !diag_active() {
+        return;
+    }
     let p = pkg.trim();
     if p.is_empty() {
         return;
@@ -1176,6 +1200,8 @@ fn aff_file_head() -> Vec<u8> {
 /// 返回 None 表示打开失败（调用方下次写入时再试）。
 fn main_open(w: &mut MainWriter) -> Option<fs::File> {
     let dir = common::get_module_root().join(DEVIMP_DIR_REL);
+    // devimp/ 目录的唯一创建者（含启动期）：本函数只在 diag_active() 门控的写入
+    // 路径上被调用，故目录的创建天然受 dev_record 开关约束（diag_prepare 不再代创建）
     let _ = fs::create_dir_all(&dir);
     let name = match w.cur_name.clone() {
         Some(n) => n,
@@ -1321,7 +1347,7 @@ fn main_write_line(row: MainRow) {
         // 触顶换新文件：清 tick 节流状态（新文件首 tick 即记录，不留心跳空窗）
         main_tick_state_clear();
         // 触顶即新增了一个 128MB 级文件：顺手执行目录预算清理
-        // （logd/ 与 devimp/ 各自独立计量，各自超 128MB 才从本目录最旧文件删到 <96MB）
+        // （logd/ 与 devimp/ 各自独立计量，各自超 256MB 才从本目录最旧文件删到 <200MB）
         enforce_dir_limits(&common::get_module_root());
     }
     // 记账（含换行）：写入即事件触发，devimp/ 累计增长达 128MB 触发重启打包
@@ -1331,30 +1357,75 @@ fn main_write_line(row: MainRow) {
 
 /// 启动兜底清理：仅保留最近 DEVIMP_KEEP_FILES 份历史诊断文件（main_*.log 与
 /// aff_*.log 合并计数，按文件 mtime 排序，超出从旧到新删除）。main.rs 启动时
-/// 调用一次；正常路径下 devimp/ 已被启动归档整体 rename 走并新建为空目录，
+/// 调用一次；正常路径下 devimp/ 已被启动归档整体 rename 走（不预建空目录），
 /// 此函数仅作为归档 rename 失败时的兜底（旧文件保留在原目录时防止无限堆积）。
+///
+/// **目录不存在即早退（2026-09-24）**：devimp/ 整体属于 dev_record 产物，开关
+/// 关闭时「不得产生任何数据」——含空目录。目录的唯一创建者交给真正要写入它的
+/// 路径（`main_open` / `aff_open` 写入前各自 `create_dir_all`，见其函数注释），
+/// 它们只在 `diag_active()` 门控下才会被执行，天然满足开关约束。故这里不再创建
+/// 目录：不存在就没有历史文件可清理（归档失败兜底也只对「原目录仍在」有意义），
+/// 直接返回；目录存在（上一轮遗留 / 归档失败 / 开关重新打开后已写入）才 prune。
 // [devimp_api]
 pub fn diag_prepare() {
     let dir = common::get_module_root().join(DEVIMP_DIR_REL);
-    let _ = fs::create_dir_all(&dir);
+    // 早退：devimp/ 不存在 → 无历史文件可清理，且绝不代 dev_record 创建目录
+    if !dir.exists() {
+        return;
+    }
     diag_prune(None);
 }
 
 /// 看门狗 PID（daemon 由看门狗 sh 前台拉起，`getppid()` 即其 PID）。
-/// ppid <= 1：daemon 非看门狗前台子进程（调试直跑 / 看门狗已被杀后的孤儿态，
-/// 由 init 收养），返回 None；再校验父进程 comm 为 sh/mksh，进一步防 pid
-/// 复用/调试直跑误判。
+/// 判据两条满足其一（2026-09-24 重做）：
+/// 1. **pidfile 铁证**：`logs/watchdog.pid` 内容 == `getppid()`（看门狗启动时
+///    `echo $$` 自写、归档时复制回、缺失由 `ensure_watchdog_pid_file` 自愈）；
+/// 2. **脱管 shell**（`detached_shell_parent`）：父进程是被 init 收养的 shell
+///    （看门狗 setsid+disown 后必为孤儿；调试直跑的交互 shell 祖字段 ≠ 1）。
+///
+/// 旧实现只查 comm ∈ {sh, mksh}，两个方向都会错：调试直跑（交互终端也是 sh）
+/// 误判「有监督」→ 达门限 exit(0) 后无人拉起、调度永久停止；busybox/ash 父进程
+/// 或 /proc 读失败（SELinux）误判「无监督」→ 计数清零、门限永久失效且零日志。
 fn watchdog_pid() -> Option<i32> {
     let ppid = unsafe { libc::getppid() };
     if ppid <= 1 {
         return None;
     }
-    let comm = fs::read_to_string(format!("/proc/{ppid}/comm")).unwrap_or_default();
-    let comm = comm.trim();
-    if comm != "sh" && comm != "mksh" {
+    let pid_path = common::get_module_root().join("logs/watchdog.pid");
+    if let Ok(s) = fs::read_to_string(&pid_path) {
+        if s.trim().parse::<i32>() == Ok(ppid) {
+            return Some(ppid);
+        }
+    }
+    detached_shell_parent()
+}
+
+/// 父进程是否为「脱管的 shell」（comm 属 shell 家族且已被 init 收养）。
+/// /proc/<ppid>/stat 第 4 字段 = 其父 pid：==1 即孤儿态（setsid + disown 的
+/// 看门狗必然如此），交互终端链完好的调试直跑不会命中。
+fn detached_shell_parent() -> Option<i32> {
+    let ppid = unsafe { libc::getppid() };
+    if ppid <= 1 {
         return None;
     }
-    Some(ppid)
+    let comm = fs::read_to_string(format!("/proc/{ppid}/comm")).unwrap_or_default();
+    if !matches!(
+        comm.trim(),
+        "sh" | "mksh" | "ash" | "bash" | "dash" | "busybox" | "toybox"
+    ) {
+        return None;
+    }
+    // stat 的 comm 字段可含空格/括号，从最后一个 ')' 之后取：state ppid …
+    let stat = fs::read_to_string(format!("/proc/{ppid}/stat")).unwrap_or_default();
+    let grand = stat
+        .rsplit_once(')')
+        .and_then(|(_, rest)| rest.split_whitespace().nth(1))
+        .and_then(|s| s.parse::<i32>().ok());
+    if grand == Some(1) {
+        Some(ppid)
+    } else {
+        None
+    }
 }
 
 /// logs/watchdog.pid 运行时自愈：logs/ 目录被外部删除时该文件随目录一起
@@ -1374,8 +1445,9 @@ pub fn ensure_watchdog_pid_file() {
     if fs::create_dir_all(root.join("logs")).is_err() {
         return;
     }
-    // 非看门狗拉起（调试直跑/孤儿态）不写，防 stopScheduler 误杀无关进程
-    let Some(ppid) = watchdog_pid() else {
+    // 非看门狗拉起（调试直跑/孤儿态）不写，防 stopScheduler 误杀无关进程。
+    // 重建判定用脱管 shell 判据（文件正是缺失状态，pidfile 无从匹配）
+    let Some(ppid) = detached_shell_parent() else {
         return;
     };
     let _ = fs::write(&pid_path, ppid.to_string());
@@ -1524,6 +1596,9 @@ const AFF_HEADER: &str = "# aff_ 线程数据文件（帧式文本，2026-09-22 
 # @S ts=<MMDD-HHmmss> ntop=<进程行数> nfg=<线程行数>\n\
 # p <rank> <pid> <pkg|comm> u=<整数util%> mask=<允许核hex> home=<核|-1>\n\
 # t <pid> <tid> <comm> u=<整数util%> core=<核|-1> home=<核|-1> pin=<0|1> uclamp=<值|-1>\n\
+# t 行为差分集（2026-09-24）：缺失 tid = 与上一帧完全相同（每 30 帧全量刷新一次）；\n\
+#   常驻写全量的只有前台进程线程与被管线程表里动过的条目，长尾线程只在变化帧/刷新帧出现。\n\
+#   长尾行的 u 是自上次落盘（最多 30s）窗口的平均 util%，其余行仍是 1s 窗口值。\n\
 # 帧边界：@A 单行自帧；@S 按帧头 ntop+nfg 计数定界，末尾截断帧直接丢弃。\n\
 # 行首字符 \\x01 保留给将来的二进制帧（本版不实现）。全字段空白/控制字符净化为 _。\n\
 # t 行 pid=0 表示归属未知（后台候选建档线程）；uclamp 本版恒 -1（预留字段）。";
@@ -1551,6 +1626,8 @@ fn aff_new_name() -> String {
 /// （帧格式说明 + `#` 元信息注释行）。返回 None 表示打开失败（下次写入再试）。
 fn aff_open(w: &mut AffWriter) -> Option<fs::File> {
     let dir = common::get_module_root().join(DEVIMP_DIR_REL);
+    // devimp/ 目录的唯一创建者（含启动期）：同 main_open，本函数只在 diag_active()
+    // 门控的写入路径上被调用
     let _ = fs::create_dir_all(&dir);
     let name = match w.cur_name.clone() {
         Some(n) => n,
@@ -1705,6 +1782,10 @@ pub fn aff_action(
 
 /// `@S` 每秒快照帧：帧头计数由 `rows` 实际行反推（首字符 `p`/`t` 分别计入
 /// ntop/nfg，帧头与行数恒等）；rows 为调用方拼好的 p/t 行（不含换行）。
+/// **`t` 行是差分集**（2026-09-24 起，见 `chiri::build_aff_snapshot` 的文档注释）：
+/// 只有前台进程线程、被动过的被管条目、以及值有变化的长尾线程会出现在帧内，
+/// **缺失的 tid = 与上一帧完全相同**（调用方每 30 帧全量刷新一次防漂移）。
+/// 本函数只负责按行首字符计数与拼帧，帧头计数恒等于本次实际写入的行数。
 pub fn aff_snapshot(rows: &[String]) {
     if !diag_active() || rows.is_empty() {
         return;
@@ -1736,7 +1817,8 @@ pub fn aff_snapshot(rows: &[String]) {
 // 流程（由 main.rs 在 logger::init 之前调用，保证新旧日志文件分离）：
 // 1. 把整个 logs/ 与 devimp/ 分别原子重命名为同级 `ziped_<ts>` / `ziped_devimp_<ts>`
 //    临时目录（同分区 rename；`ziped_` 是历史命名、遗留扫描按它认目录，保留不动），
-//    并新建空目录接住本进程的新写入；
+//    其中 logs/ 新建空目录接住本进程的新写入；devimp/ 不预建空目录（交由诊断写入
+//    路径惰性创建，dev_record 关闭时不得留痕，含空目录）；
 // 2. **复制回 watchdog.pid** 到新建的 logs/——看门狗先于本进程启动、WebUI
 //    stopScheduler 靠 logs/watchdog.pid 定位并终止看门狗，归档不能带走它；
 // 3. 单个一次性子线程把两个临时目录串行打包为**无压缩 tar**，打包本身由外部
@@ -1749,14 +1831,14 @@ pub fn aff_snapshot(rows: &[String]) {
 // 5. rename 失败或原目录为空时跳过对应归档，不影响启动。
 
 // [archive]
-/// logd/ 归档目录自身预算：超过后只清本目录内最旧归档（128MB）
-const LOGD_MAX_BYTES: u64 = 128 * 1024 * 1024;
-/// logd/ 清理目标：从最旧归档删到低于该值（96MB，滞回防每次归档都触发清理）
-const LOGD_TARGET_BYTES: u64 = 96 * 1024 * 1024;
-/// devimp/ 目录自身预算，与 logd/ **独立计量**（128MB）
-const DEVIMP_DIR_MAX_BYTES: u64 = 128 * 1024 * 1024;
-/// devimp/ 清理目标（96MB）
-const DEVIMP_DIR_TARGET_BYTES: u64 = 96 * 1024 * 1024;
+/// logd/ 归档目录自身预算：超过后只清本目录内最旧归档（256MB，2026-09-24 由 128MB 扩容）
+const LOGD_MAX_BYTES: u64 = 256 * 1024 * 1024;
+/// logd/ 清理目标：从最旧归档删到低于该值（200MB，滞回防每次归档都触发清理）
+const LOGD_TARGET_BYTES: u64 = 200 * 1024 * 1024;
+/// devimp/ 目录自身预算，与 logd/ **独立计量**（256MB）
+const DEVIMP_DIR_MAX_BYTES: u64 = 256 * 1024 * 1024;
+/// devimp/ 清理目标（200MB）
+const DEVIMP_DIR_TARGET_BYTES: u64 = 200 * 1024 * 1024;
 
 /// 归档 staging 目录名前缀（logs/ → `ziped_<ts>`，devimp/ → `ziped_devimp_<ts>`）
 const STAGING_PREFIX: &str = "ziped_";
@@ -1971,6 +2053,10 @@ pub fn archive_on_startup(root: &Path) -> (Option<String>, Option<String>) {
         // 终止看门狗，清掉会导致「关闭调度」失效（与归档路径同口径）
         clear_dir_keep(&src_logs, &["watchdog.pid"]);
         clear_dir_keep(&src_devimp, &[]);
+        // devimp/ 清空后若已成空则连目录一并删：该目录整体属于 dev_record 产物，
+        // 开关关闭时不得留痕（含空目录）。remove_dir 仅在目录存在且为空时成功，
+        // 有残留/不存在时静默失败——开关开启时后续写入自会 create_dir_all 重建。
+        let _ = fs::remove_dir(&src_devimp);
         SHORT_SESSION_DISCARDED.store(true, Ordering::Release);
         // 遗留 staging 目录仍照常回收打包——它们属于更早的会话，不是本轮垃圾，
         // 且在崩溃循环里正是最有价值的那份现场
@@ -2006,7 +2092,8 @@ pub fn archive_on_startup(root: &Path) -> (Option<String>, Option<String>) {
         }
     }
 
-    // ── devimp/：rename → 新建空目录接住本进程新写入 ──
+    // ── devimp/：整体 rename 归档（**不新建目录**——交由 diag 写入路径
+    // main_open / aff_open 惰性 create_dir_all，开关关闭时不得留痕，含空目录）──
     let mut devimp_tmp: Option<PathBuf> = None;
     let devimp_has_entries = fs::read_dir(&src_devimp)
         .map(|mut d| d.next().is_some())
@@ -2014,7 +2101,6 @@ pub fn archive_on_startup(root: &Path) -> (Option<String>, Option<String>) {
     if devimp_has_entries {
         let tmp = unique_staging(root, &format!("ziped_devimp_{}", ts));
         if fs::rename(&src_devimp, &tmp).is_ok() {
-            let _ = fs::create_dir_all(&src_devimp);
             devimp_tmp = Some(tmp);
         }
     }
@@ -2060,21 +2146,22 @@ pub fn archive_on_startup(root: &Path) -> (Option<String>, Option<String>) {
     (logs_tar, devimp_tar)
 }
 
-/// logd/ 与 devimp/ 目录预算清理（**各自独立**）：任一目录超过自己的 MAX 时，
-/// 只删本目录内最旧文件，直到本目录低于自己的 TARGET。
+/// logd/ 与 devimp/ 目录预算清理（**各自独立**）：任一目录超过自己的 MAX 时
+/// 收到 TARGET 以下。**两目录清理语义不同**：logd/ 按「归档批次」原子删
+/// （`enforce_logd_limit`），devimp/ 按单文件 mtime 删（`enforce_dir_limit`）。
 ///
 /// 历史实现把两目录合并成一个 128MB 总预算并跨目录按 mtime 删除：devimp 的
 /// 膨胀（单文件软上限 128MB、按数量保留最多 20 份）会被算到 logd 头上，而
 /// logd 内的归档包 mtime 恒旧于本会话正在写的 devimp 文件 → 归档包被优先
 /// 删光（含启动时刚打好的那个），即「logd/ 被全清」。改为独立计量后，devimp
-/// 再大也动不到 logd，反之亦然。活跃写入文件（status/daemon/devimp 当前文件）
-/// mtime 最新天然最后才轮到，devimp 写入器对被删文件另有自愈（写入巡检发现
-/// metadata Err 后重开重建）。
+/// 再大也动不到 logd，反之亦然。devimp 活跃写入文件（status/daemon/devimp
+/// 当前文件）mtime 最新天然最后才轮到，devimp 写入器对被删文件另有自愈
+/// （写入巡检发现 metadata Err 后重开重建）。
 ///
 /// 调用时机：启动归档打包完成后 + devimp 触顶换文件时（每次轮转最多增加
 /// 一个 128MB 文件，运行中触发频率极低，全目录 metadata 扫描开销可忽略）。
 fn enforce_dir_limits(root: &Path) {
-    enforce_dir_limit(&root.join("logd"), LOGD_MAX_BYTES, LOGD_TARGET_BYTES);
+    enforce_logd_limit(&root.join("logd"));
     enforce_dir_limit(
         &root.join(DEVIMP_DIR_REL),
         DEVIMP_DIR_MAX_BYTES,
@@ -2099,10 +2186,11 @@ fn active_diag_names() -> Vec<String> {
     out
 }
 
-/// 单目录预算清理：`dir` 总大小超过 `max` 时按 mtime 从最旧文件逐个删除，
+/// devimp/ 单目录预算清理：`dir` 总大小超过 `max` 时按 mtime 从最旧文件逐个删除，
 /// 直到低于 `target`。**活跃文件与最新的一个文件永不删除**——单个文件本身
-/// 超过 target 时（如一次归档 >96MB），删完其余文件后仍会留下它，避免目录
-/// 被清空（清理目标不可达时以「至少留活跃+一份」为准）。
+/// 超过 target 时（如一个 100MB+ 的 aff_），删完其余文件后仍会留下它，避免目录
+/// 被清空（清理目标不可达时以「至少留活跃+一份」为准）。logd/ 不走本函数
+/// （见 `enforce_logd_limit` 的批次原子语义）。
 fn enforce_dir_limit(dir: &Path, max: u64, target: u64) {
     let mut paths: Vec<PathBuf> = Vec::new();
     if collect_files(dir, &mut paths).is_err() {
@@ -2138,6 +2226,106 @@ fn enforce_dir_limit(dir: &Path, max: u64, target: u64) {
         }
         if fs::remove_file(path).is_ok() {
             total = total.saturating_sub(*len);
+        }
+    }
+}
+
+/// 归档批次键（`logd/` 预算清理的原子单位）：同一次启动归档产出的
+/// `<MMDD-HHmmss>.tar`（logs 侧）与 `devimp_<MMDD-HHmmss>.tar`（devimp 侧）
+/// 共享 `<MMDD-HHmmss>` 一段；`unique_path` 去重的 `-N` 后缀剥掉。
+/// 形态不符的外来文件按整名成组（等价单文件批次），不会被误并组。
+fn logd_batch_key(name: &str) -> String {
+    let is_ts = |s: &str| {
+        let b = s.as_bytes();
+        b.len() == 11
+            && b[4] == b'-'
+            && b.iter().enumerate().all(|(i, c)| i == 4 || c.is_ascii_digit())
+    };
+    let Some(stem) = name.strip_suffix(".tar") else {
+        return name.to_string();
+    };
+    let stem = stem.strip_prefix("devimp_").unwrap_or(stem);
+    if is_ts(stem) {
+        return stem.to_string();
+    }
+    if let Some((base, idx)) = stem.rsplit_once('-') {
+        if is_ts(base) && !idx.is_empty() && idx.bytes().all(|c| c.is_ascii_digit()) {
+            return base.to_string();
+        }
+    }
+    name.to_string()
+}
+
+/// logd/ 预算清理：**按归档批次原子删**（2026-09-24）。
+///
+/// 背景（2026-09-24 事故）：devimp 归档单个 114MB（aff 线程流膨胀）时，旧实现
+/// 「保最新一个文件、其余删到 <96MB」的保底只盖住 `devimp_*.tar`（打包顺序
+/// logs 先 devimp 后，devimp tar mtime 最新）——同批的 logs 侧 `<ts>.tar`
+/// （daemon.log / status.csv 的唯一载体，仅 ~1MB）被划进「其余」连同旧批次一起
+/// 删光，导出包只剩 `devimp_*.tar`，daemon.log/status.csv 凭空消失。
+///
+/// 现语义：
+/// 1. **批次原子**：`<ts>.tar` 与 `devimp_<ts>.tar` 同进退——批次是一次会话的
+///    完整记录，拆掉任何一半都不可再生；
+/// 2. **最新批次永不删**：每次导出必含最近一次会话的 daemon.log/status.csv；
+/// 3. **按批龄旧→新整批删**，删到 < `LOGD_TARGET_BYTES`；
+/// 4. **目标不可达**（最新批次自身 ≥ target）时退化为「收到 MAX 即停」：
+///    预算内的旧批次不再为凑 target 而陪葬。
+fn enforce_logd_limit(dir: &Path) {
+    let mut paths: Vec<PathBuf> = Vec::new();
+    if collect_files(dir, &mut paths).is_err() {
+        return;
+    }
+    // 批次键 → (组内最新 mtime, [(len, path)])
+    let mut groups: std::collections::BTreeMap<
+        String,
+        (std::time::SystemTime, Vec<(u64, PathBuf)>),
+    > = std::collections::BTreeMap::new();
+    let mut total: u64 = 0;
+    for p in paths {
+        let Ok(meta) = fs::metadata(&p) else {
+            continue;
+        };
+        let len = meta.len();
+        total = total.saturating_add(len);
+        let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+        let key = p
+            .file_name()
+            .map(|n| logd_batch_key(&n.to_string_lossy()))
+            .unwrap_or_default();
+        let g = groups.entry(key).or_insert((mtime, Vec::new()));
+        g.0 = g.0.max(mtime);
+        g.1.push((len, p));
+    }
+    if total <= LOGD_MAX_BYTES {
+        return;
+    }
+    // 最新批次 = 含最新 mtime 文件的那组（本轮 batch 的 devimp tar 最后落盘）
+    let newest_key = groups.iter().max_by_key(|(_, g)| g.0).map(|(k, _)| k.clone());
+    let floor = newest_key
+        .as_ref()
+        .and_then(|k| groups.get(k))
+        .map(|g| g.1.iter().map(|(l, _)| *l).sum::<u64>())
+        .unwrap_or(0);
+    let budget = if floor >= LOGD_TARGET_BYTES {
+        LOGD_MAX_BYTES
+    } else {
+        LOGD_TARGET_BYTES
+    };
+    let mut batches: Vec<(std::time::SystemTime, String, Vec<(u64, PathBuf)>)> =
+        groups.into_iter().map(|(k, (m, v))| (m, k, v)).collect();
+    batches.sort(); // 批龄旧→新（mtime 优先，键名兜底破平）
+    for (_, key, members) in &batches {
+        if Some(key) == newest_key.as_ref() {
+            continue;
+        }
+        if total < budget {
+            break;
+        }
+        for (len, p) in members {
+            if fs::remove_file(p).is_ok() {
+                total = total.saturating_sub(*len);
+            }
         }
     }
 }

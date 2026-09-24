@@ -148,9 +148,10 @@ default:
     spike_decay: 0.10
     touch_boost_enabled: true
     # 触摸窗口内大核地板抬高：floor = perf_init + tiers × 0.05，且不超过 perf_ceil
-    # TODO: 实机复核 600ms / 4 档（手指在屏上滑动时应始终处于窗口内）。
+    # TODO: 实机复核 600ms / 3 档（手指在屏上滑动时应始终处于窗口内；档位过高会在
+    # 轻载触摸期把上限顶到目标之上，再降档需配合滑动/打字流畅度实测）。
     touch_boost_ms: 600
-    touch_boost_tiers: 4
+    touch_boost_tiers: 3
 
 # [boost]
 boost:

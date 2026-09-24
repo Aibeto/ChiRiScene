@@ -67,7 +67,7 @@ export function readStatusCsvTail(bytes = 256 * 1024): Promise<ReadResult<string
   return readTail(absOf('statusCsv'), bytes, 'not-created')
 }
 
-/** devimp 目录文件列表（daemon 启动即建目录，空目录合法；仅 ChiRi 有内容） */
+/** devimp 目录文件列表（惰性创建：`main_open`/`aff_open` 写入前才 `create_dir_all`，dev_record 关闭时不产生任何数据、连空目录都没有；仅 ChiRi 有内容） */
 export function listDevimp(): Promise<ReadResult<string[]>> {
   return listDir(absOf('devimpDir'), 'not-created')
 }

@@ -360,7 +360,8 @@ impl CoreGroupWorker {
     ///   立即返回 → on_load_update + flush，零延迟；
     /// - 触摸升频：scheduler_ipc 广播空负载包，同样立即打断阻塞 → flush。
     /// 超时分支只承担两件非性能任务：清理过期触摸窗口、重写当前频率防篡改
-    /// （厂商守护进程的篡改也是秒级动作，1s 粒度足够）。空闲（无负载事件）
+    /// （默认无竞争者，节点被改写属异常态——残留旧模块/手动调试/内核异常，
+    /// 异常改写也是秒级动作，1s 粒度足够兜住）。空闲（无负载事件）
     /// 时 Worker 从每秒 ~6 次空转降到 1 次。
     fn run(mut self) {
         let tick_interval = Duration::from_secs(1);

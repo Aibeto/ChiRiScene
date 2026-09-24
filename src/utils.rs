@@ -443,7 +443,7 @@ impl FastWriter {
             path: path_ref.to_path_buf(),
             unmounted: false,
         };
-        // 惰性卸载：仅当直接打开失败（厂商 bind mount 保护 / 权限封装）时才尝试 umount 重开，
+        // 惰性卸载：仅当直接打开失败（挂载写保护 / 权限封装等异常态）时才尝试 umount 重开，
         // 避免对正常设备上每个节点无条件 detach（可能拆掉合法挂载）。写入被拒（EACCES/EROFS）
         // 时也会走一次卸载重试（见 do_write）。
         if w.file.is_none() {
@@ -527,7 +527,7 @@ impl FastWriter {
                     Some(libc::EINVAL) | Some(libc::EBUSY) => {
                         log::debug!("write freq {} to {:?} skipped: {}", value, self.path, e);
                     }
-                    // EACCES/EROFS: 多为厂商挂载写保护，卸载后重试一次
+                    // EACCES/EROFS: 多为挂载写保护/权限封装（异常态），卸载后重试一次
                     Some(libc::EACCES) | Some(libc::EROFS) if !self.unmounted => {
                         log::warn!(
                             "{}",

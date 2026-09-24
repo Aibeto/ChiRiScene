@@ -115,6 +115,9 @@ python scripts\devimp-analyze.py <解压目录> [--since MMDD-HHMMSS] [--min-n 3
 ## 三、判定要点（最易读错的地方）
 
 - **`cur_freq_khz`/`max_freq_khz` 是调度器写入的 scaling_max 决策值，不是实际频率**；实际值看 snap 的 `cpu_cur_khz`。比率 = cap%
+- **`deb_up`/`deb_down` = `up_wait`/`down_wait` 连续方向 tick 计数**（2026-09-24 源码确认）：
+  升/降频速率限制计数器，非错误计数；「decision=down 但 cur_freq 不动」可能是触摸地板/
+  热 clamp 钉住（flush 里 `current_perf.max(floor)` 在决策之后），不要读成写频失败或假 down
 - `max_util`：CLG 行 = 平滑前原始 util；tuned（akmode/playback）行 = 平滑后决策负载——离线二次平滑前先区分来源
 - `migrations`/`wakeups` = BpfStats **2s 增量**（源码 `src/common.rs` `DaemonEvent::BpfStats`，
   `cpu_monitor` 每 2s 发一次差分）：**÷2 = 每秒**
@@ -128,10 +131,14 @@ python scripts\devimp-analyze.py <解压目录> [--since MMDD-HHMMSS] [--min-n 3
   - **`free_above` 是性能豁免档、不是温度带**：压制只落在 `(soft_perf_cap, free_above)` 区间，`>= free_above` 不钳制。**`cap=85` ≠ 已压制**——`free_above == soft_perf_cap` 时压制带为空、软限档完全空转（8550 曾如此，2026-09-23 修为 0.95），日志表现 = `cap=85` 期间写频仍可到 hw_max；热压制只作用于 CLG，tuned 段 cap 列 `-`
   - **实测**：batt 42.1℃ 触发 → `cap=85`（`thermal_change batt=42.1 cpu=56.4 cap=85 free=85`）
   - **daemon 重启会把热状态重置回 100**（新会话从零升温）→ 跨重启的 cap 序列不可直接连读
-- 充放电：**不要用电流符号判定**（厂商方向不一）；status.csv 有 `charge` 列（权威）。
+- 充放电：**不要用电流符号判定**（方向随内核/机型而异）；status.csv 有 `charge` 列（权威）。
   devimp snap 无 charge 列时用脚本的双向启发式，并在结论里注明。
   脚本口径：**严格排除 `batt_i == 0`**（无电流/数据缺失视为非放电样本，会略抬 P_avg）；
   输出 `[!] 两侧功率都合理` 时说明该机型方向需人工确认——结合 status.csv 的 charge 列人工核对一次
+- **44 列 devimp 的 `batt_i` 疑似整数化**（2026-09-24 实测，值域仅 0/1/2/3；status.csv 同秒为
+  0.106/0.889 等浮点，`batt_p` 列正常）：铁律「排除 batt_i==0」会误删约 58% 样本且恰是
+  <0.5A 轻载秒 → P_avg 系统性高估（aweme 实测 3.35W vs 真值 2.14W）。此类包功耗**以
+  status.csv 的 `charge`+`batt_power_w` 为准**，devimp 功耗列只做交叉验证
 - 模式语义：`clg_active=1` = CLG 在接管；`mode=fas` = FAS 接管；特调模式（playback/akmode）= tuned 接管；
   PowerBase 开启时替换 CLG（日志有 powerbase-activated）
 - `freq_trans` 恒 0 而非 `-` = 内核无 cpufreq tracepoint（探针没挂上），不是「频率从未切换」
@@ -180,10 +187,23 @@ python scripts\devimp-analyze.py <解压目录> [--since MMDD-HHMMSS] [--min-n 3
 6. 热态日志（battT 长期 40+℃）会整体抬高功耗——评估调参需凉机对照
 7. 对功耗结论保持怀疑：先确认「是不是同一台设备、同一个版本、同一类场景」
 8. **PowerShell 会吞掉 python 的长 stdout**（本次 200 行以上被截断）→ 让脚本把结果写进
-   `<tmp>/probe*.txt` 再用 read_file 分段读；控制台里 `Get-Content` 中文会显示成乱码，但文件本身是好的
+   `<tmp>/probe*.txt` 再用 read_file 分段读；控制台里 `Get-Content` 中文会显示成乱码，但文件本身是好的。
+   **管道重定向也不保险（2026-09-24 两度截断）——用 `cmd /c "python ... > file"` 才完整**
 9. **`search_content`/ripgrep 搜不到 `daemon.log`**：本仓库 `.gitignore` 忽略 `*.log`，rg 默认尊重 gitignore
    → 分析日志一律用 python 读文件或 `Select-String`（`-Encoding UTF8`）
 10. **daemon.log 文本里有 U+2068/U+2069 隔离符**（`P⁨0⁩`、`⁨playback⁩`）：写正则前先
     `re.sub(r"[\u2068\u2069]", "", s)`，否则 `P(\d+)`、`mode=⁨…⁩` 之类匹配全部失败
 11. **`@A result=e0` 不是「成功」**：`affinity::io_result_tag` 用 `raw_os_error().unwrap_or(0)`，
     拿不到 errno 时写 `e0`；`e3`=ESRCH（线程已退出，正常）、`e22`=EINVAL（偶发）
+12. **外层包只有 `devimp_*.tar`、没有 `<ts>.tar`（daemon.log/status.csv）**：2026-09-24 之前的
+    logd 预算清理 bug 产物（超大 devimp 归档把同批 logs 侧小 tar 挤掉，实例 logd_0924-173105），
+    已按批次原子清理修复；老包按「缺 logd 侧」降级口径（无 fps/FAS/charge/PowerAVG）判读
+13. **`@A` 清理帧 2026-09-24 起改为汇总（aff 减量）**：逐条 `bind_release` 只代表**真有内核动作**的条目
+    （pin/move_group/restore 等）；「只被扫到、从未动手」的条目清理时汇成一条
+    `<场景>_bulk`（`stale_bulk`/`gone_bulk`/`departed_bulk`/`release_bulk`/`disabled_bulk`，`value`=本次条数）。
+    统计清理规模要读 bulk 帧累加，别再按逐条 `bind_release` 计数
+14. **`@S` 帧 2026-09-24 起是差分集**：前台进程线程与被管条目每帧全量，长尾线程只在
+    `u/core/home/pin` 变化时落行——**缺失行 = 与上一帧相同**，每 30 帧一次全量刷新。离线重建状态
+    不能假设「行数 = 线程数」，要跨帧累积并留意帧头 `nfg`；刷新帧内长尾 `u` 是 ≤30s 均值。
+    另：`t` 行 `pid` 已由 `/proc/<tid>/status` 的 Tgid 补全（旧包的 54% `pid=0` 属老版本行为）。
+    诊断开关重开后首帧必为全量（新会话重新建档）

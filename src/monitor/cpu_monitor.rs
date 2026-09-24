@@ -225,7 +225,8 @@ pub async fn start_cpu_loop(
 
     tokio::spawn(async move {
         let mut rx_pid = rx_pid;
-        // 前台 PID 由 monitor/mod.rs 的 pid_watcher 统一广播，这里只消费最新值
+        // 前台 PID 由 app_detect 在 `set_current_package` 生效处即时广播（原
+        // mod.rs 的 pid_watcher 500ms 轮询线程已删），这里只消费最新值
         let mut fg_pid: u32 = *rx_pid.borrow();
         // 根据最大 CPU ID 初始化历史记录向量，避免越界
         let mut last_idle_times = vec![0u64; max_cpu_id + 1];
@@ -264,7 +265,8 @@ pub async fn start_cpu_loop(
 
         loop {
             interval.tick().await;
-            // 消费 pid_watcher 广播的前台 PID（500ms 源 + 常规/特调40ms 采样，足够及时）
+            // 消费前台 PID 广播（推送源 = app_detect 的包名/PID 变化点，无中转延迟；
+            // 常规 160ms / 特调 40ms 采样节奏下足够及时）
             if rx_pid.has_changed().unwrap_or(false) {
                 fg_pid = *rx_pid.borrow_and_update();
             }

@@ -261,6 +261,7 @@ fast-watchdog-release = [Fast] load source timeout ({ $secs }s), releasing fast 
 # --- Logger ---
 log-level-updated = Log level updated to: { $level }
 logger-log-restart-for-archive = [Logger] { $dir } reached { $mb }MB, restarting scheduler to archive logs
+logger-log-restart-suppressed = [Logger] { $dir } reached { $mb }MB but no watchdog detected (pidfile mismatch and parent is not a detached shell); auto-restart-for-archive skipped. Normal for direct debug runs; on-device, check logs/watchdog.pid
 
 # --- Rhine (Lab) ---
 rhine-state-created = [Rhine] rhine.chr missing, created with default content (not enabled)

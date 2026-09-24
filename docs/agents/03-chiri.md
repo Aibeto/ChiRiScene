@@ -78,6 +78,7 @@ WebUI 侧：
 
 - **`util_smoothing`（2026-09-22 新增，CLG 决策负载 EMA）**：抖动负载下 max*util 每 tick 大幅摆动 → target_perf 翻摆、决策方向反复翻转、`scaling_max_freq` 高频改写（8550 QQ 实测大核 2048 tick 反转 458 次）。EMA 滤波（语义同 tuned 的 `util_smoothing`，1.0=关闭、缺省即关闭=逐位等价）后反转降约五成、写频降三成。default/reduce 配 0.5，boost 保持 1.0（响应优先）；α 0.35 可再降抖动但上限均值抬升更多。main* `max_util` 列为双语义：CLG 行写**平滑前**原始值（离线回放可自行试验系数）；tuned（akmode）行写平滑后的决策负载（2026-09-17 起语义变化）——离线回放按行来源/decision 区分，tuned 行不可再当原始 util 二次平滑。字段新增须同步：`config.rs` 字段+缺省+normalize+Default、`feature.yaml` 全部 SoC 文件（SoC 文件整份覆盖根，只改根不生效）、`config-example.yaml`。
 
+- **FAS 防篡改强制重写改时间基准（2026-09-24）**：`freq_force_reapply_interval` 语义由「每 N **帧**」改为「每 N **秒**」（默认 30 秒，`normalize()` 钳制最小 1——旧实现写 0 会 `% 0` panic，看门狗反复重启）。旧行为在 120fps 下等效 0.25s 一次、144fps 更密，每次对 3 个 policy 做两次写频 + 两次 `re_unmount()`（实测游戏期约 24 写 + 24 `umount2`/s 且随刷新率放大）→ 现在降至 0.2 写/s、0 `umount2`；`PolicyController::force_reapply()` 里的两次 `re_unmount()` 已删除（它只 `umount2(MNT_DETACH)`、不重开 fd，对写入路径零贡献；`verify_prev_freq` 里那次保留）。副作用：`freq_hold_frames` 的 hold 不再被高频 force 击穿。**防篡改是异常兜底语义**：默认 ChiRi 全局唯一调度接管、无竞争者，节点被改写属异常态（残留旧模块、手动调试、内核异常态）。
 - 全局省电向（2026-09-20，用户要求「除 sgameGlobal 外所有场景功耗减半」+「不能限制最高性能释放」硬性约束）：**perf_ceil 一律保持硬性原值（reduce 0.60 / default 1.0 / boost 1.0），禁止用压 ceiling 省电**。省电路径 = 提升升频门槛与降地板：default 档 up_threshold 0.72→0.78、perf_floor 0.10→0.05、perf_init 0.40→0.25、headroom_factor 1.20→1.05、down_fast_threshold 0.25；boost headroom 1.40→1.25（保留相对性能优势）；reduce perf_init 0.25→0.20、headroom 1.05。`module/config/feature.yaml`（根）是未命中 SoC 目录机型的 ChiRi 兜底配置与代码默认值来源。**sgameGlobal（FAS 配置）唯一豁免**：改档位参数不得连带改动其 FAS 语义。（2026-09-22 用户复盘后更新：日常档加了天花板 default `perf_ceil` 0.80 + `per_cluster` little 0.70 / prime 0.65，交互由 touch_boost 兜——「禁止压 ceiling」条款对 CLG 日常档已解除，FAS 豁免不变。）
 
 - 多线程按核心组独立调度：每个 cpufreq policy 由一个独立的 `CoreGroupWorker` 线程管理，持有各自的 `ClusterState`（频率档位、`FastWriter`、`current_perf`、防抖计数器等），线程内自主完成决策 + 写频，核心组之间完全并行无锁。`CpuLoadGovernor`（`cpu_load_governor.rs`）是 Worker 线程管理器：`init_policies` 枚举系统 cpufreq policy、为每个 policy spawn Worker 线程（写 schedutil governor、min 压硬件最低、max 按 perf_init 设初始上限）；`release` 停止所有 Worker（Worker 退出前自行恢复系统原始状态）；`reload_config` 停旧 Worker + 用新配置 spawn 新 Worker（等价轻量 init，current_perf 重置到新 perf_init）。
@@ -139,7 +140,7 @@ WebUI 侧：
 
 - **PowerBase（Stardust 家族，meta.yaml `powerbase_enabled`，默认关）只替换「谁来调频」**：开启后原本由 CLG 接管的档位（reduce/default/boost）改由 `src/chiri/power_base.rs` 以**放电功耗**为指标调频——功耗低于 feature 里的 `target_power_w` 时放宽升频；达到或超过时守住不升，除非「满占用核心占比 ≥ `overload_cores_pct` 且持续 `overload_hold_ms`」；降频恒激进（不看功耗）；触摸窗口内允许突破功率上限。**模式名与所有外部接口一律不变**（`current_mode.chr` 仍是 default/boost，rules / WebUI / 通知都不受影响）。接管点有两处：`apply_mode_takeover`（主路径，即时）与调度循环每轮的兜底纠正块（覆盖启动块 / ConfigReload / 亮屏恢复 / lab 重建四条旁路——它们直接 init CLG，不兜就会「CLG 与 PowerBase 抢写 scaling_max_freq」或「切换后没人接管」）。affinity 的 promote 阈值在开启时翻倍（积极性减半）。**已知 TODO**：触摸突破当前恒 false——CLG 的 `AtomicTouchState` 是它私有字段，需另备共享标志。**热保护对它无效是预期行为**（thermal 靠压 CLG 上限工作）。
 
-- `FastLock::init()` 遍历 `get_cpu_policies()`、快照原始状态、写 schedutil governor、把 min=max 锁到 target（vector=含 boost 硬件最高频、frozen=硬件最低频）；`tick()` 每 5 秒重写一次 **target** 防止系统/厂商守护进程篡改（2026-09-22 修：原误写 hw_max，frozen 每 5 秒被拉回最高频=失效）；`release()` 恢复接管前的 governor/min/max。
+- `FastLock::init()` 遍历 `get_cpu_policies()`、快照原始状态、写 schedutil governor、把 min=max 锁到 target（vector=含 boost 硬件最高频、frozen=硬件最低频）；`tick()` 每 5 秒重写一次 **target** 作异常兜底收敛（默认无竞争者，节点被改写属异常态——残留旧模块、手动调试、内核异常态；2026-09-22 修：原误写 hw_max，frozen 每 5 秒被拉回最高频=失效）；`release()` 恢复接管前的 governor/min/max。
 
 - `mod.rs` 事件循环中 `fast_lock.tick()` 在每次 `recv_timeout` 唤醒时调用；模式切换/息屏 doze/亮屏恢复/看门狗超时/panic 收尾均正确 release fast_lock。
 
@@ -185,15 +186,15 @@ WebUI 侧：
 
 - `src/chiri/core_ctl.rs` 的 `CoreCtlManager`，**三态状态机**（None/Boost/Scenemode，`set_power_state(boost, scenemode)` 统一入口，内部去重可被 2s 周期安全调用；切换时先退出旧状态恢复快照再进入新状态）。调度线程收尾 `release()` 按当前状态恢复。**NONE 与 BOOST 稳态都重试 `offlined` 残留核**（每 2s）——只重试 NONE 的话，scenemode 退出恢复失败后用户随即进入 boost（fas/performance 全时段 boost），prime 会整场游戏保持离线（超大核异常离线实测根因之一，2026-09 修复）。
 
-- **Boost**：把各 cluster 的 core_ctl `min_cpus` 抬到全组常在线（防厂商热插拔与 ChiRi 调频打架），退出恢复快照；只动 min_cpus 不动 max_cpus/busy 阈值。
+- **Boost**：把各 cluster 的 core_ctl `min_cpus` 抬到全组常在线（防内核 core_ctl 热插拔与 ChiRi 调频打架），退出恢复快照；只动 min_cpus 不动 max_cpus/busy 阈值。
 
-- **Scenemode 离线核（[已暂停] 息屏深度省电）**：`CoreCtl.scenemode_offline` 门控（8550/8475 true，8998 内核 4.4 默认 false）。进入 scenemode 时先解除 boost（min_cpus 抬着会让厂商 core_ctl 重新拉起被下线的核——两者互斥由 `apply_affinity_and_corectl` 保证），下线目标由 `scenemode_targets()` 计算：**小核 + 大核全开常驻**（频率上限由 scenemode CLG 配置统一压制），**仅 prime 整簇下线**消除空转漏电流；逐核写 online=0 回读验证，失败跳过（warn），已在 offlined 中的核防重复登记。**独占一颗小核给调度服务**（编号最大的 little——三步实现：① `affinity::exclude_core_from_cpusets` 把该核从全部业务 cpuset 组（top-app/foreground/background/system-background/restricted）的 cpus 移除，其他进程/新进程（继承组掩码）均不可调度到该核；② 自身全部线程移入 cpuset 根组（根组含全部在线核，sched_setaffinity 才不会被原组掩码二次过滤）；③ 全线程自钉到该核）；设备无 /dev/cpuset 时降级为仅自钉。维持期每 2s 纠偏：重新下线被外部拉起的核 + `exclude_core_from_cpusets` 重写被框架 CpusetManager 加回保留核的组（快照只记首次原始值，防框架中间值覆盖）。**退出恢复 `restore_online` 失败的核必须保留在 offlined 中由 STATE_NONE 分支每 2s 重试**——此前失败即 clear、状态机回 NONE 再无重试路径，写回被内核拒绝的核永久离线；全部恢复后才释放独占（cpuset 快照还原 + 自身线程移回原组 + 解除自钉），重新下线前先把残留核拉回在线（否则 online=0 被跳过记录、核永远失去恢复登记）。
+- **Scenemode 离线核（[已暂停] 息屏深度省电）**：`CoreCtl.scenemode_offline` 门控（8550/8475 true，8998 内核 4.4 默认 false）。进入 scenemode 时先解除 boost（min_cpus 抬着会让内核 core_ctl 重新拉起被下线的核——两者互斥由 `apply_affinity_and_corectl` 保证），下线目标由 `scenemode_targets()` 计算：**小核 + 大核全开常驻**（频率上限由 scenemode CLG 配置统一压制），**仅 prime 整簇下线**消除空转漏电流；逐核写 online=0 回读验证，失败跳过（warn），已在 offlined 中的核防重复登记。**独占一颗小核给调度服务**（编号最大的 little——三步实现：① `affinity::exclude_core_from_cpusets` 把该核从全部业务 cpuset 组（top-app/foreground/background/system-background/restricted）的 cpus 移除，其他进程/新进程（继承组掩码）均不可调度到该核；② 自身全部线程移入 cpuset 根组（根组含全部在线核，sched_setaffinity 才不会被原组掩码二次过滤）；③ 全线程自钉到该核）；设备无 /dev/cpuset 时降级为仅自钉。维持期每 2s 纠偏：重新下线被拉回的核 + `exclude_core_from_cpusets` 重写被框架 CpusetManager 加回保留核的组（快照只记首次原始值，防框架中间值覆盖）。**退出恢复 `restore_online` 失败的核必须保留在 offlined 中由 STATE_NONE 分支每 2s 重试**——此前失败即 clear、状态机回 NONE 再无重试路径，写回被内核拒绝的核永久离线；全部恢复后才释放独占（cpuset 快照还原 + 自身线程移回原组 + 解除自钉），重新下线前先把残留核拉回在线（否则 online=0 被跳过记录、核永远失去恢复登记）。
 
 - **scenemode 饱和退出**：常驻簇（小核∪大核）max_util 持续 10s ≥ 70%（`SCENEMODE_SAT_UTIL/SECS`，util 是忙时占比与频率无关，饱和即真饱和）→ 视为后台负载压不死常驻核：一次性退回 reduce 的 CLG 配置 + 立即恢复全部在线核 + 释放独占小核，并进入 **300s 冷却**（`SCENEMODE_COOLDOWN`，期间 scenemode 入口被门控不得重进，防反复拉锯）；冷却结束后息屏条件仍满足则自然重进。
 
 - **自钉/解钉按成功清单（2026-09-23）**：`pin_self_dedicated` 记录实际钉住的自身 tid 清单（`self_pinned_tids`，只记成功），`unpin_self` 按清单逐个恢复全核（非 ESRCH 失败留清单下次重试）；勿用 `self_pinned` 总开关短路恢复——部分钉定失败时 `self_pinned=false` 会让 unpin 整体跳过，已钉住的线程永久滞留单核掩码。
 
-- 为什么选核排除离线核而不"按需唤醒"：唤醒大核要拉电压轨/重建 L2，为后台线程点亮大核净亏能；直接写 online 会与厂商热插拔守护进程打架（对方再下线，ping-pong）。需要更多在线核时的正确姿势是抬 core_ctl min_cpus（Boost 态）。scenemode 是唯一反向使用 online 写入的场景（目标恰恰是让 prime 睡死，小核+大核常驻保住待命响应）。
+- 为什么选核排除离线核而不"按需唤醒"：唤醒大核要拉电压轨/重建 L2，为后台线程点亮大核净亏能；直接写 online 会与内核 core_ctl 热插拔打架（对方再下线，ping-pong）。需要更多在线核时的正确姿势是抬 core_ctl min_cpus（Boost 态）。scenemode 是唯一反向使用 online 写入的场景（目标恰恰是让 prime 睡死，小核+大核常驻保住待命响应）。
 
 - cluster 发现：遍历 `get_cpu_policies()` → related_cpus 首个 CPU 的 `/sys/devices/system/cpu/cpuN/core_ctl`（每 policy 一份，天然去重），惰性枚举一次；无节点打点 `corectl-unavailable` 后保持空表（scenemode 直接 sysfs 离线**不依赖** core_ctl 节点，仅受独立配置门控）。
 

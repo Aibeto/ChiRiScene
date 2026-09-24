@@ -447,14 +447,48 @@ fn apply_mode_takeover(
 }
 
 // [aff_snap]
-/// @S 线程下钻的 stat 差分基线：tid → 上轮 ticks + 上次采样时刻。
+/// 长尾线程（线程表里只被扫到、从未被动过的条目）的强制全量刷新间隔（帧，
+/// 1s/帧 = 30s），兼作长尾线程的「热窗」长度：
+/// - **全量刷新**：省略/降采样规则每 30 帧（含首帧）全量落行一次。下游按
+///   「缺失行 = 与上一帧相同」重建状态，长期省略会累积漂移，刷新帧重新锚定；
+/// - **热窗**：最近 30 帧内 u/core/home/pin/pid/comm 有过变化的长尾线程保持
+///   逐帧采样（差分判定需要「本帧 u」），静默满 30 帧后降为刷新帧采样。
+const AFF_LONGTAIL_REFRESH_FRAMES: u64 = 30;
+
+/// 单个 tid 的差分基线 + 上次落盘值（差分省略的对比基准）。
+/// **原地更新**：旧实现每帧新建一个 ~700 条的 HashMap 再整体替换（每秒数百次
+/// 分配），这里改为 entry 原地改写 + `retain` 增量清理，分配为 0。
+struct ThSnap {
+    /// 上轮采样的 utime+stime（差分减数）
+    ticks: u64,
+    /// 上轮采样时刻：本轮 util 的窗口分母（冷长尾跨刷新帧时 = 实际间隔）
+    at: Instant,
+    /// 上轮**落盘**值（省行判定只看这六项）
+    util: i32,
+    core: i32,
+    home: i16,
+    pin: bool,
+    /// 上轮落盘的归属 pid：tid 被别的进程复用时它会变，必须算「变化」
+    pid: u32,
+    /// 上轮落盘的线程 comm（`sample_one_tid` 的原始 stat 值，**不是**落盘用的
+    /// `aff_token` 归一化串——归一化会把不同 comm 折叠成同一个 token，用它比对
+    /// 会把「换了个线程」判成没变）。比对原始值永不漏身份变化，代价只是偶尔多
+    /// 落一行内容相同的行。变更时借 `clear + push_str` 复用容量，稳态零堆分配
+    comm: String,
+    /// 热窗截止帧号：`frame <= hot_until` 时逐帧采样（见上方的常量说明）
+    hot_until: u64,
+}
+
+/// @S 线程下钻的 stat 差分状态：上次采样时刻 + 帧序号 + 每 tid 基线。
 /// 与 cpu_monitor 的进程级基线（SnapState）分开，各自独立滚动。
 #[derive(Default)]
 struct AffThState {
     /// 上次采样时刻（None = 首帧：只建基线、util 全 0）
     last_at: Option<Instant>,
-    /// tid → 上轮 stat ticks（utime+stime）。每帧整体滚动重建，死线程条目随之清除
-    base: std::collections::HashMap<u32, u64>,
+    /// 帧序号（1 起，首帧 = 1）：刷新帧与热窗判定用
+    frame: u64,
+    /// tid → 差分基线（原地更新、增量清理，不整表重建）
+    base: std::collections::HashMap<u32, ThSnap>,
 }
 static AFF_TH_STATE: std::sync::OnceLock<Mutex<AffThState>> = std::sync::OnceLock::new();
 
@@ -487,19 +521,48 @@ fn mask_hex(pid: i32) -> String {
 
 /// @S 每秒进程/线程快照帧（`devimp/aff_<ts>.log`）组装：top-N 进程 + 前台树/
 /// 被管进程线程下钻。只在 `diag_active()` 时由 1s 块调用（与 main_snap 同门控，
-/// 关闭路径零开销），拼好的行数组交 `logger::aff_snapshot`（帧头计数由行反推）。
+/// 关闭路径零采样零写入），拼好的行数组交 `logger::aff_snapshot`（帧头计数由行反推）。
 ///
 /// 落盘集合 = util top-N（N = meta.devimp_top_n）∪ 前台进程+全部线程 ∪ 被管
 /// 进程+被管线程；后两者 rank=0、util=0 也落盘。前台子进程无现成枚举手段，
 /// 只落前台进程+线程（不硬造 /proc 遍历）。
+///
+/// ── 帧内 `t` 行集合（2026-09-24 起为**差分帧**，读日志必须按此口径）──
+/// `t` 行 = ① 前台进程**全部**线程（全量，每帧都写：分析最关键）
+///        ∪ ② `AffinityManager` 线程表里**被动过的条目**（home ≥ 0 或组绑定，
+///          `thread_diag` 的 pinned 即此集合；全量，每帧都写：它们是 `@A`
+///          动作帧的作用对象，必须与动作流逐帧对齐）
+///        ∪ ③ **变化的长尾线程**（只被扫到、从未动过的条目里，本帧 u /
+///          core / home / pin / pid / comm 任一与上次落盘值不同的那些；pid 与
+///          comm 是线程身份——tid 会被别的进程/线程复用，身份变了必须落行）。
+/// **缺失的 `t` 行 = 与上一帧该 tid 完全相同**（省行不丢语义）。该规则每
+/// [`AFF_LONGTAIL_REFRESH_FRAMES`] 帧（含首帧）全量刷新一次，防省略累积漂移；
+/// ③ 的 `u` 是**自上次采样（最多 30 帧）窗口的平均值**，①② 仍是 1s 窗口值。
+/// `p` 行不走差分（每帧全量，只有 top-N + 补位几个）。
+/// 代价（读日志必须知道）：冷长尾不采样就无从知道 u 变没变，因此
+/// 「首次看到某个长尾线程变化」后的 30 帧内逐帧可见（热窗），而一直沉默、
+/// 突然零星活跃一下的长尾线程最迟在下一个刷新帧（≤30s）才被记录，
+/// 且其帧窗口内有 <30s 的短促占用会被抹平——省的就是这部分「从未动过」的
+/// 长尾，别拿它做短时尖峰归因。
+///
+/// 为什么值得这么做（190130 实测：42min 会话 / aff_ 121MB / 每帧 773 行）：
+/// - `t` 行 1,934,080 行 = 114MB（占 94%），等于每秒对 ~773 个 tid 做 stat 差分
+///   并落 ~770 行；其中 **54% 是 pid=0**（后台候选建档线程，从未被动过）、
+///   **49.4% 整秒 u=0**（睡整秒），信息密度极低；
+/// - 长尾降为「30 帧一次采样 + 只落变化行」后，冷长尾的 stat 读与 `t` 行各降约
+///   1/30，加上 ③ 的省行，`t` 行量级约减半、每秒 stat 读同幅下降；aff_ 写入
+///   从 42min 撞 128MB 打包门限拉长到 1h 以上（门限强制重启次数随之下降）；
+/// - ② 保持全量、不参与省略：它在整表里通常只占很小一部分，但钉核效果/迁组
+///   的分析主线全落在它上面，省它的收益远小于丢它的风险。
 ///
 /// 行格式（util 一律整数百分比）：
 /// - 进程：`p <rank> <pid> <pkg|comm> u=<util%> mask=<核占用hex> home=<核|-1>`
 /// - 线程：`t <pid> <tid> <comm> u=<util%> core=<核|-1> home=<核|-1> pin=<0|1> uclamp=-1`
 ///
 /// 数据来源与成本：进程 util 走 `snapshot_procs`（eBPF map 差分）；线程 util 走
-/// `sample_one_tid` stat 差分（只对下钻线程，约几十次小文件读）；核掩码只对落盘
-/// 进程查 `read_tid_mask`；home/pin 直取 AffinityManager 状态表；uclamp 不下钻恒 -1。
+/// `sample_one_tid` stat 差分（只对下钻线程，且长尾按热窗/刷新帧降采样）；核掩码
+/// 只对落盘进程查 `read_tid_mask`；home/pin 直取 AffinityManager 状态表；uclamp
+/// 不下钻恒 -1。
 fn build_aff_snapshot(
     mgr: &affinity::AffinityManager,
     fg_pid: i32,
@@ -522,63 +585,128 @@ fn build_aff_snapshot(
         }
     }
 
-    // ── 线程下钻集合 = 前台树全量 ∪ 被管线程（按 tid 去重，稳定排序）──
-    let mut tids: Vec<(u32, u32)> = Vec::new(); // (pid, tid)
+    // ── 线程下钻候选集 = 前台树全量 ∪ 被管线程表（按 tid 去重，稳定排序）──
+    // full = 每帧全量采样 + 全量落行（①前台进程线程 / ②被动过的被管条目；
+    // thread_diag 的 pinned 已含 home ≥ 0 ∪ group_bind ≠ None）；full=false 为长尾
+    let mut tids: Vec<(u32, u32, bool)> = Vec::new(); // (pid, tid, full)
     let mut seen_tid: HashSet<u32> = HashSet::new();
     if fg_pid > 0 {
         for tid in crate::monitor::cpu_monitor::get_thread_tids(fg_pid as u32) {
             if seen_tid.insert(tid) {
-                tids.push((fg_pid as u32, tid));
+                tids.push((fg_pid as u32, tid, true));
             }
         }
     }
-    for (tid, pid, _, _) in &diag {
+    for (tid, pid, _, pinned) in &diag {
         if seen_tid.insert(*tid as u32) {
-            tids.push((*pid as u32, *tid as u32));
+            tids.push((*pid as u32, *tid as u32, *pinned));
         }
     }
     tids.sort_unstable();
 
     // 线程采样：stat 差分（首见/首帧只建基线 util=0）+ comm；core 取 stat 的
-    // processor 字段（读不到 -1）。采样失败（线程已退出）即不落行
-    let mut th_rows: Vec<(u32, u32, String, i32, i32)> = Vec::with_capacity(tids.len());
+    // processor 字段（读不到 -1）。采样失败（线程已退出）即不落行。
+    // 末位 bool = 本帧是否落行（差分的核心：采样了也可能省行）
+    let mut th_rows: Vec<(u32, u32, String, i32, i32, bool)> = Vec::with_capacity(tids.len());
     {
         let mut st = AFF_TH_STATE
             .get_or_init(|| Mutex::new(AffThState::default()))
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
-        let win_secs = st
-            .last_at
-            .map(|t| now.duration_since(t).as_secs_f32())
-            .unwrap_or(0.0);
+        let first = st.last_at.is_none();
         st.last_at = Some(now);
-        let mut next_base = HashMap::with_capacity(tids.len());
-        for &(pid, tid) in &tids {
-            let Some(s) = affinity::sample_one_tid(tid as i32) else {
+        st.frame += 1;
+        let frame = st.frame;
+        // 刷新帧：首帧必全量（全建基线、util 全 0），此后每 30 帧一次（防漂移）
+        let refresh = first || frame % AFF_LONGTAIL_REFRESH_FRAMES == 0;
+        for &(pid, tid, full) in &tids {
+            let (home, pinned) = th_state.get(&tid).copied().unwrap_or((-1, false));
+            // 长尾且已退冷：本轮**不采样、不落行**（省 stat 读与行；语义由
+            // 「缺失行 = 与上一帧相同」承载）。刷新帧或热窗内的仍逐帧采样
+            if !full && !refresh && !st.base.get(&tid).is_some_and(|e| e.hot_until >= frame) {
                 continue;
+            }
+            let Some(s) = affinity::sample_one_tid(tid as i32) else {
+                // 线程已退出：顺手回收基线（原地 remove，不整表重建）
+                st.base.remove(&tid);
+                continue;
+            };
+            // 窗口分母取该 tid 自己的上次采样时刻：冷长尾跨刷新帧时窗口 = 实际间隔
+            let win_secs = match st.base.get(&tid) {
+                Some(e) => now.duration_since(e.at).as_secs_f32(),
+                None => 0.0,
             };
             // 单线程只能跑在一个核上：util ≤ 100%（采样抖动由 clamp 兜底）
             let util_pct = match st.base.get(&tid) {
-                Some(&prev) if win_secs > 0.0 && s.ticks >= prev => {
-                    (((s.ticks - prev) as f32 / clk_tck()) / win_secs * 100.0).clamp(0.0, 100.0)
+                Some(e) if win_secs > 0.0 && s.ticks >= e.ticks => {
+                    (((s.ticks - e.ticks) as f32 / clk_tck()) / win_secs * 100.0).clamp(0.0, 100.0)
                 }
                 _ => 0.0,
             };
-            next_base.insert(tid, s.ticks);
-            th_rows.push((
-                pid,
-                tid,
-                crate::logger::aff_token(&s.comm),
-                util_pct.round() as i32,
-                s.processor,
-            ));
+            let util = util_pct.round() as i32;
+            // 基线**原地更新**（复用 entry），顺带按差分决定本帧是否落行
+            let emit = match st.base.get_mut(&tid) {
+                Some(e) => {
+                    // 身份（pid/comm）一并参与差分：冷长尾最长 30 帧才采样一次，
+                    // 期间「线程退出 + tid 被别的线程/别的进程复用」看不见，若不比
+                    // 身份会出现新线程沿用旧 pid/comm 的行（或整行被省掉）
+                    let changed = e.util != util
+                        || e.core != s.processor
+                        || e.home != home
+                        || e.pin != pinned
+                        || e.pid != pid
+                        || e.comm != s.comm;
+                    // 有变化即续热窗 30 帧：之后仍逐帧采样（差分判定要看「本帧 u」）；
+                    // 静默满 30 帧自然退冷，回到 30 帧一次的刷新采样
+                    if changed {
+                        e.hot_until = frame + AFF_LONGTAIL_REFRESH_FRAMES;
+                        // comm 只在真变了才改写，复用 String 容量、稳态零分配
+                        if e.comm != s.comm {
+                            e.comm.clear();
+                            e.comm.push_str(&s.comm);
+                        }
+                    }
+                    e.ticks = s.ticks;
+                    e.at = now;
+                    e.util = util;
+                    e.core = s.processor;
+                    e.home = home;
+                    e.pin = pinned;
+                    e.pid = pid;
+                    full || refresh || changed
+                }
+                None => {
+                    // 首见（新线程 / 新进程线程）：必落行，长尾则进热窗观察 30 帧
+                    st.base.insert(
+                        tid,
+                        ThSnap {
+                            ticks: s.ticks,
+                            at: now,
+                            util,
+                            core: s.processor,
+                            home,
+                            pin: pinned,
+                            pid,
+                            comm: s.comm.clone(),
+                            hot_until: frame + AFF_LONGTAIL_REFRESH_FRAMES,
+                        },
+                    );
+                    true
+                }
+            };
+            th_rows.push((pid, tid, crate::logger::aff_token(&s.comm), util, s.processor, emit));
         }
-        st.base = next_base;
+        // 增量清理：只保留本轮**候选集**内的 tid（线程消亡随候选集消失回收）。
+        // `retain` 原地收缩、零分配（旧实现每帧新建整表再整体替换）。
+        // 注意保留**本轮未采样的冷长尾**：它们仍是候选集成员，基线里的 `at`
+        // 要留到刷新帧才能算出覆盖整段间隔的 util，删掉会把窗口重置为 0
+        st.base.retain(|tid, _| seen_tid.contains(tid));
     }
-    // 被管进程的 comm 兜底（不在进程快照里时用其任一线程 comm）
+    // 被管进程的 comm 兜底（不在进程快照里时用其任一线程 comm）。
+    // 取**采样到**（含本帧省行）的线程：省行的线程其进程仍可能在补位 p 行上
     let mut pid_comm: HashMap<u32, &str> = HashMap::new();
-    for (pid, _, comm, _, _) in &th_rows {
+    for (pid, _, comm, _, _, _) in &th_rows {
         pid_comm.entry(*pid).or_insert(comm.as_str());
     }
 
@@ -653,7 +781,11 @@ fn build_aff_snapshot(
             pid_home.get(&pid).copied().unwrap_or(-1),
         ));
     }
-    for (pid, tid, comm, util_pct, core) in &th_rows {
+    for (pid, tid, comm, util_pct, core, emit) in &th_rows {
+        // 差分省行：本帧与上次落盘值相同（长尾冷线程）→ 不落行
+        if !*emit {
+            continue;
+        }
         let (home, pinned) = th_state.get(tid).copied().unwrap_or((-1, false));
         rows.push(format!(
             "t {pid} {tid} {comm} u={util_pct} core={core} home={home} pin={} uclamp=-1",
@@ -667,8 +799,8 @@ fn build_aff_snapshot(
 /// 应用 CPU 亲和布局与 core_ctl 在线策略（ChiRi 专属，跟随模式/屏幕/前台 PID）。
 /// 内部带去重：布局与 PID 未变化时无 sysfs 写入，可安全周期性调用。
 /// `core_utils` 为最近一次 SystemLoadUpdate 的逐核 util（按核选核打分输入）。
-/// `scenemode_offline` 为 scenemode 激活标志：抑制 boost（防厂商 core_ctl 把
-/// 下线的核拉回来）并触发 core_ctl 离线（prime 下线深度省电）。
+/// `scenemode_offline` 为 scenemode 激活标志：抑制 boost（boost 会把 min_cpus
+/// 抬回全组常在线、把下线的核拉回来）并触发 core_ctl 离线（prime 下线深度省电）。
 fn apply_affinity_and_corectl(
     affinity: &mut affinity::AffinityManager,
     corectl: &mut core_ctl::CoreCtlManager,
@@ -756,6 +888,61 @@ fn fas_affinity_hook(
     affinity_mgr.set_boost_uclamp_override(active);
 }
 
+// [mode_file]
+/// `current_mode.chr` 的写入记账：值未变且磁盘内容一致时跳过写入。
+///
+/// 5s 自愈块每轮经 `utils::try_write_file` → `write_to_file` 是 5 个 syscall
+/// （`exists` + `chmod 664` + `write` + `chmod 444`，另加打开/关闭），而稳态下
+/// 内容几乎从不变化，绝大多数轮次是纯浪费。记账上次写入值后，稳态轮次只剩
+/// 「读一次文件内容比对」= 1 个 syscall（read + close）。
+///
+/// **不能只判 `exists()`**：文件被外部清空（0 字节）或改写成别的值时它依然存在，
+/// 而「被清空」恰是这类状态文件最常见的损坏形态——只判存在会让自愈语义失效
+/// （读到的永远是空/错值却不再重写）。读一次内容比对既保住「外部清空/改写也会
+/// 自愈」的既有语义，又远便宜于 5 次写+chmod 的无条件重写。
+///
+/// 写路径、文件权限（664 → 444）与失败处理仍交给 `try_write_file`，与原实现一致。
+struct ModeFile {
+    path: std::path::PathBuf,
+    /// 上次经本写入器落盘的模式值（None = 尚未写过 / 文件已被删除）
+    last: Option<String>,
+}
+
+impl ModeFile {
+    fn new(path: std::path::PathBuf) -> Self {
+        Self { path, last: None }
+    }
+
+    /// 无条件写入（启动初始写入、模式切换 / FAS 退出 / DOWN 进入等事件路径用）：
+    /// 事件发生时模式确实变了，保持原有「每次都写」行为，只顺带更新记账。
+    fn write(&mut self, mode: &str) {
+        let _ = utils::try_write_file(&self.path, mode.as_bytes());
+        self.last = Some(mode.to_string());
+    }
+
+    /// 删除文件（DOWN 退出时调用）：必须一并清记账——否则文件缺失后，一个
+    /// 「与记账相同」的模式切换会被误判为无需写入，留下最长 5s 的文件空窗。
+    fn remove(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+        self.last = None;
+    }
+
+    /// 5s 自愈：记账值相同 **且** 磁盘内容一致才跳过，否则无条件重写
+    /// （外部清空 / 改写 / 删除都会因比对不等而触发自愈）。
+    fn heal(&mut self, mode: &str) {
+        if self.last.as_deref() == Some(mode) && file_content_eq(&self.path, mode.as_bytes()) {
+            return;
+        }
+        self.write(mode);
+    }
+}
+
+/// 读一次文件内容与期望字节比对（供跳过无变化的周期重写）。
+/// 读失败（文件缺失 / 不可读）即判不等 → 由调用方重写自愈。
+fn file_content_eq(path: &std::path::Path, expected: &[u8]) -> bool {
+    matches!(std::fs::read(path), Ok(cur) if cur == expected)
+}
+
 // [threads]
 /// 启动 Chiri 调度线程组（由 main.rs 调用）：
 /// - `config_watcher` 线程：监听 config 目录，热重载 Config 并重放一次性系统调整
@@ -763,13 +950,13 @@ fn fas_affinity_hook(
 ///
 /// 参数 `rx` 为 Monitor 层与调度层间的有界事件通道，`shared_config` 为全局共享配置，
 /// `ak_active` 为特调激活共享标志（Monitor 层据此切换采样间隔），
-/// `fas_active` 为 FAS 前台激活共享标志（FasManager 置位，Monitor 层 fps_monitor
-/// 据此门控 eBPF 探针加载与 uprobe 挂载——反偷跑）。
+/// `fas_signal` 为 FAS 前台激活信号（FasManager 置位并唤醒等待者，Monitor 层
+/// fps_monitor 据此门控 eBPF 探针加载与 uprobe 挂载——反偷跑）。
 pub fn start_scheduler_thread(
     rx: mpsc::Receiver<DaemonEvent>,
     shared_config: Arc<RwLock<Config>>,
     ak_active: Arc<AtomicBool>,
-    fas_active: Arc<AtomicBool>,
+    fas_signal: Arc<crate::monitor::FasSignal>,
     rhine_initial: Option<String>,
 ) -> Result<()> {
     let root = common::get_module_root();
@@ -989,9 +1176,13 @@ pub fn start_scheduler_thread(
             // [ipc_state] 
             let root = common::get_module_root();
             // 当前模式持久化文件：每次模式切换时写入，供外部（如 WebUI）读取当前状态。
-            // 自愈：常态下每 5 秒重写一次（见循环内 MODE_FILE_REWRITE_INTERVAL 分支），
+            // 自愈：常态下每 5 秒巡检一次（见循环内 MODE_FILE_REWRITE_INTERVAL 分支），
+            // 内容未变则跳过重写（ModeFile::heal），被清空/改写/删除仍会在 5 秒内恢复——
             // 防止文件被意外清空/删除后 WebUI 读不到当前状态（清空原因多非人为，但重写兜底人为误删）。
             let mode_file_path = root.join("current_mode.chr");
+            // 模式文件写入器：记账上次写入值，5s 自愈块在内容未变时跳过重写
+            // （稳态 5 syscall → 1 read，见 ModeFile 注释）
+            let mut mode_file = ModeFile::new(mode_file_path);
             const MODE_FILE_REWRITE_INTERVAL: Duration = Duration::from_secs(5);
             let mut last_mode_file_write = Instant::now();
             // 停摆期心跳间隔：停摆中本线程不打任何日志，按这个间隔落一条状态行
@@ -1019,7 +1210,7 @@ pub fn start_scheduler_thread(
             // 启动时先写一次初始模式，避免开机后文件缺失/被清空时 WebUI 显示未知状态
             {
                 let mode = mode_clone.lock().unwrap().clone();
-                let _ = utils::try_write_file(&mode_file_path, mode.as_bytes());
+                mode_file.write(&mode);
             }
 
             // let mut fas_controller = crate::scheduler::fas::FasController::new(); // 已由 fas_manager 取代
@@ -1030,7 +1221,8 @@ pub fn start_scheduler_thread(
             let mut ak_governor = crate::chiri::tuned::TunedGovernor::new(ak_governor_flag);
 
             // 极速模式（fast）专属锁频器：与 CLG 完全独立，不读 yaml 调频参数，
-            // 直接锁所有 cluster 的 min=max=硬件最高频，每 5 秒重写防止外部篡改。
+            // 直接锁所有 cluster 的 min=max=硬件最高频，每 5 秒重写兜底收敛
+            // （默认无竞争者，节点被改写属异常态——残留旧模块/手动调试/内核异常）。
             let mut fast_lock = crate::chiri::fast::FastLock::new();
 
             // PowerBase（Stardust 家族，meta.yaml `powerbase_enabled` 控制，默认关）：
@@ -1065,7 +1257,7 @@ pub fn start_scheduler_thread(
             // FAS 温度源只记节点路径，除数每次刷新取全局预识别结论（勿在此固化）
             let fas_temp_path =
                 crate::utils::find_battery_temp_path().map(std::path::PathBuf::from);
-            let mut fas_mgr = fas_manager::FasManager::new(fas_temp_path, fas_active.clone());
+            let mut fas_mgr = fas_manager::FasManager::new(fas_temp_path, fas_signal.clone());
 
             // CPU 亲和与线程迁移控制器 + core_ctl 核心在线接管（ChiRi 专属）
             let mut affinity_mgr = affinity::AffinityManager::new(sys_path_exist.clone());
@@ -1254,10 +1446,7 @@ pub fn start_scheduler_thread(
                         CpuScheduler::restore_system_tweaks();
                         *mode_clone.lock().unwrap() = crate::down::DOWN_MODE.to_string();
                         crate::logger::set_diag_mode(crate::down::DOWN_MODE);
-                        let _ = utils::try_write_file(
-                            &mode_file_path,
-                            crate::down::DOWN_MODE.as_bytes(),
-                        );
+                        mode_file.write(crate::down::DOWN_MODE);
                         log::warn!("{}", t("scheduler-down-enter"));
                     } else {
                         // 恢复目标模式：优先用 monitor 的**实时判定**而不是停摆前的快照——
@@ -1274,7 +1463,7 @@ pub fn start_scheduler_thread(
                         };
                         *mode_clone.lock().unwrap() = resume_mode.clone();
                         crate::logger::set_diag_mode(&resume_mode);
-                        let _ = std::fs::remove_file(&mode_file_path);
+                        mode_file.remove();
                         // 停摆期 governors 全被 release 过，退出时**必须按恢复出来的模式重新
                         // 接管**：只复位内存模式不够——ModeChange 只在「模式真的变了」时才重
                         // 接管，前台应用没换就会一直空着（全是释放态，却不会有任何异常提示）。
@@ -1361,14 +1550,16 @@ pub fn start_scheduler_thread(
                     halted = down;
                 }
 
-                // 当前模式文件自愈：每 5 秒重写一次（即便内容未变也重写），
-                // 保证被外部清空/删除后 WebUI 最多 5 秒恢复读取当前状态。
+                // 当前模式文件自愈：每 5 秒巡检一次。内容未变（记账值与当前模式一致
+                // 且磁盘内容也一致）时不再无条件重写——稳态 5 个 syscall（exists +
+                // chmod×2 + write）降为 1 次 read 比对；被外部清空/改写/删除仍会在
+                // 最多 5 秒内自愈（比对不等即重写，见 ModeFile::heal）。
                 // 停摆期间只推进计时、不落盘——里面是 down，覆盖它等于退出停摆
                 if last_mode_file_write.elapsed() >= MODE_FILE_REWRITE_INTERVAL {
                     last_mode_file_write = Instant::now();
                     if !halted {
                         let mode = mode_clone.lock().unwrap().clone();
-                        let _ = utils::try_write_file(&mode_file_path, mode.as_bytes());
+                        mode_file.heal(&mode);
                     }
                     // watchdog.pid 自愈：logs/ 被外部删除后该文件随目录消失，
                     // WebUI stopScheduler 将无法终止看门狗（旧看门狗残留会把
@@ -1653,8 +1844,10 @@ pub fn start_scheduler_thread(
                         );
                         // @S 每秒进程/线程快照（aff_* 线程流文件）：top-N 进程 +
                         // 前台树/被管进程线程下钻。与上面的 main_snap 同 diag_active
-                        // 门控（关闭路径零开销）；开启时成本为 map 遍历 + 少量 /proc
-                        // 与几十次 getaffinity/stat 读，毫秒级
+                        // 门控（关闭路径连本函数体都不进，零采样零写入）；开启时成本
+                        // = map 遍历 +「前台线程 ∪ 被动过的条目 ∪ 热长尾」的
+                        // getaffinity/stat 读，冷长尾按 30 帧一次降采样
+                        // （帧语义见 build_aff_snapshot 的文档注释）
                         let snap_top_n = config_clone.read().unwrap().meta.devimp_top_n;
                         let rows = build_aff_snapshot(
                             &affinity_mgr,
@@ -1694,7 +1887,7 @@ pub fn start_scheduler_thread(
                         if let Some(mode) = pending_mode_after_fas.take() {
                             *mode_clone.lock().unwrap() = mode.clone();
                             crate::logger::set_diag_mode(&mode);
-                            let _ = utils::try_write_file(&mode_file_path, mode.as_bytes());
+                            mode_file.write(&mode);
                             // governor/GPU：目标若是 contingency/babel 则接管，否则恢复
                             sync_lab_governor_gpu(&mode, &mut governor_guard, &mut gpu_guard, &mut fast_lock);
                             fas_affinity_hook(&mut affinity_mgr, &mut corectl_mgr, false, 0);
@@ -1996,7 +2189,8 @@ pub fn start_scheduler_thread(
                     }
                 }
 
-                // 极速模式：每 5 秒重写一次硬件最高频，防止系统/厂商守护进程篡改；
+                // 极速模式：每 5 秒重写一次硬件最高频兜底收敛（默认无竞争者，
+                // 节点被改写属异常态——残留旧模块/手动调试/内核异常）；
                 // 返回距下次重写的剩余时间，纳入动态超时计算
                 // 停摆期不碰任何节点：tick 内部虽有 is_active 早退，这里显式断开，
                 // 免得将来给 FastLock 加的开关绕过这道防线
@@ -2322,7 +2516,7 @@ pub fn start_scheduler_thread(
                                 &format!("{old_mode}->{mode}"),
                             );
 
-                            let _ = utils::try_write_file(&mode_file_path, mode.as_bytes());
+                            mode_file.write(&mode);
 
                             // 亲和布局/core_ctl 跟随模式切换（含前台 PID 变化的线程重迁移）
                             {

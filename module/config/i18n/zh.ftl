@@ -261,6 +261,7 @@ fast-watchdog-release = [Fast] 负载源超时 ({ $secs }s)，释放极速锁频
 # --- Logger ---
 log-level-updated = 日志级别已更新为: { $level }
 logger-log-restart-for-archive = [Logger] { $dir } 已达到 { $mb }MB，立即重启调度以打包日志
+logger-log-restart-suppressed = [Logger] { $dir } 已达到 { $mb }MB，但未检测到看门狗（pidfile 不匹配且父进程非脱管 shell），跳过自动重启归档；调试直跑属正常，线上请检查 logs/watchdog.pid
 
 # --- Rhine（实验室）---
 rhine-state-created = [Rhine] rhine.chr 不存在，已补建默认内容（未启用）

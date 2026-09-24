@@ -1,0 +1,40 @@
+---
+description: 解压/分析 devimpbin/ 下 logd_*.tar.gz 日志包时（比对版本机型、选组、跑聚合脚本、PowerShell 产物、写归因结论）的流程纪律
+alwaysApply: false
+---
+
+# 日志包分析流程纪律
+
+完整五步流程与已知坑全集见 `.cursor/commands/devimp-log-analysis.md`，本规则是执行纪律。
+
+## 硬规则
+
+1. **先定版本/机型/schema 再比数据**：文件头三查——`# module=... (versionCode N)`、
+   `# soc=... model=...`、`# android= kernel=`。同包出现多版本值 = 混版本，必须报警再继续；
+   机型或系统不同 -> 功耗绝对值不可比，只做包内归因。
+2. 目录名不可信（`devimpbin/8550/` 出现过 8475 包）：以文件头 SoC/包名特征为准。
+3. 包内常混旧日志：按文件名 `_MMDD-HHMMSS` 取最新一簇再下结论；解压后先 `tar -tzvf`
+   确认 logd 侧 `<ts>.tar` 与 `devimp_<ts>.tar` 都在——只有 devimp tar 是「归档被挤掉」
+   bug 产物，按缺 logd 侧降级判读（无 daemon.log/status.csv = 无 fps/charge/PowerAVG）。
+4. 解压与中间产物一律放项目内 `devimpbin/tmp_<tag>/`，不出项目树。
+5. PowerShell 长输出用 `cmd /c "python ... > file"` 重定向到文件再读；
+   管道重定向也不保险（实测两度截断）。
+6. 分析脚本写成 `.py` 文件再跑（PowerShell 内嵌 python 会被引号/`$` 转义吃掉）；
+   yaml 校验用 node + `webui/node_modules/js-yaml`（pyyaml 可能损坏）。
+7. rg/search_content 搜不到 `*.log`（`.gitignore` 忽略、rg 尊重 gitignore）：
+   用 python 读文件或 `Select-String -Encoding UTF8`。
+8. daemon.log 文本含 U+2068/U+2069 隔离符：正则前先 `re.sub(r"[\u2068\u2069]", "", s)`，
+   否则 `P(\d+)`、`mode=...` 之类匹配全部失败。
+9. devimp `ts` 列没有日期（`HH:MM:SS.mmm`）：行过滤用 `^\d{2}:\d{2}:\d{2}\.\d{3},`，
+   [BAD] 用日期前缀 `startswith("09")` 匹配（一行都匹配不到）。
+10. 结论必须给证据（文件:行或数字）；跨包先列「同版本/同机型/同场景/同 dev_record」核对表；
+    先看温度带（batt >=40 C / cpu >=60 C 属热态）再比功耗；充放电方向以 status.csv 的
+    `charge` 列为准，不要用电流符号判。
+
+## 正反例
+
+```text
+[BAD] 「抖音功耗偏高，建议调低 touch_boost」（无 n、无基线、无温带）
+[GOOD] 「抖音 P_avg 2.14W（n=555, p50 1.61 / p95 5.39，凉机无热事件）落在基线 1.9~2.4W
+      带内，不建议动参」
+```

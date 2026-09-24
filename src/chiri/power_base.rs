@@ -10,7 +10,7 @@
 //!   - 触摸窗口内允许短暂突破功率上限（`touch_break_ms`）。
 //!
 //! **只替换 CLG**：FAS / 场景特调 / DOWN 停摆 / 实验室的启停判据一律不受影响。
-//! 结构照 `fast.rs`（独立接管、快照/释放、5s 重写防篡改），但不锁死频率，
+//! 结构照 `fast.rs`（独立接管、快照/释放、5s 防篡改重写兜底收敛），但不锁死频率，
 //! 而是按上面的规则动态算出每个 policy 的目标频率。
 
 use crate::chiri::config::PowerBaseConfig;
@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use crate::fluent_args;
 use crate::i18n::{t, t_with_args};
 
-/// 防篡改重写间隔（与 fast.rs 同口径）
+/// 防篡改重写间隔（与 fast.rs 同口径；默认无竞争者，重写是异常兜底收敛）
 const REWRITE_INTERVAL: Duration = Duration::from_secs(5);
 /// 性能比死区：目标与当前的差小于它就认为「已经到位」，不写频率
 /// （利用率反馈滞后时的抖动会被它挡掉，同时把 sysfs 写入从每 tick 降到只在真正变化时）
