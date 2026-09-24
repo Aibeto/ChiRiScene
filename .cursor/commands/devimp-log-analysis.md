@@ -3,7 +3,9 @@ description: 解析与判定 ChiRi 设备的 devimp 日志包（devimpbin 下 lo
 argument-hint: [日志包/解压目录，或要分析的问题]
 ---
 
-> 维护位置：`.cursor/commands/devimp-log-analysis.md`（本文件，唯一副本）；聚合脚本在 `scripts/devimp-analyze.py`。
+> 维护位置：`.cursor/commands/devimp-log-analysis.md`（本文件，唯一副本）；脚本套件在 `scripts/devimp/`
+> （入口 `dvrun.py` 与 `scripts\devimp-run.cmd`；聚合表仍为 `scripts/devimp-analyze.py`）。
+> **改动任何脚本后同步下方「预设脚本」节**。
 > 由 skill 迁移而来（2026-09-23），`.agents/skills/devimp-log-analysis/` 已删除，勿再建 skill 副本。
 
 本次用户输入：$ARGUMENTS
@@ -19,23 +21,32 @@ argument-hint: [日志包/解压目录，或要分析的问题]
 
 ### 1. 解压（含内层 tar）
 
-**解压目录一律放项目内**（如 `devimpbin/tmp_<tag>/`），不用 `%TEMP%`——临时产物不出项目树，
+**解压/输出目录一律放项目内**（`devimpbin/<MMDD-HHMMSS>/`，`dvextract.py --out-root` 默认），不用 `%TEMP%`——临时产物不出项目树，
 分析完可直接删（`devimpbin/` 已被忽略）。
 
 ```powershell
 cd e:\code\ChiRi
-$w = "devimpbin\tmp_<tag>"; New-Item -ItemType Directory -Force -Path $w | Out-Null
-tar -xzf devimpbin\<soc>\logd_XXXX-XXXXXX.tar.gz -C $w
-# 外层带进来的内层归档分两种（2026-09-23 实测 logd_0923-020304）：
-#   <MMDD-HHMMSS>.tar          -> logd 侧：daemon.log / status.csv / service.log / watchdog.pid
-#   devimp_<MMDD-HHMMSS>.tar   -> devimp 侧：main_*.log + aff_*.log
-foreach ($t in Get-ChildItem $w -Filter *.tar) {
-    $d = Join-Path $w ("x_" + $t.BaseName); New-Item -ItemType Directory -Force -Path $d | Out-Null
-    tar -xf $t.FullName -C $d
-}
+# 单命令全流程（推荐）：解压 + 聚合表 + 三个探针 + report.md
+scripts\devimp-run.cmd devimpbin\logd_XXXX-XXXXXX.tar.gz
+#   → 产出在 devimpbin\<MMDD-HHMMSS>\ ：inventory.txt / analyze.txt / main.txt /
+#     aff.txt / status.txt / report.md（输出目录就是解压目录）
+
+# 也可分步跑（--only 选择阶段：extract,analyze,main,aff,status）
+python scripts\devimp\dvextract.py devimpbin\logd_XXXX-XXXXXX.tar.gz
+python scripts\devimp\dvmain.py    devimpbin\<tag> [--since MMDD-HHMMSS] [--min-n 30]
+python scripts\devimp\dvaff.py     devimpbin\<tag>
+python scripts\devimp\dvstatus.py  devimpbin\<tag>
 ```
 
-解压后再核对：`Get-ChildItem $w -Recurse -File | Select Name,Length` —— devimp 内层单文件 8~17MB 属正常。
+**内层归档格式 2026-09-25 起多了一种（重要）**：`module/scripts/pack.sh` 的 `archive`
+分支现在把内层归档压成 **`.tar.lz4`**（`lz4 -f` 帧格式）；设备上没有 lz4 时**回落保留 `.tar`**。
+所以外层包里的内层成员可能是 `<ts>.tar` / `<ts>.tar.lz4` / `devimp_<ts>.tar` /
+`devimp_<ts>.tar.lz4` 四种，**扩展名还可能骗人**（实测出现过 LZ4 负载却叫 `.tar`）。
+`dvextract.py` 一律按**前 4 字节内容嗅探**（`0x184D2204` 帧 / `0x184C2102` 遗留 / 否则当 raw tar）
+并在 LZ4 解出后校验结果确实像 tar；**不要按文件名判断，手写解压脚本时同理**。本机未装
+`lz4` python 模块，走 `scripts/devimp/dvlz4.py` 的纯 python 解码器。
+
+解压与校验都交给 `dvextract.py`：它会写 `inventory.txt`（每个文件 + 大小 + 嵌套层 + 检出压缩），并核对每个 devimp 批次至少解出 `main_*`/`aff_*`、对缺 logd 侧的批次告警（老包降级口径见「五、已知坑」12）。
 
 ### 2. 现场判定（**目录名不可信**；先定版再比数据）
 
@@ -77,6 +88,32 @@ python scripts\devimp-analyze.py <解压目录> [--since MMDD-HHMMSS] [--min-n 3
 - **FAS 验证要交叉两处**：`daemon.log` 的 `fas-gear-switch`/`gear_state`/`policy_controller`，与
   `status.csv` 的 `fps` 列（**只有 FAS 激活的秒有值**，其余是 `-`）
 - 结论模板：场景表 → 与基线差值 → 归因（调度侧/热/GPU/环境）→ 是否可动 ChiRi 参数
+
+## 预设脚本（首选入口）
+
+反复手写的临时探针已固化为 `scripts/devimp/` 下的常驻脚本；本节是唯一入口说明。
+（本节为新增，不影响后续「二、列索引速查」等既有编号。）
+
+| 脚本 | 作用 | 命令 |
+|---|---|---|
+| `dvrun.py` | **单命令全流程**：解压 → 聚合表 → 三探针 → `report.md` | `python scripts\devimp\dvrun.py <logd_*.tar.gz 或已解压目录>` |
+| `dvextract.py` | 解压（递归容忍 + 内容嗅探 + 完整性闸门 + `inventory.txt`） | `python scripts\devimp\dvextract.py <logd_*.tar.gz> [--tag T] [--out-root devimpbin]` |
+| `dvmain.py` | `main_*.log`：定版 / mode×package / decide-vs-actual / 热压制带 / snap 侧 | `python scripts\devimp\dvmain.py <解压目录> [--since MMDD-HHMMSS] [--min-n 30]` |
+| `dvaff.py` | `aff_*.log`：`@A` 动作与 bulk、`@S` 差分帧累积、绑定轨迹 | `python scripts\devimp\dvaff.py <解压目录> [--since MMDD-HHMMSS]` |
+| `dvstatus.py` | `status.csv` + `daemon.log`：charge / 放电功率 / fps / FAS 证据 / 重启界标 | `python scripts\devimp\dvstatus.py <解压目录>` |
+| `dvlz4.py` | 纯 python LZ4 解码（供 dvextract 用；有 `--selftest`） | `python scripts\devimp\dvlz4.py --selftest` |
+| `dvcommon.py` | 共享工具（列定义、文件头解析、切行、统计、UTF-8 输出） | （库，不直接跑） |
+
+- **Windows 一条命令入口**：`scripts\devimp-run.cmd devimpbin\logd_0925-045336.tar.gz`
+  （等价于 `python scripts\devimp\dvrun.py …`，`%*` 透传全部参数）。
+- `dvrun.py` 全程在一个 python 进程内跑（`scripts/devimp-analyze.py` 文件名带连字符不能 import，
+  用 subprocess 捕获其 stdout 到 `analyze.txt`）；**单阶段失败不中断全链**，`report.md` 标注失败阶段。
+- 输出（写进 `devimpbin/<tag>/`）：`inventory.txt` / `analyze.txt` / `main.txt` / `aff.txt` /
+  `status.txt` / `report.md`；`report.md` 末尾给出单独重跑任一阶段的完整命令。
+- **每个脚本自己写 UTF-8 结果文件，stdout 只打几行摘要 + 路径**——PowerShell 重定向会把
+  python stdout 按控制台代码页重编码、中文必乱码（已知坑 16），**禁止依赖 shell 重定向取全文**。
+- 判读口径一律以本文档「判定要点」为准，脚本只做读数与统计，不另立解释。
+
 
 ## 二、列索引速查
 
@@ -207,3 +244,10 @@ python scripts\devimp-analyze.py <解压目录> [--since MMDD-HHMMSS] [--min-n 3
     不能假设「行数 = 线程数」，要跨帧累积并留意帧头 `nfg`；刷新帧内长尾 `u` 是 ≤30s 均值。
     另：`t` 行 `pid` 已由 `/proc/<tid>/status` 的 Tgid 补全（旧包的 54% `pid=0` 属老版本行为）。
     诊断开关重开后首帧必为全量（新会话重新建档）
+15. **内层归档 2026-09-25 起可能是 `.tar.lz4`**（`pack.sh` 的 `archive` 分支 `lz4 -f`；
+    设备无 lz4 时回落 `.tar`）：外层包内层成员四种形态都可能出现，且**扩展名可能骗人**
+    （实测 LZ4 负载叫 `.tar`）。一律**按前 4 字节内容嗅探**，别按文件名判；本机没装 `lz4`
+    python 模块，走 `scripts/devimp/dvlz4.py` 的纯 python 解码器（`dvextract.py` 已封装）。
+16. **PowerShell 重定向会毁掉 python stdout 的中文**：按控制台代码页重编码，产出 mojibake
+    （2026-09-25 实测）。预设脚本因此**自己写 UTF-8 结果文件**（`main.txt` 等），stdout 只留
+    短摘要；分析这些脚本的输出**看文件，不要看终端回显**。

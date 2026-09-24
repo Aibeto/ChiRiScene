@@ -21,6 +21,18 @@
   背景：超大 devimp 归档（114MB）曾把同批 daemon.log/status.csv 归档挤掉（logd_0924-173105 包）。
   目录预算同日扩容：`LOGD_MAX_BYTES` / `DEVIMP_DIR_MAX_BYTES` 128→256MB、TARGET 96→200MB。
   详见 docs/agents/02-convention.md 归档条与「被挤掉」历史坑。
+- **归档格式（2026-09-25，契约变更）**：启动归档两目录产物均为 **`logd/<ts>.tar.lz4`** 与
+  **`logd/devimp_<ts>.tar.lz4`**（`pack.sh archive` 内 `lz4 -f` 帧格式）；设备无 lz4 时**回落未压缩 `.tar`**。
+  导出包 `logd_*.tar.gz` 外层仍是 gzip（`pack.sh export`）。**分析侧禁止按扩展名判断内层形态**——
+  内层成员两种都可能（还可能是错标），一律嗅探 magic。实测 logd_0925-045336 内层仍为纯 `.tar`
+  ⇒ 该设备走的是 lz4 回落分支，**真机 `.tar.lz4` 至今未被验证过**。解压用 `scripts/devimp/dvlz4.py`。
+
+- **devimp 分析走预置脚本（2026-09-25）**：一律用 `python scripts/devimp/dvrun.py <logd_*.tar.gz>`
+  （或 `scripts\devimp-run.cmd`）一条命令跑完 extract/analyze/main/aff/status，产出落 `devimpbin/<MMDD-HHMMSS>/`
+  的 `inventory.txt` / `analyze.txt` / `main.txt` / `aff.txt` / `status.txt` / `report.md`。
+  **禁止再在 `devimpbin/` 现场写一次性 probe py**——该目录分析完即清，工作全丢（2026-09-25 前的实际损失）。
+  单个探针可 `--only <阶段>` 或直接跑 `dvmain.py`/`dvaff.py`/`dvstatus.py` 复用。
+
 - 日志打包门限（128MB，**未变**）的看门狗判定（2026-09-24 重做）：pidfile 铁证
   （`logs/watchdog.pid` == getppid()）∪ 脱管 shell（comm 属 shell 家族且祖字段 ==1）；
   达门限被抑制时打点 `logger-log-restart-suppressed` warn，不再静默清零（旧 comm∈{sh,mksh}
@@ -41,6 +53,13 @@
   「`pid>0` 当前台哨兵」的判据改看它（等价重构，调度决策未变）。⑤ bg uclamp 值守卫：
   同值不写、60s 强制再断言（~1 次/s → 1 次/60s），`uclamp` 帧只在真写时产生。
   判读口径见 `.cursor/commands/devimp-log-analysis.md` 已知坑 13/14。
+
+- 亲和组绑定释放必须覆盖「压力窗口外」（2026-09-25）：前台线程的 `group_bind`（Key/Busy 共用枚举）
+  释放分支条件 = `group_bind != GroupBind::None` + `!key_pressure` 守卫（原 `== GroupBind::Key`
+  只兜 Key 绑定）。原因：Busy 绑定的空闲回落只写在 `promote_busy_foreground` 内，而该函数在
+  `key_pressure` 解除后整段不再被调用 → 压力一落，Busy 线程就带着 big∪prime 收窄掩码滞留
+  （logd_0925 实测 95min 会话末帧仍有 1115 条 `pin=1/home=-1` 未释放，占 aff_ 116MB/128MB）。
+  **结论：新增组绑定触发条件时，必须同步检查释放侧是否有窗口外兜底。**
 
 - devimp 目录懒创建与零写入（2026-09-24）：`devimp/` **唯一创建者 = `main_open`/`aff_open`**（两者都在
   `diag_active()` 门控内）；`diag_prepare` 目录不存在即早退、启动归档不预建、短会话清空后连空目录
