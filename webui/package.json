@@ -9,7 +9,7 @@
     "prebuild": "node scripts/fetch-fonts.mjs",
     "build": "vite build",
     "preview": "vite preview",
-    "type-check": "svelte-check --tsconfig ./tsconfig.json",
+    "type-check": "svelte-check --tsconfig ./tsconfig.json --tsgo",
     "test": "vitest run"
   },
   "engines": {
@@ -22,10 +22,11 @@
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^7.3.0",
     "@types/node": "^26.6.2",
+    "@typescript/native": "npm:typescript@^7.0.2",
     "svelte": "^5.57.1",
     "svelte-check": "^4.7.6",
     "subset-font": "^2.3.0",
-    "typescript": "^7.0.2",
+    "typescript": "^6.0.3",
     "vite": "^8.3.0",
     "vitest": "^5.0.1"
   }
