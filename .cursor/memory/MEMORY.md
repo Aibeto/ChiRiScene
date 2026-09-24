@@ -10,6 +10,9 @@
 - 架构约定、契约数字、命令口径变更同步 `docs/agents/` 与本文件；具体改动经过写 `.cursor/memory/YYYY-MM-DD.md`。
 - CI 跳过口径：`build.yml` 的 `check-skip` 闸——提交信息含 `skip ci`（不分大小写、无需方括号）即跳过该次构建；
   `[skip ci]` 等方括号标记另走 GitHub 原生整 run 跳过；`workflow_dispatch` 手动触发恒运行；提交信息仅提及该字样也会命中。
+- WebUI type-check 口径（2026-09-24）：`npm run type-check` = `svelte-check --tsgo`；TypeScript 7 经 npm 别名
+  `@typescript/native` 接入，根 typescript 保持 6 系列（svelte-check 对等依赖只认 5/6 系列）；别名与 `--tsgo`
+  成对，缺任一 svelte-check 直接报错退出。
 
 ## 进行中
 

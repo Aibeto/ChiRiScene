@@ -57,7 +57,7 @@ cargo +nightly check -p chiri --target aarch64-linux-android
 # WebUI 开发（无 ksu 时自动装载 src/dev/mock-shell 设备替身）
 cd webui && npm install && npm run dev
 
-# WebUI 类型检查（svelte-check，已替换旧的 vue-tsc）
+# WebUI 类型检查（svelte-check --tsgo；tsgo 依赖 @typescript/native 别名，见 02 依赖现状）
 cd webui && npm run type-check
 
 # WebUI 纯逻辑断言（契约层与数据层，可脱离真机运行）
