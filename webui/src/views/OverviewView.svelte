@@ -76,11 +76,21 @@
 
   onMount(() => {
     void app.loadOverview();
-    // 每秒自刷新数据（不重载页面）；loadOverview 有在飞共享，轮询不会堆积
+    // [poll] 每秒自刷新数据（不重载页面）；loadOverview 有在飞共享，轮询不会堆积。
+    // WebView 切后台后 interval 仍会被浏览器节流但不为零，这里主动跳过 hidden 期
+    // 的 tick 省电；恢复可见时立即补一次，避免后台期间的数据空窗
     const timer = setInterval(() => {
+      if (document.hidden) return;
       void app.loadOverview();
     }, 1000);
-    return () => clearInterval(timer);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void app.loadOverview();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   });
 
   async function confirmStop() {

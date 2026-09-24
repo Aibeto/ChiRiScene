@@ -1,4 +1,4 @@
-// sources.ts: [device] [files] [logs]
+// sources.ts: [device] [files] [logs] [readMany]
 // 各接触点的原始读取入口（不解析，解析见 src/data/*）。
 // 缺失语义：白名单类文件只有 ChiRi 机型会产生（→ chiri-only）；日志/快照类
 // 是「尚未产生」（→ not-created）；真正的失败一律 failed，绝不吞成空值。
@@ -57,8 +57,9 @@ export function readModulePropRaw(): Promise<ReadResult<string>> {
 }
 
 // [logs]
-/** 本次运行的守护进程日志尾部（单文件上限 50MB，禁止整读） */
-export function readDaemonLogTail(bytes = 128 * 1024): Promise<ReadResult<string>> {
+/** 本次运行的守护进程日志尾部（单文件上限 50MB，禁止整读；日志页每秒解析，
+ * 窗口只留尾部展示所需（64KB），减半自 128KB——窗口越大每秒解析的白付越多 */
+export function readDaemonLogTail(bytes = 64 * 1024): Promise<ReadResult<string>> {
   return readTail(absOf('daemonLog'), bytes, 'not-created')
 }
 
@@ -89,6 +90,63 @@ export async function clearArchives(): Promise<ReadResult<true>> {
     `rm -rf ${shQuote(absOf('logdDir'))} && echo done`
   )
   return errno === 0 ? ok(true) : failed<true>(shellError(errno, stderr))
+}
+
+// [readMany]
+/** 批量读规格：key 是调用方取结果用的键，path 为设备绝对路径 */
+export interface ReadManySpec {
+  key: string
+  path: string
+  /** 可选：只取文件末尾 N 字节（大文件防整读，如 status.csv） */
+  tailBytes?: number
+}
+
+export type ReadManyResult = ReadResult<Record<string, string | null>>
+
+/** BEGIN/END 标记模板：带序号防内容碰撞——解析按序号顺序从上一个 END 之后推进，
+ * 前一个文件的内容即使恰好含后一个文件的标记串也不会被误切 */
+const RM_BEGIN = (i: number): string => `__CHIRI_RM_${i}_BEGIN__`
+const RM_END = (i: number): string => `__CHIRI_RM_${i}_END__`
+
+/**
+ * 一次 shell exec 完成多个文件的读取。每个 fork 的 su -c 都很贵（总览页秒级轮询
+ * 曾达 9 次 exec/s），把 N 次读拼成一条脚本只付一次 fork，是轮询降开销的原语。
+ * 单个文件缺失不算失败（对应项为 null）；只有 exec 本身失败（桥错误/命令整体失败）
+ * 才返回 failed——与 readText 的三分类口径一致。
+ */
+export async function readMany(specs: readonly ReadManySpec[]): Promise<ReadManyResult> {
+  if (!isLive()) return absent<Record<string, string | null>>('unsupported-env')
+  if (specs.length === 0) return ok({})
+  const script = specs
+    .map((s, i) => {
+      const q = shQuote(s.path)
+      const body =
+        s.tailBytes !== undefined ? `tail -c ${s.tailBytes} ${q} || cat ${q}` : `cat ${q}`
+      return `if [ -f ${q} ]; then echo ${shQuote(RM_BEGIN(i))}; ${body}; echo ${shQuote(RM_END(i))}; fi`
+    })
+    .join('\n')
+  try {
+    // 整条脚本经 shQuote 再交给 sh -c：换行与单引号都在转义出口内，禁止裸拼
+    const { errno, stdout, stderr } = await run(`sh -c ${shQuote(script)}`)
+    if (errno !== 0) return failed<Record<string, string | null>>(shellError(errno, stderr))
+    const value: Record<string, string | null> = {}
+    for (const s of specs) value[s.key] = null
+    let pos = 0
+    for (let i = 0; i < specs.length; i++) {
+      const beginTag = RM_BEGIN(i)
+      const endTag = RM_END(i)
+      const bi = stdout.indexOf(`${beginTag}\n`, pos)
+      if (bi < 0) continue // 文件缺失（if -f 跳过）：保持 null
+      const ei = stdout.indexOf(endTag, bi + beginTag.length + 1)
+      if (ei < 0) continue // 标记不完整按缺失处理，不升级为失败
+      // BEGIN 换行后到 END 标记前即文件原文；结尾换行观感同 readTail（tail 原样保留）
+      value[specs[i].key] = stdout.slice(bi + beginTag.length + 1, ei)
+      pos = ei + endTag.length
+    }
+    return ok(value)
+  } catch (e) {
+    return failed<Record<string, string | null>>(e instanceof Error ? e.message : String(e))
+  }
 }
 
 export { REL }

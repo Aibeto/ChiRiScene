@@ -3,12 +3,12 @@
 // 并保证「读失败」与「不适用」在界面上是不同的表达。
 import {
   hasActionScript,
-  probeLiveness,
+  judgeLiveness,
   stopScheduler,
   type DaemonState
 } from '@/contract/daemon'
 import { readDown, writeDown } from '@/contract/down'
-import { readPowerAvg } from '@/contract/power'
+import { absOf } from '@/contract/paths'
 import { pollExport, startExport } from '@/contract/export'
 import { readLab, writeLabMode } from '@/contract/lab'
 import { readMeta, writeMetaFields, type MetaSnapshot, type WritableField } from '@/contract/meta'
@@ -17,9 +17,9 @@ import {
   deviceKind,
   listDevimp,
   listLogd,
-  readCurrentModeRaw,
   readDaemonLogTail,
   readFasWhitelistRaw,
+  readMany,
   readModulePropRaw,
   readRulesRaw,
   readSpecialTunedRaw,
@@ -27,7 +27,7 @@ import {
   type DeviceKind
 } from '@/contract/sources'
 import { fetchInstalledPackages, buildAppEntries, filterApps, type AppEntry } from '@/data/apps'
-import { parseDaemonLog, type LogLine } from '@/data/daemon-log'
+import { LOG_MAX_LINES, parseDaemonLog, type LogLine } from '@/data/daemon-log'
 import {
   LAB_FORCE_OFF,
   LAB_MODE_KEYS,
@@ -43,6 +43,7 @@ import { describeMode, type ModeInfo } from '@/data/mode'
 import { EMPTY_MODULE_PROP, parseModuleProp, type ModuleProp } from '@/data/module-info'
 import { EMPTY_RULES, parseRules, type RulesInfo } from '@/data/rules'
 import { parseStatusCsv, type StatusRow } from '@/data/status-csv'
+import { parsePowerAvgWatt } from '@/data/power-avg'
 import {
   parseFasWhitelist,
   parseSpecialTuned,
@@ -54,6 +55,9 @@ import { toast } from '@/kernel/ksu'
 
 /** 只读文件的界面态：缺失（不适用/尚未生成）与失败要分开 */
 export type FileState = 'ok' | 'missing' | 'failed'
+
+/** 静态项复用窗口：module.prop / meta / 白名单 / 机型变化频率低（天级），退出秒级轮询 */
+const STATIC_TTL_MS = 30_000
 
 class AppStore {
   // [common]
@@ -129,6 +133,48 @@ class AppStore {
   /** 自刷新失败提示的节流标志：失败 toast 一次，成功后复位（每秒轮询不能刷屏） */
   refreshFailNotified = false
 
+  // [logs] 增量解析锚点（endsWith 内容锚定）：
+  // - xxxTailCache = 上次读到的尾部窗口原文。新读尾部以它**结尾**（endsWith 命中）
+  //   说明文件只在尾部追加（轮转/截断必不命中）→ 前缀部分即纯新增字节
+  // - xxxAnchorLen = tailCache 里已完整解析部分的长度（按最后一个 '\n'（含）切）。
+  //   尾部半行**不进显示**：写盘是行缓冲，读到无换行结尾是瞬时竞态，该行完整后
+  //   下一轮照常解析（最多晚 1s 显示），正确性优先于逐字节行为一致
+  /** 上次 daemon.log 尾部窗口原文（null = 无锚点，整段重解析） */
+  private logTailCache: string | null = null
+  /** tailCache 中已完整解析的长度（tailCache 最后一个 '\n' 之后为未解析半行） */
+  private logAnchorLen = 0
+  /** 上次 status.csv 尾部窗口原文（null = 无锚点，整段重解析） */
+  private statusTailCache: string | null = null
+  /** statusTailCache 中已完整解析的长度 */
+  private statusAnchorLen = 0
+
+  /** daemon.log 锚定失效（缺失/失败）：清空展示时一并复位，下轮从整段重解析重建 */
+  private resetLogAnchor(): void {
+    this.logTailCache = null
+    this.logAnchorLen = 0
+  }
+
+  /** status.csv 锚定失效（缺失/失败）：同上 */
+  private resetStatusAnchor(): void {
+    this.statusTailCache = null
+    this.statusAnchorLen = 0
+  }
+
+  /**
+   * 窗口尾部的「未解析半行」长度（最后一个 '\n' 之后的字符数；无 '\n' 则整个
+   * 窗口都是半行）。> 0 时本轮放弃增量走整段重解析——半行是瞬时竞态（行缓冲
+   * 写盘几乎总以 \n 结尾），为它维护跨条目合并语义不值得。
+   */
+  private static tailPartialLen(text: string): number {
+    const lastNl = text.lastIndexOf('\n')
+    return lastNl >= 0 ? text.length - (lastNl + 1) : text.length
+  }
+
+  /** 已完整解析长度 = 窗口长度 - 尾部半行长度（两处锚点推进共用） */
+  private static anchorLenOf(text: string): number {
+    return text.length - AppStore.tailPartialLen(text)
+  }
+
   /** 自刷新失败时的 toast（同一次失败串只提示一次） */
   notifyRefreshFail(): void {
     if (this.refreshFailNotified) return
@@ -147,39 +193,105 @@ class AppStore {
   }
 
   get statusRowsNewestFirst(): StatusRow[] {
-    return [...this.statusRows].reverse()
+    return this.statusRowsReversed
   }
 
-  // [common]
-  /** 设备信息与生效配置（所有页面都需要） */
-  async loadCommon(): Promise<void> {
-    const [kind, propRaw, meta] = await Promise.all([
-      deviceKind(),
-      readModulePropRaw(),
-      readMeta()
-    ])
-    this.deviceKind = kind
-    if (propRaw.kind === 'ok') this.moduleProp = parseModuleProp(propRaw.value)
+  /** 倒序副本：在赋值 statusRows 处同步维护（setStatusRows），getter 只返回不重建 */
+  private statusRowsReversed = $state<StatusRow[]>([])
 
-    if (meta.kind === 'ok') {
-      this.metaSnapshot = meta.value
-      this.metaPath = meta.value.path
-      this.configRel = meta.value.rel
-      this.metaValid = meta.value.valid
-      this.metaProblems = meta.value.problems
-      this.configState = 'ok'
-      this.configError = ''
-      this.refreshFailNotified = false
-    } else if (meta.kind === 'absent') {
-      this.metaSnapshot = null
-      this.configState = 'missing'
-      this.configError = ''
-      this.configRel = ''
-      this.metaPath = ''
-    } else {
-      this.configState = 'failed'
-      this.configError = meta.error
-      this.notifyRefreshFail()
+  /** statusRows 的唯一赋值入口：同步维护倒序副本，避免每次读取都 [...].reverse() */
+  private setStatusRows(rows: StatusRow[]): void {
+    this.statusRows = rows
+    // 0/1 行时倒序 = 原序，直接共享同一数组省一次拷贝
+    this.statusRowsReversed = rows.length > 1 ? [...rows].reverse() : rows
+  }
+
+  /** 展示行数上限：720 行 ≈ 12 分钟（每秒 1 行），与既有展示口径一致 */
+  private static readonly STATUS_MAX_ROWS = 720
+
+  /**
+   * [logs] statusRows 的追加入口（增量解析专用）：新行 concat 到尾部、超上限
+   * 从头部裁剪（CSV 每秒 append，倒序副本同步维护交给 setStatusRows）。
+   * 空批次直接跳过（避免白付一次 concat + 赋值）。
+   */
+  private appendStatusRows(rows: StatusRow[]): void {
+    if (rows.length === 0) return
+    let merged = this.statusRows.concat(rows)
+    if (merged.length > AppStore.STATUS_MAX_ROWS) {
+      merged = merged.slice(merged.length - AppStore.STATUS_MAX_ROWS)
+    }
+    this.setStatusRows(merged)
+  }
+
+  // [common] → [static]
+  /** 静态项上次加载时间（0 = 从未加载）：loadOverview 据此判断是否补拉 */
+  private staticLoadedAt = 0
+  /** 在飞的静态项请求：并发调用共享同一个 promise（理由同 loadOverview） */
+  private staticJob: Promise<void> | null = null
+  /** 特调白名单解析出的模式名集合（describeMode 派生用；秒级批量读路径维护） */
+  private modeNameSet: Set<string> = new Set()
+  /** 上次 tick 批量读到的特调白名单原文（null = 缺失）：原文未变不重解析 */
+  private specialRawCache: string | null = null
+  /** 上次 tick 批量读到的 FAS 白名单原文（null = 缺失）：原文未变不重解析 */
+  private fasRawCache: string | null = null
+
+  /**
+   * 静态项加载（原 loadCommon 的内容 + 白名单 + hasActionScript）：module.prop、meta、
+   * 特调/FAS 白名单、hasActionScript、deviceKind 这些变化频率低（天级），退出秒级轮询——
+   * loadOverview 每 30s 补拉一次，各写路径成功后 force 刷新一次。
+   * force=false 且命中 TTL 窗口直接返回，避免每秒 tick 白付这几次 exec。
+   */
+  async loadStatic(force = false): Promise<void> {
+    if (this.staticJob) {
+      if (!force) return this.staticJob
+      // force 请求（写成功后）不能被在飞的非 force 补拉吞掉：那次 job 读的是
+      // 写前数据、结束时会刷新 staticLoadedAt，直接复用会让本次写入的静态项
+      // 最长 30s 不更新。先等它落地，再走下方强制重读。
+      await this.staticJob
+    }
+    if (!force && Date.now() - this.staticLoadedAt < STATIC_TTL_MS) return
+    this.staticJob = (async () => {
+      try {
+      const [kind, propRaw, meta, actionOk] = await Promise.all([
+        deviceKind(),
+        readModulePropRaw(),
+        readMeta(),
+        hasActionScript()
+      ])
+      this.deviceKind = kind
+      if (propRaw.kind === 'ok') this.moduleProp = parseModuleProp(propRaw.value)
+
+      this.actionAvailable = actionOk
+
+      if (meta.kind === 'ok') {
+        this.metaSnapshot = meta.value
+        this.metaPath = meta.value.path
+        this.configRel = meta.value.rel
+        this.metaValid = meta.value.valid
+        this.metaProblems = meta.value.problems
+        this.configState = 'ok'
+        this.configError = ''
+        this.refreshFailNotified = false
+      } else if (meta.kind === 'absent') {
+        this.metaSnapshot = null
+        this.configState = 'missing'
+        this.configError = ''
+        this.configRel = ''
+        this.metaPath = ''
+      } else {
+        this.configState = 'failed'
+        this.configError = meta.error
+        this.notifyRefreshFail()
+      }
+      this.staticLoadedAt = Date.now()
+      } finally {
+        this.staticJob = null
+      }
+    })()
+    try {
+      await this.staticJob
+    } finally {
+      this.staticJob = null
     }
   }
 
@@ -195,60 +307,98 @@ class AppStore {
     this.loading = true
     this.overviewJob = (async () => {
       try {
-      const [live, modeRaw, tunedRaw, fasRaw, actionOk, powerAvg] = await Promise.all([
-        probeLiveness(),
-        readCurrentModeRaw(),
-        readSpecialTunedRaw(),
-        readFasWhitelistRaw(),
-        hasActionScript(),
-        readPowerAvg()
+      // 静态项（module.prop/meta/白名单/hasActionScript/机型）退出秒级轮询：
+      // 陈旧（从未加载或距上次 >30s）时与本 tick 并行补拉一次，不阻塞活跃项读取
+      const staticRefresh =
+        Date.now() - this.staticLoadedAt >= STATIC_TTL_MS ? this.loadStatic() : null
+      // [tag] 秒级开销收敛：活跃项合并为一次 readMany（稳态 = 1 次 exec）——
+      // current_mode.chr、PowerAVG.chr、status.csv 尾部、特调/FAS 白名单，以及
+      // LiveTime.chr（存活判据）。旧实现存活探测是独立 exec（probeLiveness），
+      // 现并入批量读，判定逻辑抽成纯函数 judgeLiveness（contract/daemon.ts）
+      const rm = await readMany([
+        { key: 'mode', path: absOf('currentMode') },
+        { key: 'powerAvg', path: absOf('powerAvg') },
+        { key: 'status', path: absOf('statusCsv'), tailBytes: 4096 },
+        // 特调/FAS 白名单挂在同一次批量读上（0 次额外 exec）：计数与模式名翻译
+        // 均秒级可达；原文未变只付一次字符串比对（见下方处理）
+        { key: 'special', path: absOf('specialTuned') },
+        { key: 'fas', path: absOf('fasWhitelist') },
+        // [liveness] 心跳文件并入批量读（64B）：key 为 null = 文件缺失 = stopped，
+        // 与旧 probeLiveness 的 absent→stopped 口径一致
+        { key: 'liveTime', path: absOf('liveTime'), tailBytes: 64 }
       ])
 
-      if (live.kind === 'ok') {
-        this.daemonState = live.value
-        this.daemonError = ''
-      } else if (live.kind === 'absent') {
+      // [liveness] 存活判定改走批量条目，三分类映射与旧独立探测一致：
+      // - 批量 ok：liveTime null（缺失）→ stopped；内容非法 → unknown + 详情
+      // - 批量整体 absent（非 live 环境）→ unknown + unsupportedEnv
+      // - 批量整体 failed → unknown + batchError（旧 failed 同口径）
+      const okEntries = rm.kind === 'ok' ? rm.value : null
+      const batchError = rm.kind === 'failed' ? rm.error : ''
+      if (okEntries !== null) {
+        const live = judgeLiveness(okEntries.liveTime ?? null)
+        this.daemonState = live.state
+        // 空串复位旧错误、非空为「内容非法」详情（judgeLiveness 只在这两态出错）
+        this.daemonError = live.error
+      } else if (rm.kind === 'absent') {
         this.daemonState = 'unknown'
         this.daemonError = t('state.unsupportedEnv')
       } else {
         this.daemonState = 'unknown'
-        this.daemonError = live.error
+        this.daemonError = batchError
       }
 
-      this.modeMissing = modeRaw.kind === 'absent'
-      this.modeError = modeRaw.kind === 'failed' ? modeRaw.error : ''
-      const mode = modeRaw.kind === 'ok' ? modeRaw.value : ''
+      // readMany → 单文件三分类的映射：'ok' 里某 key 为 null = 该文件缺失（≈absent），
+      // 整体 'absent' = 非 live 环境（全部按缺失），'failed' = exec 本身失败（全部按失败）
 
-      this.whitelistError =
-        tunedRaw.kind === 'failed'
-          ? tunedRaw.error
-          : fasRaw.kind === 'failed'
-            ? fasRaw.error
-            : ''
-      const special: Map<string, SpecialTunedEntry> =
-        tunedRaw.kind === 'ok' ? parseSpecialTuned(tunedRaw.value) : new Map()
-      const fas: Map<string, string> =
-        fasRaw.kind === 'ok' ? parseFasWhitelist(fasRaw.value) : new Map()
-      const modes = specialModeSet(special)
-      this.specialCount = special.size
-      this.fasCount = fas.size
+      // current_mode.chr：缺失按「尚未生成」（modeMissing），真实失败才报 modeError
+      const modeText = okEntries?.mode ?? null
+      this.modeMissing = okEntries ? modeText === null : rm.kind === 'absent'
+      this.modeError = okEntries ? '' : batchError
+      const mode = modeText?.trim() ?? ''
 
+      // PowerAVG.chr：缺失/为空/非法统一「无值」；exec 整体失败沿用旧 readPowerAvg 的
+      // 映射（watt=null、missing=false），不把环境瞬时错误误报成「文件缺失」红字
+      const watt = okEntries ? parsePowerAvgWatt(okEntries.powerAvg ?? '') : null
+      this.powerAvgWatt = watt
+      this.powerAvgMissing = okEntries ? watt === null : false
+
+      // status.csv 尾部：powerNowWatt 与「为什么没有均值」共用同一次读取——
+      // 旧实现 powerStaleWhy 会再发一次独立 exec，这里一并省掉
+      const tailRows = parseStatusCsv(okEntries?.status ?? '')
+      const lastStatus = tailRows[tailRows.length - 1]
+      this.powerNowWatt = lastStatus?.battPower ?? null
+
+      // 特调白名单（挂在本次批量读上，0 额外 exec）：原文与上次相同只付一次字符串
+      // 比对、变了才重解析——模式卡名称翻译与特调计数因此秒级可达；failed 不动上次
+      // 解析结果（瞬时故障不抖动清零），缺失按空表处理（与旧 absent 口径一致）
+      const specialRaw = okEntries?.special ?? null
+      if (specialRaw !== this.specialRawCache) {
+        this.specialRawCache = specialRaw
+        const special =
+          specialRaw === null
+            ? new Map<string, SpecialTunedEntry>()
+            : parseSpecialTuned(specialRaw)
+        this.modeNameSet = specialModeSet(special)
+        this.specialCount = special.size
+      }
+      // FAS 白名单同样挂在批量读上：原文未变只付一次比对；failed 不动上次结果，
+      // 缺失按空表（与旧 absent 口径一致）。readMany 整体失败才报 whitelistError
+      const fasRaw = okEntries?.fas ?? null
+      if (fasRaw !== this.fasRawCache) {
+        this.fasRawCache = fasRaw
+        const fas =
+          fasRaw === null ? new Map<string, string>() : parseFasWhitelist(fasRaw)
+        this.fasCount = fas.size
+      }
+      this.whitelistError = rm.kind === 'failed' ? batchError : ''
+
+      // 依赖静态项的派生（白名单模式名 / meta 快照的口径开关）等静态补拉就位后再算；
+      // 静态新鲜时这里是已完成的 promise，await 无额外开销
+      if (staticRefresh) await staticRefresh
       this.currentMode = mode
-      this.modeInfo = describeMode(mode, modes)
-      this.actionAvailable = actionOk
-      // 功耗参考/平均值（W）：缺失/为空/非法统一按「无值」显示 —，不打断其它数据
-      this.powerAvgWatt = powerAvg.kind === 'ok' ? powerAvg.value.watt : null
-      this.powerAvgMissing = powerAvg.kind === 'ok' ? powerAvg.value.missing : false
+      this.modeInfo = describeMode(mode, this.modeNameSet)
       // 没有取值时把「为什么没有」一并算出来：界面只显示 — 会让人以为是坏的
-      this.powerStaleReason = this.powerAvgWatt === null ? await this.powerStaleWhy() : ''
-      // 当前功耗（status.csv 末行 batt_power_w）：模式卡右侧「当前功耗」块的数据源；
-      // 文件缺失/无行/读数缺失一律 null（显示 —，不打断其它数据）
-      if (this.isChiri) {
-        const tail = await readStatusCsvTail(4096)
-        const rows = tail.kind === 'ok' ? parseStatusCsv(tail.value) : []
-        this.powerNowWatt = rows[rows.length - 1]?.battPower ?? null
-      }
-      await this.loadCommon()
+      this.powerStaleReason = watt === null ? this.powerStaleWhyOf(lastStatus) : ''
       } finally {
         this.loading = false
         this.ready = true
@@ -261,8 +411,9 @@ class AppStore {
     }
   }
 
+  /** 兼容入口（显式刷新静态项，写路径后调用）：绕过 TTL 窗口强制重读 */
   async refreshCommon(): Promise<void> {
-    await this.loadCommon()
+    await this.loadStatic(true)
   }
 
   // [config]
@@ -313,6 +464,8 @@ class AppStore {
       this.configRel = result.value.rel
       this.draft = {}
       this.writeReverted = patchKeys.some(key => result.value.values[key] !== expected[key])
+      // meta 落盘成功：静态项里的 meta 快照刚被改，强制补拉一次（fire-and-forget，不拖慢返回）
+      void this.loadStatic(true)
       toast(t('config.saved'))
       return true
     } finally {
@@ -548,16 +701,12 @@ class AppStore {
 
   /**
    * PowerAVG 没取到值时，说明原因（空串 = 说不清，界面回退到 overview.power.missing）。
-   * 判据来自 status.csv 最后一行（daemon 每秒一行，含 charge 与 screen_on）：
+   * 判据来自本 tick 批量读取的 status.csv 末行（同步派生，不再单独 exec 重读）：
    *   ① 非放电（充电 / 充满 / 未充电 / 状态不可识别）→ 按口径不取样；
    *   ② 平均模式且息屏 → 不取样（平均口径＝亮屏放电）；
    *   ③ 放电且屏幕条件满足却仍为空 → 电压/电流读数不可用（或 daemon 还没写过一行）。
    */
-  private async powerStaleWhy(): Promise<string> {
-    const tail = await readStatusCsvTail(4096)
-    if (tail.kind !== 'ok') return ''
-    const rows = parseStatusCsv(tail.value)
-    const last = rows[rows.length - 1]
+  private powerStaleWhyOf(last: StatusRow | undefined): string {
     if (!last) return ''
     if (last.charge !== 'discharging') {
       const known = ['charging', 'full', 'not_charging']
@@ -633,6 +782,8 @@ class AppStore {
       }
       this.downActive = result.value.active
       this.downPath = result.value.path
+      // down.chr 落盘成功：强制补拉静态项（写路径统一口径）
+      void this.loadStatic(true)
       toast(active ? t('config.down.on') : t('config.down.off'))
       // 停摆会改 current_mode.chr（写 down / 删掉让自愈写回），总览页那份快照已过期
       await this.loadOverview()
@@ -664,6 +815,8 @@ class AppStore {
       this.metaValid = result.value.valid
       this.metaProblems = result.value.problems
       this.metaPath = result.value.path
+      // meta 直写成功：强制补拉静态项（meta 快照刚被改；fire-and-forget 不拖慢返回）
+      void this.loadStatic(true)
       toast(useAverage ? t('overview.power.avg') : t('overview.power.ref'))
     } finally {
       this.powerAvgPending = false
@@ -693,6 +846,8 @@ class AppStore {
       this.metaValid = result.value.valid
       this.metaProblems = result.value.problems
       this.metaPath = result.value.path
+      // meta 直写成功：强制补拉静态项（meta 快照刚被改；fire-and-forget 不拖慢返回）
+      void this.loadStatic(true)
       toast(enabled ? t('config.powerbase') : t('config.advanced'))
     } finally {
       this.powerbasePending = false
@@ -738,6 +893,8 @@ class AppStore {
       this.metaValid = result.value.valid
       this.metaProblems = result.value.problems
       this.metaPath = result.value.path
+      // meta 直写成功：强制补拉静态项（meta 快照刚被改；fire-and-forget 不拖慢返回）
+      void this.loadStatic(true)
     } finally {
       this.battPending = false
       this.metaWritePending = false
@@ -865,15 +1022,17 @@ class AppStore {
           listLogd()
         ])
         if (log.kind === 'ok') {
-          this.logLines = parseDaemonLog(log.value)
+          this.applyDaemonLog(log.value)
           this.logState = 'ok'
           this.logError = ''
         } else if (log.kind === 'absent') {
           this.logLines = []
+          this.resetLogAnchor()
           this.logState = 'missing'
           this.logError = ''
         } else {
           this.logLines = []
+          this.resetLogAnchor()
           this.logState = 'failed'
           this.logError = log.error
           this.notifyRefreshFail()
@@ -885,15 +1044,17 @@ class AppStore {
       } else {
         const csv = await readStatusCsvTail()
         if (csv.kind === 'ok') {
-          this.statusRows = parseStatusCsv(csv.value)
+          this.applyStatusCsv(csv.value)
           this.statusState = this.statusRows.length > 0 ? 'ok' : 'missing'
           this.statusError = ''
         } else if (csv.kind === 'absent') {
-          this.statusRows = []
+          this.setStatusRows([])
+          this.resetStatusAnchor()
           this.statusState = 'missing'
           this.statusError = ''
         } else {
-          this.statusRows = []
+          this.setStatusRows([])
+          this.resetStatusAnchor()
           this.statusState = 'failed'
           this.statusError = csv.error
           this.notifyRefreshFail()
@@ -903,6 +1064,78 @@ class AppStore {
     } finally {
       this.logLoading = false
     }
+  }
+
+  // [logs] 增量解析应用：ok 分支共用入口（锚定命中只解析新增行，否则整段重建）
+  /**
+   * daemon.log 尾部应用（endsWith 内容锚定）：
+   * - 命中（新尾部以旧窗口结尾 = 文件只在尾部追加）→ 解析新增字节里的完整行
+   *   并 concat（首行续行语义交给 parseDaemonLog 的 continuation 参数）；
+   * - 不命中（轮转/截断/首次）或上轮留有未解析半行 → 整段重解析重建。
+   *   整段路径对尾部半行沿用 parseDaemonLog 的旧行为（不匹配则并入前条），
+   *   「半行不进显示」的口径只在增量路径成立；半行是瞬时竞态，下轮补全后
+   *   以完整行显示，无正确性影响。
+   * 展示上限沿用 LOG_MAX_LINES：concat 后从头部裁剪，防增量路径无界增长，
+   * 与整段 parseDaemonLog 的 maxLines 行为一致。
+   */
+  private applyDaemonLog(fresh: string): void {
+    const cache = this.logTailCache
+    const hit =
+      cache !== null &&
+      fresh.endsWith(cache) &&
+      // 上轮尾部半行未显示：为它做跨条目合并不值得（行缓冲写盘半行是瞬时竞态），
+      // 直接整段重解析保证正确性
+      this.logAnchorLen === cache.length
+    if (hit && cache !== null) {
+      // 命中：added = 纯新增字节（anchorLen === cache.length 保证上轮无残留半行，
+      // chunk 从行边界开始）；added 里末尾的半行留给下轮
+      const added = fresh.slice(0, fresh.length - cache.length)
+      const lastNl = added.lastIndexOf('\n')
+      if (lastNl >= 0) {
+        const chunk = added.slice(0, lastNl + 1)
+        const prev = this.logLines.length > 0 ? this.logLines[this.logLines.length - 1] : null
+        // 上限传 Infinity：裁剪在下面 concat 后统一做（chunk 本身很小）
+        const parsed = parseDaemonLog(chunk, Number.POSITIVE_INFINITY, prev)
+        // 返回首元素是 prev 本体（续行已原地并入），新行才是要追加的
+        const addedLines = prev !== null ? parsed.slice(1) : parsed
+        const merged = this.logLines.concat(addedLines)
+        this.logLines =
+          merged.length > LOG_MAX_LINES ? merged.slice(merged.length - LOG_MAX_LINES) : merged
+      }
+      // lastNl < 0：本轮无新增完整行（可能纯半行增长），logLines 不动
+    } else {
+      this.logLines = parseDaemonLog(fresh)
+    }
+    // 锚点推进：anchor = 最后一个完整行结尾（尾部半行不进锚点、不进显示）
+    this.logTailCache = fresh
+    this.logAnchorLen = AppStore.anchorLenOf(fresh)
+  }
+
+  /**
+   * status.csv 尾部应用：与 applyDaemonLog 同一套锚定模式。CSV 每行整行写出，
+   * parseStatusCsv 按字段数过滤残行，P 为空时 chunk 可直接增量解析；
+   * 追加走 appendStatusRows（超 720 行头部裁剪 + 倒序副本同步）。
+   */
+  private applyStatusCsv(fresh: string): void {
+    const cache = this.statusTailCache
+    const hit =
+      cache !== null &&
+      fresh.endsWith(cache) &&
+      this.statusAnchorLen === cache.length
+    if (hit && cache !== null) {
+      // P 为空（anchorLen === cache.length）→ combined 就是纯新增字节
+      const added = fresh.slice(0, fresh.length - cache.length)
+      const lastNl = added.lastIndexOf('\n')
+      if (lastNl >= 0) {
+        this.appendStatusRows(parseStatusCsv(added.slice(0, lastNl + 1)))
+      }
+    } else {
+      // 上限与增量路径统一为 STATUS_MAX_ROWS（默认 maxRows=300，半行竞态触发
+      // 整段重解析时行数会从 720 跳回 300，一次显示抖动）
+      this.setStatusRows(parseStatusCsv(fresh, AppStore.STATUS_MAX_ROWS))
+    }
+    this.statusTailCache = fresh
+    this.statusAnchorLen = AppStore.anchorLenOf(fresh)
   }
 
   // [actions]

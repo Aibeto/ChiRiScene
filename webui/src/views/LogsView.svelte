@@ -87,13 +87,24 @@
     }
   }
 
-  // 每秒自刷新数据（不重载页面）；loadLogs 内部有在飞守卫，轮询不会堆积
+  // 每秒自刷新数据（不重载页面）；loadLogs 内部有在飞守卫，轮询不会堆积。
+  // [poll] WebView 切后台后 interval 仍会被浏览器节流但不为零，主动跳过 hidden
+  // 期的 tick 省电；恢复可见时立即补一次，避免后台期间的数据空窗。
+  // 回调闭包里 source 必须取当前值（$state 可变），不能在 onMount 时快照
   onMount(() => {
     void app.loadLogs(source)
     const timer = setInterval(() => {
+      if (document.hidden) return
       void app.loadLogs(source)
     }, 1000)
-    return () => clearInterval(timer)
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void app.loadLogs(source)
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
   })
 
   // 跟随滚底：$effect 在 DOM 更新后运行。依赖**整个数组**而不是长度——尾部窗口

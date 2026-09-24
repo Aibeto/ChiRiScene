@@ -45,15 +45,27 @@ function normalizeLevel(raw: string): LogLevelName {
 }
 
 // [parse]
+/** 展示上限：与增量路径（state.svelte.ts 的 concat 后裁剪）共用同一口径 */
+export const LOG_MAX_LINES = 2000
+
 /**
  * 解析日志文本为结构化行。窗口从行中间开始时，首行往往残缺——
  * 若首行不匹配格式则直接丢弃（它无法对应任何完整事件）。
  * 返回数组保持文件顺序（旧 → 新）。
+ *
+ * [logs] continuation：增量解析的「上一条」锚点（无参调用方零影响）。有值时
+ * 视为解析已开始（started=true），chunk 首部不带前缀的续行（daemon 多行
+ * message）会**原地并入该条目的 message** 而不是被丢弃；返回数组首元素就是
+ * continuation 本体，调用方拼接新行时需自行把它从结果里去掉。
  */
-export function parseDaemonLog(text: string, maxLines = 2000): LogLine[] {
+export function parseDaemonLog(
+  text: string,
+  maxLines = LOG_MAX_LINES,
+  continuation: LogLine | null = null
+): LogLine[] {
   const lines = text.split('\n')
-  const out: LogLine[] = []
-  let started = false
+  const out: LogLine[] = continuation !== null ? [continuation] : []
+  let started = continuation !== null
 
   for (const line of lines) {
     const m = LINE_RE.exec(line)

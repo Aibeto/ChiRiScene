@@ -33,21 +33,41 @@ export type DaemonState =
 const LIVE_TIME_READ_BYTES = 64
 
 /**
- * 探测存活：读心跳文件并与本机时间比对。
- * - 文件缺失 → stopped（没有任何实例在写心跳）
- * - 内容非法 → failed（读到了但不可用：界面报错，不谎报「已停止」）
+ * [liveness] 存活纯判定：从心跳文件原文出发，不发 exec（不发任何 IO）。
+ * loadOverview 的批量读路径与 probeLiveness 共用，保证两路口径一致：
+ * - raw null（文件缺失）→ stopped（没有任何实例在写心跳）
+ * - 内容非法 → unknown + 错误详情（读到了但不可用：界面报错，不谎报「已停止」）
+ * - 其余按心跳新鲜度二分（running / stopped）
+ */
+export function judgeLiveness(raw: string | null): {
+  state: DaemonState
+  error: string
+} {
+  if (raw === null) return { state: 'stopped', error: '' }
+  const fileSeconds = parseLiveTimeSeconds(raw)
+  if (fileSeconds === null) {
+    return {
+      state: 'unknown',
+      error: `${LIVE_TIME_FILE} 内容非法：${raw.trim() || '(空)'}`
+    }
+  }
+  const fresh = isLiveTimeFresh(fileSeconds, nowSecondsOfHour())
+  return { state: fresh ? 'running' : 'stopped', error: '' }
+}
+
+/**
+ * 探测存活：读心跳文件并与本机时间比对（判定复用 judgeLiveness）。
+ * 秒级轮询已改走 readMany 批量读（state.svelte.ts loadOverview），此独立入口
+ * 保留给单次探测的调用方（如停止调度后的复核），行为与旧实现完全一致。
  */
 export async function probeLiveness(): Promise<ReadResult<DaemonState>> {
   if (!isLive()) return absent<DaemonState>('unsupported-env')
   const r = await readText(absOf('liveTime'), 'not-created', LIVE_TIME_READ_BYTES)
   if (r.kind === 'absent') return ok<DaemonState>('stopped')
   if (r.kind !== 'ok') return r
-  const fileSeconds = parseLiveTimeSeconds(r.value)
-  if (fileSeconds === null) {
-    return failed<DaemonState>(`${LIVE_TIME_FILE} 内容非法：${r.value.trim() || '(空)'}`)
-  }
-  const fresh = isLiveTimeFresh(fileSeconds, nowSecondsOfHour())
-  return ok<DaemonState>(fresh ? 'running' : 'stopped')
+  const j = judgeLiveness(r.value)
+  if (j.error !== '') return failed<DaemonState>(j.error)
+  return ok<DaemonState>(j.state)
 }
 
 // [watchdog]

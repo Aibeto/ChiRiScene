@@ -1605,12 +1605,15 @@ impl AffinityManager {
                                 }
                             } else if home >= 0 {
                                 let _ = self.unpin_core(tid, home, fg_pid, &pkg);
-                            } else if group_bind == GroupBind::Key {
-                                // 组掩码兜底恢复：boost 退出，或 default 压力
-                                // 解除/息屏（key_pressure 活跃时保持绑定）；
-                                // Busy 绑定的空闲回落由下方采样块单独处理，
-                                // 不在此处释放——否则小核压力随升核解除后
-                                // 下一轮即 restore，与采样块滞回形成乒乓
+                            } else if group_bind != GroupBind::None {
+                                // 组掩码兜底恢复（Key / Busy 同款）：boost 退出，或
+                                // default 压力解除/息屏（key_pressure 活跃时保持绑定）。
+                                // 压力**活跃期** Busy 绑定的空闲回落仍走下方采样块的
+                                // 滞回（避免边界乒乓）；但压力一旦解除，
+                                // promote_busy_foreground 整段不再被调用，那时必须在这里
+                                // 兜住，否则这些线程会带着 big∪prime 收窄掩码滞留
+                                //（实测 95min 会话末帧仍有 1115 条 pin=1/home=-1 未释放，
+                                // 非 boost 段全程压在性能核）。
                                 if !key_pressure {
                                     let _ = self.restore_group_mask(tid, fg_pid, &pkg);
                                 }

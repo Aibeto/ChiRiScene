@@ -732,7 +732,7 @@ fn local_hms(_epoch: i64) -> Option<(u32, u32, u32)> {
 //
 // 供离线分析改善调度的按核诊断数据，与 status.csv 分离：
 // - 独立目录 `devimp/`（模块根，与 logs/ 平级），**启动时随 logs/ 一起归档**到
-//   logd/devimp_<MMDD-HHmmss>.tar（子线程异步打包）；归档后**不预建空目录**——
+//   logd/devimp_<MMDD-HHmmss>.tar.lz4（子线程异步打包）；归档后**不预建空目录**——
 //   由首次写入的 main_open / aff_open 惰性 create_dir_all（开关关闭时不得留痕，
 //   含空目录），目录/归档/记账派生物保留 devimp 名；
 // - **main_ 按前台包名分组**：文件名 `main_<包名>_<MMDD-HHmmss>.log`（本地时间，
@@ -1811,7 +1811,8 @@ pub fn aff_snapshot(rows: &[String]) {
     aff_write_block(&block, ntop + nfg + 1);
 }
 
-// 启动归档：logs/ → logd/<ts>.tar、devimp/ → logd/devimp_<ts>.tar（一次性子线程
+// 启动归档：logs/ → logd/<ts>.tar.lz4、devimp/ → logd/devimp_<ts>.tar.lz4
+//（一次性子线程
 // 串行打包），打包完成后执行 logd/ 与 devimp/ 的**各自独立**预算清理
 //
 // 流程（由 main.rs 在 logger::init 之前调用，保证新旧日志文件分离）：
@@ -1821,9 +1822,10 @@ pub fn aff_snapshot(rows: &[String]) {
 //    路径惰性创建，dev_record 关闭时不得留痕，含空目录）；
 // 2. **复制回 watchdog.pid** 到新建的 logs/——看门狗先于本进程启动、WebUI
 //    stopScheduler 靠 logs/watchdog.pid 定位并终止看门狗，归档不能带走它；
-// 3. 单个一次性子线程把两个临时目录串行打包为**无压缩 tar**，打包本身由外部
+// 3. 单个一次性子线程把两个临时目录串行打包为 tar.lz4（打包由外部
 //    脚本 scripts/pack.sh 完成（对外暴露的稳定接口、构建流程不得修改；优先
-//    模块自带 core/bin/tar，回退系统 tar。2026-09-17 起不再由 Rust 手写 ZIP），
+//    模块自带 core/bin/tar，回退系统 tar。lz4 不可用时脚本回落保留 .tar；
+//    2026-09-17 起不再由 Rust 手写 ZIP）），
 //    成功后删除临时目录并自然退出（无常驻线程）；失败保留对应临时目录并写入
 //    ARCHIVE_FAILED.txt 供事后排查（此时 logger 尚未 init，无法打点）；
 // 4. 打包完成后执行目录预算清理：logd/ 与 devimp/ 各自超过
@@ -2009,7 +2011,7 @@ fn clear_dir_keep(dir: &Path, keep: &[&str]) {
     }
 }
 
-/// 串行打包一批 staging 目录：每个目录打成 `logd/<去 ziped_ 前缀名>.tar`
+/// 串行打包一批 staging 目录：每个目录打成 `logd/<去 ziped_ 前缀名>.tar.lz4`
 /// （沿用其原始时间戳），成功删目录、失败留痕（pack_or_keep）；空目录直接丢弃。
 fn pack_staging_dirs(root: &Path, logd: &Path, dirs: Vec<PathBuf>) {
     for dir in dirs {
@@ -2026,7 +2028,7 @@ fn pack_staging_dirs(root: &Path, logd: &Path, dirs: Vec<PathBuf>) {
             .strip_prefix(STAGING_PREFIX)
             .unwrap_or(&stem)
             .to_string();
-        let tar_path = unique_path(logd, &stem, "tar");
+        let tar_path = unique_path(logd, &stem, "tar.lz4");
         pack_or_keep(root, &dir, &tar_path);
     }
 }
@@ -2117,7 +2119,7 @@ pub fn archive_on_startup(root: &Path) -> (Option<String>, Option<String>) {
             .strip_prefix(STAGING_PREFIX)
             .unwrap_or(&stem)
             .to_string();
-        format!("{stem}.tar")
+        format!("{stem}.tar.lz4")
     }
     let logs_tar = logs_tmp.as_deref().map(tar_name_of);
     let devimp_tar = devimp_tmp.as_deref().map(tar_name_of);
@@ -2231,9 +2233,10 @@ fn enforce_dir_limit(dir: &Path, max: u64, target: u64) {
 }
 
 /// 归档批次键（`logd/` 预算清理的原子单位）：同一次启动归档产出的
-/// `<MMDD-HHmmss>.tar`（logs 侧）与 `devimp_<MMDD-HHmmss>.tar`（devimp 侧）
-/// 共享 `<MMDD-HHmmss>` 一段；`unique_path` 去重的 `-N` 后缀剥掉。
-/// 形态不符的外来文件按整名成组（等价单文件批次），不会被误并组。
+/// `<MMDD-HHmmss>.tar.lz4`（logs 侧）与 `devimp_<MMDD-HHmmss>.tar.lz4`
+/// （devimp 侧）共享 `<MMDD-HHmmss>` 一段；`unique_path` 去重的 `-N` 后缀剥掉。
+/// 兼容 lz4 回落的历史 `<ts>.tar` 产物；形态不符的外来文件按整名成组
+/// （等价单文件批次），不会被误并组。
 fn logd_batch_key(name: &str) -> String {
     let is_ts = |s: &str| {
         let b = s.as_bytes();
@@ -2241,7 +2244,7 @@ fn logd_batch_key(name: &str) -> String {
             && b[4] == b'-'
             && b.iter().enumerate().all(|(i, c)| i == 4 || c.is_ascii_digit())
     };
-    let Some(stem) = name.strip_suffix(".tar") else {
+    let Some(stem) = name.strip_suffix(".tar.lz4").or_else(|| name.strip_suffix(".tar")) else {
         return name.to_string();
     };
     let stem = stem.strip_prefix("devimp_").unwrap_or(stem);
@@ -2344,8 +2347,9 @@ fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
 }
 
 /// 调用外部打包脚本（`module/scripts/pack.sh`，对外暴露的稳定接口，构建流程
-/// 不得修改）把 staging 目录打成无压缩 tar。脚本优先用模块自带 `core/bin/tar`
-/// （外部引入的二进制），回退系统 tar。成功判据：退出码 0 且目标文件存在。
+/// 不得修改）把 staging 目录打成 tar.lz4（脚本内 lz4 不可用时回落无压缩 .tar）。
+/// 脚本优先用模块自带 `core/bin/tar`（外部引入的二进制），回退系统 tar。
+/// 成功判据：退出码 0 且目标文件（.tar.lz4 或回落 .tar）存在。
 /// 脚本缺失 / tar 全部不可用 → false，调用方保留 staging 并留痕。
 fn pack_dir_tar(root: &Path, dir: &Path, out_tar: &Path) -> bool {
     let script = root.join("scripts/pack.sh");
@@ -2357,7 +2361,15 @@ fn pack_dir_tar(root: &Path, dir: &Path, out_tar: &Path) -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
-    ok && out_tar.exists()
+    if !ok {
+        return false;
+    }
+    if out_tar.exists() {
+        return true;
+    }
+    // 回落产物：脚本没找到 lz4 时保留同名无压缩 .tar
+    let plain = out_tar.to_string_lossy().strip_suffix(".lz4").map(PathBuf::from);
+    plain.is_some_and(|p| p.exists())
 }
 
 /// 打包单个 staging 目录：成功删除目录，失败写 ARCHIVE_FAILED.txt 保留待查

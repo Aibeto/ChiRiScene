@@ -103,13 +103,14 @@ fn main() -> Result<()> {
 
     let log_dir = root.join("logs");
     // 启动归档：把上一轮整个 logs/ 与 devimp/ 分别重命名为临时目录并交单个
-    // 子线程异步打包为 logd/<ts>.tar 与 logd/devimp_<ts>.tar（tar 无压缩；
-    // watchdog.pid 复制回新建的 logs/ 供 stopScheduler 定位看门狗）；打包完成后执行
+    // 子线程异步打包为 logd/<ts>.tar.lz4 与 logd/devimp_<ts>.tar.lz4（pack.sh
+    // 内 lz4 不可用回落 .tar；watchdog.pid 复制回新建的 logs/ 供 stopScheduler
+    // 定位看门狗）；打包完成后执行
     // logd/ 与 devimp/ 各自独立的预算清理（各自 >128MB 时删本目录最旧文件到 <96MB）。
     // 本进程日志写入新建的 logs/；devimp/ 仅在 dev_record 开启时由写入路径惰性创建
     // （归档后不预建空目录，见下），两目录互不干扰。devimp/ 为双诊断文件——
     // main_<pkg>_<MMDD-HHmmss>.log（主诊断，tick/snap/event）+ aff_<MMDD-HHmmss>.log
-    // （线程流，@A 动作帧 + @S 每秒快照帧），归档时一并进 devimp_<ts>.tar。
+    // （线程流，@A 动作帧 + @S 每秒快照帧），归档时一并进 devimp_<ts>.tar.lz4。
     // 必须在 create_dir_all(log_dir)/logger::init 之前执行，保证新旧文件分离。
     let (archived_zip, archived_devimp) = logger::archive_on_startup(&root);
     std::fs::create_dir_all(&log_dir)?;
