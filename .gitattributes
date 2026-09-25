@@ -1,0 +1,17 @@
+# 换行符：LF，关闭 CRLF 自动转换（配合 core.autocrlf=false）
+* text=auto eol=lf
+
+# 明确二进制，避免 text=auto 误判后被换行符规范化
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.zip binary
+*.lz4 binary
+*.gz binary
+# *.chr binary

@@ -104,16 +104,30 @@ ChiRi CLG 调度核心，使用白名单适配soc
 
 ## 开放源代码许可
 
-| Project | License  | Repository                                 |
-| :------ | :------- | :----------------------------------------- |
-| yumi    | GPL v3.0 | [GitHub](https://github.com/imacte/yumi)   |
-| AppOptR | GPL v3.0 | [Gitee](https://gitee.com/sutoliu/AppOptR) |
+| Project                       | License                          | Repository                                                            |
+| :---------------------------- | :------------------------------- | :-------------------------------------------------------------------- |
+| yumi                          | GPL v3.0                         | [GitHub](https://github.com/imacte/yumi)                              |
+| AppOptR                       | GPL v3.0                         | [Gitee](https://gitee.com/sutoliu/AppOptR)                            |
+| linux                         | GPL v2.0 WITH Linux-syscall-note | [GitHub](https://github.com/torvalds/linux)                           |
+| android_kernel_oneplus_sm8550 | GPL v2.0 WITH Linux-syscall-note | [Github](https://github.com/OnePlusOSS/android_kernel_oneplus_sm8550) |
 
 ## 参考与鸣谢
 
 | Project            | License  | Repository                                                   |
 | :----------------- | :------- | :----------------------------------------------------------- |
 | LittleYouran_CTS_3 | GPL v3.0 | [GitHub](https://github.com/LittleYouran/LittleYouran_CTS_3) |
+
+### gitmodules
+
+以下是对 `git submodule` 的补充：
+
+| Submodule                     | commit                                     | branch                             |
+| :---------------------------- | :----------------------------------------- | :--------------------------------- |
+| AppOptR                       | `47cdb2d35869f992f894da3504e21c1da097d870` | master                             |
+| LittleYouran_CTS_3            | `3ecd526b72a08d97429376e519869aa464d50a39` | main                               |
+| android_kernel_oneplus_sm8550 | `b9bdf47513b96f7bd7dd41888edd254ef06a0690` | oneplus/sm8550_b_16.0.0_oneplus_11 |
+
+拉取时注意 `commit` 和 `branch` ，避免参考版本不一致
 
 ---
 
