@@ -7,7 +7,7 @@ use std::os::unix::io::{AsRawFd, RawFd};
 use std::ptr;
 use std::sync::Arc;
 use std::sync::mpsc::{SyncSender, TrySendError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use aya::Ebpf;
 use aya::maps::RingBuf;
@@ -30,6 +30,19 @@ const SYMBOL_SHORT: &str = "_ZN7android7Surface11queueBufferEP19ANativeWindowBuf
 const SYMBOL_LONG: &str =
     "_ZN7android7Surface11queueBufferEP19ANativeWindowBufferiPNS_24SurfaceQueueBufferOutputE";
 const LIBGUI_PATH: &str = "/system/lib64/libgui.so";
+
+/// `android::Surface::queueBuffer` 的 mangled 前缀：类名与方法名固定，参数签名
+/// 随 Android 版本变化（短/长两种硬编码名在新版本机型上都会解析失败 → FAS 收
+/// 不到帧、档位永远不动，表现为 FAS 失效）。扫描按此前缀匹配，签名变化无感。
+const SYMBOL_MANGLED_PREFIX: &str = "_ZN7android7Surface11queueBufferE";
+
+/// attach 失败退避（秒）：符号类故障按档位递增，此后钳在上限
+const RETRY_BACKOFF_SECS: &[u64] = &[1, 2, 5];
+/// libgui 内根本不存在该符号（帧源永久不可用）时的退避：不必频繁重试，
+/// 每 60s 探一次即可——重试要读并解析一遍 libgui 的 ELF 符号表
+const RETRY_BACKOFF_NO_SYMBOL_SECS: u64 = 60;
+/// 无探针时的 poll 超时上限（退避窗口内按此周期醒来，不做 attach）
+const IDLE_POLL_MAX_MS: u64 = 1_000;
 
 /// RingBuf 输出的帧时间戳事件（与 yumi-ebpf 的 FrameTimestampEvent 内存布局一致）
 #[repr(C)]
@@ -90,6 +103,13 @@ struct FpsManager {
     states: HashMap<u32, ProbeState>,
     /// 当前关注的目标 PID（最近一次 attach 的 PID）
     current_pid: u32,
+    /// libgui 里扫描到的 queueBuffer 符号变体（建实例时扫一次；空 = 该文件
+    /// 没有该符号，帧源永久不可用）
+    symbol_candidates: Vec<String>,
+    /// attach 连续失败次数（退避档位与 warn 降频共用）
+    attach_fail_count: u32,
+    /// 下次允许重试 attach 的时刻（退避窗口内不再解析 libgui）
+    attach_retry_at: Instant,
 }
 
 impl FpsManager {
@@ -115,12 +135,24 @@ impl FpsManager {
             ring.as_raw_fd()
         };
 
+        let symbol_candidates = scan_queue_buffer_symbols(LIBGUI_PATH);
+        debug!(
+            "{}",
+            t_with_args(
+                "fps-monitor-symbol-scan",
+                &fluent_args!("count" => symbol_candidates.len().to_string())
+            )
+        );
+
         Ok(Self {
             bpf,
             ring_fd,
             links: HashMap::new(),
             states: HashMap::new(),
             current_pid: 0,
+            symbol_candidates,
+            attach_fail_count: 0,
+            attach_retry_at: Instant::now(),
         })
     }
 
@@ -143,9 +175,13 @@ impl FpsManager {
             self.states.remove(&self.current_pid);
         }
 
-        // new_pid == 0：纯 detach（FAS 去激活待机），不 attach
+        // new_pid == 0：纯 detach（FAS 去激活待机），不 attach。
+        // 失败计数一并清零：上一段会话的退避档位不该带到下一段会话（否则新会话
+        // 首次 attach 失败就直接吃上一轮遗留的最长退避）。
         if new_pid == 0 {
             self.current_pid = 0;
+            self.attach_fail_count = 0;
+            self.attach_retry_at = Instant::now();
             debug!("{}", t("fps-monitor-detached"));
             return Ok(());
         }
@@ -165,21 +201,60 @@ impl FpsManager {
             return Ok(());
         };
 
-        let program: &mut UProbe = self.bpf.program_mut("handle_frame").unwrap().try_into()?;
-        let link = program
-            .attach(
-                UProbeAttachPoint::from(UProbeAttachLocation::from(SYMBOL_SHORT)),
+        // 建实例时没扫到（libgui 当时不可读）的，每次重试前重扫一遍：退避后重试
+        // 频率极低（最长 60s 一次），成本可忽略，能救回开机早期读不到文件的场景。
+        if self.symbol_candidates.is_empty() {
+            self.symbol_candidates = scan_queue_buffer_symbols(LIBGUI_PATH);
+        }
+
+        // 候选顺序：短签名 → 长签名 → libgui 扫描到的变体（后者覆盖短/长名
+        // 都解析失败的机型：签名随 Android 版本变化，扫描按 mangled 前缀匹配）。
+        // TODO: 两个签名并存时先试短签名（旧版重载）——若真机显示帧数偏少，
+        // 说明挂到了非主路径的重载上，改为长签名优先再验一次。
+        let mut candidates: Vec<String> = vec![SYMBOL_SHORT.to_string(), SYMBOL_LONG.to_string()];
+        for sym in &self.symbol_candidates {
+            if !candidates.contains(sym) {
+                candidates.push(sym.clone());
+            }
+        }
+
+        let mut attached = None;
+        for (i, sym) in candidates.iter().enumerate() {
+            let program: &mut UProbe = self.bpf.program_mut("handle_frame").unwrap().try_into()?;
+            match program.attach(
+                UProbeAttachPoint::from(UProbeAttachLocation::from(sym.as_str())),
                 LIBGUI_PATH,
                 scope,
+            ) {
+                Ok(link) => {
+                    if i > 0 {
+                        debug!("{}", t("fps-monitor-symbol-short-miss"));
+                    }
+                    attached = Some((sym.clone(), link));
+                    break;
+                }
+                Err(e) => {
+                    // 最后一个候选的失败原因才是有效诊断信息（前面失败只说明签名不匹配）
+                    if i + 1 == candidates.len() {
+                        return Err(e.into());
+                    }
+                }
+            }
+        }
+        let Some((sym, link)) = attached else {
+            return Err(anyhow::anyhow!("no queueBuffer symbol available"));
+        };
+
+        // attach 成功：清零失败计数，下一次 PID 切换不受退避影响
+        self.attach_fail_count = 0;
+        self.attach_retry_at = Instant::now();
+        debug!(
+            "{}",
+            t_with_args(
+                "fps-monitor-attach-symbol-name",
+                &fluent_args!("symbol" => sym)
             )
-            .or_else(|_| {
-                debug!("{}", t("fps-monitor-symbol-short-miss"));
-                program.attach(
-                    UProbeAttachPoint::from(UProbeAttachLocation::from(SYMBOL_LONG)),
-                    LIBGUI_PATH,
-                    scope,
-                )
-            })?;
+        );
 
         self.links.insert(new_pid, link);
         self.states.entry(new_pid).or_insert_with(ProbeState::new);
@@ -236,6 +311,138 @@ impl FpsManager {
     fn has_active_probe(&self) -> bool {
         self.current_pid > 0
     }
+
+    /// 是否到了可以重试 attach 的时刻（退避窗口内返回 false）。
+    /// 目的：符号解析失败是持续故障，若按 500ms 轮询反复重试，等于每秒两次
+    /// 读并解析 libgui 的 ELF 符号表——纯浪费且把 daemon.log 冲爆。
+    fn attach_retry_due(&self) -> bool {
+        Instant::now() >= self.attach_retry_at
+    }
+
+    /// 无探针时的 poll 超时：睡到下次可重试时刻，上限 1s（退避窗口内只剩
+    /// 一次空转 poll，不做 attach、不解析 ELF）。
+    /// 上限存在的理由：前台 PID 走 mpsc channel、不注册进 poll，超时返回是它
+    /// 唯一的消费窗口——睡满整个退避会把 PID 切换延迟到几十秒后。
+    fn idle_poll_timeout(&self) -> Duration {
+        let left = self.attach_retry_at.saturating_duration_since(Instant::now());
+        left.clamp(Duration::from_millis(100), Duration::from_millis(IDLE_POLL_MAX_MS))
+    }
+
+    /// 记录一次 attach 失败：推进退避窗口并按降频打日志。
+    /// 首次与每 10 次打 warn，其余降为 debug——此前每次失败都 warn，一个游戏
+    /// 会话能刷出数千行，日志写入本身成了负担。
+    fn report_attach_failure(&mut self, err: &anyhow::Error) {
+        self.attach_fail_count = self.attach_fail_count.saturating_add(1);
+        let no_symbol = self.symbol_candidates.is_empty();
+        let backoff = if no_symbol {
+            RETRY_BACKOFF_NO_SYMBOL_SECS
+        } else {
+            let i = (self.attach_fail_count as usize).saturating_sub(1);
+            RETRY_BACKOFF_SECS[i.min(RETRY_BACKOFF_SECS.len() - 1)]
+        };
+        self.attach_retry_at = Instant::now() + Duration::from_secs(backoff);
+
+        if self.attach_fail_count % 10 != 1 {
+            debug!(
+                "{}",
+                t_with_args(
+                    "fps-monitor-pid-switch-failed",
+                    &fluent_args!("error" => err.to_string())
+                )
+            );
+            return;
+        }
+        if no_symbol {
+            warn!(
+                "{}",
+                t_with_args(
+                    "fps-monitor-frame-source-missing",
+                    &fluent_args!(
+                        "lib" => LIBGUI_PATH,
+                        "secs" => backoff.to_string()
+                    )
+                )
+            );
+        } else {
+            warn!(
+                "{}",
+                t_with_args(
+                    "fps-monitor-pid-switch-failed",
+                    &fluent_args!("error" => err.to_string())
+                )
+            );
+        }
+    }
+}
+
+/// 从 ELF64 的动态符号表里取回所有 `android::Surface::queueBuffer` 变体名。
+/// 只支持小端 ELF64（Android 目标机全部如此）；解析不了就返回空 vec，由调用方
+/// 按「帧源不可用」处理——宁可退避，也不要拿硬编码名反复撞墙。
+fn scan_queue_buffer_symbols(path: &str) -> Vec<String> {
+    let Ok(data) = std::fs::read(path) else {
+        return Vec::new();
+    };
+    let Some(out) = scan_dynsym_names(&data) else {
+        return Vec::new();
+    };
+    let mut hits: Vec<String> = out
+        .into_iter()
+        .filter(|n| n.starts_with(SYMBOL_MANGLED_PREFIX))
+        .collect();
+    hits.sort();
+    hits.dedup();
+    hits
+}
+
+/// 读出动态符号表里的全部符号名（SHT_DYNSYM=11，名字表由 sh_link 指向）。
+fn scan_dynsym_names(data: &[u8]) -> Option<Vec<String>> {
+    if data.len() < 64 || data.first()? != &0x7f || data.get(1..4)? != b"ELF" || data[4] != 2 {
+        return None;
+    }
+    let shoff = le_u64(data, 0x28)? as usize;
+    let shentsize = le_u16(data, 0x3a)? as usize;
+    let shnum = le_u16(data, 0x3c)? as usize;
+    if shentsize < 64 || shnum == 0 {
+        return None;
+    }
+    for i in 0..shnum {
+        let sh = shoff + i * shentsize;
+        if le_u32(data, sh + 4)? != 11 {
+            continue;
+        }
+        let sym_off = le_u64(data, sh + 0x18)? as usize;
+        let sym_size = le_u64(data, sh + 0x20)? as usize;
+        let str_idx = le_u32(data, sh + 0x28)? as usize;
+        let st = shoff + str_idx * shentsize;
+        let str_off = le_u64(data, st + 0x18)? as usize;
+        let str_size = le_u64(data, st + 0x20)? as usize;
+        let strtab = data.get(str_off..str_off.saturating_add(str_size))?;
+
+        let mut names = Vec::new();
+        for s in 0..(sym_size / 24) {
+            let so = sym_off + s * 24;
+            let name_idx = le_u32(data, so)? as usize;
+            let Some(rest) = strtab.get(name_idx..) else {
+                continue;
+            };
+            let end = rest.iter().position(|&b| b == 0).unwrap_or(rest.len());
+            if let Ok(name) = std::str::from_utf8(&rest[..end]) {
+                names.push(name.to_string());
+            }
+        }
+        return Some(names);
+    }
+    None
+}
+
+fn le_u16(d: &[u8], off: usize) -> Option<u16> {
+    Some(u16::from_le_bytes(d.get(off..off + 2)?.try_into().ok()?))
+}
+fn le_u32(d: &[u8], off: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(d.get(off..off + 4)?.try_into().ok()?))
+}
+fn le_u64(d: &[u8], off: usize) -> Option<u64> {
+    Some(u64::from_le_bytes(d.get(off..off + 8)?.try_into().ok()?))
 }
 
 // [loop]
@@ -353,33 +560,23 @@ pub async fn start_fps_loop(
                     fas_signal.wait_until_active();
                     continue;
                 }
-                if !manager.has_active_probe() {
+                if !manager.has_active_probe() && manager.attach_retry_due() {
                     let cur = *rx_pid.borrow();
                     if cur > 0 {
                         if let Err(e) = manager.switch_pid(cur) {
-                            warn!(
-                                "{}",
-                                t_with_args(
-                                    "fps-monitor-pid-switch-failed",
-                                    &fluent_args!("error" => e.to_string())
-                                )
-                            );
+                            manager.report_attach_failure(&e);
                         }
                     }
                 }
 
                 // [pid-switch] 
                 // PID 变化（tokio 订阅任务桥接的共享前台 PID 广播）
+                // 这里**不走退避门控**：新 PID 是新信息（上一个进程挂载失败不代表
+                // 这一个也失败），值得立刻重试一次；失败照常计入退避。
                 while let Ok(new_pid) = pid_rx.try_recv() {
                     // 无需重新注册 Poll——RingBuf fd 不变
                     if let Err(e) = manager.switch_pid(new_pid) {
-                        warn!(
-                            "{}",
-                            t_with_args(
-                                "fps-monitor-pid-switch-failed",
-                                &fluent_args!("error" => e.to_string())
-                            )
-                        );
+                        manager.report_attach_failure(&e);
                     }
                 }
 
@@ -388,7 +585,7 @@ pub async fn start_fps_loop(
                 let timeout = if manager.has_active_probe() {
                     Some(Duration::from_millis(100))
                 } else {
-                    Some(Duration::from_millis(500))
+                    Some(manager.idle_poll_timeout())
                 };
 
                 // mio poll error 只意味着被信号打断，sleep 后重试即可

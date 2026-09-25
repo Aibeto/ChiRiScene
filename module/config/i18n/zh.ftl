@@ -89,6 +89,9 @@ fps-monitor-passive = [FPS Monitor] FAS 未激活，探针待机（不挂载 upr
 fps-monitor-detached = [FPS Monitor] FAS 已去激活，探针摘除（回到零开销待机）
 fps-monitor-symbol-short-miss = [FPS Monitor] 短签名符号 attach 失败，尝试长签名符号...
 fps-monitor-attach-symbol = [FPS Monitor] 使用符号 attach: { $lib } (pid={ $pid })
+fps-monitor-attach-symbol-name = [FPS Monitor] 命中符号: { $symbol }
+fps-monitor-symbol-scan = [FPS Monitor] libgui 符号扫描：命中 { $count } 个 queueBuffer 变体
+fps-monitor-frame-source-missing = [FPS Monitor] 帧源不可用：{ $lib } 内无 Surface::queueBuffer 符号，FAS 档位控制停摆（退避 { $secs }s 后重试）
 fps-monitor-frame-summary = [FPS Monitor] 帧摘要 | pid={ $pid } 窗口={ $window } 最新={ $latest_ms }ms 平均={ $avg_ms }ms
 fps-monitor-frames-dropped = [FPS Monitor] 事件通道拥塞，已丢弃 { $count } 个帧样本（调度层消费不及时）
 

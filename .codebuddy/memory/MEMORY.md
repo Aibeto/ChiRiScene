@@ -118,6 +118,7 @@
 - **FG util 口径（2026-09-23 修）**：`compute_tgid_util` 基线存 adj(raw+pending)、util = adj 差分/墙钟；旧「raw 差分+当前 pending」多算 pending(t0)，util 系统性高估。
 - **亲和/core_ctl 恢复写失败（2026-09-23）**：非 ESRCH 失败保留状态（home/计数/moved_group/自钉清单）待重试，成功或 ESRCH 才清；unpin_self 按成功 tid 清单恢复，勿用 self_pinned 总开关短路。
 - **CLG 热压制语义（2026-09-23 修）**：只钳写频、**不回写 `current_perf`**（回写会让状态卡死在 cap，「持续高负载涨过豁免档」不成立）；生效区间 `(soft_perf_cap, free_above)`，`>= free_above` 不钳制。**豁免档必须严格大于 soft_perf_cap**——8550 曾 free 0.80 被 normalize 抬到 0.85 = 压制带为空、41℃ 软限档全程空转（cap=85 仍写 hw_max），已改 0.95（normalize 同日收紧为「过低或相等 → soft+0.10」）。热压制只作用于 CLG，tuned（playback/akmode）不参与。
+- **FAS「接管了但没帧」= uprobe 帧源没挂上，不是策略问题（2026-09-25 定位）**：status.csv 有 `mode=fas` 行而 `fps` 列全空、daemon.log 反复刷 `PID 切换失败: error resolving symbol` → libgui 的 `Surface::queueBuffer` mangled 名随 Android 版本变化，硬编码短/长签名在部分机型全miss。表现：FAS 档位永不调整，snap 侧 fas 段 `cur==max` 整段恒定、governor=performance，功耗显著高于基线。判读顺序：daemon.log 的 PID 切换失败 → status.csv 的 fps 列 → snap 的 cur/max。修复方向在 `monitor/fps_monitor.rs`（dynsym 扫描取变体 + 失败退避），判据见代码注释。
 
 ## 电池读数（遥测）
 

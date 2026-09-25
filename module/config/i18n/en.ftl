@@ -89,6 +89,9 @@ fps-monitor-passive = [FPS Monitor] FAS not active, probe standing by (no uprobe
 fps-monitor-detached = [FPS Monitor] FAS deactivated, probe detached (back to zero-overhead standby)
 fps-monitor-symbol-short-miss = [FPS Monitor] short symbol attach failed, trying long symbol...
 fps-monitor-attach-symbol = [FPS Monitor] attached with symbol: { $lib } (pid={ $pid })
+fps-monitor-attach-symbol-name = [FPS Monitor] matched symbol: { $symbol }
+fps-monitor-symbol-scan = [FPS Monitor] libgui symbol scan: { $count } queueBuffer variant(s) found
+fps-monitor-frame-source-missing = [FPS Monitor] frame source unavailable: no Surface::queueBuffer symbol in { $lib }, FAS gear control stalled (retry in { $secs }s)
 fps-monitor-frame-summary = [FPS Monitor] frame summary | pid={ $pid } window={ $window } latest={ $latest_ms }ms avg={ $avg_ms }ms
 fps-monitor-frames-dropped = [FPS Monitor] event channel congested, { $count } frame samples dropped (scheduler consuming too slowly)
 
