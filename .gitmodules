@@ -1,0 +1,12 @@
+[submodule "AppOptR"]
+	path = AppOptR
+	url = https://gitee.com/sutoliu/AppOptR.git
+	branch = master
+[submodule "LittleYouran_CTS_3"]
+	path = LittleYouran_CTS_3
+	url = https://github.com/LittleYouran/LittleYouran_CTS_3.git
+	branch = main
+[submodule "android_kernel_oneplus_sm8550"]
+	path = android_kernel_oneplus_sm8550
+	url = https://github.com/OnePlusOSS/android_kernel_oneplus_sm8550.git
+	branch = oneplus/sm8550_b_16.0.0_oneplus_11

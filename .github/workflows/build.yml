@@ -22,8 +22,10 @@ env:
 jobs:
   build:
     name: Build and Package
-    # 使用最新的 Ubuntu 运行环境
-    runs-on: ubuntu-latest
+    # 钉版本：ubuntu-latest 在 2026-10-19~11-19 期间切到 26.04，
+    # TODO: 待 26.04 上验证过 eBPF 编译链（bpf-linker 预编译二进制 + NDK 链接）再升。
+    # runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
 
     steps:
       # 1. 拉取代码

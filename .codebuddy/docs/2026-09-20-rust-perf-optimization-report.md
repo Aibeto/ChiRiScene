@@ -8,18 +8,18 @@
 
 代码里已经做过一轮热路径优化（`FastWriter` 持 fd + 栈缓冲、`log_enabled!` 门控 `format!`、`Arc` 共享替代逐簇 `to_vec`、事件驱动 deadline 替代 100ms 空转）。剩余空间分三档：
 
-| 级别 | 项 | 现状 | 收益（估算） |
-|---|---|---|---|
-| P0 | K1 合并 eBPF percpu map | 每次 sched_switch 5 次 map 查找 | 探针耗时降 30%~50% |
-| P0 | K2 THREAD_RUN_TIME 记账开关 | 32768 项 hash 每次开关无条件累加，仅降级路径消费 | 每次开关省 1 次 hash 查找/插入 |
-| P0 | K3 遥测探针按需挂载 | sched_wakeup 等 3 个 tracepoint 无条件挂 | 高频唤醒场景省 1%~3% CPU |
-| P1 | U1 日志落盘 syscall | 每条日志 6 次 syscall | 高日志量下 syscall 降 5/6 |
-| P1 | U3 采样期 map 读取 | 每 tick 9 次 bpf 读 + 1 次 Vec 分配 | 与 K1 联动降到 5 次 |
-| P2 | A1 i18n `t()` | 每条日志 RwLock + Fluent 解析 + String 分配 | 日志路径分配趋零 |
-| P2 | A2 devimp 行构造 | 每行 40 列 String + join | dev 路径分配降一个量级 |
-| P3 | B1/B2 tokio 运行时 | 2 个多线程 runtime，8 核约 16 工作线程 | 线程与内存显著下降 |
-| P3 | B4 构建剖面 | `opt-level="z"` + fat LTO | 需 A/B 实测后定 |
-| P3 | B3/B5/B6 依赖裁剪 | 4 个未使用依赖、log4rs 只用一个编码器 | 体积与 CI 时间 |
+| 级别 | 项                          | 现状                                             | 收益（估算）                   |
+| ---- | --------------------------- | ------------------------------------------------ | ------------------------------ |
+| P0   | K1 合并 eBPF percpu map     | 每次 sched_switch 5 次 map 查找                  | 探针耗时降 30%~50%             |
+| P0   | K2 THREAD_RUN_TIME 记账开关 | 32768 项 hash 每次开关无条件累加，仅降级路径消费 | 每次开关省 1 次 hash 查找/插入 |
+| P0   | K3 遥测探针按需挂载         | sched_wakeup 等 3 个 tracepoint 无条件挂         | 高频唤醒场景省 1%~3% CPU       |
+| P1   | U1 日志落盘 syscall         | 每条日志 6 次 syscall                            | 高日志量下 syscall 降 5/6      |
+| P1   | U3 采样期 map 读取          | 每 tick 9 次 bpf 读 + 1 次 Vec 分配              | 与 K1 联动降到 5 次            |
+| P2   | A1 i18n `t()`               | 每条日志 RwLock + Fluent 解析 + String 分配      | 日志路径分配趋零               |
+| P2   | A2 devimp 行构造            | 每行 40 列 String + join                         | dev 路径分配降一个量级         |
+| P3   | B1/B2 tokio 运行时          | 2 个多线程 runtime，8 核约 16 工作线程           | 线程与内存显著下降             |
+| P3   | B4 构建剖面                 | `opt-level="z"` + fat LTO                        | 需 A/B 实测后定                |
+| P3   | B3/B5/B6 依赖裁剪           | 4 个未使用依赖、log4rs 只用一个编码器            | 体积与 CI 时间                 |
 
 **首要动作建议**：先补自测量（[measure]），再动 K1/K2/U1。理由：没有基线，P0 的收益无法证明，而 P0 改动面在内核探针，回归风险最高。
 
@@ -137,7 +137,7 @@ logger.rs:8-12 只用了 `PatternEncoder` 加自定义 `Append`，却带进 chro
 - **不要上 `panic = "abort"`**，理由见 B4。
 - **不要为了省 syscall 砍掉日志自愈**。logger.rs:63-66 记录得很清楚：外部删掉 `daemon.log` 后持久化句柄会写进已 unlink 的 inode，当初换成按路径 open 就是为了这个，U1 的重开路径必须保留。
 - **不要在调度决策里加缓存换延迟**。40ms/160ms 的负载投喂是实时性契约，[evt_load] 里的每次判定都依赖当拍 util。
-- **不要顺手改 DOWN 停摆的门控**。停摆期跳过下发的分支是逐条补出来的，性能改动碰这几处要先重读 `docs/agents/03-chiri.md` 的 DOWN 小节。
+- **不要顺手改 DOWN 停摆的门控**。停摆期跳过下发的分支是逐条补出来的，性能改动碰这几处要先重读 `agentsdocs/03-chiri.md` 的 DOWN 小节。
 
 ## [plan] 落地顺序
 

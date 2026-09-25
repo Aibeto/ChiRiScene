@@ -35,9 +35,7 @@ logd/
 # TRAE & CodeBuddy
 .trae-html-share-packages/
 
-# reference
-AppOptR/
-LittleYouran_CTS_3/
+# 参考仓库改为 git submodule 记录（见 .gitmodules），不再靠忽略规则排除
 
 # devimp
 devimpbin/
