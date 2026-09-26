@@ -1,7 +1,7 @@
 id=chiri
 name=ChiRi Canary
-version=Alpha07-02
-versionCode=10702
+version=Alpha07-04
+versionCode=10704
 author=Aibeto
 description=小心的滑
 updateJson=https://raw.githubusercontent.com/Aibeto/ChiRi/main/updateInformation/update.json
