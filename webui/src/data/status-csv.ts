@@ -1,8 +1,9 @@
 // status-csv.ts: [columns] [types] [parse]
 // logs/status.csv 契约（src/logger.rs STATUS_HEADER / status_log_snapshot）：
-//   22 列、首行是表头、type 恒为 snap；timestamp 是**设备本地时间** HH:MM:SS.mmm（无日期）；
+//   23 列、首行是表头、type 恒为 snap；timestamp 是**设备本地时间** HH:MM:SS.mmm（无日期）；
 //   缺测值统一为 '-'；screen_on / clg_active 用 0/1 表示。
 //   fps 是预留列：仅 FAS 激活且帧窗口有样本时为实测值，其余为 '-'。
+//   screen_prop 是 debug.tracing.screen_state 原始值（'-' = 属性缺失）。
 // 该文件仅 ChiRi 机型的调度线程产生，读取一律取尾部窗口。
 
 // [columns]
@@ -28,7 +29,8 @@ export const STATUS_COLUMNS = [
   'wakeups',
   'migrations',
   'freq_trans',
-  'fps'
+  'fps',
+  'screen_prop'
 ] as const
 
 export const STATUS_COLUMN_COUNT = STATUS_COLUMNS.length
@@ -61,6 +63,8 @@ export interface StatusRow {
   freqTrans: number | null
   /** FAS 实测帧率；未启动 FAS 时为 null（CSV 里是 '-'） */
   fps: number | null
+  /** debug.tracing.screen_state 原始值；属性缺失为空串（CSV 里是 '-'） */
+  screenProp: string
 }
 
 // [parse]
@@ -85,7 +89,7 @@ function str(raw: string | undefined): string {
 
 /**
  * 解析 CSV 文本为快照行。窗口可能从行中间开始（tail -c），
- * 因此按「字段数必须等于 22」过滤残缺行；表头行按首列名识别。
+ * 因此按「字段数必须等于 23」过滤残缺行；表头行按首列名识别。
  * 返回按时间顺序（文件顺序）的数组，由调用方决定展示方向。
  */
 export function parseStatusCsv(text: string, maxRows = 300): StatusRow[] {
@@ -118,7 +122,8 @@ export function parseStatusCsv(text: string, maxRows = 300): StatusRow[] {
       wakeups: num(cells[18]),
       migrations: num(cells[19]),
       freqTrans: num(cells[20]),
-      fps: num(cells[21])
+      fps: num(cells[21]),
+      screenProp: str(cells[22])
     })
   }
   return rows.length > maxRows ? rows.slice(rows.length - maxRows) : rows

@@ -129,6 +129,15 @@ describe('meta.yaml 校验（复刻守护进程口径）', () => {
     expect(validateFieldValue('oplus_chg', 1 as unknown as boolean)).not.toBeNull()
   })
 
+  it('息屏判定值：仅 0/1 合法', () => {
+    expect(validateFieldValue('screen_off_value', 1)).toBeNull()
+    expect(validateFieldValue('screen_off_value', 0)).toBeNull()
+    expect(validateFieldValue('screen_off_value', 2)).not.toBeNull()
+    expect(validateFieldValue('screen_off_value', true as unknown as number)).not.toBeNull()
+    expect(validateMeta({ ...valid, screen_off_value: 0 })).toEqual([])
+    expect(validateMeta({ ...valid, screen_off_value: 2 }).length).toBe(1)
+  })
+
   it('电池读数字段：布尔类型与单位校准的数字类型', () => {
     expect(
       validateMeta({

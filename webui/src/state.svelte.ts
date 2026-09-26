@@ -678,6 +678,9 @@ class AppStore {
   /** PowerBase 开关写入中的状态（高级设置） */
   powerbasePending = $state(false)
   powerbaseError = $state('')
+  /** 息屏判定值写入中的状态（高级设置） */
+  screenOffPending = $state(false)
+  screenOffError = $state('')
   /** 当前功耗（W，status.csv 最后一行的 batt_power_w，1s 采样）：null = 无行/无读数，显示 — */
   powerNowWatt = $state<number | null>(null)
 
@@ -689,6 +692,12 @@ class AppStore {
   /** PowerBase 是否开启（meta.yaml `powerbase_enabled`，默认 false = 由 CLG 调频） */
   get powerbaseEnabled(): boolean {
     return this.metaSnapshot?.values?.powerbase_enabled === true
+  }
+
+  /** 息屏判定值（meta.yaml `screen_off_value`，缺省 1）：debug.tracing.screen_state
+   *  等于该值视为息屏；非法值与缺失一律按默认 1 呈现（daemon 侧同口径） */
+  get screenOffValue(): number {
+    return this.metaSnapshot?.values?.screen_off_value === 0 ? 0 : 1
   }
 
   // [powerMax]
@@ -851,6 +860,37 @@ class AppStore {
       toast(enabled ? t('config.powerbase') : t('config.advanced'))
     } finally {
       this.powerbasePending = false
+      this.metaWritePending = false
+    }
+  }
+
+  /**
+   * 高级设置：息屏判定值——直写 meta.yaml 的 `screen_off_value`（不走草稿，立即热重载）。
+   * debug.tracing.screen_state 属性等于该值视为息屏；默认 1，安装脚本会按安装期
+   * 实测值自动校正。写后回读，界面以实际落盘内容为准。
+   */
+  async setScreenOffValue(value: 0 | 1): Promise<void> {
+    if (this.screenOffPending || this.metaWritePending) return
+    this.screenOffPending = true
+    this.metaWritePending = true
+    this.screenOffError = ''
+    try {
+      const result = await writeMetaFields({ screen_off_value: value })
+      if (result.kind !== 'ok') {
+        this.screenOffError =
+          result.kind === 'failed' ? result.error : t('state.unsupportedEnv')
+        toast(this.screenOffError)
+        return
+      }
+      this.metaSnapshot = result.value
+      this.metaValid = result.value.valid
+      this.metaProblems = result.value.problems
+      this.metaPath = result.value.path
+      // meta 直写成功：强制补拉静态项（meta 快照刚被改；fire-and-forget 不拖慢返回）
+      void this.loadStatic(true)
+      toast(t(value === 1 ? 'config.screenoff' : 'config.screenoff.zero'))
+    } finally {
+      this.screenOffPending = false
       this.metaWritePending = false
     }
   }

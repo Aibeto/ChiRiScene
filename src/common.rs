@@ -8,7 +8,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 // [events]
 /// 守护进程全局事件总线
@@ -436,6 +436,21 @@ pub fn set_powerbase_enabled(enabled: bool) {
 /// 不在 tick 内读磁盘与锁。
 pub fn powerbase_enabled() -> bool {
     POWERBASE_ENABLED.load(Ordering::Acquire)
+}
+
+/// 息屏判定值（meta.yaml `screen_off_value`，缺省 1）：debug.tracing.screen_state
+/// 属性值等于该值视为息屏，其余数字视为亮屏。Config::load 时同步到原子量，
+/// 屏幕检测（monitor/screen_detect.rs [prop]）只读原子量，不在 tick 内读磁盘。
+static SCREEN_OFF_VALUE: AtomicU32 = AtomicU32::new(1);
+
+/// 设置息屏判定值（meta.yaml 的 screen_off_value，Config::load 时调用）。
+pub fn set_screen_off_value(value: u32) {
+    SCREEN_OFF_VALUE.store(value, Ordering::Release);
+}
+
+/// 息屏判定值（meta.yaml 的 screen_off_value，缺省 1）。
+pub fn screen_off_value() -> u32 {
+    SCREEN_OFF_VALUE.load(Ordering::Acquire)
 }
 
 /// 设置 FAS 总开关（meta.yaml 的 fas_enabled，Config::load 时调用）。
@@ -978,6 +993,8 @@ struct MetaYamlFile {
     nofix: Option<bool>,
     /// 耗电读数满量程 W（缺省 12）：详见 ExternalMetaOverrides
     power_max_w: Option<f32>,
+    /// 息屏判定值（0/1，缺省 1）：详见 ExternalMetaOverrides
+    screen_off_value: Option<u32>,
 }
 
 /// 磁盘 meta.yaml 交给 Config::load 的覆盖值：**None = 文件里没写这个键 → 沿用内嵌默认**
@@ -1041,6 +1058,12 @@ pub struct ExternalMetaOverrides {
     /// 耗电读数满量程 W（meta.yaml `power_max_w`，缺省 12）：只影响 WebUI 状态页
     /// 仪表盘的进度换算，不参与任何调度决策。
     pub power_max_w: Option<f32>,
+    /// 息屏判定值（meta.yaml `screen_off_value`，缺省 1）：debug.tracing.screen_state
+    /// 属性等于该值视为息屏。取值仅 0/1，其它值在 parse_disk_meta 回退默认（不判整文件非法）。
+    /// 消费点：chiri Config::load 合并后 set_screen_off_value 同步原子量，读取在
+    /// monitor/screen_detect.rs [prop]；安装脚本 customize.sh 的 [screen-detect] 段
+    /// 会在安装期按属性实测值翻转该字段。
+    pub screen_off_value: Option<u32>,
 }
 
 /// 读磁盘 meta.yaml（先经 sync_meta_snapshot 校验/纠正）。文件缺失或仍非法时返回
@@ -1141,6 +1164,9 @@ fn parse_disk_meta(text: &str) -> Option<ExternalMetaOverrides> {
     };
     let voltage_divisor = f.voltage_divisor.or(f.unit_divisor).map(sane);
     let current_divisor = f.current_divisor.map(sane);
+    // 息屏判定值：仅 0/1 合法，其它值回退默认 1（与 power_max_w 同口径，
+    // 单个字段笔误不判整个文件非法）
+    let screen_off_value = f.screen_off_value.map(|v| if v <= 1 { v } else { 1 });
     Some(ExternalMetaOverrides {
         loglevel: match f.loglevel.as_deref() {
             Some(v) => Some(sanitize_loglevel(v)?),
@@ -1166,6 +1192,7 @@ fn parse_disk_meta(text: &str) -> Option<ExternalMetaOverrides> {
         current_divisor,
         nofix: f.nofix,
         power_max_w,
+        screen_off_value,
     })
 }
 

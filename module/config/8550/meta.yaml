@@ -30,3 +30,6 @@ current_divisor: 1000000
 power_max_w: 12
 # PowerBase 总开关（Stardust 家族，高级设置，默认关闭）：开启后 CLG 交由 PowerBase 接管
 powerbase_enabled: false
+# 息屏判定值（高级设置，默认 1）：debug.tracing.screen_state 属性等于该值视为息屏。
+# 安装时会按属性实测值自动校正，一般无需手改。
+screen_off_value: 1

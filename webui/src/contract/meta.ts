@@ -36,7 +36,9 @@ export const META_FIELDS = [
   /** 旧键（曾把电压/电流校准合成一个）：daemon 仍接收，等价于只设电压校准 */
   'unit_divisor',
   'nofix',
-  'power_max_w'
+  'power_max_w',
+  /** 息屏判定值（debug.tracing.screen_state 等于该值视为息屏，仅 0/1） */
+  'screen_off_value'
 ] as const
 export type MetaField = (typeof META_FIELDS)[number]
 
@@ -56,7 +58,8 @@ export const WRITABLE_FIELDS = [
   'current_double',
   'voltage_divisor',
   'current_divisor',
-  'power_max_w'
+  'power_max_w',
+  'screen_off_value'
 ] as const
 export type WritableField = (typeof WRITABLE_FIELDS)[number]
 
@@ -208,6 +211,13 @@ export function validateMeta(values: Record<string, unknown>): string[] {
   ) {
     problems.push('devimp_top_n 必须是整数')
   }
+  // 息屏判定值：仅 0/1 合法（daemon 侧其它值回退默认 1，不判整文件非法，界面从严）
+  if ('screen_off_value' in values) {
+    const v = values.screen_off_value
+    if (typeof v !== 'number' || !Number.isInteger(v) || (v !== 0 && v !== 1)) {
+      problems.push('screen_off_value 只能是 0 或 1')
+    }
+  }
   for (const f of ['unit_divisor', 'voltage_divisor', 'current_divisor'] as const) {
     if (f in values && (typeof values[f] !== 'number' || !Number.isFinite(values[f]))) {
       problems.push(`${f} 必须是数字`)
@@ -240,6 +250,12 @@ export function validateFieldValue(
       return Number.isFinite(n) && n > 0 && n <= 1e9
         ? null
         : '校准值必须是大于 0 的数字（缺省 1000000；OPlus 私有节点由安装脚本写成 1000）'
+    }
+    case 'screen_off_value': {
+      // 布尔必须显式拒绝（Number(true) === 1 会混过数值检查；daemon 侧 serde u32 也不收布尔）
+      if (typeof value === 'boolean') return '息屏判定值只能是 0 或 1'
+      const n = Number(value)
+      return n === 0 || n === 1 ? null : '息屏判定值只能是 0 或 1'
     }
     case 'dev_record':
     case 'fas_enabled':

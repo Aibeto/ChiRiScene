@@ -6,7 +6,7 @@ import { filterByLevel, parseDaemonLog } from '@/data/daemon-log'
 const HEADER =
   'timestamp,type,mode,package,charge,screen_on,batt_temp,cpu_temp,thermal_cap_pct,thermal_free_pct,' +
   'clg_active,psi_cpu_some,psi_io_some,psi_mem_some,gpu_busy_pct,batt_voltage_v,batt_current_ma,' +
-  'batt_power_w,wakeups,migrations,freq_trans,fps'
+  'batt_power_w,wakeups,migrations,freq_trans,fps,screen_prop'
 
 function row(overrides: Partial<Record<string, string>> = {}): string {
   const base: Record<string, string> = {
@@ -31,7 +31,8 @@ function row(overrides: Partial<Record<string, string>> = {}): string {
     wakeups: '210',
     migrations: '6',
     freq_trans: '902',
-    fps: '-'
+    fps: '-',
+    screen_prop: '1'
   }
   return [
     'timestamp',
@@ -55,16 +56,17 @@ function row(overrides: Partial<Record<string, string>> = {}): string {
     'wakeups',
     'migrations',
     'freq_trans',
-    'fps'
+    'fps',
+    'screen_prop'
   ]
     .map(col => overrides[col] ?? base[col])
     .join(',')
 }
 
 describe('status.csv 解析', () => {
-  it('列数常量与守护进程表头一致（22 列）', () => {
-    expect(STATUS_COLUMN_COUNT).toBe(22)
-    expect(HEADER.split(',')).toHaveLength(22)
+  it('列数常量与守护进程表头一致（23 列）', () => {
+    expect(STATUS_COLUMN_COUNT).toBe(23)
+    expect(HEADER.split(',')).toHaveLength(23)
   })
 
   it('跳过表头并按列名取值', () => {
@@ -81,6 +83,8 @@ describe('status.csv 解析', () => {
     expect(r.battPower).toBeCloseTo(-1.95)
     // FAS 未启动：fps 预留列为 '-' → null
     expect(r.fps).toBeNull()
+    // screen_prop：属性原始值
+    expect(r.screenProp).toBe('1')
   })
 
   it('FAS 激活时 fps 列取实测值', () => {

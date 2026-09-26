@@ -24,7 +24,7 @@
 ### meta.yaml 写侧
 
 - 严格层 `common::MetaYamlFile`+`deny_unknown_fields`；字段全可选（缺省沿用内嵌默认），出现即校验（loglevel 五级大小写不敏感、language∈zh/en、name/author trim 非空、开关键布尔、power_max_w 数字越界回退 12）。
-- 可写字段：`loglevel` `language` `dev_record` `fas_enabled` `scenemode_enabled` `thread_bind` `power_avg` `notify` + 电池 `oplus_chg` `oplus_dual_cell` `voltage_double` `current_double` `voltage_divisor` `current_divisor`（旧键 `unit_divisor` 兜底）。
+- 可写字段：`loglevel` `language` `dev_record` `fas_enabled` `scenemode_enabled` `thread_bind` `power_avg` `notify` `screen_off_value` + 电池 `oplus_chg` `oplus_dual_cell` `voltage_double` `current_double` `voltage_divisor` `current_divisor`（旧键 `unit_divisor` 兜底）。
 - 非法后果：`sync_meta_snapshot`（启动+每次热重载前）用内嵌默认整份覆盖并追加 `# 上一次修改存在非法字段…`，用户其它改动一并丢失。
 - **新增字段同步点**：`MetaYamlFile`/`ExternalMetaOverrides` + `chiri::config::Meta` 与 `Config::load` 覆盖合并 + 四个 meta.yaml 模板 + WebUI `contract/meta.ts` + `tests/contract.test.ts`。**nofix 门控**（进程级 `NOFIX`，`read_nofix_flag` 必须早于自愈）。
 - 双层解析：严格层仅 sync 用；容错层 chiri::config::Meta（`#[serde(default)]`）、scheduler::config::Meta（只 loglevel/language）。`fas_enabled`/`scenemode_enabled`/`thread_bind` 缺省 true。
@@ -54,7 +54,7 @@
 ### 日志与预算
 
 - `daemon.log` ≤50MB + 3 备份；行格式 `[YYYY-MM-DD HH:MM:SS] [LEVEL] [module] msg`（本地时间），模块剥 crate 前缀。
-- `status.csv` ≤8MB + `.1`，每秒一行 **22 列**（末列 `fps` 仅 FAS 激活有值）；新增列一律追加末尾；全精度写入、显示层 `toFixed(1)`。两者都不可整读。
+- `status.csv` ≤8MB + `.1`，每秒一行 **23 列**（末列 `screen_prop` = debug.tracing.screen_state 原始值、缺失 "-"；`fps` 仅 FAS 激活有值）；新增列一律追加末尾；全精度写入、显示层 `toFixed(1)`。两者都不可整读。
 - 启动：先判短会话（首行距启动 <30s → 清空不打包；解析失败按非短会话），再把上轮打包进 `logd/`（`pack.sh` 走外部 tar，**不得改**；导出 = logd→tar→**gzip**→删中间产物）。
 - 预算（2026-09-24 由 128/96 扩容为 256/200MB）：`logd/`、`devimp/` **各自独立计量**，各自 >256MB 才清理到 <200MB。**两目录清理语义不同**：logd/ 走 `enforce_logd_limit` 按**归档批次原子删**（`<ts>.tar` 与 `devimp_<ts>.tar` 同进退、最新批次永不删；最新批次自身 ≥200MB 时退化为收到 256MB 即停，不为凑目标陪葬旧批次）；devimp/ 仍按单文件 mtime 删（活跃 + 最新一份永不删）。历史坑：旧「只保最新一个文件」会把同批 ~1MB 的 `<ts>.tar`（daemon.log/status.csv 唯一载体）连同旧批次删掉，导出包只剩 devimp tar。
 - 写路径记账 ≥128MB（`LOG_RESTART_THRESHOLD_BYTES`，**未随预算扩容**；devimp 单文件软上限同为 128MB、按数量保留 20 份）即 `exit(0)`，**无看门狗时不退出**：`watchdog_pid()` = 「`logs/watchdog.pid` 内容 == `getppid()`」∪「脱管 shell」（`detached_shell_parent`：comm 属 shell 家族且 `/proc/<ppid>/stat` 祖字段 ==1）；两条都不成立则计数清零并打一条 warn `logger-log-restart-suppressed`（2026-09-24 起，旧实现静默失效、零痕迹）。`ensure_watchdog_pid_file` 重建时只用脱管 shell 判据（文件正缺失，pidfile 无从匹配）。
@@ -112,7 +112,7 @@
 - **白名单 `re:` 解析**：必须 `strip_prefix("re:")` 再按 `:` 切分；导出 yaml 只含精确条目 → UI 只能近似。
 - **FAS 单实例+延迟退出**：activate 时 GovernorGuard 切 performance；失前台 `request_delayed_exit` 持策略 15s（夹 1..=600），到期 1s tick 退出并按 `pending_mode_after_fas` 重接管；ModeChange 的 fas→非fas 拦截在 mode_clone 更新前。息屏与 FAS 完全解耦。
 - **帧指标口径**：eBPF 只有一个 uprobe（`Surface::queueBuffer`），`frame_delta_ns` = 相邻帧间隔；必须只投喂新产生的帧。
-- **息屏轴**：scenemode 停迁移 + cpuset 全核 + 只压 CLG 上限；判定走屏幕**投票仲裁**（OFF 票**超过有效票数一半**即确认，2026-09-23 由固定 2 票改为多数票）；**已无节点退役、无恒亮屏兜底**——`verify_screen_state` 每轮全节点投票校正，票数是唯一判断标准。
+- **息屏轴**：scenemode 停迁移 + cpuset 全核 + 只压 CLG 上限；判定现走 `debug.tracing.screen_state` 属性轮询（口径：当前值 == `screen_off_value` 即息屏，**其余含缺失一律亮屏**；缺省 1，安装脚本按实测翻转；2026-09-26 切换，sysfs 投票检测 [PAUSED] 留在 `screen_detect.rs`，恢复见 `agentsdocs/03-chiri.md` 屏幕状态小节）。
 - **后台降权**：`AffinityConfig.background_uclamp_max_pct`（默认 50）钳后台/受限组 `cpu.uclamp.max`；`affinity_blacklist.yaml` 含 SystemUI/桌面。`thread_bind` 是线程摆放总闸。
 - **stat comm 口径（2026-09-23 修）**：`sample_one_tid` 以首 '(' 与末 ')' 定界 comm；旧 `text[1..close]` 混入「tid 尾部+` (`」致 KEY_THREAD_COMMS/黑名单精确匹配恒不命中，修复后已生效。
 - **FG util 口径（2026-09-23 修）**：`compute_tgid_util` 基线存 adj(raw+pending)、util = adj 差分/墙钟；旧「raw 差分+当前 pending」多算 pending(t0)，util 系统性高估。

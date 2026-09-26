@@ -30,6 +30,8 @@ webui/                # Svelte 5(runes) + TypeScript + Vite + ak-ui 管理界面
   scripts/fetch-fonts.mjs  # 构建期拉取字体（predev/prebuild 自动执行）：Poppins 拉丁 + Noto Sans SC 中文子集，产物 src/assets/fonts/ 不入库
 updateInformation/    # 更新.json 与 changelog
 .github/workflows/    # CI：Node 24 + Rust nightly + NDK r29 + cargo-ndk；提交信息含 "skip ci"（不分大小写）时跳过该次构建
+devimpbin/            # devimp 日志工作区（AI 协作用，gitignore）：logd_*.tar.gz 导出包 → dvrun.py 解包 → 各日期子目录（daemon.log / status.csv / main_*.log / aff_*.log + analyze/main/aff/status/report 聚合表）；tmp_* scratch 用完即删
+scripts/devimp/       # devimp 分析管道：dvrun.py（一条命令跑完解包+聚合表）、dvlz4.py（lz4 解压）
 ```
 
 ## [stack] 技术栈

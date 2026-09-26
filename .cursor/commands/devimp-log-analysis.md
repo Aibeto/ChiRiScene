@@ -277,3 +277,18 @@ python scripts\devimp-analyze.py <解压目录> [--since MMDD-HHMMSS] [--min-n 3
 16. **PowerShell 重定向会毁掉 python stdout 的中文**：按控制台代码页重编码，产出 mojibake
     （2026-09-25 实测）。预设脚本因此**自己写 UTF-8 结果文件**（`main.txt` 等），stdout 只留
     短摘要；分析这些脚本的输出**看文件，不要看终端回显**。
+17. **daemon.log 是 fluent 本地化文案，不是 key 字面量**（2026-09-26 实测）：搜 `fas-qos-clamp`、
+    `clampev-node-missing`、`corectl` 这类打点 key **恒零命中且是假阴性**——log::warn!/info! 输出的
+    是 `i18n/zh.ftl` 翻译后的文本（如 `QoS 钳制`、`档位切换`、`core_ctl` 带下划线）。
+    检索前先查 `module/config/i18n/zh.ftl` 拿中文原文再搜
+18. **Grep 工具对部分 daemon.log 彻底读不动**（2026-09-26，`x_0926-162614\daemon.log` 13.4MB）：
+    显式路径、强制命中串（如必在首行的 `chiri`）也零命中——编码/控制字符导致 rg 匹配失效。
+    **对该文件的任何 Grep 零命中一律按「未检索」处理**，检索必须走显式解码脚本
+    （PowerShell StreamReader / python），并先用必在串做 positive control
+19. **`clamp_change` 事件行（main log，P1-2 旁证）判读口径**：2s 热块采样、**变化才落行**
+    （落行密度≈smax 变化密度，不是固定节拍）；reason 字段值域：
+    `msmp_min/max=-` = msm_performance 参数节点读失败/空（真机可为常态缺失）；
+    `horae=1` = `/proc/horae_qmi` 存在；`dcvsh=policyN:X` = `dcvsh_freq_limit`（簇首核），
+    恒等满频即无硬件 DCVS 降档；`corectl=min/max/enable` 三值斜杠分隔（**字段序固定**，
+    enable=0 时 min 摆动不生效）；`smax` = scaling_max_freq 读回（P1-1 三级判定的读回源）。
+    节点缺失首见会 warn 一次（文案 `佐证节点不可用`），之后静默记 `-`

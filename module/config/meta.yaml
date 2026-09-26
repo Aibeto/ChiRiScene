@@ -40,3 +40,6 @@ power_max_w: 12
 # 场合（reduce / default / boost）改由 PowerBase 以放电功耗为指标调频；FAS / 特调 /
 # DOWN 停摆 / 实验室的启停判据不受影响。
 powerbase_enabled: false
+# 息屏判定值（高级设置，默认 1）：debug.tracing.screen_state 属性等于该值视为息屏。
+# 安装时会按属性实测值自动校正，一般无需手改。
+screen_off_value: 1

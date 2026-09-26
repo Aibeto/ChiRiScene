@@ -155,14 +155,23 @@ pub fn start_monitor(
     let force_refresh_clone_for_watcher = Arc::clone(&force_refresh_arc);
 
     // [watchers]
-    // 3. 启动屏幕状态监控线程
+    // 3. 启动屏幕状态监控线程：debug.tracing.screen_state 属性轮询（见 screen_detect.rs [prop]），
+    //    变化即直推 ScreenStateChange 事件；app_detect 的轮询转发退化为 verify 自愈兜底
+    //    （双发由调度器消费端去重）。
+    //    [PAUSED] 原 uevent sysfs 投票直推已暂停（screen_detect.rs [source]）。
     log::debug!("{}", t("monitor-thread-start-screen"));
-    // uevent 线程直推 ScreenStateChange 事件：亮屏感知零轮询延迟，
-    // app_detect 的轮询转发退化为 verify 自愈兜底（双发由调度器消费端去重）
     let tx_screen = tx.clone();
     spawn_guarded("screen_watcher", move || {
+        screen_detect::monitor_screen_state_property(screen_state_clone_for_watcher, tx_screen);
+    })?;
+
+    // 3b. uevent 线程：现仅服务 CPU hotplug（置 CPU_HOTPLUG_DIRTY，2s 周期块刷新核位图）；
+    //     屏幕分支已 [PAUSED]，见 screen_detect.rs [uevent]。
+    let screen_state_clone_for_uevent = Arc::clone(&screen_state_arc);
+    let tx_uevent = tx.clone();
+    spawn_guarded("uevent_watcher", move || {
         if let Err(e) =
-            screen_detect::monitor_screen_state_uevent(screen_state_clone_for_watcher, tx_screen)
+            screen_detect::monitor_screen_state_uevent(screen_state_clone_for_uevent, tx_uevent)
         {
             error!(
                 "{}",

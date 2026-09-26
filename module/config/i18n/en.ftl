@@ -303,6 +303,7 @@ corectl-self-pinned = [CoreCtl] scheduler service pinned to dedicated little cor
 corectl-unavailable = [CoreCtl] no usable core_ctl node found, takeover skipped
 corectl-write-failed = [CoreCtl] core_ctl write failed: { $path }
 corectl-node-missing = [CoreCtl] core_ctl node missing/unreadable: { $path } (cluster falls back to per-core offline)
+corectl-enable-off = [CoreCtl] core_ctl enable=0 (kernel ignores max_cpus writes): { $path }; skipping the no-op write and falling back to per-core offline
 corectl-vendor-override = [CoreCtl] core_ctl node overridden by vendor (non-zero read-back): { $path }; not fighting vendor, restored from snapshot on exit
 corectl-verify-failed = [CoreCtl] core_ctl node read-back failed (write issued, accounted as applied): { $path }
 corectl-scenemode-halt = [CoreCtl] scenemode prime cluster halted via core_ctl max_cpus

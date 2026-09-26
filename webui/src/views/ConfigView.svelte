@@ -222,6 +222,18 @@
         checked={app.powerbaseEnabled}
         onchange={next => app.setPowerbase(next)}
       />
+      <!-- 息屏判定值：debug.tracing.screen_state 等于该值视为息屏（默认 1，安装时按实测校正）。
+           开启 = 属性 1 视为息屏；关闭 = 属性 0 视为息屏。直写 meta.yaml，热重载即时生效 -->
+      <ToggleField
+        label={t('config.screenoff')}
+        hint={t('config.screenoff.hint')}
+        checked={app.screenOffValue === 1}
+        disabled={app.screenOffPending}
+        onchange={next => app.setScreenOffValue(next ? 1 : 0)}
+      />
+      {#if app.screenOffError}
+        <p class="u-note u-danger u-mt-2">{app.screenOffError}</p>
+      {/if}
       <!-- 功耗口径与电池读数（电流/电压/功率）的设置都在「电池读数」二级页 -->
     </div>
   </Panel>

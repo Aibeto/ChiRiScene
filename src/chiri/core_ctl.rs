@@ -68,6 +68,11 @@ struct CoreCtlCluster {
     /// 快照的原始 max_cpus（None = 节点不可读，该簇不支持 max_cpus 压制，
     /// scenemode 走逐核 offline 兜底）
     max_cpus: Option<String>,
+    /// 快照的 core_ctl enable（None = 节点不可读，保持原有 max_cpus 压制
+    /// 尝试；Some(false) = 该簇 core_ctl 未启用，内核不受理 max_cpus 写入，
+    /// 直接跳过这次无效写走逐核 offline 兜底。仅快照期读一次作省写优化，
+    /// 不做周期重读——厂商可能动态改 enable，纠偏路径仍按原兜底）
+    enable: Option<bool>,
 }
 
 /// 核心在线接管器
@@ -241,12 +246,22 @@ impl CoreCtlManager {
                         };
                     }
                 }
+                // enable 快照（读失败记 None = 保持原有 max_cpus 压制尝试）：
+                // core_ctl enable=0 时内核不受理 max_cpus 写入，快照记 false 供
+                // scenemode 省掉这次无效写（见 shrink_prime_via_max_cpus）
+                let enable = fs::read_to_string(format!("{dir}/enable"))
+                    .ok()
+                    .map(|v| {
+                        let v = v.trim();
+                        v == "1" || v.eq_ignore_ascii_case("true")
+                    });
                 self.clusters.push(CoreCtlCluster {
                     dir,
                     first_cpu: *first,
                     cluster_size: cpus.len() as u32,
                     min_cpus: val,
                     max_cpus,
+                    enable,
                 });
                 // TODO(discover): 快照为进程启动时的单次读取，若厂商在接管后
                 // 改写 max_cpus，restore_max_cpus 会按旧快照覆盖厂商值。F3 的
@@ -362,6 +377,8 @@ impl CoreCtlManager {
     /// 互不踩）。事件驱动单次写 + 记账（max_cpus_applied）防重复写。返回
     /// false = core_ctl 路径不可用，调用方降级逐核 online 兜底：
     /// - 无 prime 簇 / 该簇无 max_cpus 节点（快照缺失）——首次 warn 一次防刷屏；
+    /// - 该簇 core_ctl `enable=0`（快照期读到，内核不受理 max_cpus 写入）——
+    ///   跳过无效写直接兜底，首次 warn 一次（复用 max_cpus_warned 去重）；
     /// - 写失败：core_ctl 写入被拒，记 warn 一次不重试；
     /// - 读回确认为非 0：OPLUS pipeline scene 会放行/锁 max_cpus（厂商并发
     ///   写，core_ctl.c:847,861,918-919），记 warn 一次不重试，不与厂商拉锯；
@@ -392,6 +409,22 @@ impl CoreCtlManager {
                     t_with_args(
                         "corectl-node-missing",
                         &fluent_args!("path" => format!("{}/max_cpus", self.clusters[idx].dir))
+                    )
+                );
+            }
+            return false;
+        }
+        // enable 感知（快照期读一次，仅作省写优化）：core_ctl enable=0 时内核
+        // 不受理 max_cpus 写入，写也是无效 sysfs 写；直接降级逐核 offline 兜底
+        // （warn 复用 max_cpus_warned 去重）。enable == None（读不到）保持现行为
+        if self.clusters[idx].enable == Some(false) {
+            if !self.max_cpus_warned {
+                self.max_cpus_warned = true;
+                warn!(
+                    "{}",
+                    t_with_args(
+                        "corectl-enable-off",
+                        &fluent_args!("path" => format!("{}/enable", self.clusters[idx].dir))
                     )
                 );
             }

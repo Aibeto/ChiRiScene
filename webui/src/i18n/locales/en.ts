@@ -163,6 +163,9 @@ export default {
   'lab.notice.reboot': 'Use under developer guidance',
   'config.powerbase': 'ChiRi PB',
   'config.powerbase.hint': 'Follow me — right or wrong is a false premise',
+  'config.screenoff': 'Screen-off value 1',
+  'config.screenoff.hint': 'System property debug.tracing.screen_state = 1 means screen off; turn off to use 0 (calibrated at install)',
+  'config.screenoff.zero': 'Screen-off value set to 0',
 
   'lab.notice.effects': 'Turning the lab off requires a reboot',
   'lab.notice.manual': 'In special cases you can edit rhine.chr directly',

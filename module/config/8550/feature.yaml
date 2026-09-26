@@ -64,10 +64,16 @@ Thermal:
   # 安全阈值本身（batt_soft_temp_c / batt_hard_temp_c）不动。
   soft_perf_cap: 0.85
   hard_perf_cap: 0.40
-  # 豁免档：热压制只落在 (soft_perf_cap, free_above) 区间，>= 豁免档不钳制。
-  # 必须 > soft_perf_cap（相等 = 压制带为空、软限档完全不生效）；
-  # 也不要贴 1.0（持续高负载要能平滑涨过豁免档拿全速）
+  # 豁免档：仅在 clamp_heavy=false（重钳关闭）时生效——热压制只落在
+  # (soft_perf_cap, free_above) 区间，>= 豁免档不钳制。必须 > soft_perf_cap
+  # （相等 = 压制带为空、软限档完全不生效）；也不要贴 1.0（持续高负载要能
+  # 平滑涨过豁免档拿全速）
   free_above: 0.95
+  # 重钳开关（默认 true，缺键 = true）：cap 窗口内对**所有簇**恒钳写频目标，
+  # 窗口解除立即恢复全速；current_perf 决策状态照常平滑、不回写（卡死根因不存在）。
+  # 2026-09-26 真机：cap85 窗口 37 分钟高载簇决策值恒为满频、降档 0 次——旧豁免带
+  # （>= free_above 完全不钳）过于宽松，故改恒钳。false = 回退 free_above 豁免旧行为。
+  clamp_heavy: true
   hysteresis_c: 3
 
 # [sched]
@@ -163,10 +169,14 @@ default:
     spike_decay: 0.10
     touch_boost_enabled: true
     # 触摸窗口内大核地板抬高：floor = perf_init + tiers × 0.05，且不超过 perf_ceil
-    # TODO: 实机复核 600ms / 3 档（手指在屏上滑动时应始终处于窗口内；档位过高会在
+    # TODO: 实机复核 600ms / 2 档（手指在屏上滑动时应始终处于窗口内；档位过高会在
     # 轻载触摸期把上限顶到目标之上，再降档需配合滑动/打字流畅度实测）。
     touch_boost_ms: 600
-    touch_boost_tiers: 3
+    # 【临时待 A/B，仅 8550 调整】2026-09-26 由 3 档降为 2 档：touch=1 共 2255 行，
+    # big 簇决策下限实测恒为 1651200 kHz，来自 perf_init 0.35 + 3×0.05 = 0.50；
+    # 降到 2 档 = 0.45（约 1.65GHz → 1.4GHz）。滑动/打字流畅度实测后再定稿，
+    # 不行就回 3 档。其它机型（8475/8998）保持各自原值，勿跟随本机改动。
+    touch_boost_tiers: 2
 
 # [boost]
 boost:

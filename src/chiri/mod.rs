@@ -279,6 +279,8 @@ pub fn cpu_freq_snapshot() -> (String, String, String, String) {
 /// 验证期结束后评估去留——结论沉淀进判读文档后，本采集可整体移除或收窄。
 /// 全部只读；节点缺失/读失败值记 `-` 并对该节点 warn 一次（`warned` 去重，
 /// 之后静默，避免 2s 周期刷屏）。policy 列表进程内缓存（OnceLock，运行期不变）。
+/// msmp 二节点加读取退避（连续 8 次读空后停读、每 64 次重试一轮，见函数内状态机），
+/// 避免恒不可读节点每 2s 白读 2 个 sysfs 文件。
 /// 只在 `diag_active()` 时由 2s 热块调用；调用方比对快照字符串，未变化零落盘。
 fn clamp_evidence_snapshot(warned: &mut HashSet<String>) -> String {
     /// 缺失节点首见告警一次（key 形如 "smax@policy4"，附完整路径便于排查）
@@ -357,16 +359,39 @@ fn clamp_evidence_snapshot(warned: &mut HashSet<String>) -> String {
             seg_push(&mut corectl, *id, &cc);
         }
     }
-    // msm_performance 参数（单值，非逐 policy）；horae_qmi 只记存在性
-    let mut msmp = [String::new(), String::new()];
-    for (i, name) in ["cpu_min_freq", "cpu_max_freq"].iter().enumerate() {
-        let path = format!("/sys/module/msm_performance/parameters/{}", name);
-        match read_trim(&path) {
-            Some(v) => msmp[i] = v,
-            None => {
-                msmp[i] = "-".to_string();
-                warn_once(warned, format!("msmp.{}", name), &path);
+    // msm_performance 参数（单值，非逐 policy）；horae_qmi 只记存在性。
+    // 【临时】读取退避：8550 实测此二节点恒不可读，每 2s 仍白读 2 个 sysfs 文件。
+    // 连续 `MSMP_FAIL_LIMIT` 次读空后停止读文件（快照项直接记 `-`），
+    // 每 `MSMP_RETRY_TICKS` 次（≈128s）重试一轮，恢复可读即自动回归采集。
+    static MSMP_FAIL_STREAK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    static MSMP_SKIP_TICKS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    const MSMP_FAIL_LIMIT: u32 = 8;
+    const MSMP_RETRY_TICKS: u32 = 64;
+    let mut msmp = ["-".to_string(), "-".to_string()];
+    let skip = MSMP_FAIL_STREAK.load(Ordering::Relaxed) >= MSMP_FAIL_LIMIT;
+    // 退避期只在第 MSMP_RETRY_TICKS 个 tick 重试一轮，其余 tick 不读文件、直接记 `-`
+    let retry = skip && MSMP_SKIP_TICKS.fetch_add(1, Ordering::Relaxed) + 1 >= MSMP_RETRY_TICKS;
+    if !skip || retry {
+        let mut all_ok = true;
+        for (i, name) in ["cpu_min_freq", "cpu_max_freq"].iter().enumerate() {
+            let path = format!("/sys/module/msm_performance/parameters/{}", name);
+            match read_trim(&path) {
+                Some(v) => msmp[i] = v,
+                None => {
+                    all_ok = false;
+                    warn_once(warned, format!("msmp.{}", name), &path);
+                }
             }
+        }
+        if all_ok {
+            // 任一节点恢复可读即清零退避，回归正常采集
+            MSMP_FAIL_STREAK.store(0, Ordering::Relaxed);
+            MSMP_SKIP_TICKS.store(0, Ordering::Relaxed);
+        } else if MSMP_FAIL_STREAK.load(Ordering::Relaxed) < MSMP_FAIL_LIMIT {
+            MSMP_FAIL_STREAK.fetch_add(1, Ordering::Relaxed);
+        } else {
+            // 重试失败：计数归零，下一轮重试再等 MSMP_RETRY_TICKS
+            MSMP_SKIP_TICKS.store(0, Ordering::Relaxed);
         }
     }
     let horae = if std::path::Path::new("/proc/horae_qmi").exists() {
@@ -1826,6 +1851,11 @@ pub fn start_scheduler_thread(
                     // fps 预留列：仅 FAS 激活时取活跃实例的窗口均值，
                     // 其余（FAS 未启动/后台保留实例/窗口无样本）为 None → 写 "-"
                     let fas_fps = fas_mgr.current_fps();
+                    // screen_prop 列：debug.tracing.screen_state 原始值，无事件可听，
+                    // 并入本 1s 采样轮询各读一次（属性缺失为 "-"）
+                    let screen_prop_raw =
+                        crate::monitor::screen_detect::read_screen_prop_raw()
+                            .unwrap_or_else(|| "-".to_string());
                     crate::logger::status_log_snapshot(
                         &current_mode,
                         &fg_package,
@@ -1849,6 +1879,7 @@ pub fn start_scheduler_thread(
                         last_bpf_stats.1,
                         last_bpf_stats.2,
                         fas_fps,
+                        &screen_prop_raw,
                     );
                     // PowerAVG（耗电参考/平均）：紧跟 status 行写入之后**顺序**计算并
                     // 写 PowerAVG.chr（用户口径：计算值直接加在 csv 后，不并行处理）。

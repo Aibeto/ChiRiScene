@@ -10,8 +10,9 @@
 | ------------------------ | -------------------------------------------------------------------------------------------------------------------------- | ------------------------------ | ------------------------------------------------ | ----------- | ----------------------------------------------------------- |
 | `devimpbin/0926-030102/` | **ChiRi Canary Alpha06-18 (versionCode 10618)**（`x_0926-030100/daemon.log` 首行）                                         | 8550 / 2210132C（小米 13 Pro） | Android 17 (sdk 37) / 5.15.194-android13-8-00019 | 44 列拆分版 | 25min 会话，无 FAS 接管（fps 非空 0）；含 cap=85 短暂热压段 |
 | `devimpbin/0925-143934/` | **ChiRi Canary Alpha06-16 (versionCode 10616)**（`x_0925-132525/daemon.log`、`x_0925-143931/daemon.log` 首行，两段同版本） | 同上                           | 同上                                             | 44 列拆分版 | 两个批次共 4782 行 status，全程放电、无 FAS                 |
+| `devimpbin/0926-162821/` | **ChiRi Canary Alpha07-02 (versionCode 10702)**（P0/P1 落地后首包） | **OnePlus 11 / PHB110**        | Android 16 (sdk 36) / 5.15.180-android13-8-01178 | 44 列拆分版 | 80min + 2min 两批次；37min cap85 窗口；`clamp_change` 2075 行（P1-2 旁证已生效）。归因见同目录 `0926-162821-verify.md` 及本文 §4 |
 
-**两个包的 daemon 版本（Alpha06-16/06-18）均旧于当前代码（Alpha07-02）**，行为差异以下述「对应计划项」为线索、最终以真机当前版本复测为准。
+**两个包的 daemon 版本（Alpha06-16/06-18）均旧于当前代码（Alpha07-02）**，行为差异以下述「对应计划项」为线索、最终以真机当前版本复测为准。0926-162821 包即 Alpha07-02 本尊，其结论可直接回填下表。
 
 ## 1. 本地挖掘发现（带证据位置）
 
@@ -79,7 +80,7 @@
 | T5  | msm_performance / core_ctl / Horae 活跃性清点                      | 确认锁频盖写者与 core_ctl 管辖簇（P1-4 前置）                            | `cat /sys/module/msm_performance/parameters/cpu_{min,max}_freq`；`cat /sys/devices/system/cpu/cpu7/core_ctl/min_cpus`（big/prime 同理，确认管辖簇）；`ls /proc/oplus* /sys/kernel/oplus*`；Horae：`ls /sys/kernel/horae* 2>/dev/null`                                        | §1.5：core_ctl 三簇 boost/恢复闭环已实证；msm_performance/Horae/OMRG 零痕迹            | P1-2 / P1-4 / P2-2 |
 | T6  | ftrace：WALT 选核 + 85 限频路径                                    | F2/F3 行为级确认；uclamp.max=85 究竟走哪条路                             | `tracefs` 挂载后 `echo 1 > events/sched/trace_sched_task_util/enable`（及 `trace_dcvsh_freq`），抓 30s 高负载段                                                                                                                                                              | 本地无 FAS 段、无 tracepoint（cpufreq_transition 缺失，§1.7）                          | P2-3 / P1-5        |
 | T7  | uclamp.max=85 的 A/B 实验                                          | 决定 P1-5 是否动 tg 层钳制                                               | 同一游戏/视频场景，`uclamp.max=85` 与关闭各跑 15min，对比帧率、`scaling_cur_freq`、`dcvsh_freq_limit`、功耗（status.csv 口径）                                                                                                                                               | 85 走限频路径（F3）仅有内核侧推论，无行为数据                                          | P1-5               |
-| T8  | 软限幅 cap 生效性 A/B（本地新增）                                  | 复现 §1.2「cap=85 决策仍满档」：确认压制带逻辑在当前版本是否真的降决策值 | 造热压（烤机至 CLG 触发），记录 `thermal_change` 事件前后 tick 决策值与 `cpu_cur_khz`；对照 feature.yaml `soft_perf_cap`/`free_above`                                                                                                                                        | cap=85 窗口 34 tick 决策全满档、压制带内 0 tick；`clamp_change` 行（临时）可作同秒旁证 | P1-1 关联          |
+| T8  | 软限幅 cap 生效性 A/B（本地新增）                                  | 复现 §1.2「cap=85 决策仍满档」：确认压制带逻辑在当前版本是否真的降决策值 | 造热压（烤机至 CLG 触发），记录 `thermal_change` 事件前后 tick 决策值与 `cpu_cur_khz`；对照 feature.yaml `soft_perf_cap`/`free_above`                                                                                                                                        | cap=85 窗口 34 tick 决策全满档、压制带内 0 tick；`clamp_change` 行（临时）可作同秒旁证；**豁免带重构已落地（`Thermal.clamp_heavy` 默认 true），见 §4.1** | P1-1 关联          |
 | T9  | 内核 input boost 节点探测（本地新增）                              | §1.4 的 4 节点全 ENOENT：确认厂商 boost 实际挂在哪                       | `ls /sys/module/cpu_boost/parameters/ 2>/dev/null; ls /sys/module/input_boost/ 2>/dev/null; grep -r input_boost /sys/kernel/qcom* 2>/dev/null`；触摸时读 FREQ_QOS_MIN 变化                                                                                                   | touch=1 决策下限 ≥1.65GHz（ChiRi 地板生效）；内核节点不存在                            | P1-2 旁证名单      |
 | T10 | 热压场景 FAS verify 行为（P1-1 验证）                              | 防篡改重写 vs QoS 钳制死循环风险                                         | 热压 + FAS 白名单应用前台，抓 daemon.log `policy_controller`/verify 行与 scaling_max 读回值；`clamp_change` 行（临时）的 smax 段可作同秒读回佐证                                                                                                                             | 本地 FAS 未激活，无数据（§1.6）；clamp_change 已内置 smax 采集                         | P1-1               |
 
@@ -92,3 +93,47 @@
 - thermal zone type / trip / cooling-map、cpuidle latency、capacity 的 DT 实证。
 - msm_performance、Horae、OMRG、frame_boost 的活跃性。
 - tg 层 uclamp 钳制（`uclamp_tg_restrict`）的行为差异。
+
+## 4. Alpha07-02 包（0926-162821）回填（2026-09-26，依据 `0926-162821-verify.md`）
+
+| #  | 状态变化 | 新证据 |
+| --- | --- | --- |
+| T4 | **部分定案** | `clamp_change` 2075 行中 `dcvsh_freq_limit` 恒等于三簇满频（2016000/2803200/3187200）→ 本会话无硬件 DCVS/LMh 降档，归因②在常规负载下排除；仅剩真热压时段采样 |
+| T5 | **部分定案** | `msmp_min=- msmp_max=-` 全量恒 `-` → msm_performance 参数节点本机不可读（无锁频盖写通道）；`horae=1` → `/proc/horae_qmi` 存在（Horae 实体在，活跃性未知）；`corectl=` 三簇可读、policy0 min_cpus 在 1↔3 摆动（vendor 侧活跃） |
+| T8 | **豁免带重构已落地（带 `clamp_heavy` 开关，默认 true），待真机 A/B 验证功耗与性能** | 恒钳重构落地 + cap85 窗口逐包复核：第 16 列 `max_freq_khz` 降档计数 = 0、第 15 列 `cur_freq_khz` 有变化、豁免带覆盖 2%–6%——详见 §4.1 |
+| T10 | 维持 | 本包 FAS 未激活（smax 读回与 dcvsh 组合无 QoS 钳制特征）；FAS 热压 verify 仍只能真机做 |
+
+### 4.1 T8 豁免带重构落地 + cap85 窗口复核（2026-09-26 收口）
+
+**代码落地（Alpha07-02 之后，待真机复测）**
+
+- 豁免带重构：CLG 钳制点改为 `eff_perf = if clamp_heavy || current_perf < free_above { current_perf.min(cap) } else { current_perf }`。`clamp_heavy=true`（默认）cap 窗口内所有簇**恒钳**；`false` 精确回退旧 `free_above` 豁免行为。**只钳写频、不回写 `current_perf`** 不变 → 「决策卡死在 cap」根因不存在。
+- 开关契约：`Thermal.clamp_heavy: bool`（serde 默认 `true`），`Config::load` 同步给 governor（启动与热重载均生效）；`module/config/8550/feature.yaml` 已加 `clamp_heavy: true`，`free_above` 注释改为「仅 clamp_heavy=false 时生效」。
+- 行为级证据：新增 `clamp_apply` 跃迁事件（仅 bind/unbind **状态跃迁**时、`diag_active()` 门控内），字段 `bind / pid / cap% / perf / eff / tgt_khz`；无新定时器、诊断关闭时零分配。
+
+**cap85 窗口实测（0926-162821；n=2217 秒，转换 100→85 @15:49:13.703、85→100 @16:26:15.962）**
+
+- 【已确认·两列语义**最易读错**】第 16 列 `max_freq_khz`（scaling_max 上限）窗口内**恒为硬件满档**（little 2016000 / big 2803200 / prime 3187200），**降档计数 = 0**（逐包核对）→ cap=85 对写频上限「空转」的直接证据；第 15 列 `cur_freq_khz`（决策选频）窗口内**是变化的**（样本 1670400 / 1900800 / 1593600 / 1286400 等），并非恒为上限。**两列语义必须分列陈述、不可混算。**
+- 【已确认·豁免带覆盖率】`cur_perf >= free_above(0.95)` 覆盖率很低：little 215/3918 = 5.5%、big 90/3931 = 2.3%、prime 92/2947 = 3.1%（分母 = 该簇「有数值 cur_perf」的行）；带内 `max_util` 多落 `[0.75,1.0]`（186/215、79/90、79/92）。→ 原计划把「37min 热窗口满频」当最大杠杆，实测豁免带只覆盖 2%–6% 样本，收益应按 `max_freq_khz` 列评估、而非按豁免带覆盖率评估。
+- 【已确认·样本口径】窗口内 tick 行 28243，其中 17447 行缺数值 `cur_perf` 且**全部是 `mode=playback`**；豁免带统计只覆盖 `mode=default` 的 10796 行。playback 段本包未采集这两列，**不得用别的字段或别的包推断**。
+- 【已确认·cap 值域】`thermal_cap_pct` 本包只有 85 与 100 → 落在 `(85,95)` 开区间的 tick 行 = **0**，带内/带外对照退化为 cap85 vs cap100 对照。
+- 【已确认·功耗口径 `batt_power_w`】cap85 **2.7844 W**（n=2217，p50 2.5186）vs cap100 **3.1845 W**（n=2661，p50 2.9463），差 −0.386 W；**未做场景归一化，不可直接读作限幅带来的节省**（两窗口包构成不同）。
+- 【已确认·各包 P_avg 排名】mobileqq 4.473 W (n=275) > kernelsu 4.284 (n=113) > launcher 3.703 (n=97) > bili 2.956 (n=3553) > coolapk 2.729 (n=223) > pixez 2.097 (n=494)。
+- 【未确认·待真机】`clamp_heavy` 恒钳后的实际功耗/性能收益（A/B 未做）；`touch_boost_tiers 3→2` 对 big 簇决策下限与体验的影响。
+
+**两项已落地待验证**
+
+- 【临时待 A/B，仅 8550】`touch_boost_tiers: 3→2`：big 簇决策下限 0.50→0.45（≈1.65GHz→1.4GHz）；touch=1 实测共 2255 行、big 簇下限恒 1651200（改动前口径，待新包复测）。
+- core_ctl enable 感知（**持久改动，非【临时】**）：`CoreCtlCluster.enable` 快照期读一次（读失败记 `None`）；`enable == Some(false)` 时 `shrink_prime_via_max_cpus` warn 一次（复用 `max_cpus_warned`）后 `return false`、走既有逐核 offline 兜底；**不做周期重读**，reassert 纠偏路径不变。
+
+**数据文档**：`devimpbin/0926-162821/power-profile.md`（功耗 / 包构成）、`devimpbin/0926-162821/cap85-band.md`（cap85 两列语义与豁免带统计）。
+
+**遗留**
+
+- 原计划「在 `clamp_change` 里加 `smax <= cap 档位` 校验、把 cap 生效做成行为级证据」**未直接实现**：`clamp_change` 由 `src/chiri/mod.rs::clamp_evidence_snapshot` 发出，当时该文件被另一代理占用；本轮改在 governor 侧新增 `clamp_apply` 跃迁事件替代。若要直接在 `clamp_change` 加该校验，需后续单独做。
+- `src/chiri/mod.rs` msmp 读取退避（【临时】）：连续读空 8 次（≈16s）进入退避，退避期不读文件、快照记 `-`，每 64 tick（≈128s）重试一轮，恢复可读即清零回归。
+
+**检索口径两条（后续任何 daemon.log 检索先读这个）**：
+
+1. daemon.log 是 fluent **本地化文案**，不是 key 字面量——搜 `fas-qos-clamp`/`clampev-node-missing`/`corectl` 恒零命中属假阴性。先查 `module/config/i18n/zh.ftl` 拿中文文案再搜（例：`QoS 钳制`、`档位切换`、`core_ctl` 带下划线）。
+2. Grep/rg 工具**读不了** `x_*/daemon.log`（编码异常，强制命中串也零命中；0926-162821 实测 positive control 失败）。检索该文件必须走显式解码脚本（PowerShell StreamReader / Python），Grep 零命中一律按「未检索」处理。

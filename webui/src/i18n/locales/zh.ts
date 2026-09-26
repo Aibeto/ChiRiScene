@@ -159,6 +159,9 @@ export default {
   'lab.notice.reboot': '建议在开发者指导下使用',
   'config.powerbase': 'ChiRi PB',
   'config.powerbase.hint': '随我来吧对错是伪命题',
+  'config.screenoff': '息屏判定值 1',
+  'config.screenoff.hint': '系统属性 debug.tracing.screen_state 等于 1 视为息屏；关闭改为 0（安装时按实测自动校正）',
+  'config.screenoff.zero': '息屏判定值已改为 0',
 
   'lab.notice.effects': '关闭实验室需要重启',
   'lab.notice.manual': '如遇特殊情况，可直接修改 rhine.chr 文件',

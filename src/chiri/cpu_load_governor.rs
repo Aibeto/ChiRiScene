@@ -12,6 +12,23 @@ use std::time::{Duration, Instant};
 use crate::fluent_args;
 use crate::i18n::{t, t_with_args};
 
+// [thermal_clamp]
+// 热压制「重钳」开关（feature.yaml `Thermal.clamp_heavy`，serde default = true）
+
+/// 是否在 cap 窗口内对**所有簇**恒钳写频目标：
+/// - true（默认）= 恒钳写侧，`current_perf` 照常平滑、不回写——窗口解除立即恢复全速；
+/// - false = 回退旧行为：`current_perf >= free_above` 的簇豁免、不钳制。
+///
+/// 进程级原子量，由 `Config::load` 在启动/热重载时一次性写入
+/// （与 fas_enabled/scenemode_enabled 同口径，见 `chiri/config.rs::Config::load`）；
+/// Worker 每次 flush 读一次，不新增任何周期任务或轮询。
+static CLAMP_HEAVY: AtomicBool = AtomicBool::new(true);
+
+/// 由配置层同步 `Thermal.clamp_heavy`（`Config::load` 调用）。热重载即时生效。
+pub fn set_clamp_heavy(v: bool) {
+    CLAMP_HEAVY.store(v, Ordering::Relaxed);
+}
+
 // [cluster]
 // PolicyRestore — CLG 接管前的系统状态快照，release 时恢复
 
@@ -332,8 +349,9 @@ struct CoreGroupWorker {
     /// 热保护性能上限（f32 bit pattern 存 AtomicU32，1.0 = 无压制）。
     /// scheduler_ipc 线程定期采样电池/CPU 温度后写入，Worker 每次 flush 读取并 clamp
     thermal_cap: Arc<AtomicU32>,
-    /// 压制豁免档（f32 bit pattern，0..1）：current_perf >= 该值时不钳制，
-    /// 保证任何温度下持续高负载都能到达硬件最高频
+    /// 压制豁免档（f32 bit pattern，0..1）：仅在 `Thermal.clamp_heavy=false`（重钳关闭）
+    /// 时生效——current_perf >= 该值时不钳制，保证任何温度下持续高负载都能到达硬件最高频。
+    /// clamp_heavy=true（默认）时本值被忽略（恒钳模式不使用豁免档）。
     thermal_free_above: Arc<AtomicU32>,
     /// 上次决策摘要（main_ tick 行用，on_load_update 填写）
     dev_decision: &'static str,
@@ -342,6 +360,9 @@ struct CoreGroupWorker {
     dev_tgt_perf: f32,
     dev_raw_util: f32,
     dev_prev_perf: f32,
+    /// 上次 flush 时热钳制是否「生效」（eff_perf 被 cap 压到 current_perf 之下）；
+    /// 仅用于 clamp_apply 证据事件的跃迁去重（值未变不写），不参与控制
+    dev_clamp_binds: bool,
 }
 
 impl CoreGroupWorker {
@@ -540,19 +561,44 @@ impl CoreGroupWorker {
             .cluster
             .current_perf
             .clamp(self.cfg.perf_floor, self.cfg.perf_ceil);
-        // 热压制（带豁免带）：cap 由 scheduler_ipc 按电池/CPU 温度写入。
-        // 只钳写频、不回写 current_perf：生效区间 (cap, free_above)，>= 豁免档
-        // 不钳制（保留到达最高频的能力）；decision 状态照常向 target 平滑，
-        // 持续高负载能平滑涨过豁免档拿到全速（内核温控兜底）。
-        // 回写 current_perf 会让状态卡死在 cap：升频步长够不到豁免档时永远被压回。
+        // 热压制（重钳）：cap 由 scheduler_ipc 按电池/CPU 温度写入。
+        // 只钳写频、不回写 current_perf：decision 状态照常向 target 平滑，
+        // 窗口解除立即恢复全速。回写 current_perf 才会让状态卡死在 cap
+        // （升频步长够不到上限时永远被压回）——重钳不碰状态，卡死根因不存在。
+        // clamp_heavy=true（默认）：cap 窗口内所有簇恒钳写频目标；
+        // clamp_heavy=false：回退旧行为，current_perf >= 豁免档 free_above 时不钳
+        // （保留到达最高频的能力，free_above 仅此分支生效）。
         let cap = f32::from_bits(self.thermal_cap.load(Ordering::Relaxed));
         let free_above = f32::from_bits(self.thermal_free_above.load(Ordering::Relaxed));
-        let eff_perf = if self.cluster.current_perf < free_above {
+        let clamp_heavy = CLAMP_HEAVY.load(Ordering::Relaxed);
+        let eff_perf = if clamp_heavy || self.cluster.current_perf < free_above {
             self.cluster.current_perf.min(cap)
         } else {
             self.cluster.current_perf
         };
         let target_freq = self.cluster.find_floor_freq(eff_perf);
+        // [thermal_clamp] 行为级证据：钳制「生效/解除」跃迁时记一条 event（值未变不写，
+        // 无新增周期任务）。生效判据 = 本次写频目标被 cap 压到 current_perf 之下，
+        // 即 smax 落点应 <= cap 对应档位。diag 关闭时零分配。
+        let clamp_binds = eff_perf < self.cluster.current_perf;
+        if clamp_binds != self.dev_clamp_binds {
+            self.dev_clamp_binds = clamp_binds;
+            if crate::logger::diag_active() {
+                crate::logger::main_event(
+                    "clamp_apply",
+                    "-",
+                    &format!(
+                        "bind={} pid={} cap={:.0} perf={:.2} eff={:.2} tgt_khz={}",
+                        clamp_binds,
+                        self.cluster.policy_id,
+                        cap * 100.0,
+                        self.cluster.current_perf,
+                        eff_perf,
+                        target_freq
+                    ),
+                );
+            }
+        }
         // [dwell] 豁免判定：触摸 floor 提频的升向写入 / 极低负载立即降频的降向写入
         // （fast_down 消费制，只作用本次 flush）/ 上次写失败的防篡改补写。热保护
         // clamp 刻意不豁免（温度毛刺不得绕过滞回直写频率），它是降频方向，经
@@ -818,6 +864,7 @@ impl CoreGroupWorker {
             dev_tgt_perf: 0.0,
             dev_raw_util: 0.0,
             dev_prev_perf: 0.0,
+            dev_clamp_binds: false,
         };
 
         let handle = thread::Builder::new()
@@ -883,7 +930,7 @@ pub struct CpuLoadGovernor {
     /// 热保护性能上限（f32 bit pattern，1.0 = 无压制）。
     /// scheduler_ipc 按电池/CPU 温度更新，Worker 每次 flush 读取；跨 init/reload 生命周期保持
     thermal_cap: Arc<AtomicU32>,
-    /// 压制豁免档（f32 bit pattern）：ceiling >= 豁免档不钳制，保证可达硬件最高频
+    /// 压制豁免档（f32 bit pattern）：仅 `clamp_heavy=false` 时生效，ceiling >= 豁免档不钳制
     thermal_free_above: Arc<AtomicU32>,
     /// 是否处于接管状态（至少一个 Worker 启动成功才为 true）
     active: bool,
@@ -909,7 +956,8 @@ impl CpuLoadGovernor {
     }
 
     /// 下发热保护参数。scheduler_ipc 每 2s 调一次。
-    /// Worker flush 时读这两个原子量：低于豁免档才压到 cap，高于就不管。
+    /// Worker flush 时读这两个原子量：clamp_heavy=true（默认）时所有簇恒压到 cap；
+    /// clamp_heavy=false 时仅 current_perf < 豁免档 free_above 才压，否则不管。
     pub fn set_thermal_limits(&self, cap: f32, free_above: f32) {
         self.thermal_cap
             .store(cap.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);

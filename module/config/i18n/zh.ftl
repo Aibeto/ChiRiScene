@@ -303,6 +303,7 @@ corectl-self-pinned = [CoreCtl] 调度服务已钉到专用小核 cpu{ $core }
 corectl-unavailable = [CoreCtl] 未发现可用的 core_ctl 节点，接管跳过
 corectl-write-failed = [CoreCtl] core_ctl 写入失败: { $path }
 corectl-node-missing = [CoreCtl] core_ctl 节点缺失/不可读: { $path }（该簇降级逐核 offline 兜底）
+corectl-enable-off = [CoreCtl] core_ctl enable=0（内核不受理 max_cpus 写入）: { $path }，跳过无效写直接降级逐核 offline
 corectl-vendor-override = [CoreCtl] core_ctl 节点被厂商改写（写后读回非 0）: { $path }，不与厂商拉锯，退出按快照恢复
 corectl-verify-failed = [CoreCtl] core_ctl 节点读回失败（写已发出，按已生效记账）: { $path }
 corectl-scenemode-halt = [CoreCtl] scenemode prime 簇已经 core_ctl max_cpus 整簇 halt

@@ -440,7 +440,7 @@ const STATUS_CHECK_EVERY: u64 = 16;
 /// fps 为**预留列**，schema 恒定存在（1s 一行照常占位）：仅 FAS 激活且帧窗口
 /// 有样本时为实测值，其余（FAS 未启动 / 无活跃实例 / 窗口尚无样本）一律 "-"。
 /// 追加在末尾而非插入中间，避免打乱既有列的索引。
-const STATUS_HEADER: &str = "timestamp,type,mode,package,charge,screen_on,batt_temp,cpu_temp,thermal_cap_pct,thermal_free_pct,clg_active,psi_cpu_some,psi_io_some,psi_mem_some,gpu_busy_pct,batt_voltage_v,batt_current_ma,batt_power_w,wakeups,migrations,freq_trans,fps";
+const STATUS_HEADER: &str = "timestamp,type,mode,package,charge,screen_on,batt_temp,cpu_temp,thermal_cap_pct,thermal_free_pct,clg_active,psi_cpu_some,psi_io_some,psi_mem_some,gpu_busy_pct,batt_voltage_v,batt_current_ma,batt_power_w,wakeups,migrations,freq_trans,fps,screen_prop";
 
 /// 常驻写入器：append 句柄 + 巡检计数
 struct StatusWriter {
@@ -631,7 +631,8 @@ fn fmt_num(v: Option<f32>) -> String {
 /// 遥测（PSI/GPU/电池，含 OPlus bcc 实时数据）+ 热保护（温度/压制/豁免）
 /// + 模式状态 + 前台包名（每行实时快照，切换点由相邻行变化体现）
 /// + 充放电状态（charging/discharging/full/not_charging，未知为 "-"）
-/// + FAS 实测帧率（`fps` 预留列，FAS 未启动/窗口无样本为 "-"，见 STATUS_HEADER）。
+/// + FAS 实测帧率（`fps` 预留列，FAS 未启动/窗口无样本为 "-"，见 STATUS_HEADER）
+/// + `screen_prop`：debug.tracing.screen_state 原始值（属性缺失为 "-"）。
 #[allow(clippy::too_many_arguments)]
 pub fn status_log_snapshot(
     mode: &str,
@@ -654,6 +655,7 @@ pub fn status_log_snapshot(
     migrations: u32,
     freq_trans: u32,
     fps: Option<f32>,
+    screen_prop: &str,
 ) {
     // frozen（待春归）：1s 一行的 status.csv 属于该模式要停掉的「额外开销」。
     // 闸口放在这里而不是调用点，是为了让所有写入路径（含将来的）都过同一道。
@@ -683,6 +685,7 @@ pub fn status_log_snapshot(
         &migrations.to_string(),
         &freq_trans.to_string(),
         &fmt_num(fps),
+        screen_prop,
     ]);
 }
 

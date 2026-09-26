@@ -64,6 +64,9 @@ fn apply_meta_overrides(meta: &mut Meta, o: &crate::common::ExternalMetaOverride
     if let Some(v) = o.power_max_w {
         meta.power_max_w = v;
     }
+    if let Some(v) = o.screen_off_value {
+        meta.screen_off_value = v;
+    }
     if let Some(v) = o.nofix {
         meta.nofix = v;
     }
@@ -125,6 +128,12 @@ pub struct Meta {
     #[serde(default, alias = "PowerAvg")]
     pub power_avg: bool,
 
+    /// 息屏判定值（meta.yaml `screen_off_value`，缺省 1）：debug.tracing.screen_state
+    /// 属性等于该值视为息屏。高级设置可改；安装脚本会按安装期属性实测值自动校正。
+    /// Config::load 同步到 common::SCREEN_OFF_VALUE，屏幕检测只读原子量。
+    #[serde(default = "default_screen_off_value", alias = "ScreenOffValue")]
+    pub screen_off_value: u32,
+
     /// 耗电读数满量程（W，meta.yaml `power_max_w`，可选，默认 12）：只影响 WebUI
     /// 状态页仪表盘的进度换算，不参与任何调度决策。
     #[serde(default = "crate::utils::default_power_max_w", alias = "PowerMaxW")]
@@ -185,6 +194,10 @@ fn default_language() -> String {
 /// 快照 top-N 进程数缺省值（`devimp_top_n`）：10 个进程 / 每秒 @S 帧
 fn d_devimp_top_n() -> usize {
     10
+}
+/// 息屏判定值缺省值（meta.yaml `screen_off_value`）：debug.tracing.screen_state = 1 视为息屏
+fn default_screen_off_value() -> u32 {
+    1
 }
 
 impl Meta {
@@ -874,8 +887,9 @@ impl SpecialTunedConfig {
 /// - CPU 温度仅在极端情况参与——大型游戏里 CPU 温度由内核 95°C 温控兜底，
 ///   软件层重复压制没意义，阈值设得很高（75/85°C）只防内核兜不住的极端场景
 ///
-/// 豁免档 free_above：当前性能上限已高于豁免档时不钳制。
-/// 意味着持续高负载可以冲到硬件最高频——不挡性能的路，只在中低负载区间积热时压一压。
+/// 豁免档 free_above：仅在 `clamp_heavy=false`（重钳关闭）时生效——当前性能上限
+/// 已高于豁免档时不钳制，持续高负载可冲到硬件最高频。`clamp_heavy=true`（默认）时
+/// cap 窗口内对所有簇恒钳写频目标（不回写 current_perf，窗口解除即恢复全速）。
 ///
 /// 仅对 CLG 接管模式生效（reduce/default/boost/doze/scenemode）。
 /// vector/akmode 走自己的路径，不受影响。
@@ -906,6 +920,13 @@ pub struct ThermalGuardConfig {
     /// 意味着 sustained load 能冲到 80%+ 硬件频率，只在中低负载积热时压住
     #[serde(default = "d_thermal_free_above")]
     pub free_above: f32,
+    /// 重钳开关（serde 默认 true）：cap 窗口内对**所有簇**恒钳写频目标，窗口解除
+    /// 立即恢复全速；false = 回退旧豁免行为（current_perf >= free_above 的簇不钳制，
+    /// 此时 free_above 生效）。只决定钳制形态，不改 cap 计算与温度判定。
+    /// 由 `Config::load` 同步到 CLG 层原子量（`cpu_load_governor::set_clamp_heavy`），
+    /// 热重载即时生效；老配置文件缺该键时行为 = true。
+    #[serde(default = "crate::utils::default_true")]
+    pub clamp_heavy: bool,
     /// 回滞（°C）：温度降到 软限 - hysteresis 以下才解除压制。
     /// 设太小会在阈值附近反复触发/解除，频率抖动
     #[serde(default = "d_thermal_hysteresis")]
@@ -963,6 +984,7 @@ impl Default for ThermalGuardConfig {
             soft_perf_cap: d_thermal_soft_cap(),
             hard_perf_cap: d_thermal_hard_cap(),
             free_above: d_thermal_free_above(),
+            clamp_heavy: true,
             hysteresis_c: d_thermal_hysteresis(),
             cpu_temp_zone_types: crate::utils::default_cpu_temp_zone_types(),
         }
@@ -1324,6 +1346,7 @@ impl Config {
         crate::common::set_fas_enabled(config.meta.fas_enabled);
         crate::common::set_scenemode_enabled(config.meta.scenemode_enabled);
         crate::common::set_powerbase_enabled(config.meta.powerbase_enabled);
+        crate::common::set_screen_off_value(config.meta.screen_off_value);
         // 线程功能总闸与机型内的两个子开关取「与」：关掉后 affinity 走 release()
         // （逐线程恢复全核 + cpuset/uclamp 快照回写）、core_ctl 回 Normal（恢复
         // min_cpus/online 快照）——即「把绑定分配全部改成全核心」。热重载后由
@@ -1339,6 +1362,10 @@ impl Config {
         config.merge_scenemode();
         config.meta.normalize();
         config.thermal.normalize();
+        // 热压制「重钳」开关同步到 CLG 层（进程级原子量，同 fas/scenemode 口径）：
+        // true（默认）= cap 窗口内恒钳所有簇，false = 回退 free_above 豁免旧行为。
+        // 见 cpu_load_governor.rs 的 [thermal_clamp]。
+        crate::chiri::cpu_load_governor::set_clamp_heavy(config.thermal.clamp_heavy);
         // CPU 温度 zone 名单同步到探测层（utils [temp_probe]）。名单来自编译期嵌入
         // 的 feature.yaml（进程内恒定），set 仅首次生效，热重载重复调用无副作用。
         crate::utils::set_cpu_temp_zone_types(config.thermal.cpu_temp_zone_types.clone());

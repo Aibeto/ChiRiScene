@@ -7,6 +7,10 @@
 
 - 一切 AI 产出文件（计划、评估、报告等）只写项目文件夹内：本环境文档放 `.cursor/docs/`、记忆放 `.cursor/memory/`；
   工具自动写到项目外的副本（如 Cursor plans 目录）复制回项目后删除原件。
+- **【铁律】任何文件不得落在项目文件夹之外**（2026-09-26 用户严令，违者零容忍）：
+  CreatePlan 会把计划写到 `C:\Users\Aibeto Zhu\.cursor\plans\`——**每次创建计划后必须立即**：
+  ① 原文复制到 `.cursor/docs/plans/<日期>-<名称>.plan.md`；② 删除 plans 目录原件；③ 确认项目外无残留。
+  本日已违例一次（两份计划滞留项目外被用户抓到），此流程刻死，不依赖回忆。
 - 架构约定、契约数字、命令口径变更同步 `agentsdocs/` 与本文件；具体改动经过写 `.cursor/memory/YYYY-MM-DD.md`。
 - CI 跳过口径：`build.yml` 的 `check-skip` 闸——提交信息含 `skip ci`（不分大小写、无需方括号）即跳过该次构建；
   `[skip ci]` 等方括号标记另走 GitHub 原生整 run 跳过；`workflow_dispatch` 手动触发恒运行；提交信息仅提及该字样也会命中。
@@ -80,6 +84,8 @@
   未变时重新激活（息屏释放、冷却结束），只等 PID 会漏唤醒。
 
 - ChiRi 是设备上唯一的 userspace sysfs 写频调度程序（口径，2026-09-26 依内核源码分析修正）：设备上**不存在常态竞争的厂商守护进程/第三方调度模块**；频率实际决策链 = waltgov + vendor hook（OMRG/frame_boost）+ FREQ_QOS 聚合，详见 `.cursor/docs/kernel-analysis/06-vendor-inventory.md`，ChiRi 写 scaling_max/min 是 clamp 不是频率决策，内核 thermal QoS 钳制是合法态不算篡改；防篡改/周期重写（fast/power_base 5s、FAS 30s 强制重写、CLG 1s、bg uclamp 60s 再断言等）一律是**异常兜底**——防的是残留旧模块、手动调试、内核异常态下的异常改写，文档/汇报勿再写成厂商对抗。
+
+- **热压制恒钳开关（2026-09-26 契约，配置级）**：`Thermal.clamp_heavy: bool`（serde 默认 `true`），`Config::load` 同步到 CLG，启动与热重载均生效。`true` = cap 窗口内所有簇**恒钳**写频目标、`free_above` 豁免档被忽略；`false` = 精确回退旧 `free_above` 豁免行为。只改钳制判据，仍**只钳写频、不回写 `current_perf`**（状态卡死根因不存在）。8550 feature.yaml 已置 `true`；行为级证据 = governor 侧 `clamp_apply` 跃迁事件（bind/unbind 跃迁时、`diag_active()` 门控内）。口径正文见 `agentsdocs/03-chiri.md` Thermal 段。
 
 ## 进行中
 

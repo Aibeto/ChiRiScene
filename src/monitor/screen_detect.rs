@@ -1,17 +1,15 @@
-//! screen_detect.rs: [update] [source] [select] [read] [verify] [uevent]
+//! screen_detect.rs: [update] [prop] [verify] [uevent]（[source]/[select]/[read] 已 [PAUSED]）
 
-use kobject_uevent::{ActionType, UEvent};
-use log::{debug, info, warn};
+use kobject_uevent::UEvent;
+use log::{debug, info, trace, warn};
 use netlink_sys::{Socket, SocketAddr, protocols::NETLINK_KOBJECT_UEVENT};
 use std::error::Error;
-use std::fs;
-use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::SyncSender;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::common::DaemonEvent;
 use crate::fluent_args;
@@ -23,85 +21,47 @@ use crate::i18n::{t, t_with_args};
 /// uevent 线程直推（零轮询延迟），verify_screen_state 自愈路径的变化
 /// 由 app_detect 主循环兜底转发（其循环本身每轮比对 arc）。
 ///
-/// 息屏仲裁（口径：**多数票**，无节点退役）：亮→息**翻转尝试**时全节点投票——
-/// OFF 票超过有效票数的一半才确认；只凑到一票 OFF 且没有其它可读节点时也确认
-/// （机型只暴露一个节点的情况）；一个有效读数都没有时不改判。读不到、不存在的
-/// 节点不计票、也不否决。
-/// 稳态（无翻转）快速返回不做扫描——全节点复核由 verify 的定时轮询承担，
-/// 不随事件频率空跑全节点扫描。
-/// 所有息屏事件生产者（verify 自愈、power/backlight/leds uevent）共用本函数，
-/// 策略天然覆盖全部息屏事件。
-/// 注意：投票扫描必须在拿 arc 锁之前——本函数后半段要写 arc，持锁会与调用方互等。
+/// [PAUSED] 原「亮→息翻转先全节点投票（多数票）再确认」的仲裁已暂停——现役判定源是
+/// debug.tracing.screen_state 属性（见 [prop]），属性可信、无陈旧节点问题，翻转即采纳。
+/// 恢复投票 = 解开 [source]/[select]/[read] 区块并还原本函数的投票块与 VETO_WARNED。
 fn update_state_if_changed(state_arc: &Arc<Mutex<bool>>, new_state: bool, source: &str) -> bool {
-    // 窥视当前状态（短锁）：稳态（无翻转）直接返回，不做全节点扫描
-    let current = *state_arc.lock().unwrap();
-    if new_state == current {
-        if new_state {
-            VETO_WARNED.store(false, Ordering::Relaxed);
-        }
+    let mut state_lock = state_arc.lock().unwrap();
+    if *state_lock == new_state {
         return false;
     }
-    if !new_state {
-        // 亮→息翻转尝试：全节点投票（节点清单走缓存，状态仍是新鲜读），OFF 票超过半数才确认
-        let nodes = screen_nodes();
-        let votes = tally_screen_nodes(&nodes);
-        if !screen_off_confirmed(&votes) {
-            if let Some(node) = &votes.on_node {
-                if !VETO_WARNED.swap(true, Ordering::Relaxed) {
-                    warn!(
-                        "{}",
-                        t_with_args(
-                            "screen-off-vetoed",
-                            &fluent_args!("source" => source, "node" => node)
-                        )
-                    );
-                }
-            } else {
-                // 一个有效读数都没有：保持亮屏
-                debug!(
-                    "{}",
-                    t_with_args("screen-off-unconfirmed", &fluent_args!("source" => source))
-                );
-            }
-            return false;
-        }
-    } else {
-        VETO_WARNED.store(false, Ordering::Relaxed);
-    }
-    let mut state_lock = state_arc.lock().unwrap();
-    if *state_lock != new_state {
-        debug!(
-            "{}",
-            t_with_args(
-                "screen-state-detect-detail",
-                &fluent_args!(
-                    "source" => source,
-                    "old" => state_lock.to_string(),
-                    "new" => new_state.to_string()
-                )
+    debug!(
+        "{}",
+        t_with_args(
+            "screen-state-detect-detail",
+            &fluent_args!(
+                "source" => source,
+                "old" => state_lock.to_string(),
+                "new" => new_state.to_string()
             )
-        );
-        debug!(
-            "{}",
-            t_with_args(
-                "screen-state-change-detected",
-                &fluent_args!("source" => source)
-            )
-        );
-        *state_lock = new_state;
-        let state_str = if new_state { "ON" } else { "OFF" };
-        debug!(
-            "{}",
-            t_with_args(
-                "screen-state-changed-value",
-                &fluent_args!("state" => state_str)
-            )
-        );
-        true
-    } else {
-        false
-    }
+        )
+    );
+    debug!(
+        "{}",
+        t_with_args(
+            "screen-state-change-detected",
+            &fluent_args!("source" => source)
+        )
+    );
+    *state_lock = new_state;
+    let state_str = if new_state { "ON" } else { "OFF" };
+    debug!(
+        "{}",
+        t_with_args(
+            "screen-state-changed-value",
+            &fluent_args!("state" => state_str)
+        )
+    );
+    true
 }
+
+/* [PAUSED] sysfs 节点投票检测整体暂停：亮灭屏判定改用 debug.tracing.screen_state
+   系统属性（见 [prop]）。恢复 = 移除本注释开头的块注释标记与 [read] 末尾的配对
+   结束标记，再还原 [update] 与 [uevent] 中带 [PAUSED] 标记的投票块与屏幕分支。
 
 // [source]
 /// 屏幕状态检测源类别：不同机型暴露的屏幕状态节点不同（QCOM/通用内核走
@@ -112,15 +72,15 @@ fn update_state_if_changed(state_arc: &Arc<Mutex<bool>>, new_state: bool, source
 enum ScreenSourceKind {
     /// backlight class（/sys/class/backlight）：bl_power/actual_brightness/brightness 判定
     Backlight,
-    /// leds class（/sys/class/leds/*backlight*，如 MTK lcd-backlight）：
+    /// leds class（/sys/class/leds 下名字含 backlight 的节点，如 MTK lcd-backlight）：
     /// Android 息屏时背光亮度写 0，brightness > 0 即面板在发光
     Leds,
-    /// fbdev blank（/sys/class/graphics/fb*/blank）：0 = unblank（亮），非 0 = 灭
+    /// fbdev blank（/sys/class/graphics/fb<编号>/blank）：0 = unblank（亮），非 0 = 灭
     FbBlank,
-    /// LCD class（/sys/class/lcd/*/lcd_power，三星 Exynos `panel/lcd_power` 等）：
+    /// LCD class（/sys/class/lcd/设备名/lcd_power，三星 Exynos `panel/lcd_power` 等）：
     /// 同 FB_BLANK 口径，0 = UNBLANK（亮）、4 = POWERDOWN（灭）
     LcdPower,
-    /// DRM connector（/sys/class/drm/*DSI*/*eDP* 等内屏）：`enabled` 字符串节点，
+    /// DRM connector（/sys/class/drm 下 DSI/eDP 内屏 connector）：`enabled` 字符串节点，
     /// "enabled" = 亮、"disabled" = 灭（内核 DPMS 口径）；外接 HDMI/DP 不计
     DrmEnabled,
     /// DRM connector 的 `dpms`（`enabled` 缺失时的兜底，老内核 DPMS 字符串节点）：
@@ -243,8 +203,8 @@ fn invalidate_screen_nodes() {
 ///    具备 brightness 节点；这是「/sys/class/backlight 不存在导致屏幕状态
 ///    完全读不到」机型的主要修复路径（非面板 LED：键盘背光、按键灯、充电/通知灯、
 ///    闪光灯、RGB 灯不计）；
-/// 3. `/sys/class/graphics/fb*/blank`（fbdev 旧接口兜底，fb0/fb1/… 全部计入）；
-/// 4. `/sys/class/lcd/*/lcd_power`（LCD class，三星 Exynos `panel/lcd_power`
+/// 3. `/sys/class/graphics/fb<编号>/blank`（fbdev 旧接口兜底，fb0/fb1/… 全部计入）；
+/// 4. `/sys/class/lcd/设备名/lcd_power`（LCD class，三星 Exynos `panel/lcd_power`
 ///    等机型唯一可用的屏幕状态节点，FB_BLANK 口径）；
 /// 5. `/sys/class/drm` 内屏 connector（名字含 dsi/edp/lvds）的 `enabled` 节点
 ///    （内核 DPMS 状态，字符串型）——backlight/leds 全缺机型的又一兜底路径；
@@ -427,69 +387,90 @@ fn read_backlight_state(dev: &Path) -> Option<bool> {
         (None, None, None) => None,
     }
 }
+*/
+
+// [prop]
+/// 屏幕状态检测（现役）：读 Android 系统属性 `debug.tracing.screen_state`——框架在
+/// 亮/灭屏时写入 `0`/`1`。判定口径（用户定）：**当前值 == 息屏判定值即息屏，其余
+/// 一切值（含缺失/异常）一律亮屏**。息屏判定值 = common::screen_off_value（meta.yaml
+/// `screen_off_value`，缺省 1）。每次读数打 trace 日志（现值与判定）。
+/// TODO: 恢复 sysfs 投票检测（[source]/[select]/[read]）后移除属性轮询路径。
+/// 属性缺失告警去重：个别 ROM 框架不写该属性时息屏机制不会触发（恒判亮屏），warn
+/// 一条留痕；读到有效值即复位（开机早期属性可能尚未就绪，误报一条可接受）。
+static PROP_MISSING_LOGGED: AtomicBool = AtomicBool::new(false);
+
+/// 读属性原始值：None = 属性缺失/为空；Some = 原始字符串（trim 后）。
+/// 供 status.csv 的 `screen_prop` 列与本模块判定共用（1s 采样轮询并入调用）。
+pub fn read_screen_prop_raw() -> Option<String> {
+    // PROP_VALUE_MAX = 92（Android 系统属性单值上限）
+    let mut buf = [0u8; 92];
+    let name = c"debug.tracing.screen_state";
+    // SAFETY: name 为 NUL 结尾常量、buf 为固定长度缓冲；__system_property_get 只在
+    // 缓冲内写入并返回实际长度，无别名访问
+    let len = unsafe { libc::__system_property_get(name.as_ptr(), buf.as_mut_ptr()) };
+    if len <= 0 {
+        if !PROP_MISSING_LOGGED.swap(true, Ordering::Relaxed) {
+            warn!("screen-detect: debug.tracing.screen_state missing; treated as screen-on");
+        }
+        return None;
+    }
+    PROP_MISSING_LOGGED.store(false, Ordering::Relaxed);
+    let raw = String::from_utf8_lossy(&buf[..len as usize]);
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        if !PROP_MISSING_LOGGED.swap(true, Ordering::Relaxed) {
+            warn!("screen-detect: debug.tracing.screen_state missing; treated as screen-on");
+        }
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+/// 现役判定：当前值 == 息屏判定值 → 息屏；其余一切（含缺失/异常）→ 亮屏。
+fn read_screen_prop() -> bool {
+    let raw = read_screen_prop_raw();
+    let state = match &raw {
+        Some(v) => *v != crate::common::screen_off_value().to_string(),
+        None => true,
+    };
+    trace!(
+        "screen-detect: screen_state={} off_value={} -> {}",
+        raw.as_deref().unwrap_or("<missing>"),
+        crate::common::screen_off_value(),
+        if state { "on" } else { "off" }
+    );
+    state
+}
+
+/// 属性轮询周期：单次属性读取开销极小，500ms 在感知延迟与线程空转间取衡
+const SCREEN_PROP_POLL_MS: u64 = 500;
+
+/// 屏幕状态属性轮询线程（现役）：每 500ms 读一次 debug.tracing.screen_state，
+/// 变化即更新共享状态并直推 `ScreenStateChange` 事件（与原 uevent 直推同管道）。
+pub fn monitor_screen_state_property(state_arc: Arc<Mutex<bool>>, tx: SyncSender<DaemonEvent>) {
+    loop {
+        thread::sleep(Duration::from_millis(SCREEN_PROP_POLL_MS));
+        let state = read_screen_prop();
+        if update_state_if_changed(&state_arc, state, "prop") {
+            let _ = tx.send(DaemonEvent::ScreenStateChange(state));
+        }
+    }
+}
 
 // [verify]
-/// 屏幕状态自愈校验：uevent 可能漏报（开机早期 sysfs 未就绪、长时间息屏后
-/// 唤醒、netlink 缓冲溢出，或机型根本不广播屏幕类 uevent——现代内核已无
-/// early_suspend/late_resume power uevent，leds/backlight 亮度变化多数驱动
-/// 也不广播 KOBJ_CHANGE），导致 `state_arc` 与实际屏幕状态脱节。
-/// 由 app_detect 主循环每轮调用一次：**全节点投票**，票数为唯一判断标准，
-/// 结论与 arc 不一致时经 [`update_state_if_changed`] 校正。无有效读数或票数
-/// 平手时不改判，不干扰 uevent 主路径。
-/// 候选节点清单取自 [`screen_nodes`]（TTL 内命中缓存零分配零 syscall；枚举只在
-/// 首轮/TTL 到期/失效后做，每轮仍是新鲜读），全部不可读时立即失效重枚举——
-/// 自愈节拍与节拍内的读次数都不变。
-///
-/// 诊断打点（防刷屏）：① 首次发现可读节点时 info 打点源类别与路径——「屏幕
-/// 状态读不到」时从 daemon.log 即可确认设备实际可用的检测源；② 全部节点缺失
-/// 或全不可读时 info 告警一次（恢复后复位）。
+/// 屏幕状态自愈校验：由 app_detect 主循环每轮调用一次，读 debug.tracing.screen_state
+/// 属性校正共享状态——覆盖属性轮询线程启动早期（首次读数前）与线程意外停滞的情况；
+/// 变化时经 [`update_state_if_changed`] 校正，事件由 app_detect 主循环兜底转发。
+/// [PAUSED] 原 sysfs 全节点投票口径（票数为唯一判断标准）见 [source]/[select]/[read]。
 pub fn verify_screen_state(state_arc: &Arc<Mutex<bool>>) {
-    let nodes = screen_nodes();
-    if nodes.is_empty() {
-        if !NO_SOURCE_LOGGED.swap(true, Ordering::Relaxed) {
-            info!("{}", t("screen-detect-no-source"));
-        }
-        return;
-    }
-    // 全节点投票（节点清单走缓存）：票数为唯一判断标准
-    let votes = tally_screen_nodes(&nodes);
-    let valid = votes.off + votes.on;
-    if valid == 0 {
-        // 全部不可读：没有证据就不改判（恢复后复位，便于下次告警）；
-        // 同时丢弃清单缓存——下一轮重枚举，避免节点拓扑变化（模块加载/权限）后
-        // 卡在一份读不出任何东西的失效清单上
-        invalidate_screen_nodes();
-        if !NO_SOURCE_LOGGED.swap(true, Ordering::Relaxed) {
-            info!("{}", t("screen-detect-no-source"));
-        }
-        return;
-    }
-    NO_SOURCE_LOGGED.store(false, Ordering::Relaxed);
-    if !SOURCE_FOUND_LOGGED.swap(true, Ordering::Relaxed) {
-        let (dev, kind) = &nodes[0];
-        info!(
-            "{}",
-            t_with_args(
-                "screen-detect-source-found",
-                &fluent_args!("kind" => kind.as_str(), "path" => dev.display().to_string())
-            )
-        );
-    }
-    let decided = if votes.off * 2 > valid {
-        false
-    } else if votes.on * 2 > valid {
-        true
-    } else {
-        // 票数平手：保持现状
-        return;
-    };
-    update_state_if_changed(state_arc, decided, "verify");
+    update_state_if_changed(state_arc, read_screen_prop(), "verify");
 }
 
 // [uevent]
 pub fn monitor_screen_state_uevent(
-    state_arc: Arc<Mutex<bool>>,
-    tx: SyncSender<DaemonEvent>,
+    // [PAUSED] 屏幕分支暂停后本函数不再消费这两项；恢复屏幕分支时去掉下划线
+    _state_arc: Arc<Mutex<bool>>,
+    _tx: SyncSender<DaemonEvent>,
 ) -> Result<(), Box<dyn Error>> {
     let mut socket = Socket::new(NETLINK_KOBJECT_UEVENT)?;
     let sa = SocketAddr::new(process::id(), 1);
@@ -511,34 +492,17 @@ pub fn monitor_screen_state_uevent(
                             )
                         )
                     );
-                    if event.subsystem == "power" {
-                        if let Some(action) = event.env.get("POWER_ACTION") {
-                            debug!(
-                                "{}",
-                                t_with_args(
-                                    "screen-uevent-power-action",
-                                    &fluent_args!("action" => action.as_str())
-                                )
-                            );
-                            let new_state = if action == "early_suspend" {
-                                Some(false)
-                            } else if action == "late_resume" {
-                                Some(true)
-                            } else {
-                                None
-                            };
-                            if let Some(state) = new_state {
-                                // 状态变化直接推送 ScreenStateChange：消费者零轮询延迟
-                                if update_state_if_changed(&state_arc, state, "power") {
-                                    let _ = tx.send(DaemonEvent::ScreenStateChange(state));
-                                }
-                            }
-                        }
-                    } else if event.subsystem == "cpu" {
+                    // [PAUSED] power 屏幕分支暂停（属性轮询见 [prop]）；恢复 = 还原本分支
+                    // 及下方 backlight/leds 分支。
+                    if event.subsystem == "cpu" {
                         // CPU hotplug（cpuN/online 变更）：只置脏标记，下一轮 affinity
                         // 立即刷新在线核位图（≤2s）。这里不做任何读/写，事件风暴也只是一次原子写
                         crate::monitor::CPU_HOTPLUG_DIRTY.store(true, Ordering::Relaxed);
-                    } else if event.subsystem == "backlight" && event.action == ActionType::Change {
+                    }
+                    /* [PAUSED] backlight/leds 屏幕分支暂停（属性轮询见 [prop]）：
+                       恢复 = 还原两个分支体，并在导入处补回 kobject_uevent::ActionType。 */
+
+                    /*
                         thread::sleep(Duration::from_millis(100));
                         // 与 verify 自愈同口径（read_backlight_state）：bl_power==0 → 亮；
                         // 非 0（含亮屏路径不清零的陈旧值）以 actual_brightness 为准，
@@ -617,6 +581,7 @@ pub fn monitor_screen_state_uevent(
                             }
                         }
                     }
+                    */
                 }
             }
             Err(_) => thread::sleep(Duration::from_secs(1)),
