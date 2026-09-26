@@ -2,7 +2,7 @@
 # action.sh: [paths] [stop-old] [permissions] [watchdog-start] [result]
 # 手动启动/重启调度（用户点击模块 Action 按钮时执行）：杀旧看门狗与主进程 → 重新拉起；action 阶段无 ui_print（安装期函数），统一用 log() 输出到 stdout 与 service.log
 
-# [paths] 
+# [paths]
 # 定义路径与日志函数
 [ -z "$MODDIR" ] && MODDIR=${0%/*}
 
@@ -30,12 +30,12 @@ rm -f "$PID_FILE"
 sleep 1
 log "stopped."
 
-# [permissions] 
+# [permissions]
 # 设置权限
 chmod 755 "$DAEMON_PATH"
 
 # [watchdog-start]
-# 看门狗：崩溃自动重启，存在 .uninstalling 或二进制被删时退出；PID 写入 watchdog.pid 供 action/WebUI「关闭调度」终止；用 setsid 完全脱离父进程组。
+# 看门狗：崩溃自动重启，存在 .uninstalling 或二进制被删时退出；PID 写入 watchdog.pid 供 action/WebUI「关闭调度」终止；用 setsid 完全脱离父进程组
 
 # 检测 setsid 可用性，优先使用 BusyBox 的 setsid
 SETSID_CMD=""
@@ -60,8 +60,7 @@ WATCHDOG_CMD="sh -c '
     started=\$(date +%s 2>/dev/null)
     \"\$DAEMON\"                    # 崩溃/退出后返回，退避后再拉起
     ended=\$(date +%s 2>/dev/null)
-    # 崩溃退避：退出用时 <60s 判为异常短命（启动即崩），sleep 3→10→30→60s 递增封顶，
-    # 防「3s 一次的重启风暴」把日志/IO 放大；活过 60s 或 date 不可用时回到 3s
+    # 崩溃退避：退出用时 <60s 判为异常短命（启动即崩），sleep 3→10→30→60s 递增封顶，防「3s 一次的重启风暴」把日志/IO 放大；活过 60s 或 date 不可用时回到 3s
     if [ -n \"\$started\" ] && [ -n \"\$ended\" ] && [ \$(( ended - started )) -lt 60 ]; then
       case \$BACKOFF in 3) BACKOFF=10 ;; 10) BACKOFF=30 ;; *) BACKOFF=60 ;; esac
     else
@@ -74,7 +73,7 @@ WATCHDOG_CMD="sh -c '
 ' sh \"$PID_FILE\" \"$DAEMON_PATH\" \"$STOP_FLAG\" > /dev/null 2>&1"
 
 # 两分支都必须后台化并脱离父进程组：setsid 前台执行会阻塞本脚本（此前 action 卡在 stopped 之后、"daemon restarted." 打不出来的根因），必须 &；
-# nohup 分支同样 & 后台（setsid 不可用时 nohup + & 已足够被 init 收养）。
+# nohup 分支同样 & 后台（setsid 不可用时 nohup + & 已足够被 init 收养）
 if [ -n "$SETSID_CMD" ]; then
   $SETSID_CMD sh -c "$WATCHDOG_CMD" &
 else

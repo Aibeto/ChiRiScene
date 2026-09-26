@@ -15,8 +15,8 @@
   );
   // 调度未运行时不把 current_mode.chr 的陈旧值当「当前模式」，卡片只陈述「调度未运行」；文件缺失同口径显示「尚未产生模式记录」
   const modeIdle = $derived(app.daemonState === "stopped");
-  // PowerBase 接管 CLG 时只换「谁在调频」：家族/模式名显示 Stardust / PowerBase，原始 id 保留展示。
-  // daemon 只在亮屏 + CLG 档生效（见 mod.rs 兜底纠正块），这里以 kind==='clg' 近似，实验室 vector 不受影响
+  // PowerBase 接管 CLG 时只换「谁在调频」：家族/模式名显示 Stardust / PowerBase，原始 id 保留展示daemon 只在亮屏 + CLG 档生效（见 mod.rs 兜底纠正块），
+  // 这里以 kind==='clg' 近似，实验室 vector 不受影响
   const pbTakesClg = $derived(
     !modeIdle && !app.modeMissing && app.powerbaseEnabled && app.modeInfo.kind === "clg",
   );
@@ -35,10 +35,10 @@
   );
   // 三层信息（家族 / 模式名 / 原始 id）逐级去重，同一个词只说一次：
   // ① 家族行只在名字看不出家族时显示——clg/lab/stardust 的成员名（default / vector /
-  //    息屏场景）不体现家族；fas / down / 特调 / 未知的名字本身就是家族（mode.fas = 'FAS'
-  //    = mode.family.fas），再列一行等于重复；
+  // 息屏场景）不体现家族；fas / down / 特调 / 未知的名字本身就是家族（mode.fas = 'FAS'
+  // = mode.family.fas），再列一行等于重复；
   // ② id 行只在它与模式名不是同一个词时显示——CLG 与实验室档的 mode.* 值就是 id 本身
-  //    （mode.default = 'default' = id），否则「子模式」会在卡片上出现两次（用户反馈）。
+  // （mode.default = 'default' = id），否则「子模式」会在卡片上出现两次（用户反馈）
   const FAMILY_KINDS = new Set(["clg", "lab", "stardust"]);
   const showFamily = $derived(
     familyLabel !== "" && FAMILY_KINDS.has(app.modeInfo.kind),
@@ -78,8 +78,7 @@
 
   onMount(() => {
     void app.loadOverview();
-    // [poll] 每秒自刷新（loadOverview 有在飞共享，轮询不堆积）；跳过 hidden 期 tick 省电，
-    // 恢复可见时立即补一次，避免后台数据空窗
+    // [poll] 每秒自刷新（loadOverview 有在飞共享，轮询不堆积）；跳过 hidden 期 tick 省电，恢复可见时立即补一次，避免后台数据空窗
     const timer = setInterval(() => {
       if (document.hidden) return;
       void app.loadOverview();
@@ -127,8 +126,8 @@
         <p class="u-note">{daemonDetail}</p>
       </div>
       {#if app.isChiri}
-        <!-- 耗电情况：PowerAVG.chr（daemon 每 1s 采样写入），口径随 meta.power_avg；
-             量程 = meta.power_max_w（默认 12W），进度条直接复用官方 ak-progress 原语 -->
+        <!-- 耗电情况：PowerAVG.chr（daemon 每 1s 采样写入），口径随 meta.power_avg；量程 = meta.power_max_w（默认 12W），
+             进度条直接复用官方 ak-progress 原语 -->
         <div class="power">
           <p class="u-note">
             {app.powerAvgUsesAverage ?
@@ -140,10 +139,9 @@
               "—"
             : `${app.powerAvgWatt.toFixed(2)} ${t("unit.watt")}`}
           </p>
-          <!-- 官方 ak-progress 结构：--ak-progress-signal 与 --ak-progress-value 的默认值
-               都声明在 .ak-progress 根上，fill 的宽度与颜色全部由变量驱动。此前裸用
-               track/fill 时 fill 取不到 signal 变量 → background 透明，条看着是空的
-               （此前两次修宽度方向都错了，宽度早就画上了）。壳层由 .power__bar 剥掉 -->
+          <!-- 官方 ak-progress 结构：--ak-progress-signal 与 --ak-progress-value 的默认值都声明在 .ak-progress 根上，
+               fill 的宽度与颜色全部由变量驱动此前裸用track/fill 时 fill 取不到 signal 变量 → background 透明，条看着是空的（此前两次修宽度方向都错了，
+               宽度早就画上了）壳层由 .power__bar 剥掉 -->
           <div
             class="ak-progress power__bar"
             role="progressbar"
@@ -167,9 +165,8 @@
       {/if}
     </div>
     {#if app.powerAvgMissing || app.powerStaleReason}
-      <!-- 文件缺失是「调度没跑过」的正常形态，不是错误 → 次要色说明，不用危险色。
-           有具体原因（未取样：非放电 / 平均模式息屏 / 读数不可用）时优先显示它，
-           说不清才回退到 overview.power.missing 那句兜底 -->
+      <!-- 文件缺失是「调度没跑过」的正常形态，不是错误 → 次要色说明，不用危险色有具体原因（未取样：非放电 / 平均模式息屏 / 读数不可用）时优先显示它，说不清才回退到 overview.power
+           missing 那句兜底 -->
       <p class="u-note u-mt-2">
         {app.powerStaleReason || t("overview.power.missing")}
       </p>
@@ -218,8 +215,7 @@
         {/if}
       </div>
       {#if app.isChiri}
-        <!-- 当前功耗：status.csv 最后一行的 batt_power_w，结构/样式与首卡的
-           平均/参考放电功耗块完全一致（同一批 .power 类） -->
+        <!-- 当前功耗：status.csv 最后一行的 batt_power_w，结构/样式与首卡的平均/参考放电功耗块完全一致（同一批 .power 类） -->
         <div class="power">
           <p class="u-note">{t("overview.power.now")}</p>
           <p class="power__value u-mono">
@@ -315,8 +311,7 @@
       : t("overview.export.action")}
     </button>
     {#if app.exportPhase === "running"}
-      <!-- 进度区整块用官方 ak-progress（标题行 + 斜纹刻度轨道）；填充宽度由下方
-           .ak-progress__fill 的内联 width 决定，不再依赖 --ak-progress-value 继承 -->
+      <!-- 进度区整块用官方 ak-progress（标题行 + 斜纹刻度轨道）；填充宽度由下方.ak-progress__fill 的内联 width 决定，不再依赖 --ak-progress-value 继承 -->
       <div class="ak-progress u-mt-3">
         <div class="ak-progress__header">
           <span>
@@ -440,8 +435,7 @@
 
   .power__bar {
     width: 100%;
-    /* 官方 .ak-progress 根自带壳层（内距/边框/深底）——标签与数值在外层栅格，
-       条只取它的轨道/填充机制，壳层剥掉保持原布局 */
+    /* 官方 .ak-progress 根自带壳层（内距/边框/深底）——标签与数值在外层栅格，条只取它的轨道/填充机制，壳层剥掉保持原布局 */
     padding: 0;
     border: 0;
     background: none;
@@ -467,8 +461,7 @@
     gap: var(--ak-space-2);
   }
 
-  /* 家族名：小字上标（与 .mode__id 同档）。此前无规则 → `<p>` 的默认外边距会
-     顶开 .mode__main 的 0.2rem 行距，三行看起来是散的 */
+  /* 家族名：小字上标（与 .mode__id 同档）此前无规则 → `<p>` 的默认外边距会顶开 .mode__main 的 0.2rem 行距，三行看起来是散的 */
   .mode__family {
     margin: 0;
     color: var(--ak-text-secondary);

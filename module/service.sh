@@ -1,14 +1,13 @@
 #!/system/bin/sh
-# service.sh: [boot-wait] [paths] [cleanup] [lab-reset] [permissions] [watchdog-start]
-# chiri 模块启动脚本
+# service.sh: [boot-wait] [paths] [cleanup] [lab-reset] [permissions] [watchdog-start]chiri 模块启动脚本
 
-# [boot-wait] 
+# [boot-wait]
 # 等待系统启动完成
 until [ "$(getprop sys.boot_completed)" = "1" ]; do
   sleep 1
 done
 
-# [paths] 
+# [paths]
 # 定义路径
 [ -z "$MODDIR" ] && MODDIR=${0%/*}
 
@@ -26,16 +25,17 @@ mkdir -p "$LOG_DIR"
 #   echo "$(date): Oiface disabled." >> "$LOG_FILE"
 # fi
 
+
 # 禁用小米的 Joyose 服务
 # PACKAGE_NAME="com.xiaomi.joyose"
 # if pm list packages -e | grep -q "$PACKAGE_NAME"; then
-#   pm disable-user "$PACKAGE_NAME" >/dev/null 2>&1
-#   pm clear "$PACKAGE_NAME" >/dev/null 2>&1
-#   echo "$(date): Joyose service disabled and data cleared." >> "$LOG_FILE"
+# pm disable-user "$PACKAGE_NAME" >/dev/null 2>&1
+# pm clear "$PACKAGE_NAME" >/dev/null 2>&1
+# echo "$(date): Joyose service disabled and data cleared." >> "$LOG_FILE"
 # fi
 
 # [cleanup]
-# 清理旧进程（含旧看门狗）：重跑本脚本（热更新/管理器重载）时若只 killall chiri，旧看门狗 3s 后又把 daemon 拉起，形成双 daemon、日志双写；先按 pid 文件终止旧看门狗再清 daemon。
+# 清理旧进程（含旧看门狗）：重跑本脚本（热更新/管理器重载）时若只 killall chiri，旧看门狗 3s 后又把 daemon 拉起，形成双 daemon、日志双写；先按 pid 文件终止旧看门狗再清 daemon
 if [ -f "$LOG_DIR/watchdog.pid" ]; then
   # 空/读取失败/内容损坏的 pid 一律跳过：kill "" 无意义，kill 0 会向整个进程组发信号（可能终止本脚本）
   pid=$(cat "$LOG_DIR/watchdog.pid" 2>/dev/null)
@@ -48,28 +48,24 @@ fi
 killall -9 chiri > /dev/null 2>&1
 
 # [lab-reset]
-# 开机只删 rhine.chr，实验室状态不跨重启；rhine-back.chr 是「上次启用过实验室」的唯一信号（daemon 读到即还原并自删），勿删。
-# action.sh（手动重启）刻意不删：实验室状态保持到设备重启。
+# 开机只删 rhine.chr，实验室状态不跨重启；rhine-back.chr 是「上次启用过实验室」的唯一信号（daemon 读到即还原并自删），勿删
+# action.sh（手动重启）刻意不删：实验室状态保持到设备重启
 rm -f "$MODDIR/rhine.chr"
 
-# [permissions] 
+# [permissions]
 # 设置权限
 chmod 755 "$DAEMON_PATH"
 if [ -d "$SCRIPTS_DIR" ]; then
   chmod -R 755 "$SCRIPTS_DIR"
 fi
 
-# 调用禁用 boost 脚本（当前注释停用）
-# if [ -f "$SCRIPTS_DIR/disable_boost.sh" ]; then
-#   echo "$(date): Executing disable_boost.sh" >> "$LOG_FILE"
-#   "$SCRIPTS_DIR/disable_boost.sh"
-# else
-#   echo "$(date): disable_boost.sh not found" >> "$LOG_FILE"
-# fi
+# 调用禁用 boost 脚本（当前注释停用）if [ -f "$SCRIPTS_DIR/disable_boost.sh" ]; then echo "$(date):
+# Executing disable_boost.sh" >> "$LOG_FILE""$SCRIPTS_DIR/disable_boost.sh"else echo "$(date):
+# disable_boost.sh not found" >> "$LOG_FILE"fi
 
 # [watchdog-start]
-# 看门狗：daemon 崩溃自动重启，存在 .uninstalling 或二进制被删时退出；PID 写入 logs/watchdog.pid 供 WebUI「关闭调度」终止。
-# 用 setsid 完全脱离父进程组（旧写法 "$1" || exit 0 会在 daemon 崩溃返回非 0 时让看门狗一起退出、无法自愈，已弃用）。
+# 看门狗：daemon 崩溃自动重启，存在 .uninstalling 或二进制被删时退出；PID 写入 logs/watchdog.pid 供 WebUI「关闭调度」终止
+# 用 setsid 完全脱离父进程组（旧写法 "$1" || exit 0 会在 daemon 崩溃返回非 0 时让看门狗一起退出、无法自愈，已弃用）
 
 # 检测 setsid 可用性，优先使用 BusyBox 的 setsid
 SETSID_CMD=""
@@ -90,8 +86,7 @@ WATCHDOG_CMD="sh -c '
     started=\$(date +%s 2>/dev/null)
     \"\$DAEMON\"                    # 崩溃/退出后返回，退避后再拉起
     ended=\$(date +%s 2>/dev/null)
-    # 崩溃退避：退出用时 <60s 判为异常短命（启动即崩），sleep 3→10→30→60s 递增封顶，
-    # 防「3s 一次的重启风暴」把日志/IO 放大；活过 60s 或 date 不可用时回到 3s
+    # 崩溃退避：退出用时 <60s 判为异常短命（启动即崩），sleep 3→10→30→60s 递增封顶，防「3s 一次的重启风暴」把日志/IO 放大；活过 60s 或 date 不可用时回到 3s
     if [ -n \"\$started\" ] && [ -n \"\$ended\" ] && [ \$(( ended - started )) -lt 60 ]; then
       case \$BACKOFF in 3) BACKOFF=10 ;; 10) BACKOFF=30 ;; *) BACKOFF=60 ;; esac
     else
@@ -104,7 +99,7 @@ WATCHDOG_CMD="sh -c '
 ' sh \"$LOG_DIR/watchdog.pid\" \"$DAEMON_PATH\" \"$MODDIR/.uninstalling\" > /dev/null 2>&1"
 
 # 两个分支都必须后台化并脱离父进程组：setsid 前台执行会阻塞本脚本（看门狗 while 在 daemon 存活期间永不退出，magiskd 启动会话被拖死），必须 &；
-# nohup 分支同样 & 后台（setsid 不可用时 nohup + & 已足够被 init 收养）。
+# nohup 分支同样 & 后台（setsid 不可用时 nohup + & 已足够被 init 收养）
 if [ -n "$SETSID_CMD" ]; then
   $SETSID_CMD sh -c "$WATCHDOG_CMD" &
 else

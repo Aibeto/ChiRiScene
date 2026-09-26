@@ -1,5 +1,4 @@
-// paths.ts: [root] [rel] [abs] [cargo] [safety]
-// 设备侧路径的唯一来源：模块根优先取 KernelSU moduleInfo().moduleDir，回退约定路径。
+// paths.ts: [root] [rel] [abs] [cargo] [safety]设备侧路径的唯一来源：模块根优先取 KernelSU moduleInfo().moduleDir，回退约定路径
 import { moduleInfo } from '@/kernel/ksu'
 
 // [root]
@@ -20,8 +19,9 @@ export function setModuleRootForTest(root: string | null): void {
 }
 
 // [rel]
-/** 与守护进程约定的相对路径（见计划文档“接触点”表）。daemon.lock 不在其中：
- * 它是守护进程自持的单实例锁，WebUI 不读写（存活判据走 LiveTime.chr 心跳）。 */
+/**
+ * 与守护进程约定的相对路径（见计划文档“接触点”表）daemon.lock 不在其中：它是守护进程自持的单实例锁，WebUI 不读写（存活判据走 LiveTime.chr 心跳）
+ */
 export const REL = {
   activeConfig: 'active_config.chr',
   currentMode: 'current_mode.chr',
@@ -77,7 +77,7 @@ export function shQuote(value: string): string {
 // [safety]
 /**
  * active_config.chr 内容校验：必须是不含上溯的相对路径（可含一层 SoC 子目录），
- * 拒绝绝对路径、`..`、空串与反斜杠，防路径注入。
+ * 拒绝绝对路径、`..`、空串与反斜杠，防路径注入
  */
 export function isSafeConfigRel(p: string): boolean {
   if (!p) return false

@@ -1,6 +1,6 @@
 <script lang="ts">
-  // ConfigView.svelte: [header] [fields] [commit]
-  // meta.yaml 可写字段见 contract/meta.ts::WRITABLE_FIELDS；写入触发守护进程全量热重载，故先落草稿、由「保存」一次性提交（单次读-改-写）。
+  // ConfigView.svelte: [header] [fields] [commit]meta.yaml 可写字段见 contract/meta.ts::WRITABLE_FIELDS；
+  // 写入触发守护进程全量热重载，故先落草稿、由「保存」一次性提交（单次读-改-写）
   import { onMount } from 'svelte'
   import Panel from '@/components/Panel.svelte'
   import StateBox from '@/components/StateBox.svelte'
@@ -196,8 +196,7 @@
   </Panel>
 
   {#if app.isChiri}
-    <!-- 电池读数：二级页面入口（电流/电压/功率的来源、双电芯、单位换算、功耗口径）。
-        ChiRi 专属：遥测线程只在 ChiRi SoC 上启动，非 ChiRi 上这些开关没有消费方 -->
+    <!-- 电池读数：二级页面入口（电流/电压/功率的来源、双电芯、单位换算、功耗口径）ChiRi 专属：遥测线程只在 ChiRi SoC 上启动，非 ChiRi 上这些开关没有消费方 -->
     <Panel title={t('battery.title')} desc={t('battery.entry.hint')}>
       <div class="entry__row">
         <!-- 电池读数二级页入口（ChiRi 专属：遥测线程只在 ChiRi SoC 启动，非 ChiRi 上开关无消费方） -->
@@ -212,8 +211,7 @@
     </Panel>
   {/if}
 
-  <!-- 高级设置：二级页面入口（DOWN / PowerBase / 息屏判定值），与电池读数同一套二级页逻辑。
-       直写调度进程的状态文件与 meta.yaml，不经过草稿/保存那套 -->
+  <!-- 高级设置：二级页面入口（DOWN / PowerBase / 息屏判定值），与电池读数同一套二级页逻辑直写调度进程的状态文件与 meta.yaml，不经过草稿/保存那套 -->
   <Panel signal="action" title={t('config.advanced')} desc={t('config.advanced.hint')}>
     <div class="entry__row">
       <!-- 高级设置二级页入口：直写调度进程状态文件与 meta.yaml，不经过草稿/保存 -->
@@ -228,7 +226,7 @@
   </Panel>
 
   {#if app.isChiri}
-    <!-- 实验室：二级页面入口。只显示「有没有启用」这一个事实，具体在实验室页里管 -->
+    <!-- 实验室：二级页面入口只显示「有没有启用」这一个事实，具体在实验室页里管 -->
     <Panel
       signal={app.labMode ? 'danger' : ''}
       title={t('lab.entry')}
@@ -253,8 +251,7 @@
 </div>
 
 <style>
-  /* 单按钮的入口行：靠右对齐。原来借 .u-between 但只有一个子元素，space-between
-     等于左对齐；这里显式 flex-end（漏了这条规则时按钮会贴在左边） */
+  /* 单按钮的入口行：靠右对齐原来借 .u-between 但只有一个子元素，space-between 等于左对齐；这里显式 flex-end（漏了这条规则时按钮会贴在左边） */
   .entry__row {
     display: flex;
     justify-content: flex-end;

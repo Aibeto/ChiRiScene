@@ -1,6 +1,5 @@
 <script lang="ts">
-  // NumberField.svelte: [state] [input]
-  // 数值输入：失焦/回车才提交（避免逐字符写 meta.yaml 触发全量热重载）；非法值不提交也不回滚，保留原文并给红字。
+  // NumberField.svelte: [state] [input]数值输入：失焦/回车才提交（避免逐字符写 meta.yaml 触发全量热重载）；非法值不提交也不回滚，保留原文并给红字
   import { t } from '@/i18n/index.svelte'
 
   let {

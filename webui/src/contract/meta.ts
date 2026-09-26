@@ -1,8 +1,6 @@
-// meta.ts: [fields] [active] [read] [validate] [write]
-// meta.yaml 是唯一可写配置。daemon 侧规则（src/common.rs::parse_disk_meta +
-// sync_meta_snapshot）：字段全部可选（缺省 = 沿用二进制内嵌默认，与 rhine 影响项
-// 同语义）、拒绝未知键、出现即校验类型，任一异常 → 整个文件被内嵌默认覆盖。
-// 写入策略是「单次读-改-写 + 顶层行替换」：只动目标字段、保留注释与其他键。
+// meta.ts: [fields] [active] [read] [validate] [write]meta.yaml 是唯一可写配置daemon 侧规则（src/common.rs::
+// parse_disk_meta +sync_meta_snapshot）：字段全部可选（缺省 = 沿用二进制内嵌默认，与 rhine 影响项同语义）、拒绝未知键、出现即校验类型，任一异常 → 整个文件被内嵌默认覆盖
+// 写入策略是「单次读-改-写 + 顶层行替换」：只动目标字段、保留注释与其他键
 import { load as loadYaml } from 'js-yaml'
 import { configAbs, absOf, isSafeConfigRel, shQuote } from './paths'
 import { isLive, run } from '@/kernel/shell'
@@ -84,7 +82,7 @@ export interface MetaSnapshot {
 // [active]
 /**
  * 读取生效配置相对路径（active_config.chr）：daemon 启动时写入、无换行，形如
- * `meta.yaml` 或 `8550/meta.yaml`；只在启动时写，停跑后可能是陈旧值。
+ * `meta.yaml` 或 `8550/meta.yaml`；只在启动时写，停跑后可能是陈旧值
  */
 export async function readActiveConfigRel(): Promise<ReadResult<string>> {
   const r = await readText(absOf('activeConfig'), 'not-created', 512)
@@ -130,8 +128,7 @@ export async function readMeta(): Promise<ReadResult<MetaSnapshot>> {
 // [validate]
 function normalizeScalar(v: unknown): string {
   if (typeof v !== 'string') return ''
-  // 复刻 daemon common.rs::unquote 语义：只剥一层「成对且同型」的引号、不做逐边
-  // 剥离——畸形值 daemon 判非法，这里必须同样判非法，避免「界面已保存、daemon 整体重置」
+  // 复刻 daemon common.rs::unquote 语义：只剥一层「成对且同型」的引号、不做逐边剥离——畸形值 daemon 判非法，这里必须同样判非法，避免「界面已保存、daemon 整体重置」
   const s = v.trim()
   if (s.length >= 2) {
     const head = s[0]
@@ -195,8 +192,8 @@ export function validateMeta(values: Record<string, unknown>): string[] {
   ) {
     problems.push('power_max_w 必须是数字')
   }
-  // devimp_top_n 用 isSafeInteger 而非 isInteger：超过 2^53 的"整数"（如 1e21）会让
-  // daemon 侧 serde 解析 usize 失败、整个 meta.yaml 判非法被内嵌默认整体重置
+  // devimp_top_n 用 isSafeInteger 而非 isInteger：超过 2^53 的"整数"（如 1e21）会让daemon 侧 serde 解析 usize 失败、整个 meta
+  // yaml 判非法被内嵌默认整体重置
   if (
     'devimp_top_n' in values &&
     (typeof values.devimp_top_n !== 'number' ||
@@ -268,8 +265,8 @@ export function validateFieldValue(
 // [write]
 /**
  * 顶层行替换：仅匹配缩进为 0 的 `键: 值` 行，保留键名大小写、分隔空白与行内注释；
- * 原值带引号时统一渲染为双引号（daemon 只做去引号比较，两种写法都合法）。
- * 返回 null = 未找到该字段，调用方应放弃写入而不是整文件重排。
+ * 原值带引号时统一渲染为双引号（daemon 只做去引号比较，两种写法都合法）
+ * 返回 null = 未找到该字段，调用方应放弃写入而不是整文件重排
  */
 export function replaceTopLevelField(
   content: string,
@@ -326,8 +323,8 @@ export function utf8ToBase64(input: string): string {
 
 /**
  * 单次读-改-写事务：一次写入完成所有字段改动（每次写入都会触发 daemon 全量热重载，
- * 且 tmp+rename 会产生两个 inotify 事件，绝不做多次写入）。临时文件后缀固定为
- * `.webui.tmp`，与 daemon 自身的 `<name>.tmp` 区分，避免互踩。
+ * 且 tmp+rename 会产生两个 inotify 事件，绝不做多次写入）临时文件后缀固定为
+ * `.webui.tmp`，与 daemon 自身的 `<name>.tmp` 区分，避免互踩
  */
 export async function writeMetaFields(
   patch: Partial<Record<WritableField, string | boolean | number>>

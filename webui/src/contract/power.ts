@@ -1,6 +1,5 @@
-// power.ts: [read]
-// PowerAVG.chr 只读契约（模块根）：由 daemon 写（1s 采样，仅电池放电时计入）、
-// WebUI 只读展示。不存在与空文件统一归一为「无值」（watt = null），不是错误。
+// power.ts: [read]PowerAVG.chr 只读契约（模块根）：由 daemon 写（1s 采样，仅电池放电时计入）、WebUI 只读展示不存在与空文件统一归一为「无值」（watt = null），
+// 不是错误
 import { absOf } from './paths'
 import { readText } from './read'
 import { ok, type ReadResult } from './errors'

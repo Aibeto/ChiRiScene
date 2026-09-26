@@ -12,7 +12,7 @@ use zip::{
     write::{FileOptionExtension, FileOptions},
 };
 
-// [zip-create] 
+// [zip-create]
 
 /// 将指定目录下的全部文件与子目录打包为 zip 归档（压缩选项由回调指定）
 pub fn zip_create_from_directory_with_options<F, T>(
@@ -69,7 +69,7 @@ where
     Ok(())
 }
 
-// [path-helpers] 
+// [path-helpers]
 
 fn make_relative_path(root: &Path, current: &Path) -> PathBuf {
     let mut result = PathBuf::new();

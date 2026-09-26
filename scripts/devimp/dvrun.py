@@ -3,7 +3,7 @@
 
 用法:
     python scripts/devimp/dvrun.py <logd_*.tar.gz | 已解压目录>
-        [--tag T] [--since MMDD-HHMMSS] [--min-n 30] [--only extract,analyze,main,aff,status]
+        [--tag T] [--since MMDD-HHMMSS] [--min-n 30] [--only extract,analyze,main,aff,status,power]
 
 或者用一条命令入口（Windows）：
     scripts\\devimp-run.cmd devimpbin\\logd_0925-045336.tar.gz
@@ -15,6 +15,7 @@
     main.txt       dvmain 探针
     aff.txt       dvaff 探针
     status.txt    dvstatus 探针
+    power.txt     dvpower 探针（按包功耗归因：status.csv 权威 + devimp 侧交叉验证）
     report.md    步骤清单 + 各探针头条数字 + 单独重跑任一阶段的完整命令
 
 失败隔离：任一阶段失败不中断整条链（依赖允许时继续），`report.md` 里明确标注失败阶段。
@@ -31,7 +32,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import dvcommon as dc  # noqa: E402
 
-STAGES = ("extract", "analyze", "main", "aff", "status")
+STAGES = ("extract", "analyze", "main", "aff", "status", "power")
 PY = sys.executable or "python"
 
 
@@ -109,8 +110,8 @@ def main(argv=None):
         print("[!] extract 失败且无法定位输出目录，后续阶段中止")
         return 1
 
-    # ── 2. analyze：文件名带连字符，只能走 subprocess（其 stdout 为纯 ASCII 表）；
-    #    该脚本只 glob 传入目录本级（非递归），而解压结果在 x_devimp_<ts>/ 子目录，故按 devimp 批次逐个跑 ──
+    # ── 2. analyze：文件名带连字符，只能走 subprocess（其 stdout 为纯 ASCII 表）；该脚本只 glob 传入目录本级（非递归），
+    # 而解压结果在 x_devimp_<ts>/ 子目录，故按 devimp 批次逐个跑 ──
     if "analyze" in want:
         def _analyze():
             script = os.path.join(dc.repo_root(), "scripts", "devimp-analyze.py")
@@ -203,6 +204,25 @@ def main(argv=None):
         report.append("")
         headline += lines[1:][:2]
 
+    if "power" in want:
+        import dvpower
+        def _power():
+            import io
+            import contextlib
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = dvpower.main([outdir, "--since", a.since])
+            head = [l.strip() for l in buf.getvalue().splitlines() if l.strip()]
+            return rc, head
+        ok, lines, err, dt = run_stage("power", _power)
+        report.append(f"## 6. power（dvpower.py）{'✅' if ok else '❌ 失败'}")
+        report += [f"- {l}" for l in lines]
+        if err:
+            report.append(f"- **失败**: {err}")
+            failed.append(("power", err))
+        report.append("")
+        headline += lines[1:][:2]
+
     # ── 收尾：重跑命令 + 失败清单 ──
     tag = os.path.basename(outdir)
     report += ["## 单独重跑任一阶段", "",
@@ -211,10 +231,11 @@ def main(argv=None):
                f"python scripts/devimp/dvextract.py {a.input} --tag {tag}",
                "# 聚合表（原脚本）",
                f"python scripts/devimp-analyze.py devimpbin/{tag} --since {a.since} --min-n {a.min_n}",
-               "# 三个探针",
+               "# 四个探针",
                f"python scripts/devimp/dvmain.py devimpbin/{tag} --since {a.since} --min-n {a.min_n}",
                f"python scripts/devimp/dvaff.py devimpbin/{tag} --since {a.since}",
                f"python scripts/devimp/dvstatus.py devimpbin/{tag}",
+               f"python scripts/devimp/dvpower.py devimpbin/{tag} --since {a.since}",
                "# 或一次性全跑",
                f"python scripts/devimp/dvrun.py {a.input} --tag {tag}",
                "```", ""]
@@ -228,7 +249,7 @@ def main(argv=None):
     path = dc.write_report(outdir, "report.md", report)
 
     print(f"== dvrun 完成 -> {outdir}")
-    for l in headline[:6]:
+    for l in headline[:8]:
         print(f"   {l}")
     print(f"   报告: {path}")
     if failed:

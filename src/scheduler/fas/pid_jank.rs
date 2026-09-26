@@ -33,8 +33,7 @@ impl FasController {
         let floor = self.effective_perf_floor();
         let ceil = self.effective_perf_ceil();
 
-        // [动态 PID] PID 用 util 偏移后的有效 target 计算 budget（齿轮判断仍用原始 target），
-        // GPU bound 场景下 error 更小、输出更保守
+        // [动态 PID] PID 用 util 偏移后的有效 target 计算 budget（齿轮判断仍用原始 target），GPU bound 场景下 error 更小、输出更保守
         let eff_target = self.effective_target_fps();
         let budget_ms = 1000.0 / eff_target.max(1.0);
         let ema_budget = 1000.0 / (eff_target - self.fps_margin).max(1.0);
@@ -68,14 +67,14 @@ impl FasController {
             self.target_fps_offset = 0.0;
             // 重置采样计时器，防止下次 tick 立刻重新降低
             self.util_sample_timer = std::time::Instant::now();
-            // [紧急跳频] 超大帧 >50ms（120fps 下掉 6+ 个 vsync）直接跳 perf 0.70，不走渐进爬升：
-            // 按 max_inc≈0.09/帧从 floor=0.40 爬到 0.70 需 3-4 帧，120fps 下即 25-33ms 额外卡顿窗口
+            // [紧急跳频] 超大帧 >50ms（120fps 下掉 6+ 个 vsync）直接跳 perf 0.70，不走渐进爬升：按 max_inc≈0.09/帧从 floor=0.40 爬到 0.
+            // 70 需 3-4 帧，120fps 下即 25-33ms 额外卡顿窗口
             if actual_ms > 50.0 && self.perf_index < 0.70 {
                 self.perf_index = 0.70;
             }
 
-            // [Jank 恢复保护] 设置 post-jank perf 地板：crit 后恢复帧（error 变正）会立刻走
-            // pid-decay，原版 3 帧内 1.0→0.35 断崖导致再 jank；保护期内 perf 不低于此值
+            // [Jank 恢复保护] 设置 post-jank perf 地板：crit 后恢复帧（error 变正）会立刻走pid-decay，原版 3 帧内 1.0→0.35 断崖导致再 jank；
+            // 保护期内 perf 不低于此值
             let guard_perf = (self.perf_index * 0.55).max(0.50);
             if guard_perf > self.post_jank_perf_floor {
                 self.post_jank_perf_floor = guard_perf;
@@ -133,9 +132,8 @@ impl FasController {
                 } else {
                     1.0
                 };
-                // 目标分裂安全护栏：target_fps_offset < 0 时 PID 的 effective target 低于齿轮 raw target，
-                // 若实际 fps 低于 raw target，PID 不应视为「任务完成」而激进衰减（否则齿轮假升档/震荡），
-                // 此时把衰减力度降到 30%，让 perf 缓慢下降而非断崖
+                // 目标分裂安全护栏：target_fps_offset < 0 时 PID 的 effective target 低于齿轮 raw target，若实际 fps 低于 raw target，
+                // PID 不应视为「任务完成」而激进衰减（否则齿轮假升档/震荡），此时把衰减力度降到 30%，让 perf 缓慢下降而非断崖
                 let avg = self.fps_window.mean();
                 let split_guard = if self.target_fps_offset < -0.5
                     && avg < self.current_target_fps - 1.0
@@ -217,10 +215,10 @@ impl FasController {
 
         // Clamp：effective floor 上限 0.45 可能超过低 perf_ceil 配置，min 保证 clamp 边界合法
         self.perf_index = self.perf_index.clamp(effective_floor.min(ceil), ceil);
-        // base * (fps/60)^0.3，高刷时允许更大的单帧增量。
+        // base * (fps/60)^0.3，高刷时允许更大的单帧增量
         let scale = (self.current_target_fps / 60.0).powf(0.3).clamp(0.8, 1.8);
-        // crit/emergency 不受常规 max_inc 限制：原版 max_inc≈0.092 在 120fps 下需 7-8 帧才
-        // 能从 floor 爬到 1.0，超大帧（139ms，卡 16+ vsync）等不起渐进式爬升
+        // crit/emergency 不受常规 max_inc 限制：原版 max_inc≈0.092 在 120fps 下需 7-8 帧才能从 floor 爬到 1.0，超大帧（139ms，卡 16+ vsync）
+        // 等不起渐进式爬升
         let max_inc = if act == "crit" || act == "emergency-inc" {
             (self.cfg.max_inc_normal * scale * 2.5).max(0.15)
         } else if damped {

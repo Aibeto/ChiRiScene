@@ -1,7 +1,6 @@
 <script lang="ts">
-  // App.svelte: [shell] [bar] [views] [nav]
-  // 顶层骨架：顶栏（模块名/版本 + 守护进程状态 + 界面语言）、路由视图区、底部导航。
-  // 整站唯一的外层作用域标记 data-ak-ui="system"（ak-ui 风格强度的挂载点）。
+  // App.svelte: [shell] [bar] [views] [nav]顶层骨架：顶栏（模块名/版本 + 守护进程状态 + 界面语言）、路由视图区、底部导航
+  // 整站唯一的外层作用域标记 data-ak-ui="system"（ak-ui 风格强度的挂载点）
   import { onMount } from 'svelte'
   import LiveStatus from '@/components/LiveStatus.svelte'
   import AppsView from '@/views/AppsView.svelte'
@@ -27,9 +26,9 @@
   })
 
   /**
-   * 关闭 WebUI：优先走管理器注入的 ksu.exit（真正的原生关闭）。
+   * 关闭 WebUI：优先走管理器注入的 ksu.exit（真正的原生关闭）
    * 只有拿不到该 API（旧版管理器 / 外部浏览器）时才退回 window.close() + 历史后退——
-   * 只做后退会变成「返回上一页」，不是关闭。
+   * 只做后退会变成「返回上一页」，不是关闭
    */
   function exitWebui(): void {
     if (exitApp()) return

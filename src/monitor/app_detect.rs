@@ -71,19 +71,18 @@ pub fn get_current_pid() -> i32 {
     CURRENT_PID.load(Ordering::Relaxed)
 }
 
-/// 当前前台包名（实时，含同模式切换——包名变化即更新）；供 scheduler_ipc 的 devimp snap 行等消费，避免各处维护过期副本。
+/// 当前前台包名（实时，含同模式切换——包名变化即更新）；供 scheduler_ipc 的 devimp snap 行等消费，避免各处维护过期副本
 pub fn get_current_package() -> String {
     CURRENT_PACKAGE.lock().unwrap().to_string()
 }
 
-/// 当前前台包名的**零分配**快照：Arc<str> 克隆只递增引用计数；供周期块（如 1s 的 FAS 巡检）代替 get_current_package()。
+/// 当前前台包名的**零分配**快照：Arc<str> 克隆只递增引用计数；供周期块（如 1s 的 FAS 巡检）代替 get_current_package()
 pub fn current_package_arc() -> Arc<str> {
     CURRENT_PACKAGE.lock().unwrap().clone()
 }
 
-/// 检测到新包名时更新。**预处理**：com.xx:push 子进程名一律先归一到主包名（com.xx）——
-/// 子进程与所属包调度语义就是同一应用（厂商框架改写 cmdline 首段同理）。归一发生在唯一入口，
-/// 下游（规则匹配、FAS/特调白名单、亲和迁移、devimp 分组、通知）拿到的都已是主包名，无需再剥后缀。
+/// 检测到新包名时更新**预处理**：com.xx:push 子进程名一律先归一到主包名（com.xx）——子进程与所属包调度语义就是同一应用（厂商框架改写 cmdline 首段同理）归一发生在唯一入口，下游（规则匹配、
+/// FAS/特调白名单、亲和迁移、devimp 分组、通知）拿到的都已是主包名，无需再剥后缀
 fn set_current_package(pkg: &str, pid: i32) {
     let base = match pkg.split_once(':') {
         Some((b, _suffix)) => {
@@ -150,9 +149,8 @@ fn is_valid_user_app(pkg: &str, ignored_apps: &[String]) -> bool {
     }
 }
 
-/// 倒序扫描（Android 把最新前台放在 procs 末尾，命中即返回）；反向迭代 + 复用 cmdline 路径缓冲，
-/// 每轮省一次 Vec 与 String 分配。**刻意不做「内容未变则复用」短路**：冷启动期间 pid 先入组、
-/// exec 后 cmdline 才可读，缓存会漏检这类前台切换。
+/// 倒序扫描（Android 把最新前台放在 procs 末尾，命中即返回）；反向迭代 + 复用 cmdline 路径缓冲，每轮省一次 Vec 与 String 分配**刻意不做「内容未变则复用」短路**：
+/// 冷启动期间 pid 先入组、exec 后 cmdline 才可读，缓存会漏检这类前台切换
 fn check_cgroup_path(path: &str, ignored_apps: &[String]) -> Option<(String, i32)> {
     let Ok(content) = utils::read_file_content(path) else {
         return None;
@@ -203,9 +201,9 @@ fn get_focused_app_from_cgroup(ignored_apps: &[String]) -> Result<(String, i32),
 
 // [mode]
 
-/// 模式判定：FAS 白名单 > 特调白名单 > app_modes > 特调映射 > 全局模式（见各分支注释）。
+/// 模式判定：FAS 白名单 > 特调白名单 > app_modes > 特调映射 > 全局模式（见各分支注释）
 /// **PowerBase 不在这里出现**：它只替换「谁来调频」，模式名与所有外部接口（current_mode.chr /
-/// rules.yaml / WebUI / 通知）保持原样——开启后 current_mode 依然是 default/boost。
+/// rules.yaml / WebUI / 通知）保持原样——开启后 current_mode 依然是 default/boost
 fn determine_mode(config: &RulesConfig, current_package: &str) -> String {
     // 特调仅 Chiri SoC 且 tuned_profiles.yaml 加载成功时生效；缺配置的机型白名单应用回退 CLG 普通模式调度
     let chiri = crate::common::is_chiri_soc();
@@ -247,9 +245,8 @@ fn determine_mode(config: &RulesConfig, current_package: &str) -> String {
     if !config.dynamic_enabled {
         return global_mode;
     }
-    // 特调为 ChiRi 专属且仅白名单应用生效：非 ChiRi SoC 或非白名单包名映射到特调模式时回退
-    // 全局模式并告警（WebUI 扫描后会同步清理非法条目）。规则表匹配：前台名与规则键都已归一为
-    // 主包名（见 set_current_package / config.rs），此处为精确查表，不做回退链。
+    // 特调为 ChiRi 专属且仅白名单应用生效：非 ChiRi SoC 或非白名单包名映射到特调模式时回退全局模式并告警（WebUI 扫描后会同步清理非法条目）规则表匹配：
+    // 前台名与规则键都已归一为主包名（见 set_current_package / config.rs），此处为精确查表，不做回退链
     let app_mode = config.app_modes.get(current_package);
     if let Some(mode) = app_mode {
         if crate::common::is_special_mode(mode) || crate::common::is_fas_mode(mode) {
@@ -336,9 +333,8 @@ fn determine_mode(config: &RulesConfig, current_package: &str) -> String {
     global
 }
 
-/// 外部请求重算一次模式（实验室 rhine 套用/还原后调用）。规则热重载走 watch_config_file 的
-/// force_refresh_arc，实验室在调度线程侧拿不到，故补进程级标志由 app_detection_loop 下一轮
-/// swap 消费——用户点启用后模式当场重算（该变才发 ModeChange），不用等下次前台切换。
+/// 外部请求重算一次模式（实验室 rhine 套用/还原后调用）规则热重载走 watch_config_file 的force_refresh_arc，实验室在调度线程侧拿不到，
+/// 故补进程级标志由 app_detection_loop 下一轮swap 消费——用户点启用后模式当场重算（该变才发 ModeChange），不用等下次前台切换
 static FORCE_MODE_REFRESH: AtomicBool = AtomicBool::new(false);
 
 /// 请求 app_detection_loop 重新判定模式（模式实际变化时照常发 ModeChange 事件）
@@ -346,9 +342,8 @@ pub fn request_mode_refresh() {
     FORCE_MODE_REFRESH.store(true, Ordering::SeqCst);
 }
 
-/// 最近一次判定出的模式（与 app_detection_loop 的 last_mode 逐点同步；空串 = 尚未判定或亮屏后
-/// 清空待重算）。**DOWN 停摆退出专用**：停摆期间 ModeChange 被调度线程丢弃且不补发，退出停摆
-/// 时若沿用旧快照会因「模式没变不发事件」而一直空窗，调度线程读这里对齐真实模式。
+/// 最近一次判定出的模式（与 app_detection_loop 的 last_mode 逐点同步；空串 = 尚未判定或亮屏后清空待重算）**DOWN 停摆退出专用**：
+/// 停摆期间 ModeChange 被调度线程丢弃且不补发，退出停摆时若沿用旧快照会因「模式没变不发事件」而一直空窗，调度线程读这里对齐真实模式
 static LAST_DETERMINED_MODE: Mutex<String> = Mutex::new(String::new());
 
 /// 读最近一次判定出的模式（用途见 `LAST_DETERMINED_MODE` 的说明）
@@ -368,8 +363,8 @@ pub fn watch_config_file(
         // 兜底：快照缺失时直接用嵌入内容落盘（正常路径由 main.rs::sync_rules_snapshot 完成）
         let _ = utils::try_write_file(&rules_path, crate::common::embedded_rules_str());
     }
-    // 监听 rules.yaml 所在目录而非文件本身：WebUI 用「临时文件 + 原子 mv」替换时，挂在旧
-    // inode 上的 watch 会永久失效，目录级 watch 才能感知 MOVED_TO；其余文件靠文件名过滤避免误触发。
+    // 监听 rules.yaml 所在目录而非文件本身：WebUI 用「临时文件 + 原子 mv」替换时，挂在旧inode 上的 watch 会永久失效，目录级 watch 才能感知 MOVED_TO；
+    // 其余文件靠文件名过滤避免误触发
     let rules_dir = rules_path.parent().ok_or("invalid rules.yaml path")?;
     inotify.watches().add(
         rules_dir,
@@ -415,8 +410,8 @@ pub fn watch_config_file(
 }
 
 // [loop]
-/// `pid_tx`：前台 PID 变化广播源（cpu_monitor / fps_monitor 消费同一 watch 通道）。替代原
-/// mod.rs 500ms 轮询的 pid_watcher 线程——`CURRENT_PID` 只有 set_current_package 一个写入点，变化即推送。
+/// `pid_tx`：前台 PID 变化广播源（cpu_monitor / fps_monitor 消费同一 watch 通道）替代原mod
+/// rs 500ms 轮询的 pid_watcher 线程——`CURRENT_PID` 只有 set_current_package 一个写入点，变化即推送
 pub fn app_detection_loop(
     config_arc: Arc<Mutex<RulesConfig>>,
     screen_state_arc: Arc<Mutex<bool>>,
@@ -437,8 +432,8 @@ pub fn app_detection_loop(
     let mut debounce_start = Instant::now();
 
     loop {
-        // 屏幕状态自愈：属性轮询线程可能漏判（启动早期属性未就绪、线程停滞），先按
-        // debug.tracing.screen_state 校正一次，保证事件与真实屏幕一致（避免亮屏期间 scenemode 误计时、亮屏后无法退出）。
+        // 屏幕状态自愈：属性轮询线程可能漏判（启动早期属性未就绪、线程停滞），先按debug.tracing.screen_state 校正一次，保证事件与真实屏幕一致（避免亮屏期间 scenemode 误计时、
+        // 亮屏后无法退出）
         super::screen_detect::verify_screen_state(&screen_state_arc);
         // 两条刷新来源合并：规则热重载（watch_config_file）与实验室套用/还原（request_mode_refresh），任一为真都重算模式
         let force_refresh = force_refresh_arc.swap(false, Ordering::SeqCst)
@@ -470,9 +465,8 @@ pub fn app_detection_loop(
             continue;
         }
 
-        // 只克隆本轮需要的 ignored_apps，**不整份克隆 RulesConfig**：app_modes 是 HashMap，整份克隆
-        // 每轮复制整张表，而它只在包名变化/强制刷新轮次才用得上。guard 不跨文件读持有——cgroup
-        // 扫描是文件 IO，拉长持锁会让 config_watcher 写入空等。
+        // 只克隆本轮需要的 ignored_apps，**不整份克隆 RulesConfig**：app_modes 是 HashMap，整份克隆每轮复制整张表，而它只在包名变化/强制刷新轮次才用得上
+        // guard 不跨文件读持有——cgroup 扫描是文件 IO，拉长持锁会让 config_watcher 写入空等
         let ignored_apps = config_arc.lock().unwrap().ignored_apps.clone();
 
         let (detected_pkg, detected_pid) = get_focused_app_from_cgroup(&ignored_apps)
@@ -552,15 +546,15 @@ pub fn app_detection_loop(
                     );
                     let _ = pid_tx.send(final_pid as u32);
                 }
-                // 模式判定要读整份规则（global_mode/app_modes/dynamic_enabled），取一次短锁即可；
-                // guard 不可跨上方 cgroup 扫描持有，也不缓存整份配置——稳态每轮不碰锁。
+                // 模式判定要读整份规则（global_mode/app_modes/dynamic_enabled），取一次短锁即可；guard 不可跨上方 cgroup 扫描持有，
+                // 也不缓存整份配置——稳态每轮不碰锁
                 let new_mode = {
                     let cfg = config_arc.lock().unwrap();
                     determine_mode(&cfg, &final_pkg)
                 };
 
-                // force_refresh 只驱动重算模式，模式未变不重发 ModeChange（避免 default->default 冗余）；
-                // 同模式应用切换对 CLG 无影响，但 ChiRi FAS 需热切换 uprobe 目标，故下方补发 PackageSwitch。
+                // force_refresh 只驱动重算模式，模式未变不重发 ModeChange（避免 default->default 冗余）；同模式应用切换对 CLG 无影响，
+                // 但 ChiRi FAS 需热切换 uprobe 目标，故下方补发 PackageSwitch
                 if last_mode != new_mode {
                     info!(
                         "{}",

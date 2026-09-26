@@ -15,7 +15,7 @@ use zip::{CompressionMethod, write::FileOptions};
 
 use crate::zip_ext::zip_create_from_directory_with_options;
 
-// [cli-entry] 
+// [cli-entry]
 
 #[derive(Parser)]
 #[command(name = "xtask", about = "ChiRi Build System")]
@@ -46,7 +46,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-// [version-helpers] 
+// [version-helpers]
 
 fn cal_git_code(sh: &Shell) -> Result<usize> {
     let output = cmd!(sh, "git rev-list --count HEAD").read()?;
@@ -79,7 +79,7 @@ fn read_module_prop() -> Result<(String, String)> {
     Ok((name, version))
 }
 
-// [build-flow] 
+// [build-flow]
 
 fn build(sh: &Shell, no_pack: bool) -> Result<()> {
     let temp_dir = temp_dir();
@@ -112,8 +112,7 @@ fn build(sh: &Shell, no_pack: bool) -> Result<()> {
         fs::remove_file(temp_dir.join(".gitignore"))?;
     }
 
-    // 从模块包移除仅二进制使用的配置：运行时只读嵌入内容，磁盘上无任何读取方，
-    // 取消对外暴露以缩小可篡改面；meta.yaml / rules.yaml / 特调与 FAS 导出文件有 WebUI 读取方，保留
+    // 从模块包移除仅二进制使用的配置：运行时只读嵌入内容，磁盘上无任何读取方，取消对外暴露以缩小可篡改面；meta.yaml / rules.yaml / 特调与 FAS 导出文件有 WebUI 读取方，保留
     const BIN_ONLY: [&str; 5] = [
         "config/feature.yaml",
         "config/normal/tuned_profiles.yaml",
@@ -175,7 +174,7 @@ fn build(sh: &Shell, no_pack: bool) -> Result<()> {
     Ok(())
 }
 
-// [sub-builders] 
+// [sub-builders]
 
 fn temp_dir() -> PathBuf {
     Path::new("output").join(".temp")

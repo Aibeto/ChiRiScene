@@ -1,22 +1,21 @@
 //! core_ctl.rs: [types] [helpers] [state] [max_cpus] [scenemode] [online_reader] [restore]
 
-/// 核心在线控制器接管（ChiRi 专属）。三态状态机（互斥，按「最近一次 apply」切换，内部去重）：
+/// 核心在线控制器接管（ChiRi 专属）三态状态机（互斥，按「最近一次 apply」切换，内部去重）：
 /// - **Boost**（boost/vector/特调）：各 cluster 的 core_ctl `min_cpus` 抬到全组常在线，防止低负载时
-///   热插拔回滞把大核下线、与 ChiRi 升降频决策打架；
+/// 热插拔回滞把大核下线、与 ChiRi 升降频决策打架；
 /// - **Scenemode 离线**（息屏深度省电）：首选 WALT core_ctl 写簇首核 `max_cpus=0` 让内核 walt_halt_cpus
-///   整簇停摆（core_ctl.c:1354；is_active = cpu_active && !cpu_halted，被 halt 的核 getaffinity 自动扣掉、
-///   选核避开，调度/cpuidle 均不可见，与 ChiRi 亲和互不踩）；写后读回校验，被厂商并发改写（OPLUS pipeline
-///   scene 放行/锁 max_cpus）warn 一次不重试，降级逐核 offline；core_ctl 节点
-///   不可用的机型兜底直接写 `/sys/devices/system/cpu/cpuN/online`。**小核 + 大核全开常驻**（频率上限由
-///   scenemode CLG 配置压制），仅 prime 整簇断电消除空转漏电流；另将编号最大的小核**独占**给调度服务
-///   （从业务 cpuset 组移除 + 自身线程移入根组 + 全线程自钉）；周期重入纠偏（被异常拉起的核重新下线、
-///   被加回的保留核重新移除——节点被改写属异常态；max_cpus 被改回只 warn 不重写，退出按快照恢复）；
-/// - **Normal**：恢复全部快照（min_cpus / online）。
-///
+/// 整簇停摆（core_ctl.c:1354；is_active = cpu_active && !cpu_halted，被 halt 的核 getaffinity 自动扣掉、
+/// 选核避开，调度/cpuidle 均不可见，与 ChiRi 亲和互不踩）；写后读回校验，被厂商并发改写（OPLUS pipeline
+/// scene 放行/锁 max_cpus）warn 一次不重试，降级逐核 offline；core_ctl 节点
+/// 不可用的机型兜底直接写 `/sys/devices/system/cpu/cpuN/online`**小核 + 大核全开常驻**（频率上限由
+/// scenemode CLG 配置压制），仅 prime 整簇断电消除空转漏电流；另将编号最大的小核**独占**给调度服务
+/// （从业务 cpuset 组移除 + 自身线程移入根组 + 全线程自钉）；周期重入纠偏（被异常拉起的核重新下线、
+/// 被加回的保留核重新移除——节点被改写属异常态；max_cpus 被改回只 warn 不重写，退出按快照恢复）；
+/// - **Normal**：恢复全部快照（min_cpus / online）
 /// 用 min_cpus/online 而非逐核「按需唤醒」：点亮大核净亏能，且直接写 online 会与热插拔回滞打架——
-/// 需要更多在线核时的正确姿势是抬 min_cpus（Boost 态），让内核按自己的回滞策略管理唤醒。
+/// 需要更多在线核时的正确姿势是抬 min_cpus（Boost 态），让内核按自己的回滞策略管理唤醒
 /// cluster 发现：遍历 cpufreq policy → related_cpus 首个 CPU 的 core_ctl 目录（每 policy 一份，天然去重）；
-/// 直接 sysfs 离线不依赖 core_ctl 节点（由 `core_ctl.enabled` 配置门控）。
+/// 直接 sysfs 离线不依赖 core_ctl 节点（由 `core_ctl.enabled` 配置门控）
 use crate::chiri::affinity::{io_result_tag, set_tid_affinity};
 use crate::chiri::get_cpu_policies;
 use crate::utils::FastReader;
@@ -36,7 +35,7 @@ const STATE_BOOST: u8 = 1;
 /// 状态：scenemode 离线（小核+大核常驻，prime 断电，1 颗小核独占给调度服务）
 const STATE_SCENEMODE: u8 = 2;
 
-/// max_cpus 维持期纠偏冷却：60s 内只纠偏一次——逐 2s 重写会与厂商 pipeline 拉锯产生写放大，60s 足以感知并收敛误改。
+/// max_cpus 维持期纠偏冷却：60s 内只纠偏一次——逐 2s 重写会与厂商 pipeline 拉锯产生写放大，60s 足以感知并收敛误改
 const MAX_CPUS_REASSERT_COOLDOWN: Duration = Duration::from_secs(60);
 
 /// 单个 cluster 的 core_ctl 控制节点
@@ -51,8 +50,7 @@ struct CoreCtlCluster {
     min_cpus: String,
 /// 快照的原始 max_cpus；None = 节点不可读，该簇走逐核 offline 兜底
     max_cpus: Option<String>,
-/// 快照的 core_ctl enable；Some(false) = 内核不受理 max_cpus 写入，跳过无效写走兜底（仅快照期读一次，
-/// 不做周期重读——厂商可能动态改 enable）。
+/// 快照的 core_ctl enable；Some(false) = 内核不受理 max_cpus 写入，跳过无效写走兜底（仅快照期读一次，不做周期重读——厂商可能动态改 enable）
     enable: Option<bool>,
 }
 
@@ -66,14 +64,13 @@ pub struct CoreCtlManager {
     state: u8,
     /// scenemode 下被本模块下线的 CPU 及其原始 online 值（恢复用）
     offlined: Vec<(u32, String)>,
-/// scenemode 经 core_ctl 写过 `max_cpus=0` 的簇下标；None = 未走该路径。与 offlined 互斥（两压制路径二选一），恢复按该簇快照还原
+/// scenemode 经 core_ctl 写过 `max_cpus=0` 的簇下标；None = 未走该路径与 offlined 互斥（两压制路径二选一），恢复按该簇快照还原
     max_cpus_applied: Option<usize>,
     /// max_cpus 节点不可用/被厂商改写的 warn 一次性标记（防 2s 周期纠偏刷屏）
     max_cpus_warned: bool,
 /// 上次 max_cpus 纠偏（重写 "0"）时刻：冷却内不重复，防与厂商 pipeline 逐周期拉锯
     max_cpus_reassert_at: Option<Instant>,
-    /// scenemode 下守护进程自身线程是否已**全部**钉到专用小核（部分失败为
-    /// false，下次触发重试钉定）
+    /// scenemode 下守护进程自身线程是否已**全部**钉到专用小核（部分失败为false，下次触发重试钉定）
     self_pinned: bool,
 /// 实际钉住的自身 tid 清单（**只记成功**）：unpin 按它逐个恢复，避免部分失败时已钉线程永久滞留单核掩码
     self_pinned_tids: Vec<i32>,
@@ -101,8 +98,8 @@ fn self_tids() -> Vec<i32> {
     out
 }
 
-/// 计算 scenemode 下线目标：仅 prime（超大核）整簇下线，小核 + 大核全开常驻（频率上限由 CLG 压制）；
-/// 另将编号最大的小核独占给调度服务（见 offline_cores 与 affinity 专用核独占助手）。
+/// 计算 scenemode 下线目标：仅 prime（超大核）整簇下线，小核 + 大核全开常驻（频率上限由 CLG 压制）；另将编号最大的小核独占给调度服务（见 offline_cores 与 affinity
+/// 专用核独占助手）
 fn scenemode_targets() -> Vec<u32> {
     let ranges = crate::common::chiri_core_ranges();
     let mut targets: Vec<u32> = ranges.prime.clone().map(|c| c as u32).collect();
@@ -131,7 +128,7 @@ impl CoreCtlManager {
         }
     }
 
-/// 枚举各 cluster 的 core_ctl 控制节点并快照 min_cpus；无任何节点（内核不支持/未启用）时打点一次，之后保持空表。
+/// 枚举各 cluster 的 core_ctl 控制节点并快照 min_cpus；无任何节点（内核不支持/未启用）时打点一次，之后保持空表
     fn discover(&mut self) {
         if self.discovered {
             return;
@@ -168,10 +165,9 @@ impl CoreCtlManager {
                     .ok()
                     .map(|v| v.trim().to_string())
                     .filter(|v| !v.is_empty());
-// [residual] 崩溃残留自愈：上次可能死在 scenemode 中途，max_cpus=0 残留会让 core_ctl 持续 halt 整簇到重启。
-// 内核约束 max_cpus ≥ min_cpus ≥ 1，合法原值不可能为 0——快照解析为 0 / 低于下界即视为残留，直接写满配核数
-// 解除 halt、快照同步为写回值；写/回读失败记 None（节点不可用口径），restore 不把 "0" 当原值恢复。
-// 快照为磁盘现读，不做此自愈则「快照 == 磁盘」双重比对恒成立、残留永远跳过写回。
+// [residual] 崩溃残留自愈：上次可能死在 scenemode 中途，max_cpus=0 残留会让 core_ctl 持续 halt 整簇到重启内核约束 max_cpus ≥ min_cpus ≥ 1，
+// 合法原值不可能为 0——快照解析为 0 / 低于下界即视为残留，直接写满配核数解除 halt、快照同步为写回值；写/回读失败记 None（节点不可用口径），restore 不把 "0" 当原值恢复快照为磁盘现读，
+// 不做此自愈则「快照 == 磁盘」双重比对恒成立、残留永远跳过写回
                 if let Some(v) = max_cpus.as_deref() {
                     let residual = match v.parse::<u32>() {
                         Ok(n) => n == 0 || n < val.parse::<u32>().unwrap_or(1),
@@ -214,7 +210,7 @@ impl CoreCtlManager {
                     }
                 }
 // enable 快照（读失败记 None = 保持原有 max_cpus 压制尝试）：enable=0 时内核不受理 max_cpus 写入，
-// 记 false 供 scenemode 省掉无效写（见 shrink_prime_via_max_cpus）。
+// 记 false 供 scenemode 省掉无效写（见 shrink_prime_via_max_cpus）
                 let enable = fs::read_to_string(format!("{dir}/enable"))
                     .ok()
                     .map(|v| {
@@ -229,7 +225,7 @@ impl CoreCtlManager {
                     max_cpus,
                     enable,
                 });
-// TODO: 快照为启动期单次读取，接管后厂商改写 max_cpus 时恢复会按旧快照覆盖；纠偏冷却已部分缓解，彻底解决需恢复前重读比对。
+// TODO: 快照为启动期单次读取，接管后厂商改写 max_cpus 时恢复会按旧快照覆盖；纠偏冷却已部分缓解，彻底解决需恢复前重读比对
             }
         }
         if self.clusters.is_empty() {
@@ -237,9 +233,8 @@ impl CoreCtlManager {
         }
     }
 
-/// 统一状态入口（内部去重，可被 2s 周期安全调用）：boost = min_cpus 全组常在线；scenemode = prime 整簇
-/// 下线 + 独占一颗小核给调度服务。两者互斥，切换时先退出旧状态（恢复快照）；scenemode 维持期每次纠偏。
-/// NONE / BOOST 稳态下每 2s 重试恢复失败残留核（restore 失败不 clear），否则 prime 会离线到下次模式切换。
+/// 统一状态入口（内部去重，可被 2s 周期安全调用）：boost = min_cpus 全组常在线；scenemode = prime 整簇下线 + 独占一颗小核给调度服务两者互斥，切换时先退出旧状态（恢复快照）；
+/// scenemode 维持期每次纠偏NONE / BOOST 稳态下每 2s 重试恢复失败残留核（restore 失败不 clear），否则 prime 会离线到下次模式切换
     pub fn set_power_state(&mut self, boost: bool, scenemode: bool) {
         let target = if boost {
             STATE_BOOST
@@ -316,16 +311,14 @@ impl CoreCtlManager {
         self.state = target;
     }
 
-/// scenemode：下线 prime（超大核）整簇——小核 + 大核全开常驻，频率上限由 scenemode CLG 配置压制。
-/// 逐核写 online=0 并回读验证，失败/被拒的核跳过记 warn，成功下线的核连同原始 online 记入 offlined。
-/// 随后独占一颗小核给调度服务：选编号最大小核，从业务 cpuset 组移除 + 自身线程移入根组 + 全线程自钉
-/// （设备无 cpuset 时降级为仅自钉），保证后台任务堵塞不了调度服务。
+/// scenemode：下线 prime（超大核）整簇——小核 + 大核全开常驻，频率上限由 scenemode CLG 配置压制逐核写 online=0 并回读验证，失败/被拒的核跳过记 warn，
+/// 成功下线的核连同原始 online 记入 offlined随后独占一颗小核给调度服务：选编号最大小核，从业务 cpuset 组移除 + 自身线程移入根组 + 全线程自钉（设备无 cpuset 时降级为仅自钉），
+/// 保证后台任务堵塞不了调度服务
     // [max_cpus]
-// [max_cpus] scenemode 首选压制路径：写 prime 簇 WALT core_ctl `max_cpus=0`，内核 walt_halt_cpus 整簇停摆
-// （被 halt 的核 getaffinity 自动扣掉、选核避开，与 ChiRi 亲和互不踩）；事件驱动单次写 + 记账防重复写。
-// 返回 false = core_ctl 路径不可用，调用方降级逐核 online 兜底：无 prime 簇 / 无 max_cpus 节点、enable=0
-// （内核不受理写，跳过无效写）、写失败、读回非 0（厂商并发改写）——均首次 warn 一次，不重试不拉锯；
-// 读回失败按「写已发出」记账 Some 防恢复漏记，交维持期 reassert 纠偏。
+// [max_cpus] scenemode 首选压制路径：写 prime 簇 WALT core_ctl `max_cpus=0`，
+// 内核 walt_halt_cpus 整簇停摆（被 halt 的核 getaffinity 自动扣掉、选核避开，与 ChiRi 亲和互不踩）；事件驱动单次写 + 记账防重复写返回 false = core_ctl 路径不可用，
+// 调用方降级逐核 online 兜底：无 prime 簇 / 无 max_cpus 节点、enable=0 （内核不受理写，跳过无效写）、写失败、读回非 0（厂商并发改写）——均首次 warn 一次，不重试不拉锯；
+// 读回失败按「写已发出」记账 Some 防恢复漏记，交维持期 reassert 纠偏
     fn shrink_prime_via_max_cpus(&mut self) -> bool {
         // 已走 core_ctl 路径且未恢复（恢复失败残留重入）：不重复写
         if self.max_cpus_applied.is_some() {
@@ -356,8 +349,7 @@ impl CoreCtlManager {
             }
             return false;
         }
-// enable 感知（快照期读一次，仅省写优化）：enable=0 时内核不受理 max_cpus 写入，直接降级兜底
-// （warn 复用 max_cpus_warned 去重）；enable == None（读不到）保持现行为。
+// enable 感知（快照期读一次，仅省写优化）：enable=0 时内核不受理 max_cpus 写入，直接降级兜底（warn 复用 max_cpus_warned 去重）；enable == None（读不到）保持现行为
         if self.clusters[idx].enable == Some(false) {
             if !self.max_cpus_warned {
                 self.max_cpus_warned = true;
@@ -393,8 +385,8 @@ impl CoreCtlManager {
             );
             return false;
         }
-// 读回校验须区分「读失败」与「读回非 0」：读失败按已生效记账 Some（若按未生效降级，退出恢复 online 时
-// core_ctl 仍持 0 会再次 halt，压制泄漏到 scenemode 之外）；仅读回确认为非 0 才降级兜底、记账保持 None。
+// 读回校验须区分「读失败」与「读回非 0」：读失败按已生效记账 Some（若按未生效降级，退出恢复 online 时core_ctl 仍持 0 会再次 halt，压制泄漏到 scenemode 之外）；
+// 仅读回确认为非 0 才降级兜底、记账保持 None
         let mut read_back = None;
         for _ in 0..3 {
             match fs::read_to_string(&path) {
@@ -421,9 +413,7 @@ impl CoreCtlManager {
                 false
             }
             None => {
-                // 读回持续失败：写已发出、生效状态未知，按已生效记账防恢复
-                // 漏记（restore_max_cpus 按快照写回；即使 halt 未生效，写回
-                // 快照原值也无害）。维持期 reassert 会重读并纠偏
+                // 读回持续失败：写已发出、生效状态未知，按已生效记账防恢复漏记（restore_max_cpus 按快照写回；即使 halt 未生效，写回快照原值也无害）维持期 reassert 会重读并纠偏
                 warn!(
                     "{}",
                     t_with_args("corectl-verify-failed", &fluent_args!("path" => path))
@@ -434,8 +424,8 @@ impl CoreCtlManager {
         }
     }
 
-/// scenemode 退出：恢复 prime 簇 max_cpus 快照（记账 + 读回双重比对，磁盘已是快照值则零写跳过）；
-/// 恢复失败保留记账，由 set_power_state 周期重试路径重入（与 offlined 残留核同款）。
+/// scenemode 退出：恢复 prime 簇 max_cpus 快照（记账 + 读回双重比对，磁盘已是快照值则零写跳过）；恢复失败保留记账，
+/// 由 set_power_state 周期重试路径重入（与 offlined 残留核同款）
     fn restore_max_cpus(&mut self) {
         let Some(idx) = self.max_cpus_applied else {
             return;
@@ -485,8 +475,8 @@ impl CoreCtlManager {
     }
 
     // [scenemode]
-/// scenemode 压制入口：首选 core_ctl max_cpus 路径（整簇 halt），节点不可用 / 写失败 / 被厂商改写时
-/// 降级逐核 online 兜底——两路径记账互斥（max_cpus_applied / offlined），恢复各走各的；随后独占小核（共用）。
+/// scenemode 压制入口：首选 core_ctl max_cpus 路径（整簇 halt），节点不可用 / 写失败 / 被厂商改写时降级逐核 online 兜底——两路径记账互斥（max_cpus_applied /
+/// offlined），恢复各走各的；随后独占小核（共用）
     fn offline_cores(&mut self) {
         if self.shrink_prime_via_max_cpus() {
 // core_ctl halt 路径成功时 offlined 为空、corectl-scenemode-on 不会打：补一条成功日志表明压制已生效
@@ -516,8 +506,7 @@ impl CoreCtlManager {
         }
     }
 
-/// 兜底路径：逐核写 online=0 下线 prime 簇（core_ctl 节点不可用的机型）。回读验证，失败跳过记 warn；
-/// 成功下线的核连同原始 online 值记入 offlined 供恢复。
+/// 兜底路径：逐核写 online=0 下线 prime 簇（core_ctl 节点不可用的机型）回读验证，失败跳过记 warn；成功下线的核连同原始 online 值记入 offlined 供恢复
     fn offline_cores_direct(&mut self) {
         for cpu in scenemode_targets() {
             // 防重复：上轮恢复失败的残留核（已在 offlined 中）跳过重复登记
@@ -570,8 +559,8 @@ impl CoreCtlManager {
         }
     }
 
-/// 把守护进程自身全部线程钉到专用小核（offline_cores 已独占的 reserved_core：已移出业务 cpuset、
-/// 自身线程已移根组，sched_setaffinity 由此实现真独占），调度服务独享该核、后台任务堵塞不了。
+/// 把守护进程自身全部线程钉到专用小核（offline_cores 已独占的 reserved_core：已移出业务 cpuset、自身线程已移根组，sched_setaffinity 由此实现真独占），调度服务独享该核、
+/// 后台任务堵塞不了
     fn pin_self_dedicated(&mut self) {
         if self.self_pinned {
             return;
@@ -613,8 +602,7 @@ impl CoreCtlManager {
         );
     }
 
-/// 解除专用核钉定：把实际钉住的线程逐个恢复全核掩码（不以 self_pinned 总开关短路——部分失败时
-/// 已钉 tid 不恢复会永久滞留单核掩码）；失败且线程仍在（非 ESRCH）的 tid 留清单，下次重试。
+/// 解除专用核钉定：把实际钉住的线程逐个恢复全核掩码（不以 self_pinned 总开关短路——部分失败时已钉 tid 不恢复会永久滞留单核掩码）；失败且线程仍在（非 ESRCH）的 tid 留清单，下次重试
     fn unpin_self(&mut self) {
         if self.self_pinned_tids.is_empty() {
             self.self_pinned = false;
@@ -648,16 +636,14 @@ impl CoreCtlManager {
     }
 
     // [online_reader]
-/// cpuN/online 的 keep-open 读取器：按核号惰性建立；节点常驻（核下线后文件仍在、值变 0），
-/// 符合 FastReader 稳定节点口径。
+/// cpuN/online 的 keep-open 读取器：按核号惰性建立；节点常驻（核下线后文件仍在、值变 0），符合 FastReader 稳定节点口径
     fn online_reader(&mut self, cpu: u32) -> &mut FastReader {
         self.online_readers
             .entry(cpu)
             .or_insert_with(|| FastReader::new(format!("/sys/devices/system/cpu/cpu{cpu}/online")))
     }
 
-/// scenemode 维持期纠偏：被外部拉起的核重新写 0；被框架 CpusetManager 加回业务组的专用小核重新移除。
-/// 只读 online + 组 cpus（每 2s 数次小读），无写发生时零开销。
+/// scenemode 维持期纠偏：被外部拉起的核重新写 0；被框架 CpusetManager 加回业务组的专用小核重新移除只读 online + 组 cpus（每 2s 数次小读），无写发生时零开销
     fn reassert_offline(&mut self) {
 // 逐核收集待下线核一次批量写：单核失败 debug、全部失败 warn（utils::write_nodes），不留静默失败
         let mut items: Vec<(String, String)> = Vec::new();
@@ -684,8 +670,8 @@ impl CoreCtlManager {
                 );
             }
         }
-// core_ctl max_cpus 路径纠偏：被厂商改回非 0（OPLUS pipeline scene 并发放行/锁 max_cpus）则重写 "0" 收敛。
-// 带冷却（MAX_CPUS_REASSERT_COOLDOWN，60s 一次）防逐 2s 拉锯写放大；首次改写 warn 一次，恢复由退出路径兜底。
+// core_ctl max_cpus 路径纠偏：被厂商改回非 0（OPLUS pipeline scene 并发放行/锁 max_cpus）则重写 "0" 收敛带冷却（MAX_CPUS_REASSERT_COOLDOWN，
+// 60s 一次）防逐 2s 拉锯写放大；首次改写 warn 一次，恢复由退出路径兜底
         if let Some(idx) = self.max_cpus_applied {
             let path = format!("{}/max_cpus", self.clusters[idx].dir);
             let tampered = fs::read_to_string(&path)
@@ -730,8 +716,8 @@ impl CoreCtlManager {
         }
     }
 
-/// 恢复被下线的核：按快照值写回 online，带回读 + 一次重试。**恢复失败的核保留在 offlined 中**（clear 掉
-/// 则状态机回 NONE 后再无重试路径，被内核拒绝 / 异步热插拔未完成的核会永久离线），由每 2s 周期重试。
+/// 恢复被下线的核：按快照值写回 online，带回读 + 一次重试**恢复失败的核保留在 offlined 中**（clear 掉则状态机回 NONE 后再无重试路径，被内核拒绝 / 异步热插拔未完成的核会永久离线），
+/// 由每 2s 周期重试
     fn restore_online(&mut self) {
         // 先恢复 core_ctl max_cpus 记账（与 offlined 互斥，两路径只会有一个生效）
         self.restore_max_cpus();
@@ -805,13 +791,12 @@ impl CoreCtlManager {
         }
     }
 
-/// 启动时强制上线全部核心：上次可能死在 scenemode 中途，残留离线核会让其 cpufreq policy 目录消失
-/// （CLG/akmode/fast_lock 枚举不到该集群、永久失去 worker）且核本身永久离线。在 governor 接管前调用，
-/// 写 online=1 并清空 offlined 残留快照（快照恢复语义已由本调用替代）。
+/// 启动时强制上线全部核心：上次可能死在 scenemode 中途，残留离线核会让其 cpufreq policy 目录消失（CLG/akmode/fast_lock 枚举不到该集群、永久失去 worker）且核本身永久离线
+/// 在 governor 接管前调用，写 online=1 并清空 offlined 残留快照（快照恢复语义已由本调用替代）
     // [restore]
     pub fn force_online_all(&mut self) {
-// [restore] core_ctl max_cpus 残留自愈：残留 0 会让 core_ctl 持续 halt 整簇、下方逐核 online=1 被内核拒绝。
-// 枚举快照后与磁盘双重比对，不一致才写（本进程记账为空，按快照恢复；失败仅 warn，逐核 online 仍兜底）。
+// [restore] core_ctl max_cpus 残留自愈：残留 0 会让 core_ctl 持续 halt 整簇、下方逐核 online=1 被内核拒绝枚举快照后与磁盘双重比对，不一致才写（本进程记账为空，
+// 按快照恢复；失败仅 warn，逐核 online 仍兜底）
         self.discover();
         for c in &self.clusters {
             let Some(snap) = c.max_cpus.clone() else {
@@ -848,8 +833,7 @@ impl CoreCtlManager {
             }
         }
         self.max_cpus_applied = None;
-// 状态机同步复位：panic 恢复可能在 scenemode 激活中调用，只清 max_cpus_applied 不清 state 会让维持期
-// 纠偏 / 退出恢复指向已被本方法取代的语义（压制静默失效）。一并清纠偏冷却计时。
+// 状态机同步复位：panic 恢复可能在 scenemode 激活中调用，只清 max_cpus_applied 不清 state 会让维持期纠偏 / 退出恢复指向已被本方法取代的语义（压制静默失效）一并清纠偏冷却计时
         self.state = STATE_NONE;
         self.max_cpus_reassert_at = None;
         let ranges = crate::common::chiri_core_ranges();
@@ -900,7 +884,7 @@ impl CoreCtlManager {
         self.offlined.clear();
     }
 
-    /// 恢复各 cluster 的 min_cpus 快照（boost 退出）。
+    /// 恢复各 cluster 的 min_cpus 快照（boost 退出）
     fn restore_min_cpus(&mut self) {
         for c in &self.clusters {
             let path = format!("{}/min_cpus", c.dir);
@@ -924,7 +908,7 @@ impl CoreCtlManager {
         }
     }
 
-    /// 释放接管：恢复全部快照（调度线程收尾时调用）。
+    /// 释放接管：恢复全部快照（调度线程收尾时调用）
     pub fn release(&mut self) {
         if self.state != STATE_NONE {
             match self.state {

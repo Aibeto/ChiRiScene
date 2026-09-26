@@ -38,7 +38,7 @@ logd/
 # 参考仓库改为 git submodule 记录（见 .gitmodules），不再靠忽略规则排除
 
 # devimp
-devimpbin/
+# devimpbin/
 
 # WebUI（原 webui/.gitignore 合并于此，2026-09-22）
 webui/logs
@@ -75,3 +75,6 @@ webui/src/assets/fonts/*.tmp
 # Magisk 模块打包产物（原 module/.gitignore 合并于此）
 module/webroot/
 module/core/bin/chiri
+
+# Python 缓存
+__pycache__/

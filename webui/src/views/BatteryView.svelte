@@ -1,6 +1,6 @@
 <script lang="ts">
-  // BatteryView.svelte: [header] [source] [scale] [power]
-  // 电池读数二级页：读数来源/双电芯/单位换算/功耗口径；全部直写 meta.yaml（不走草稿，写后回读），与 daemon 热重载对齐。
+  // BatteryView.svelte: [header] [source] [scale] [power]电池读数二级页：读数来源/双电芯/单位换算/功耗口径；全部直写 meta.yaml（不走草稿，写后回读），
+  // 与 daemon 热重载对齐
   import NumberField from '@/components/NumberField.svelte'
   import Panel from '@/components/Panel.svelte'
   import StateBox from '@/components/StateBox.svelte'

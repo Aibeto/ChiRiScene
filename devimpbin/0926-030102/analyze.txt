@@ -1,0 +1,15 @@
+# 由 scripts/devimp-analyze.py 生成（subprocess 捕获，按批次）
+
+# ── batch x_devimp_0926-030100 ──
+# cmd: C:\Users\Aibeto Zhu\AppData\Local\Python\pythoncore-3.14-64\python.exe E:\code\ChiRi\scripts\devimp-analyze.py E:\code\ChiRi\devimpbin\0926-030102\x_devimp_0926-030100 --since 0000-000000 --min-n 30
+== 版本指纹 module:ChiRi Canary Alpha06-18 (versionCode 10618) | soc:8550 board=kalama model=2210132C | android:17 (sdk 37) kernel=5.15.194-android13-8-00019-gf4321180a397-ab15212794
+== E:\code\ChiRi\devimpbin\0926-030102\x_devimp_0926-030100  files=70  schema=44列新(拆分版)  last_ts=03:00:58.928
+   放电方向: batt_i>0 侧 [!] 两侧功率都『合理』或都异常，方向需人工确认；本次按 batt_i>0 侧统计
+   行类型: {'snap': 1502, 'tick': 25401, 'event': 2}
+mode      package                        n  P_avg   p50    p95 battT  cpuT  cap   gpu   psi    mig |          little             big           prime
+default   com.coolapk.market           342   2.72  2.51   4.34  28.7  52.6  100   9.1  23.3  10835 |  70.5/ 94.3 u0.68  53.3/ 68.5 u0.39  29.4/ 62.0 u0.22
+default   com.tencent.mobileqq         217   3.53  3.07   6.99  29.9  64.1  100  13.4  27.9  13152 |  72.7/ 94.3 u0.71  58.1/ 82.9 u0.49  33.9/ 85.5 u0.28
+default   com.ss.android.ugc.aweme      30   4.86  4.88   7.20  30.2  63.0  100  16.9  30.3  19637 |  79.9/100.0 u0.78  65.3/ 92.5 u0.61  45.5/ 92.8 u0.41
+--- tgtop 线程占比（近全时段） ---
+
+

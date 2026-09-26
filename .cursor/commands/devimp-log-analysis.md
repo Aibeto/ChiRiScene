@@ -26,16 +26,17 @@ argument-hint: [日志包/解压目录，或要分析的问题]
 
 ```powershell
 cd e:\code\ChiRi
-# 单命令全流程（推荐）：解压 + 聚合表 + 三个探针 + report.md
+# 单命令全流程（推荐）：解压 + 聚合表 + 四个探针 + report.md
 scripts\devimp-run.cmd devimpbin\logd_XXXX-XXXXXX.tar.gz
 #   → 产出在 devimpbin\<MMDD-HHMMSS>\ ：inventory.txt / analyze.txt / main.txt /
 #     aff.txt / status.txt / report.md（输出目录就是解压目录）
 
-# 也可分步跑（--only 选择阶段：extract,analyze,main,aff,status）
+# 也可分步跑（--only 选择阶段：extract,analyze,main,aff,status,power）
 python scripts\devimp\dvextract.py devimpbin\logd_XXXX-XXXXXX.tar.gz
 python scripts\devimp\dvmain.py    devimpbin\<tag> [--since MMDD-HHMMSS] [--min-n 30]
 python scripts\devimp\dvaff.py     devimpbin\<tag>
 python scripts\devimp\dvstatus.py  devimpbin\<tag>
+python scripts\devimp\dvpower.py   devimpbin\<tag> [--since MMDD-HHMMSS]
 ```
 
 **内层归档格式 2026-09-25 起多了一种（重要）**：`module/scripts/pack.sh` 的 `archive`
@@ -50,19 +51,19 @@ python scripts\devimp\dvstatus.py  devimpbin\<tag>
 
 ### 2. 现场判定（**目录名不可信**；先定版再比数据）
 
-| 判什么 | 怎么看 |
-|---|---|
-| **模块版本** | devimp 文件头三行：`# module=ChiRi Canary <ver> (versionCode N)`；`daemon.log` 的 `[Main] 模块版本:` 行（A06 起有）。**同一 tar 内出现多值 = 混版本，必须报警** |
-| **机型/系统** | 同处文件头：`# soc=… board=… model=…` 与 `# android= kernel=`。**机型或系统不同 → 功耗绝对值不可比**（实例：logd_0922-042407 = Canary92 / PHB110 / A16；logd_0922-130643 = Canary88 / MEIZU 21 Note / A15，同目录同天但不可比） |
-| 设备族 | devimp 文件名的包名：`miui.*`/`quicksearchbox` = 小米系；`coloros.*`/`heytap.*`/`salt.music` = OPlus 系 |
-| schema | devimp 首行表头：无 `cpu_cur_khz` = **40 列旧**（Canary92 前）；含 `cpu_cur_khz` 含 `from_core` = **48 列**（Canary92 期）；含 `cpu_cur_khz` 不含 `from_core` = **44 列新**（拆分版）；**44 列表头后还有一行 `# ts-column=local format_now`** |
-| 版本行为特征 | `daemon.log` 启动段：`已导出 N 个 FAS 白名单条目`、`PowerBase`/`meta.yaml fields invalid` 等 |
+| 判什么        | 怎么看                                                                                                                                                                                                                                        |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **模块版本**  | devimp 文件头三行：`# module=ChiRi Canary <ver> (versionCode N)`；`daemon.log` 的 `[Main] 模块版本:` 行（A06 起有）。**同一 tar 内出现多值 = 混版本，必须报警**                                                                               |
+| **机型/系统** | 同处文件头：`# soc=… board=… model=…` 与 `# android= kernel=`。**机型或系统不同 → 功耗绝对值不可比**（实例：logd_0922-042407 = Canary92 / PHB110 / A16；logd_0922-130643 = Canary88 / MEIZU 21 Note / A15，同目录同天但不可比）               |
+| 设备族        | devimp 文件名的包名：`miui.*`/`quicksearchbox` = 小米系；`coloros.*`/`heytap.*`/`salt.music` = OPlus 系                                                                                                                                       |
+| schema        | devimp 首行表头：无 `cpu_cur_khz` = **40 列旧**（Canary92 前）；含 `cpu_cur_khz` 含 `from_core` = **48 列**（Canary92 期）；含 `cpu_cur_khz` 不含 `from_core` = **44 列新**（拆分版）；**44 列表头后还有一行 `# ts-column=local format_now`** |
+| 版本行为特征  | `daemon.log` 启动段：`已导出 N 个 FAS 白名单条目`、`PowerBase`/`meta.yaml fields invalid` 等                                                                                                                                                  |
 
 ### 3. 选组（包内常混入多段旧日志）
 
 按文件名 `_MMDD-HHMMSS` 排序取**最新一簇**；`status.csv` 尾行时间戳佐证。
 daemon 可能中途重启过（启动序列日志为界）→ 只取重启后的连续段。
-**44 列拆分版里「一簇」= 同一次导出的 main_* + aff_* 全套**；一个包里可能有 5~6 簇、
+**44 列拆分版里「一簇」= 同一次导出的 main*\* + aff*\* 全套**；一个包里可能有 5~6 簇、
 每簇覆盖一个前台包（本次 35 分钟包里 = kernelsu/launcher/bili/QQ/王者/skland/mt 共 7 包）。
 
 ### 4. 跑聚合脚本
@@ -73,10 +74,17 @@ python scripts\devimp-analyze.py <解压目录> [--since MMDD-HHMMSS] [--min-n 3
 ```
 
 输出：按 `mode×package` 的 n / P_avg / p50 / p95 / battT / cpuT / cap / gpu / psi / mig
-+ little/big/prime 的 cap(avg/p95)+util + tgtop 线程占比 + 行类型分布。
-充放电方向自动判定（双向试探取合理功耗侧），不确定时会显式提示。
+
+- little/big/prime 的 cap(avg/p95)+util + tgtop 线程占比 + 行类型分布。
+  充放电方向自动判定（双向试探取合理功耗侧），不确定时会显式提示。
+
+**按包功耗归因不要读这里的 `P_avg`**（它取 devimp 的 `batt_p` 列，本机 `batt_i` 整数化
+→ 排除 `batt_i==0` 会删掉 <0.5A 轻载秒、系统性高估）：功耗归因一律走
+`python scripts\devimp\dvpower.py <解压目录>`，权威源是 `status.csv` 的 `charge` + `batt_power_w`
+（按 `mode×package` 与按包两张表 + 累计 Wh + 热档秒数），devimp 侧值只作交叉验证。
 
 **脚本输出必须配合语境读**（v2 修正）：
+
 - `fas` 行的 `little/big/prime` 恒为 `-`：FAS 不由 CLG/tuned 写 tick，**没有 tick 数据 ≠ 上限为 0**
 - 44 列包没有 `tgtop` 行 → 「tgtop 线程占比」段恒空；线程 top 要去 aff 的 `@S` 帧看
 - `mig` 列是 **2s 增量原始值**（脚本未除 2），换算每秒要 ÷2
@@ -94,38 +102,41 @@ python scripts\devimp-analyze.py <解压目录> [--since MMDD-HHMMSS] [--min-n 3
 反复手写的临时探针已固化为 `scripts/devimp/` 下的常驻脚本；本节是唯一入口说明。
 （本节为新增，不影响后续「二、列索引速查」等既有编号。）
 
-| 脚本 | 作用 | 命令 |
-|---|---|---|
-| `dvrun.py` | **单命令全流程**：解压 → 聚合表 → 三探针 → `report.md` | `python scripts\devimp\dvrun.py <logd_*.tar.gz 或已解压目录>` |
-| `dvextract.py` | 解压（递归容忍 + 内容嗅探 + 完整性闸门 + `inventory.txt`） | `python scripts\devimp\dvextract.py <logd_*.tar.gz> [--tag T] [--out-root devimpbin]` |
-| `dvmain.py` | `main_*.log`：定版 / mode×package / decide-vs-actual / 热压制带 / snap 侧 | `python scripts\devimp\dvmain.py <解压目录> [--since MMDD-HHMMSS] [--min-n 30]` |
-| `dvaff.py` | `aff_*.log`：`@A` 动作与 bulk、`@S` 差分帧累积、绑定轨迹 | `python scripts\devimp\dvaff.py <解压目录> [--since MMDD-HHMMSS]` |
-| `dvstatus.py` | `status.csv` + `daemon.log`：charge / 放电功率 / fps / FAS 证据 / 重启界标 | `python scripts\devimp\dvstatus.py <解压目录>` |
-| `dvlz4.py` | 纯 python LZ4 解码（供 dvextract 用；有 `--selftest`） | `python scripts\devimp\dvlz4.py --selftest` |
-| `dvcommon.py` | 共享工具（列定义、文件头解析、切行、统计、UTF-8 输出） | （库，不直接跑） |
+| 脚本           | 作用                                                                                                                             | 命令                                                                                  |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `dvrun.py`     | **单命令全流程**：解压 → 聚合表 → 四探针（main/aff/status/power）→ `report.md`                                                   | `python scripts\devimp\dvrun.py <logd_*.tar.gz 或已解压目录>`                         |
+| `dvextract.py` | 解压（递归容忍 + 内容嗅探 + 完整性闸门 + `inventory.txt`）                                                                       | `python scripts\devimp\dvextract.py <logd_*.tar.gz> [--tag T] [--out-root devimpbin]` |
+| `dvmain.py`    | `main_*.log`：定版 / mode×package / decide-vs-actual / 热压制带 / snap 侧                                                        | `python scripts\devimp\dvmain.py <解压目录> [--since MMDD-HHMMSS] [--min-n 30]`       |
+| `dvaff.py`     | `aff_*.log`：`@A` 动作与 bulk、`@S` 差分帧累积、绑定轨迹、`t` 行核分布（`--groups` 按机型分簇）                                   | `python scripts\devimp\dvaff.py <解压目录> [--since MMDD-HHMMSS] [--groups "0-2,3-6,7"]` |
+| `dvstatus.py`  | `status.csv` + `daemon.log`：charge / 放电功率 / fps / FAS 证据 / 重启界标                                                       | `python scripts\devimp\dvstatus.py <解压目录>`                                        |
+| `dvpower.py`   | **按包功耗归因**：`status.csv` 权威（`charge` + `batt_power_w`，按 mode×package 与按包）+ 热档秒数 + devimp 侧 `batt_p` 交叉验证 | `python scripts\devimp\dvpower.py <解压目录> [--since MMDD-HHMMSS]`                   |
+| `dvlz4.py`     | 纯 python LZ4 解码（供 dvextract 用；有 `--selftest`）                                                                           | `python scripts\devimp\dvlz4.py --selftest`                                           |
+| `dvcommon.py`  | 共享工具（列定义、文件头解析、切行、统计、UTF-8 输出）                                                                           | （库，不直接跑）                                                                      |
 
 - **Windows 一条命令入口**：`scripts\devimp-run.cmd devimpbin\logd_0925-045336.tar.gz`
   （等价于 `python scripts\devimp\dvrun.py …`，`%*` 透传全部参数）。
 - `dvrun.py` 全程在一个 python 进程内跑（`scripts/devimp-analyze.py` 文件名带连字符不能 import，
   用 subprocess 捕获其 stdout 到 `analyze.txt`）；**单阶段失败不中断全链**，`report.md` 标注失败阶段。
 - 输出（写进 `devimpbin/<tag>/`）：`inventory.txt` / `analyze.txt` / `main.txt` / `aff.txt` /
-  `status.txt` / `report.md`；`report.md` 末尾给出单独重跑任一阶段的完整命令。
+  `status.txt` / `power.txt` / `report.md`；`report.md` 末尾给出单独重跑任一阶段的完整命令。
 - **每个脚本自己写 UTF-8 结果文件，stdout 只打几行摘要 + 路径**——PowerShell 重定向会把
   python stdout 按控制台代码页重编码、中文必乱码（已知坑 16），**禁止依赖 shell 重定向取全文**。
+- `dvaff.py` 的「`t` 行核分布」段回答「某个核/簇上活跃的是谁」：**行数是采样行数不是并发线程数**
+  （`@S` 是差分集），`u` 均值里长尾行是 ≤30s 窗口均值（短促占用被抹平）；簇分界不猜、按机型 DT 显式给
+  （8550 `--groups "0-2,3-6,7"`，8475 分界不同，见 `06-kernel.md` 平台基准）。
 - 判读口径一律以本文档「判定要点」为准，脚本只做读数与统计，不另立解释。
-
 
 ## 二、列索引速查
 
 ### 44 列（2026-09-23 起重写版）
 
-| 列 | 名字 | 列 | 名字 |
-|---|---|---|---|
-| 0-3 | ts,type,mode,screen_on | 22-26 | touch,psi_cpu,psi_io,psi_mem,gpu_busy |
-| 4-9 | pid,package,tid,comm,cluster,core | 27-29 | batt_v,batt_i,batt_p |
-| 10-12 | **max_util**,over_cores,under_cores | 30-32 | wakeups,migrations,freq_trans |
-| 13-16 | cur_perf,tgt_perf,**cur_freq_khz,max_freq_khz** | 33-35 | batt_temp,cpu_temp,clg_active |
-| 17-21 | decision,deb_up,deb_down,reason,thermal_cap_pct | 36-43 | cpu_cur_khz,cpu_max_khz,cpu_min_khz,cpu_governor,gpu_*×4 |
+| 列    | 名字                                            | 列    | 名字                                                      |
+| ----- | ----------------------------------------------- | ----- | --------------------------------------------------------- |
+| 0-3   | ts,type,mode,screen_on                          | 22-26 | touch,psi_cpu,psi_io,psi_mem,gpu_busy                     |
+| 4-9   | pid,package,tid,comm,cluster,core               | 27-29 | batt_v,batt_i,batt_p                                      |
+| 10-12 | **max_util**,over_cores,under_cores             | 30-32 | wakeups,migrations,freq_trans                             |
+| 13-16 | cur_perf,tgt_perf,**cur_freq_khz,max_freq_khz** | 33-35 | batt_temp,cpu_temp,clg_active                             |
+| 17-21 | decision,deb_up,deb_down,reason,thermal_cap_pct | 36-43 | cpu*cur_khz,cpu_max_khz,cpu_min_khz,cpu_governor,gpu*\*×4 |
 
 - **`ts` 没有日期**，形如 `01:59:25.714`（`# ts-column=local format_now`）→ 过滤行用
   `^\d{2}:\d{2}:\d{2}\.\d{3},`，**不要用 `startswith("09")` 之类按日期判断**（会一行都匹配不到）
@@ -172,11 +183,12 @@ python scripts\devimp-analyze.py <解压目录> [--since MMDD-HHMMSS] [--min-n 3
 
   **「QoS 钳制 vs 硬件热压 vs 决策未落地」三态对照**：
 
-  | 状态 | scaling_max 读数 | cur_freq 票值 | 实际频率 | 排障动作 |
-  |---|---|---|---|---|
-  | FREQ_QOS 钳制 | **被拉低** | 跟随被拉低的 max | 与票一致 | 查 thermal cooling / `msm_performance` cpu_max_freq / input-boost（MIN 侧抬 FREQ_QOS_MIN） |
-  | 硬件热压（LMh/DCVS） | 正常 | 不变（仍高） | **被压低** | 读 `dcvsh_freq_limit` / `lmh_freq_limit`；`print_cpufreq_debug_regs` 区分票改 vs 硬压 |
-  | 决策未落地（waltgov） | 正常 | down 未写入 | 暂未跟上 | busy-hold + rate_limit 属正常，等下一次 util 更新；连续多帧不动再按 ②④ 排查 |
+  | 状态                  | scaling_max 读数 | cur_freq 票值    | 实际频率   | 排障动作                                                                                   |
+  | --------------------- | ---------------- | ---------------- | ---------- | ------------------------------------------------------------------------------------------ |
+  | FREQ_QOS 钳制         | **被拉低**       | 跟随被拉低的 max | 与票一致   | 查 thermal cooling / `msm_performance` cpu_max_freq / input-boost（MIN 侧抬 FREQ_QOS_MIN） |
+  | 硬件热压（LMh/DCVS）  | 正常             | 不变（仍高）     | **被压低** | 读 `dcvsh_freq_limit` / `lmh_freq_limit`；`print_cpufreq_debug_regs` 区分票改 vs 硬压      |
+  | 决策未落地（waltgov） | 正常             | down 未写入      | 暂未跟上   | busy-hold + rate_limit 属正常，等下一次 util 更新；连续多帧不动再按 ②④ 排查                |
+
 - `max_util`：CLG 行 = 平滑前原始 util；tuned（akmode/playback）行 = 平滑后决策负载——离线二次平滑前先区分来源
 - `migrations`/`wakeups` = BpfStats **2s 增量**（源码 `src/common.rs` `DaemonEvent::BpfStats`，
   `cpu_monitor` 每 2s 发一次差分）：**÷2 = 每秒**
@@ -189,7 +201,15 @@ python scripts\devimp-analyze.py <解压目录> [--since MMDD-HHMMSS] [--min-n 3
 - `thermal_cap_pct`：对照 feature.yaml 的 `soft_perf_cap`（8550=0.85、8475/8998=0.70）；41℃ 触发、38℃ 解除（hysteresis 3）
   - **`free_above` 是性能豁免档、不是温度带**：压制只落在 `(soft_perf_cap, free_above)` 区间，`>= free_above` 不钳制。**`cap=85` ≠ 已压制**——`free_above == soft_perf_cap` 时压制带为空、软限档完全空转（8550 曾如此，2026-09-23 修为 0.95），日志表现 = `cap=85` 期间写频仍可到 hw_max；热压制只作用于 CLG，tuned 段 cap 列 `-`
   - **实测**：batt 42.1℃ 触发 → `cap=85`（`thermal_change batt=42.1 cpu=56.4 cap=85 free=85`）
-  - **daemon 重启会把热状态重置回 100**（新会话从零升温）→ 跨重启的 cap 序列不可直接连读
+  - **daemon 重启会把热状态重置回 100**（新会话从零升温）→ 跨重启的 cap 序列不可直接连读。
+    **一个包里 daemon 可能重启多次**（2026-09-27 实测：`devimp/` 约 4.6 h 内 3 次触顶 128MB 强制重启，
+    包内 4 个批次各一段；daemon.log 的 `统一启动中` 是重启界标）→ 跨批次只取「各档累计秒数」，
+    不要拼连续 cap 轨迹；重启后那段的 100 档占比偏高是重启产物，**不代表该段真没受过热压制**
+- **热是常态还是偶发：看 `thermal_cap_pct` 各档的累计占用秒数**（分母 = 全部行），
+  不要凭 `thermal_change` 事件条数或 cap 均值判断。2026-09-27 实测（44 列 / 8550 / 4.6 h 会话）：
+  85 档 10422 s（64%）、100 档 5312 s（33%）、40 档 530 s（3.3%）、55/70 各 12 s（升档斜坡产物）
+  → 2/3 时间在软限档 = **热是本会话的常态背景，不是偶发**。`dvpower.py` 的 `[4]` 段直接产出该表
+  （含按批次明细；`thermal_cap_pct` 的浮点残差如 `70.00001` 已归一到整数档）
 - 充放电：**不要用电流符号判定**（方向随内核/机型而异）；status.csv 有 `charge` 列（权威）。
   devimp snap 无 charge 列时用脚本的双向启发式，并在结论里注明。
   脚本口径：**严格排除 `batt_i == 0`**（无电流/数据缺失视为非放电样本，会略抬 P_avg）；
@@ -213,27 +233,37 @@ python scripts\devimp-analyze.py <解压目录> [--since MMDD-HHMMSS] [--min-n 3
   但**若 OEM 把 governor 换成别的，ChiRi 切不回来**——这是一条待查的环境约束，不是本轮回归
 - FAS 验证看 `daemon.log` 的 `fas-gear-switch` / `fas-low-perf-upgrade` 与 snap 的 `mode=fas`；
   `status.csv` 的 `fps` 列是 eBPF uprobe（`Surface::queueBuffer`）帧间隔，只在 FAS 段有值
+  （播放态不填该列，改走下面的 `playback_fps` 行）
+- **播放态帧信号（2026-09-27 起）：看 `event` 行的 `decision=playback_fps`**
+  （只在该包里特调 `playback` 接管、且 `dev_record` 开启时才有；FAS 会话不产出——那一路走 FAS 自己的 fps）。口径：
+  - `reason` = `n=<帧数>;b<档号>=<计数>;…`：档宽 **4ms**、档 0 = <4ms、档 255 = ≥1020ms，
+    只落非零档（档号稀疏，按 `bin × 4ms` 还原帧间隔）
+  - **1 秒一行，窗口内无帧则整行不落**（暂停/静态页 = 无帧）→ 行数 ≈ 播放秒数，可直接当「在播时长」用
+  - **同一行是混流的**：探针挂在进程级 `Surface::queueBuffer`，视频层（24/30fps）+ 弹幕层（120Hz）
+    的帧间隔落在同一个直方图里。判读先找**占优簇**反推内容基线（bilibili ≈ 档 10 一堆 + 档 0/1 一堆），
+    再看是否出现超出基线的长尾档（真掉帧）。**不要对 n 求均值当 fps**
+  - 本质是离线判据（在线不判 jank、不写 fps 列）：`n` 只用于交叉验证「这一秒确实在出帧」
 
 ## 四、基线参考（会随固件变化，仅作量级对照）
 
-| 场景 | 量级 |
-|---|---|
-| 待机（息屏/无前台） | 0.4~0.8 W |
-| 视频播放（bili，playback 特调后） | 2.1~2.8 W |
+| 场景                               | 量级                      |
+| ---------------------------------- | ------------------------- |
+| 待机（息屏/无前台）                | 0.4~0.8 W                 |
+| 视频播放（bili，playback 特调后）  | 2.1~2.8 W                 |
 | 音乐播放（本地/在线的 media 场景） | 2.2~3.4 W（GPU 高则偏上） |
-| 亮屏 UI（抖音/搜索/桌面） | 1.9~2.4 W |
-| 聊天（QQ/微信） | 2.0~4.0 W（热态更高） |
-| MOBA（王者，FAS 接管后） | 3.0~4.7 W |
-| 重负载游戏 | 7 W+ |
+| 亮屏 UI（抖音/搜索/桌面）          | 1.9~2.4 W                 |
+| 聊天（QQ/微信）                    | 2.0~4.0 W（热态更高）     |
+| MOBA（王者，FAS 接管后）           | 3.0~4.7 W                 |
+| 重负载游戏                         | 7 W+                      |
 
 2026-09-23 实测（Canary Alpha06-04 / 8550 / PHB110 / A16，热态 batt 37→42℃、cpu 46→78℃）：
 
-| 场景 | 时长 | P_avg | 帧率 | 备注 |
-|---|---|---|---|---|
-| 王者 FAS（120 档位） | 10.75 min | **4.32~4.34 W** | **121.3 avg / p50 122.2 / p95 124.3 / min 43.6** | cpuT 均值 62.4℃、峰值 78.1℃；命中 55 次频率不匹配 |
-| bili playback | ≈21 min（4 段） | **2.78 W**（cap85 段 2.5~2.7 W） | 无（非 FAS） | cpuT 52.7℃；playback 把 prime 上限压到 ≈648 MHz |
-| kernelsu（default） | ≈7 min | 2.8~3.1 W | 无 | 管理器界面，GPU 空转多 |
-| launcher/QQ/mt/skland | 各 0.5~1.5 min | 1.0（桌面）~6.3 W（QQ 尖峰） | 无 | 样本 20~30 行，只作参考 |
+| 场景                  | 时长            | P_avg                            | 帧率                                             | 备注                                              |
+| --------------------- | --------------- | -------------------------------- | ------------------------------------------------ | ------------------------------------------------- |
+| 王者 FAS（120 档位）  | 10.75 min       | **4.32~4.34 W**                  | **121.3 avg / p50 122.2 / p95 124.3 / min 43.6** | cpuT 均值 62.4℃、峰值 78.1℃；命中 55 次频率不匹配 |
+| bili playback         | ≈21 min（4 段） | **2.78 W**（cap85 段 2.5~2.7 W） | 无（非 FAS）                                     | cpuT 52.7℃；playback 把 prime 上限压到 ≈648 MHz   |
+| kernelsu（default）   | ≈7 min          | 2.8~3.1 W                        | 无                                               | 管理器界面，GPU 空转多                            |
+| launcher/QQ/mt/skland | 各 0.5~1.5 min  | 1.0（桌面）~6.3 W（QQ 尖峰）     | 无                                               | 样本 20~30 行，只作参考                           |
 
 ## 五、已知坑
 

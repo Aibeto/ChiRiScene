@@ -1,5 +1,4 @@
-// down.test.ts: [parse] [write]
-// 解析口径与守护进程 src/down.rs::read_down 对齐，重点覆盖两边易分歧的形态（注释/引号/大小写）。
+// down.test.ts: [parse] [write]解析口径与守护进程 src/down.rs::read_down 对齐，重点覆盖两边易分歧的形态（注释/引号/大小写）
 import { describe, expect, it } from 'vitest'
 import { DOWN_WORD, downFileContent, parseDown } from '@/data/down'
 

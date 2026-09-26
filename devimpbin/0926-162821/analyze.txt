@@ -1,0 +1,29 @@
+# 由 scripts/devimp-analyze.py 生成（subprocess 捕获，按批次）
+
+# ── batch x_devimp_0926-162614 ──
+# cmd: C:\Users\Aibeto Zhu\AppData\Local\Python\pythoncore-3.14-64\python.exe E:\code\ChiRi\scripts\devimp-analyze.py E:\code\ChiRi\devimpbin\0926-162821\x_devimp_0926-162614 --since 0000-000000 --min-n 30
+== 版本指纹 module:ChiRi Canary Alpha07-02 (versionCode 10702) | soc:8550 board=kalama model=PHB110 | android:16 (sdk 36) kernel=5.15.180-android13-8-o-01178-gfc2079499f31
+== E:\code\ChiRi\devimpbin\0926-162821\x_devimp_0926-162614  files=36  schema=44列新(拆分版)  last_ts=16:26:11.728
+   放电方向: batt_i>0 侧 （枚举：batt_i>0 侧为放电）
+   行类型: {'snap': 4756, 'tick': 59340, 'event': 2042}
+mode      package                        n  P_avg   p50    p95 battT  cpuT  cap   gpu   psi    mig |          little             big           prime
+playback  tv.danmaku.bili             3251   3.08  2.89   4.91  40.0  53.5   93  13.0  20.7  11477 |  43.9/ 50.5 u0.54  52.7/ 66.0 u0.61  31.4/ 50.0 u0.36
+default   com.tencent.mobileqq         243   4.83  4.19  10.02  40.3  61.6   94  22.6  28.9  12407 |  60.5/ 94.3 u0.64  62.5/ 96.6 u0.62  37.8/ 92.8 u0.36
+default   com.perol.pixez              227   2.70  2.30   5.77  41.0  49.9   85  10.7  14.2   5922 |  44.4/ 82.9 u0.50  48.9/ 68.5 u0.43  23.8/ 53.6 u0.16
+default   com.coolapk.market           129   3.69  3.00   8.83  39.4  53.4  100  18.1  18.1  10471 |  48.3/ 94.3 u0.52  51.3/ 82.9 u0.50  28.8/ 92.8 u0.23
+default   me.weishu.kernelsu           109   4.39  3.73   8.56  38.0  57.1  100  19.3  25.2  13624 |  66.7/ 94.3 u0.69  65.2/ 96.6 u0.65  34.2/ 92.8 u0.30
+default   com.android.launcher          64   4.85  4.72   9.76  40.3  56.3   94  24.2  25.1  10923 |  63.0/ 94.3 u0.65  54.1/ 96.6 u0.54  41.9/ 92.8 u0.39
+--- tgtop 线程占比（近全时段） ---
+
+
+# ── batch x_devimp_0926-162818 ──
+# cmd: C:\Users\Aibeto Zhu\AppData\Local\Python\pythoncore-3.14-64\python.exe E:\code\ChiRi\scripts\devimp-analyze.py E:\code\ChiRi\devimpbin\0926-162821\x_devimp_0926-162818 --since 0000-000000 --min-n 30
+== 版本指纹 module:ChiRi Canary Alpha07-02 (versionCode 10702) | soc:8550 board=kalama model=PHB110 | android:16 (sdk 36) kernel=5.15.180-android13-8-o-01178-gfc2079499f31
+== E:\code\ChiRi\devimpbin\0926-162821\x_devimp_0926-162818  files=4  schema=44列新(拆分版)  last_ts=16:28:17.810
+   放电方向: batt_i>0 侧 （枚举：batt_i>0 侧为放电）
+   行类型: {'snap': 122, 'tick': 1505, 'event': 55}
+mode      package                        n  P_avg   p50    p95 battT  cpuT  cap   gpu   psi    mig |          little             big           prime
+playback  tv.danmaku.bili               79   2.92  2.67   4.60  40.5  54.1  100   6.8  15.4   8205 |  42.4/ 50.5 u0.47  51.4/ 66.0 u0.60  29.4/ 50.0 u0.31
+--- tgtop 线程占比（近全时段） ---
+
+

@@ -16,8 +16,8 @@ use super::policy_controller::PolicyController;
 // [reload]
 // 规则热重载
 impl FasController {
-    /// 热重载规则（预留能力：当前 FAS 配置为编译期嵌入（module/config/normal/fas/<app>.yaml），
-    /// 每实例在 activate 时 load_policies 定型，ConfigReload 不再重载 FAS，本方法暂无调用方）
+    /// 热重载规则（预留能力：当前 FAS 配置为编译期嵌入（module/config/normal/fas/<app>.yaml），每实例在 activate 时 load_policies 定型，
+    /// ConfigReload 不再重载 FAS，本方法暂无调用方）
     #[allow(dead_code)]
     pub fn reload_rules(&mut self, new_rules: &FasRulesConfig) {
         // 规范化配置（防 NaN/越界导致 clamp panic），遮蔽原引用使后续代码一致
@@ -166,9 +166,8 @@ impl FasController {
     // 频率应用 — CPU 负载感知：利用 fg_util EMA 软封顶 perf，防 200ms 采样滞后造成断崖
 
     pub fn apply_freqs(&mut self) {
-        // 防篡改强制重写节拍：时间基准（早期按帧计数，节拍随刷新率线性放大，120fps 下
-        // 30 帧 ≈0.25s），语义为「最多每 freq_force_reapply_interval 秒强制重写一次」，
-        // 配置项名与数值不变，仅单位由帧修正为秒。normalize() 已把该值钳到 ≥ 1，避免 0 导致判定恒真
+        // 防篡改强制重写节拍：时间基准（早期按帧计数，节拍随刷新率线性放大，120fps 下30 帧 ≈0.25s），语义为「最多每 freq_force_reapply_interval 秒强制重写一次」，
+        // 配置项名与数值不变，仅单位由帧修正为秒normalize() 已把该值钳到 ≥ 1，避免 0 导致判定恒真
         let force = self.freq_force_timer.elapsed()
             >= Duration::from_secs(self.cfg.freq_force_reapply_interval as u64);
         if force {
@@ -203,8 +202,7 @@ impl FasController {
             policy.freq_hold_frames = policy.freq_hold_frames.saturating_sub(1);
 
             let w = policy.cluster_profile.capacity_weight.max(0.1);
-            // 原始 ratio.powf(w) 对大核（w=2.3）惩罚过重：perf=0.50 时超大核仅 ≈20% 频率，
-            // 高刷游戏跑不上去；改为 sqrt(w) 指数 + 线性混合，缓解大核频率被压制
+            // 原始 ratio.powf(w) 对大核（w=2.3）惩罚过重：perf=0.50 时超大核仅 ≈20% 频率，高刷游戏跑不上去；改为 sqrt(w) 指数 + 线性混合，缓解大核频率被压制
             let pow_adj = ratio.powf(w.sqrt());
             let linear_adj = ratio;
             let blend = (w - 1.0).clamp(0.0, 1.5) / 1.5;
@@ -247,8 +245,7 @@ impl FasController {
         }
         self.fps_margin = fas_rules.fps_margin;
 
-        // 跨厂商候选节点（高通 perfmgr / MTK mtk_fpsgo）：逐条尝试写，
-        // 单点失败 debug、全部失败 warn（见 utils::write_nodes）
+        // 跨厂商候选节点（高通 perfmgr / MTK mtk_fpsgo）：逐条尝试写，单点失败 debug、全部失败 warn（见 utils::write_nodes）
         let perfmgr_items: [(&str, &str); 2] = [
             ("/sys/module/perfmgr/parameters/perfmgr_enable", "0"),
             ("/sys/module/mtk_fpsgo/parameters/perfmgr_enable", "0"),

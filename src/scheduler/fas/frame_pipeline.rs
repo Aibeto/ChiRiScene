@@ -10,7 +10,7 @@ use super::gear_state::GearDecision;
 use super::pid::scale_frames;
 
 impl FasController {
-    // [phase1] 
+    // [phase1]
     // Phase 1: 冷启动 & 应用切换
 
     fn handle_early_exit(&mut self, actual_ms: f32) -> bool {
@@ -45,7 +45,7 @@ impl FasController {
         false
     }
 
-    // [phase2] 
+    // [phase2]
     // Phase 2: 加载检测
 
     fn handle_loading(&mut self, actual_ms: f32, is_heavy: bool) -> bool {
@@ -116,7 +116,7 @@ impl FasController {
         false
     }
 
-    // [ema] 
+    // [ema]
     // Phase 4.5: EMA 更新
 
     fn update_ema(&mut self, actual_ms: f32, avg_fps: f32) {
@@ -156,7 +156,7 @@ impl FasController {
         }
     }
 
-    // [decay] 
+    // [decay]
     // Phase 6: 快速衰减
 
     fn apply_steady_decay(&mut self, avg_fps: f32) {
@@ -227,11 +227,10 @@ impl FasController {
         }
     }
 
-    // [thermal] 
+    // [thermal]
     // Phase 2.5: 温度护栏（temp_threshold=0 禁用）
 
-    /// 护栏锁存状态机：≥temp_threshold 进入、<temp_threshold-3℃ 退出
-    /// （迟滞防阈值边缘振荡；温度源 3s 刷新，见 FasManager::refresh_temperature）
+    /// 护栏锁存状态机：≥temp_threshold 进入、<temp_threshold-3℃ 退出（迟滞防阈值边缘振荡；温度源 3s 刷新，见 FasManager::refresh_temperature）
     fn update_thermal_hold(&mut self) {
         if self.temp_threshold <= 0.0 || self.current_temperature <= 0.0 {
             self.thermal_hold = false;
@@ -255,7 +254,7 @@ impl FasController {
         }
     }
 
-    // [update-frame] 
+    // [update-frame]
     // update_frame — 主入口
 
     pub fn update_frame(&mut self, frame_delta_ns: u64) {
@@ -367,8 +366,7 @@ impl FasController {
             );
         }
 
-        // Phase 7: 温度护栏终值钳制——放最后以覆盖 PID/jank 全部增量：热限频期间 PID 看到
-        // 帧时间变长会持续抬频，不钳制会与内核 thermal 形成正反馈（越热越抬频 → 越抬频越热）
+        // Phase 7: 温度护栏终值钳制——放最后以覆盖 PID/jank 全部增量：热限频期间 PID 看到帧时间变长会持续抬频，不钳制会与内核 thermal 形成正反馈（越热越抬频 → 越抬频越热）
         if let Some(cap) = self.thermal_perf_cap() {
             self.perf_index = self.perf_index.min(cap);
         }

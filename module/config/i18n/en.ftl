@@ -182,6 +182,7 @@ clg-watchdog-release = [CLG] WATCHDOG: no load events for { $secs }s, eBPF sourc
 clg-touch-boost = [CLG] Touch boost window open: big-core perf floor={ $floor } held { $ms }ms
 clg-thermal-cap = [CLG] Thermal guard: battery={ $batt }°C / CPU={ $cpu }°C, perf ceiling capped to { $cap }% (>= { $free } exempt)
 clg-thermal-no-sensor = [CLG] Thermal guard: no CPU temperature sensor, CPU reference disabled
+thermal-config-clamped = [Thermal] thermal config out of range, clamped: { $key } { $value } -> { $fixed }
 clg-thermal-no-battery = [CLG] Thermal guard: battery temp node not found, CPU-only suppression
 battery-temp-scale = [Thermal] battery temp scale pre-detected: { $unit } (divisor { $divisor }); shared by CLG thermal guard and FAS temperature guard
 battery-temp-scale-unknown = [Thermal] battery temp scale pre-detection inconclusive (node missing or reading not ready); degrading to CPU-only this run

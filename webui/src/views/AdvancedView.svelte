@@ -1,7 +1,6 @@
 <script lang="ts">
-  // AdvancedView.svelte: [bar] [fields]
-  // 高级设置二级页：DOWN 停摆、PowerBase、息屏判定值。与电池读数页同一套二级页逻辑：
-  // 直写状态文件 / meta.yaml（不走草稿，写后回读），与 daemon 热重载对齐。
+  // AdvancedView.svelte: [bar] [fields]高级设置二级页：DOWN 停摆、PowerBase、息屏判定值与电池读数页同一套二级页逻辑：直写状态文件 / meta.yaml（不走草稿，
+  // 写后回读），与 daemon 热重载对齐
   import NumberField from '@/components/NumberField.svelte'
   import Panel from '@/components/Panel.svelte'
   import StateBox from '@/components/StateBox.svelte'

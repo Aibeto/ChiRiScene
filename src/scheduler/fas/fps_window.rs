@@ -1,6 +1,6 @@
 //! fps_window.rs: [window]
 
-// [window] 
+// [window]
 // 帧率滑动窗口统计（均值/方差/近期均值）
 const WINDOW_SIZE: usize = 120;
 

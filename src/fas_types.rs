@@ -71,12 +71,12 @@ pub fn default_cluster_profiles() -> Vec<ClusterProfile> {
 
 // [per_app]
 
-/// 每个游戏的配置档案：只需指定 target_fps 数组，运行时按实际帧率匹配最近档位。
+/// 每个游戏的配置档案：只需指定 target_fps 数组，运行时按实际帧率匹配最近档位
 /// YAML 示例:
 /// ```yaml
 /// per_app_profiles:
-///   "com.miHoYo.GenshinImpact": { target_fps: [30, 60], fps_margin: 4.0 }
-///   "com.tencent.tmgp.sgame": { target_fps: [60, 90, 120], fps_margin: 3.0 }
+/// "com.miHoYo.GenshinImpact": { target_fps: [30, 60], fps_margin: 4.0 }
+/// "com.tencent.tmgp.sgame": { target_fps: [60, 90, 120], fps_margin: 3.0 }
 /// ```
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct PerAppProfile {
@@ -175,9 +175,8 @@ pub struct FasRulesConfig {
     #[serde(default = "d_switch_perf")]
     pub app_switch_resume_perf: f32,
 
-    /// 防篡改强制重写间隔（**秒**，最小 1，默认 30）：最多每 N 秒把当前锁频值无条件重写一遍，
-    /// 把被改写/压制的 scaling_min_freq / scaling_max_freq 收敛回目标（兜底收敛，非与常驻竞争者常态对抗）。
-    /// 历史口径：旧实现按帧计数（120fps 下 30 帧 ≈ 0.25s，4 次/s），现改为时间基准，数值含义不变。
+    /// 防篡改强制重写间隔（**秒**，最小 1，默认 30）：最多每 N 秒把当前锁频值无条件重写一遍，把被改写/压制的 scaling_min_freq / scaling_max_freq 收敛回目标（兜底收敛，
+    /// 非与常驻竞争者常态对抗）历史口径：旧实现按帧计数（120fps 下 30 帧 ≈ 0.25s，4 次/s），现改为时间基准，数值含义不变
     #[serde(default = "d_force_int")]
     pub freq_force_reapply_interval: u32,
     #[serde(default = "d_max_frame")]
@@ -335,8 +334,7 @@ fn d_util_cap_divisor() -> f32 {
 }
 
 impl FasRulesConfig {
-    /// 校验并规范化配置：非有限值（NaN/±Inf）回退默认，防止污染 PID 控制链；
-    /// perf/步长交叉约束保证 clamp 永不 panic；fps_gears 过滤非法值，空时回退默认档位
+    /// 校验并规范化配置：非有限值（NaN/±Inf）回退默认，防止污染 PID 控制链；perf/步长交叉约束保证 clamp 永不 panic；fps_gears 过滤非法值，空时回退默认档位
     pub fn normalize(&mut self) {
         if !self.perf_floor.is_finite() {
             self.perf_floor = d_perf_floor();
@@ -444,8 +442,7 @@ impl FasRulesConfig {
         }
         // 延迟退出：1s 下限防抖，10 分钟上限防呆（配得再大也不该常驻接管）
         self.deactivate_delay_secs = self.deactivate_delay_secs.clamp(1, 600);
-        // 防篡改强制重写间隔最小 1：旧实现 interval=0 是除零 panic（看门狗反复重启，FAS 停摆）；
-        // 时间基准后 0 会令「已到期」判定恒真（每帧强制重写），同样必须钳到 ≥ 1
+        // 防篡改强制重写间隔最小 1：旧实现 interval=0 是除零 panic（看门狗反复重启，FAS 停摆）；时间基准后 0 会令「已到期」判定恒真（每帧强制重写），同样必须钳到 ≥ 1
         self.freq_force_reapply_interval = self.freq_force_reapply_interval.max(1);
     }
 

@@ -33,8 +33,9 @@ updateInformation/    # 更新.json 与 changelog（changelog.md / HotUpdateInfo
 .github/workflows/    # CI：Node 24 + Rust nightly + NDK r29 + cargo-ndk；提交信息含 "skip ci"（不分大小写）时跳过该次构建
 AppOptR/              # 第三方 submodule（线程调整参考实现，锁 commit；内部文件勿移动/改写，否则污染 submodule 工作区）
 LittleYouran_CTS_3/   # 第三方 submodule（CPU Turbo Scheduler 二改；feature.yaml Scheduler 段参数的借鉴来源）
-devimpbin/            # devimp 日志工作区（AI 协作用，gitignore）：logd_*.tar.gz 导出包 → dvrun.py 解包 → 各日期子目录（daemon.log / status.csv / main_*.log / aff_*.log + analyze/main/aff/status/report 聚合表）；tmp_* scratch 用完即删
+devimpbin/            # devimp 日志工作区（AI 协作用，gitignore）：logd_*.tar.gz 导出包 → dvrun.py 解包 → 各日期子目录（daemon.log / status.csv / main_*.log / aff_*.log + analyze/main/aff/status/report 聚合表）；scratch 用完即删，一次性 probe py 不落地
 scripts/devimp/       # devimp 分析管道：dvrun.py（一条命令跑完解包+聚合表）、dvextract.py（内容嗅探+tar 校验）、dvlz4.py（纯标准库 LZ4 解压）、dvmain/dvaff/dvstatus.py（分文件解析）、dvcommon.py；另有 scripts/devimp-run.cmd
+scripts/devreview.py  # 代码审查辅助（只读）：codediff（改动 diff 剔注释，--staged 看暂存区、--code-only 滤注释行）+ locate（打行号）
 ```
 
 ## [stack] 技术栈

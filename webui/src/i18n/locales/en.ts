@@ -10,8 +10,7 @@ export default {
   'nav.logs': 'Logs',
   'nav.main': 'Main navigation',
 
-  // commented out: manual refresh buttons removed
-  // 'action.refresh': 'Refresh',
+  // commented out: manual refresh buttons removed 'action.refresh': 'Refresh',
   'action.toBottom': 'Back to bottom',
   'action.cancel': 'Cancel',
   'action.confirm': 'Confirm',
@@ -96,8 +95,8 @@ export default {
   'config.loglevel': 'Log level',
   'config.writable': 'Editable',
   'config.devRecord': 'Dev record',
-  // commented out: dev record subtitle hidden per request
-  // 'config.devRecord.hint': 'Keep default values normally, no modification required.',
+  // commented out: dev record subtitle hidden per request 'config.devRecord.hint':
+  // 'Keep default values normally, no modification required.',
   'config.fasEnabled': 'FAS frame-aware scheduling',
   'config.fasEnabled.hint': 'Frame-interval-aware scheduling',
   'config.scenemodeEnabled': 'SceneMode',
@@ -234,8 +233,8 @@ export default {
   'logs.source': 'Source',
   'logs.source.daemon': 'Daemon log',
   'logs.source.status': 'Status snapshot',
-  // commented out: log panel subtitle hidden per request
-  // 'logs.window': 'Showing the most recent window only (fixed byte window, never the whole file)',
+  // commented out: log panel subtitle hidden per request 'logs.window':
+  // 'Showing the most recent window only (fixed byte window, never the whole file)',
   'logs.archive': 'History logs are packed into logd/; view them from the archives',
   'logs.devimp': 'Diagnostic logs',
   'logs.empty': 'No content yet',
@@ -249,15 +248,14 @@ export default {
   'logs.status.power': 'Power',
   'logs.status.charge': 'Power state',
   'logs.status.times': 'Time',
-  // Charge states (fixed short words from the status.csv `charge` column;
-  // unknown/missing shown as —)
+  // Charge states (fixed short words from the status.csv `charge` column;unknown/missing shown as —)
   'logs.charge.charging': 'Charging',
   'logs.charge.discharging': 'Discharging',
   'logs.charge.full': 'Full',
   'logs.charge.not_charging': 'Not charging',
 
-  // CLG four gears: label equals the id, same in every locale;
-  // all mode.*.desc keys are commented out (card shows family + mode only, descriptions hidden)
+  // CLG four gears: label equals the id, same in every locale;all mode.*
+  // desc keys are commented out (card shows family + mode only, descriptions hidden)
   'mode.reduce': 'reduce',
   // 'mode.reduce.desc': 'Capped ceiling, battery first',
   'mode.default': 'default',
@@ -279,7 +277,7 @@ export default {
   // current_mode still holds the CLG slot name, the status card swaps the label
   'mode.powerbase': 'PowerBase',
   // 'mode.scenemode.desc':
-  //   'Low-power state entered after the screen-off timeout (separate screen axis; no mode value is produced)',
+  // 'Low-power state entered after the screen-off timeout (separate screen axis; no mode value is produced)',
   'mode.fas': 'FAS',
   // 'mode.fas.desc': 'Frame-aware scheduling',
   'mode.special': 'Tuned',

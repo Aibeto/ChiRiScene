@@ -1,6 +1,5 @@
 <script lang="ts">
-  // ConfirmSheet.svelte: [dialog]
-  // 破坏性操作确认：原生 <dialog> 提供焦点陷阱、Esc 关闭与无障碍语义；视觉用语义 token（切角面板 + 状态信号）。
+  // ConfirmSheet.svelte: [dialog]破坏性操作确认：原生 <dialog> 提供焦点陷阱、Esc 关闭与无障碍语义；视觉用语义 token（切角面板 + 状态信号）
   let {
     open = false,
     title,
@@ -81,8 +80,8 @@
 </dialog>
 
 <style>
-  /* 弹层骨架/皮肤来自官方 .ak-dialog（深色适配在 app.css [ak-adapt]），这里只保留项目特有的「注意事项」竖条；
-     竖条跟随弹层信号色（CONFIRM 暖黄 / DANGER 危险红），固定暖色会在危险弹层多出第三种颜色 */
+  /* 弹层骨架/皮肤来自官方 .ak-dialog（深色适配在 app.css [ak-adapt]），这里只保留项目特有的「注意事项」竖条；竖条跟随弹层信号色（CONFIRM 暖黄 / DANGER 危险红），
+     固定暖色会在危险弹层多出第三种颜色 */
   .note {
     margin-top: var(--ak-space-3);
     padding-left: var(--ak-space-3);

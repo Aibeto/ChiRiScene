@@ -1,6 +1,6 @@
 //! pid.rs: [struct] [pid] [utils]
 
-// [struct] 
+// [struct]
 // PID 控制器状态
 pub(super) struct PidController {
     // 用户配置的基准系数 (基于 60fps 场景调优)
@@ -19,7 +19,7 @@ pub(super) struct PidController {
     adapted_fps: f32,
 }
 
-// [pid] 
+// [pid]
 // PID 控制逻辑（系数自适应 + 单帧更新）
 impl PidController {
     pub(super) fn new(kp: f32, ki: f32, kd: f32) -> Self {
@@ -38,8 +38,8 @@ impl PidController {
         }
     }
 
-    /// 根据 target_fps 动态缩放 PID 系数：高刷 budget 更短（144fps→6.9ms vs 60fps→16.7ms），
-    /// 同样 1ms 偏差更严重，P/I/D 增益需随 target_fps 缩放且程度不同：P 最激进，D 最保守（高刷噪声大）。
+    /// 根据 target_fps 动态缩放 PID 系数：高刷 budget 更短（144fps→6.9ms vs 60fps→16.7ms），同样 1ms 偏差更严重，
+    /// P/I/D 增益需随 target_fps 缩放且程度不同：P 最激进，D 最保守（高刷噪声大）
     pub(super) fn adapt_to_target_fps(&mut self, target_fps: f32) {
         // 防御非法 target_fps（0/负/NaN/Inf），避免 PID 系数与积分限幅被污染
         if !target_fps.is_finite() || target_fps <= 0.0 {
@@ -66,8 +66,7 @@ impl PidController {
             .clamp(-self.integral_limit, self.integral_limit);
     }
 
-    /// 带利用率感知的 PID 计算：fg_util 低说明瓶颈不在 CPU（GPU/IO bound），拉频不改善帧率
-    /// 反而白给功耗，通过 util_gain 衰减 P 项增益。
+    /// 带利用率感知的 PID 计算：fg_util 低说明瓶颈不在 CPU（GPU/IO bound），拉频不改善帧率反而白给功耗，通过 util_gain 衰减 P 项增益
     pub(super) fn compute(&mut self, error: f32, inst_error: f32, norm: f32, fg_util: f32) -> f32 {
         let safe_norm = norm.clamp(0.5, 2.5);
 
@@ -81,14 +80,12 @@ impl PidController {
         self.integral = self.integral.clamp(-dyn_limit, dyn_limit);
 
         let raw_deriv = (error - self.prev_error) / safe_norm;
-        // D 项动态低通滤波：alpha 随 target_fps 升高而降低（60fps=0.30、120fps=0.21、144fps=0.19），
-        // 固定 0.7/0.3 滤波器在高刷下抑不住调度噪声、输出高频震荡
+        // D 项动态低通滤波：alpha 随 target_fps 升高而降低（60fps=0.30、120fps=0.21、144fps=0.19），固定 0.7/0.3 滤波器在高刷下抑不住调度噪声、输出高频震荡
         let d_alpha = (0.30 * (60.0 / self.adapted_fps.max(1.0)).sqrt()).clamp(0.10, 0.30);
         self.filtered_deriv = self.filtered_deriv * (1.0 - d_alpha) + raw_deriv * d_alpha;
         self.prev_error = error;
 
-        // 利用率感知增益：fg_util < 0.30 → GPU/IO bound 衰减 P 项；[0.30, 1.0] → CPU bound 正常；
-        // ≤ 0.01（刚启动未采样）不衰减
+        // 利用率感知增益：fg_util < 0.30 → GPU/IO bound 衰减 P 项；[0.30, 1.0] → CPU bound 正常；≤ 0.01（刚启动未采样）不衰减
         let util_gain = if fg_util > 0.01 && fg_util < 0.30 {
             // 映射到 0.3 ~ 0.99
             0.3 + fg_util * 2.3
@@ -109,8 +106,7 @@ impl PidController {
         self.filtered_deriv = 0.0;
     }
 
-    /// 运行时更新 PID 基准系数（热重载预留能力；当前 per-app 配置为编译期嵌入，
-    /// FasManager 复用路径走 reset_runtime + apply_freqs，本方法暂无调用方）
+    /// 运行时更新 PID 基准系数（热重载预留能力；当前 per-app 配置为编译期嵌入，FasManager 复用路径走 reset_runtime + apply_freqs，本方法暂无调用方）
     #[allow(dead_code)]
     pub(super) fn update_coefficients(&mut self, kp: f32, ki: f32, kd: f32) {
         self.base_kp = kp;
@@ -125,7 +121,7 @@ impl PidController {
     }
 }
 
-// [utils] 
+// [utils]
 // 工具函数
 
 #[inline]

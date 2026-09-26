@@ -1,16 +1,15 @@
 #!/system/bin/sh
 # pack.sh —— 外部打包工具（tar 封装 + 可选 gzip），daemon 与 WebUI 共用的对外稳定接口：
 # **本文件与 core/bin/tar（外部引入的 tar 二进制，可选）不得被任何构建流程修改**
-# （CI 的注释剥离已排除 scripts/ 目录，见 .github/workflows/build.yml）。
-#
+# （CI 的注释剥离已排除 scripts/ 目录，见 .github/workflows/build.yml）
 # 用法：
-#   pack.sh archive <staging_dir> <out_tar>
-#       无压缩打包（lz4 压缩由调用方 daemon 内置 lz4_flex 完成）；成功 exit 0，失败 exit 1（调用方负责保留 staging 并留痕）。
-#   pack.sh export <src_dir> <dest_base> <fail_file> <progress_file> <total_file>
-#       打包为 <dest_base>.tar.gz 并删除中间 .tar（gzip 不可用时保留 .tar；区别于 logd 归档里的正式 .tar 产物）；
-#       失败退出码写入 fail_file：3=源目录不可进，4=打包/压缩失败，5=源为空；进度写 progress_file、总文件数预写 total_file；exit 2=用法错误。
+# pack.sh archive <staging_dir> <out_tar>
+# 无压缩打包（lz4 压缩由调用方 daemon 内置 lz4_flex 完成）；成功 exit 0，失败 exit 1（调用方负责保留 staging 并留痕）
+# pack.sh export <src_dir> <dest_base> <fail_file> <progress_file> <total_file>
+# 打包为 <dest_base>.tar.gz 并删除中间 .tar（gzip 不可用时保留 .tar；区别于 logd 归档里的正式 .tar 产物）；
+# 失败退出码写入 fail_file：3=源目录不可进，4=打包/压缩失败，5=源为空；进度写 progress_file、总文件数预写 total_file；exit 2=用法错误
 # tar 顺序：core/bin/tar（自带优先）→ /system/bin/tar → toybox tar → busybox tar；
-# gzip 顺序：core/bin/chiri gzip（纯 Rust flate2，主选）→ 系统 gzip → busybox gzip，都没有则保留 .tar。
+# gzip 顺序：core/bin/chiri gzip（纯 Rust flate2，主选）→ 系统 gzip → busybox gzip，都没有则保留 .tar
 
 SELF_DIR=${0%/*}
 MODDIR=${SELF_DIR%/*}

@@ -13,7 +13,7 @@ static BUNDLE: LazyLock<RwLock<FluentBundle<FluentResource, IntlLangMemoizer>>> 
     RwLock::new(bundle)
 });
 
-/// 加载指定语言的翻译资源：语言包编译期嵌入（common::embedded_ftl_str），磁盘 i18n 目录不再读取。
+/// 加载指定语言的翻译资源：语言包编译期嵌入（common::embedded_ftl_str），磁盘 i18n 目录不再读取
 fn load_bundle(
     lang: &str,
 ) -> Result<FluentBundle<FluentResource, IntlLangMemoizer>, anyhow::Error> {

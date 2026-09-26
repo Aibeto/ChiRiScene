@@ -1,6 +1,5 @@
-// read.ts: [text] [list] [exists] [classify]
-// 读取原语：一切读取都限量（daemon.log 单文件 50MB、status.csv 8MB，禁止整读），
-// 并把「文件不存在」与「真实失败」分开返回。
+// read.ts: [text] [list] [exists] [classify]读取原语：一切读取都限量（daemon.log 单文件 50MB、status.csv 8MB，禁止整读），并把「文件不存在」
+// 与「真实失败」分开返回
 import { run, isLive } from '@/kernel/shell'
 import { shQuote } from './paths'
 import { absent, failed, ok, shellError, type AbsentReason, type ReadResult } from './errors'
@@ -22,7 +21,7 @@ function envUnsupported<T>(): ReadResult<T> {
 // [text]
 /**
  * 读取文件内容（限量窗口）：`tail -c` 对小文件返回全部、大文件只返回尾部，天然
- * 避免整文件装载；窗口从中间开始时可能截断首行，调用方按行解析即可容忍。
+ * 避免整文件装载；窗口从中间开始时可能截断首行，调用方按行解析即可容忍
  */
 export async function readText(
   path: string,

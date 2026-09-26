@@ -28,8 +28,7 @@ impl CpuScheduler {
         }
     }
 
-    /// 应用所有一次性的、与模式无关的系统调整。
-    /// 停摆期一律跳过（含调用的竞争窗口）：本函数是唯一的入口，闸内的那次复查才是权威判定。
+    /// 应用所有一次性的、与模式无关的系统调整停摆期一律跳过（含调用的竞争窗口）：本函数是唯一的入口，闸内的那次复查才是权威判定
     pub fn apply_system_tweaks(&self) -> Result<()> {
         let _gate = Self::tweaks_gate()
             .lock()
@@ -47,22 +46,22 @@ impl CpuScheduler {
 
     // [snapshot]
     /// 一次性系统调整的**原值快照**（节点路径 → 接管前内容），与 governor snapshot/restore 同语义：
-    /// DOWN 停摆要把系统还原成「ChiRi 没改过」的样子（否则被关的 cpu_boost、改过的 cpuidle/IO/sched_* 停摆期依旧生效，基线失真）。
-    /// **每个节点只记第一次的值**——配置热重载会重复下发，覆盖快照会把上一次 tweak 的值当成系统原值。
+    /// DOWN 停摆要把系统还原成「ChiRi 没改过」的样子（否则被关的 cpu_boost、改过的 cpuidle/IO/sched_* 停摆期依旧生效，基线失真）
+    /// **每个节点只记第一次的值**——配置热重载会重复下发，覆盖快照会把上一次 tweak 的值当成系统原值
     fn tweak_snapshot() -> &'static Mutex<HashMap<String, String>> {
         static SNAP: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
         SNAP.get_or_init(|| Mutex::new(HashMap::new()))
     }
 
-    /// 下发与还原的互斥闸：两个调用方在不同线程（config_watcher 与调度循环），「判完 is_down 就被另一线程切进/切出 DOWN」的窗口
-    /// 会让 tweak 写进停摆期、或还原覆盖掉刚补发的下发。双方都在闸内**再看一次**停摆标志即闭合该窗口。
+    /// 下发与还原的互斥闸：两个调用方在不同线程（config_watcher 与调度循环），「判完 is_down 就被另一线程切进/切出 DOWN」的窗口会让 tweak 写进停摆期、或还原覆盖掉刚补发的下发
+    /// 双方都在闸内**再看一次**停摆标志即闭合该窗口
     fn tweaks_gate() -> &'static Mutex<()> {
         static GATE: OnceLock<Mutex<()>> = OnceLock::new();
         GATE.get_or_init(|| Mutex::new(()))
     }
 
-    /// 节点不存在/不可读时不记录（写也一定失败，没有可还原的东西）。IO 调度器节点（*/queue/scheduler）读出是候选列表、
-    /// 当前值带方括号，写回必须剥壳——原样写 "[mq-deadline] kyber" 是非法值。
+    /// 节点不存在/不可读时不记录（写也一定失败，没有可还原的东西）IO 调度器节点（*/queue/scheduler）读出是候选列表、当前值带方括号，
+    /// 写回必须剥壳——原样写 "[mq-deadline] kyber" 是非法值
     fn snapshot_node(path: &str) {
         let Ok(raw) = fs::read_to_string(path) else {
             return;
@@ -78,14 +77,15 @@ impl CpuScheduler {
         snap.entry(path.to_string()).or_insert(value);
     }
 
-    /// write_nodes 批量写不读原值，写前先补齐快照。与 utils::write_nodes 同口径泛型：Vec<(String, String)> 与 &[(&str, &str)] 都能直接传（这里只取路径，值不参与快照）
+    /// write_nodes 批量写不读原值，写前先补齐快照与 utils::write_nodes 同口径泛型：Vec<(String, String)> 与 &[(&str, &str)] 都能直接传（这里只取路径，
+    /// 值不参与快照）
     fn snapshot_nodes<P: AsRef<str>, V>(items: &[(P, V)]) {
         for (path, _) in items {
             Self::snapshot_node(path.as_ref());
         }
     }
 
-    /// 单个节点：先快照再写（与 `utils::try_write_file` 同口径，节点缺失降 debug）。
+    /// 单个节点：先快照再写（与 `utils::try_write_file` 同口径，节点缺失降 debug）
     fn snapshot_write(path: &str, value: &str) -> Result<()> {
         Self::snapshot_node(path);
         utils::try_write_file(path, value)
@@ -118,8 +118,8 @@ impl CpuScheduler {
     }
 
     // [sched]
-    /// 内核调度器参数写白名单：只允许写这些 /proc/sys/kernel 节点（借鉴 LittleYouran CTS 的 Scheduler 段）。
-    /// 白名单外（含用户篡改 feature.yaml 注入）一律拒绝并 warn。
+    /// 内核调度器参数写白名单：只允许写这些 /proc/sys/kernel 节点（借鉴 LittleYouran CTS 的 Scheduler 段）白名单外（含用户篡改 feature.yaml 注入）
+    /// 一律拒绝并 warn
     const SCHED_ALLOWED_PARAMS: &'static [&'static str] = &[
         "sched_migration_cost_ns",
         "sched_nr_migrate",
@@ -130,8 +130,7 @@ impl CpuScheduler {
         "sched_schedstats",
     ];
 
-    /// 写入 Sched 段配置的内核调度器参数：节点写入去重不是本层职责（FastWriter 面向高频路径，此处热重载频率低、直接写）。
-    /// 逐节点 debug、结束 info 汇总实际写入数；空值与越白名单键跳过。
+    /// 写入 Sched 段配置的内核调度器参数：节点写入去重不是本层职责（FastWriter 面向高频路径，此处热重载频率低、直接写）逐节点 debug、结束 info 汇总实际写入数；空值与越白名单键跳过
     fn apply_sched_params(&self) -> Result<()> {
         let config = self.config.read().unwrap();
         let sched = &config.sched;
@@ -191,7 +190,7 @@ impl CpuScheduler {
     }
 
     // [io]
-    /// 遍历 /sys/block/*/queue 逐设备写入 IO 优化参数（调度器/预读/合并/统计）。开关关闭或 /sys/block 不存在直接返回（不打"已完成"日志，避免误报）
+    /// 遍历 /sys/block/*/queue 逐设备写入 IO 优化参数（调度器/预读/合并/统计）开关关闭或 /sys/block 不存在直接返回（不打"已完成"日志，避免误报）
     fn apply_io_settings(&self) -> Result<()> {
         let config = self.config.read().unwrap();
         if !config.function.io_optimization {
@@ -205,8 +204,8 @@ impl CpuScheduler {
             return Ok(());
         }
 
-        // 逐设备逐参数收集，最后一次批量写：单节点失败 debug、全部失败 warn（见 utils::write_nodes）。
-        // 不再逐节点预判 exists——块设备/参数节点各机型差异大，预判会让日志与真实写入结果脱节。
+        // 逐设备逐参数收集，最后一次批量写：单节点失败 debug、全部失败 warn（见 utils::write_nodes）不再逐节点预判 exists——块设备/参数节点各机型差异大，
+        // 预判会让日志与真实写入结果脱节
         let mut items: Vec<(String, String)> = Vec::new();
         if let Ok(entries) = fs::read_dir(block_dir) {
             for entry in entries.flatten() {
@@ -242,8 +241,8 @@ impl CpuScheduler {
     }
 
     // [touch_boost]
-    /// 屏蔽 Android/内核自带的触摸升频（cpu_boost 驱动），改由 ChiRi 触摸升频统一接管：关闭 input_boost 与 sched_boost_on_input，避免内核一上一下互抢导致频率抖动。
-    /// 候选节点逐条尝试写（不再预判存在性）：单点失败 debug、**全部**失败 warn（见 utils::write_nodes）——非 ChiRi 通用内核可能一个节点都没有。
+    /// 屏蔽 Android/内核自带的触摸升频（cpu_boost 驱动），改由 ChiRi 触摸升频统一接管：关闭 input_boost 与 sched_boost_on_input，避免内核一上一下互抢导致频率抖动
+    /// 候选节点逐条尝试写（不再预判存在性）：单点失败 debug、**全部**失败 warn（见 utils::write_nodes）——非 ChiRi 通用内核可能一个节点都没有
     fn apply_disable_touch_boost(&self) -> Result<()> {
         // 路径是字面量，直接用 `(&str, &str)` 数组，省掉逐个 `to_string()` 与 Vec 分配
         let items: [(&str, &str); 4] = [

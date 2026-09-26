@@ -1,0 +1,34 @@
+# dvstatus —— status.csv + daemon.log 探针
+# dir: E:\code\ChiRi\devimpbin\0926-030102
+
+# ── daemon.log ──
+  文件: daemon.log
+  模块版本行 (1):
+    [2026-09-26 02:35:55] [INFO] [logger] [Main] 模块版本: ChiRi Canary Alpha06-18 (versionCode 10618) | SoC 8550 | kernel 5.15.194-android13-8-00019-gf4321180a397-ab15212794
+  重启界标：`统一启动中` x1
+    - [2026-09-26 02:35:55] [INFO] [chiri] [Main] 上一轮日志已归档，后台打包至 logd/0926-023555.tar.lz4
+    - [2026-09-26 02:35:55] [INFO] [chiri] chiri-module 统一启动中...
+  启动归档界标（[Main] 上一轮…归档）:
+    - [2026-09-26 02:35:55] [INFO] [chiri] [Main] 上一轮日志已归档，后台打包至 logd/0926-023555.tar.lz4
+  FAS 证据:
+    **无** —— 本包 daemon.log 里没有任何 FAS 接管痕迹
+  看门狗 / 打包告警:
+    （无 logger-log-restart-suppressed、无权限/打包告警）
+
+# ── status.csv ──
+#     charge 列是**权威**的充放电信号；不要用电流符号判方向。
+#     fps 是 eBPF uprobe（Surface::queueBuffer），**只在 FAS 活跃时**有值 →
+#     「0 个非空行」= 正面证据：FAS 从未接管。
+  文件: status.csv
+  数据行: 1502
+  charge 分布: {'discharging': 796, 'charging': 706}
+  thermal_cap_pct 分布（前 8）: {'100': 1498, '85': 4}
+
+  仅放电行的 batt_power_w（W）统计:
+    mode           n     avg     p50     p95
+    default      796   3.170   2.690   6.188
+  （充电行 706 条，batt_power_w avg=15.167，仅供方向核对）
+
+  fps 列: 非空行 0 / 总 1502
+    **0 个非空行** = FAS 从未接管（fps 探针仅在 FAS 活跃时写入）
+

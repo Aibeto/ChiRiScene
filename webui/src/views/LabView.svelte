@@ -1,7 +1,6 @@
 <script lang="ts">
-  // LabView.svelte: [bar] [notice] [modes] [state]
-  // 实验室二级页。只摆事实：rhine.chr 内容与设备当前模式分两处显示、不做因果推断，
-  // 套用是否真的生效要看 daemon.log。
+  // LabView.svelte: [bar] [notice] [modes] [state]实验室二级页只摆事实：rhine.chr 内容与设备当前模式分两处显示、不做因果推断，
+  // 套用是否真的生效要看 daemon.log
   import { onMount } from 'svelte'
   import ConfirmSheet from '@/components/ConfirmSheet.svelte'
   import Panel from '@/components/Panel.svelte'

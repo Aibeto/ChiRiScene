@@ -1,12 +1,11 @@
 //! power_base.rs: [types] [init] [tick] [release]
-//!
-//! PowerBase（Stardust 家族）：以**放电功耗**为指标的调频器，用来替换 CLG。
+//! PowerBase（Stardust 家族）：以**放电功耗**为指标的调频器，用来替换 CLG
 //! 与 CLG 的根本区别：CLG 只看「利用率够不够」，PowerBase 看「功耗超没超目标」（feature 的 target_power_w）——
-//!   功耗低于目标：升频放宽（up_headroom_below）；达到/超过：守住不再升频，除非满占用核心占比达
-//!   overload_cores_pct 且持续 overload_hold_ms；降频恒激进（down_scale 直接砍目标，与当前功耗无关）；
-//!   触摸窗口内允许短暂突破功率上限（touch_break_ms）。
-//! **只替换 CLG**：FAS / 场景特调 / DOWN 停摆 / 实验室的启停判据一律不受影响。
-//! 结构照 fast.rs（独立接管、快照/释放、5s 防篡改重写兜底收敛），但不锁死频率，按上述规则动态算每 policy 目标频率。
+//! 功耗低于目标：升频放宽（up_headroom_below）；达到/超过：守住不再升频，除非满占用核心占比达
+//! overload_cores_pct 且持续 overload_hold_ms；降频恒激进（down_scale 直接砍目标，与当前功耗无关）；
+//! 触摸窗口内允许短暂突破功率上限（touch_break_ms）
+//! **只替换 CLG**：FAS / 场景特调 / DOWN 停摆 / 实验室的启停判据一律不受影响
+//! 结构照 fast.rs（独立接管、快照/释放、5s 防篡改重写兜底收敛），但不锁死频率，按上述规则动态算每 policy 目标频率
 
 use crate::chiri::config::PowerBaseConfig;
 use crate::utils::FastWriter;
@@ -46,8 +45,8 @@ struct BasePolicy {
 }
 
 impl BasePolicy {
-    /// 性能比 → 频率档位（硬件最低 + 跨度 × 比例，取 ≤ 目标的最大档，floor 对齐）：perf 是功耗预算内允许的上限，落点不得高于它
-    /// （ceil 会突破预算；目标落两档之间时内核本就把 max 向下 clamp）。挂在 policy 上：tick 在 &mut self.policies 循环内调用，取 &self 会借用冲突。
+    /// 性能比 → 频率档位（硬件最低 + 跨度 × 比例，取 ≤ 目标的最大档，floor 对齐）：perf 是功耗预算内允许的上限，落点不得高于它（ceil 会突破预算；
+    /// 目标落两档之间时内核本就把 max 向下 clamp）挂在 policy 上：tick 在 &mut self.policies 循环内调用，取 &self 会借用冲突
     fn freq_for(&self, perf: f32) -> u32 {
         let want = self.hw_min as f32 + (self.hw_max - self.hw_min) as f32 * perf.clamp(0.0, 1.0);
         let want = want as u32;
@@ -99,9 +98,9 @@ impl PowerBase {
     }
 
     // [init]
-    /// 接管全部 cpufreq policy：读可用频率、快照原状态、写 schedutil，并**立刻把 min=max=硬件最高频**（内部 perf 同步为 1.0）。
-    /// 必须接管即写一次：否则 perf 与硬件实际状态不一致，首个降频 tick 按升频写序先写 max → 内核以 min>max 拒绝 → 写入失败
-    /// perf 不前移 → 下个 tick 重试同样失败，**永久卡住**。取硬件最高起手：接管瞬间多有负载，先给足余量防掉帧，紧随 tick 按功耗规则迅速压下。
+    /// 接管全部 cpufreq policy：读可用频率、快照原状态、写 schedutil，并**立刻把 min=max=硬件最高频**（内部 perf 同步为 1.0）必须接管即写一次：
+    /// 否则 perf 与硬件实际状态不一致，首个降频 tick 按升频写序先写 max → 内核以 min>max 拒绝 → 写入失败perf 不前移 → 下个 tick 重试同样失败，**永久卡住**取硬件最高起手：
+    /// 接管瞬间多有负载，先给足余量防掉帧，紧随 tick 按功耗规则迅速压下
     pub fn init(&mut self, cfg: &PowerBaseConfig) {
         self.release();
         self.cfg = cfg.clone();
@@ -135,7 +134,8 @@ impl PowerBase {
                 .filter_map(|s| s.parse().ok())
                 .collect();
             if freqs.is_empty() {
-                // scaling_available_frequencies 读不到/空表：按 policy 首核映射核心组，回退 soc.yaml [freq_khz] 兜底（只补表，不改取档/floor 对齐逻辑）
+                // scaling_available_frequencies 读不到/空表：按 policy 首核映射核心组，回退 soc.yaml [freq_khz] 兜底（只补表，
+                // 不改取档/floor 对齐逻辑）
                 match crate::common::soc_freq_fallback_for_policy(pid) {
                     Some(f) => freqs = f,
                     None => continue,
@@ -189,8 +189,8 @@ impl PowerBase {
                 ranges.prime.clone().collect()
             };
 
-            // 起手锁硬件最高频（写序先 max 后 min，保证不出现 min > max）；写成功才把 perf 记为 1.0，
-            // 失败保持 0.0，下一 tick 按「升频写序」重试，不会落进上面说的「降频却先写 max」死局。
+            // 起手锁硬件最高频（写序先 max 后 min，保证不出现 min > max）；写成功才把 perf 记为 1.0，失败保持 0.0，下一 tick 按「升频写序」重试，
+            // 不会落进上面说的「降频却先写 max」死局
             let mut perf = 0.0_f32;
             if max_writer.write_value_force(hw_max) && min_writer.write_value_force(hw_max) {
                 perf = 1.0;
@@ -215,9 +215,9 @@ impl PowerBase {
     }
 
     // [tick]
-    /// 每个负载 tick 调用一次。core_utils：各 CPU 利用率（0..1）；power_w：当前功耗（W），
-    /// **None = 未在放电或没有读数**——此时不做功耗限制；touch_active：触摸窗口内，允许短暂突破功率上限。
-    /// 返回距下次防篡改重写的剩余时间（非激活返回 None）。
+    /// 每个负载 tick 调用一次core_utils：各 CPU 利用率（0..1）；power_w：当前功耗（W），
+    /// **None = 未在放电或没有读数**——此时不做功耗限制；touch_active：触摸窗口内，允许短暂突破功率上限
+    /// 返回距下次防篡改重写的剩余时间（非激活返回 None）
     pub fn on_load_update(
         &mut self,
         core_utils: &[f32],

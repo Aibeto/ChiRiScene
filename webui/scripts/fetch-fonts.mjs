@@ -1,15 +1,13 @@
-// 构建期拉取 WebUI 字体（二进制不入库，每次构建从 jsdelivr 取）。
-//
+// 构建期拉取 WebUI 字体（二进制不入库，每次构建从 jsdelivr 取）
 // 分工：拉丁/数字 → Poppins（'ChiRi Sans'）；中文 → Noto Sans SC（'ChiRi Sans CJK'）；
-// 等宽 → JetBrains Mono（已入库 assets/fonts/mono-*.woff2，不经本脚本）。均为 SIL OFL 1.1，
-// 许可正文随仓库入库：LICENSE-OFL-{poppins,noto-sans-sc,jetbrains-mono}.txt。
-//
+// 等宽 → JetBrains Mono（已入库 assets/fonts/mono-*.woff2，不经本脚本）均为 SIL OFL 1.1，
+// 许可正文随仓库入库：LICENSE-OFL-{poppins,noto-sans-sc,jetbrains-mono}.txt
 // 中文字体须子集化：①只留 CJK 码位——上游 chinese-simplified 子集自带完整 ASCII，原样内嵌
-// 会顶掉 Poppins 把英文也变成思源黑体；裁掉拉丁后两字体互不干扰，也无需 unicode-range。
-// ②体积：整份 1.14MB/字重 → 按仓库用字裁到约 145KB/字重。
+// 会顶掉 Poppins 把英文也变成思源黑体；裁掉拉丁后两字体互不干扰，也无需 unicode-range
+// ②体积：整份 1.14MB/字重 → 按仓库用字裁到约 145KB/字重
 // 字表来源：WebUI 会渲染到的全部中文出处（i18n zh、组件内联文案、daemon 的 zh.ftl、
-// rules.yaml 与 config/**/*.yaml）；字表外生僻字回落系统 CJK（同为思源黑体，观感无缝）。
-// 产物写入 src/assets/fonts/（已被 .gitignore 忽略）。
+// rules.yaml 与 config/**/*.yaml）；字表外生僻字回落系统 CJK（同为思源黑体，观感无缝）
+// 产物写入 src/assets/fonts/（已被 .gitignore 忽略）
 import { readFileSync, writeFileSync, readdirSync, existsSync, statSync, mkdirSync, renameSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { join, dirname } from 'node:path'
@@ -61,9 +59,7 @@ function cached(name) {
   return false
 }
 
-// —— 1. 收集中文子集字表 ——
-// CJK 码位范围（自上而下）：部首补充、CJK 标点、笔画、扩展 A、统一表意、兼容表意、
-// CJK 兼容形式、全角/半角形式（拉丁/西文标点一律不要）
+// —— 1. 收集中文子集字表 ——CJK 码位范围（自上而下）：部首补充、CJK 标点、笔画、扩展 A、统一表意、兼容表意、CJK 兼容形式、全角/半角形式（拉丁/西文标点一律不要）
 const isCjk = cp =>
   (cp >= 0x2e80 && cp <= 0x2eff) ||
   (cp >= 0x3000 && cp <= 0x303f) ||
@@ -109,8 +105,7 @@ for (const [name, url] of PLAIN) {
   save(name, await download(url))
 }
 
-// 中文字体按当前字表裁出，字表一变产物即作废——只按存在性跳过会让新增文案的字永远进不了
-// 子集。故用**字表哈希**当缓存键：哈希一致且文件齐备才跳过，否则重裁。
+// 中文字体按当前字表裁出，字表一变产物即作废——只按存在性跳过会让新增文案的字永远进不了子集故用**字表哈希**当缓存键：哈希一致且文件齐备才跳过，否则重裁
 const digest = createHash('sha256').update(text).digest('hex')
 const stampFile = join(OUT_DIR, '.subset-charset')
 const stamp = existsSync(stampFile) ? readFileSync(stampFile, 'utf8').trim() : ''

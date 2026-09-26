@@ -1,0 +1,144 @@
+# [1] 定版（文件头元信息）
+  module     : ChiRi Canary Alpha06-18 (versionCode 10618)
+  soc        : 8550
+  board      : kalama
+  model      : 2210132C
+  android    : 17
+  kernel     : 5.15.194-android13-8-00019-gf4321180a397-ab15212794
+  schema_tag : 44列新(拆分版)
+  [ok] 单一版本/机型，可跨批次对比
+  ts-column : local format_now
+
+# [2] 每文件行类型分布与时间跨度（批次 = 父目录）
+## 批次 x_devimp_0926-030100  (70 个文件)
+  main_bin.mt.plus.canary_0926-030035.log              rows=   191 03:00:35.381~03:00:45.321  {'snap': 10, 'tick': 181}
+  main_com.android.fileexplorer_0926-030018.log        rows=   166 03:00:18.372~03:00:27.240  {'snap': 9, 'tick': 157}
+  main_com.android.quicksearchbox_0926-023617.log      rows=   186 02:36:17.740~02:36:29.640  {'snap': 12, 'tick': 174}
+  main_com.android.quicksearchbox_0926-023648.log      rows=    60 02:36:48.756~02:36:51.720  {'snap': 3, 'tick': 57}
+  main_com.android.quicksearchbox_0926-023945.log      rows=    57 02:39:45.837~02:39:48.681  {'snap': 3, 'tick': 54}
+  main_com.android.quicksearchbox_0926-024015.log      rows=    94 02:40:15.847~02:40:20.684  {'snap': 5, 'tick': 89}
+  main_com.android.quicksearchbox_0926-024024.log      rows=    97 02:40:24.850~02:40:29.802  {'snap': 5, 'tick': 92}
+  main_com.android.quicksearchbox_0926-024910.log      rows=    57 02:49:10.066~02:49:13.001  {'snap': 3, 'tick': 54}
+  main_com.android.quicksearchbox_0926-025528.log      rows=   168 02:55:28.224~02:55:37.164  {'snap': 9, 'tick': 159}
+  main_com.android.quicksearchbox_0926-025954.log      rows=    60 02:59:54.361~02:59:57.323  {'snap': 3, 'tick': 57}
+  main_com.android.quicksearchbox_0926-030056.log      rows=    43 03:00:56.384~03:00:58.928  {'snap': 3, 'tick': 40}
+  main_com.android.settings_0926-024048.log            rows=   155 02:40:48.856~02:40:56.846  {'snap': 8, 'tick': 147}
+  main_com.android.settings_0926-024100.log            rows=    95 02:41:00.860~02:41:05.808  {'snap': 5, 'tick': 90}
+  main_com.android.settings_0926-024109.log            rows=    94 02:41:09.865~02:41:14.761  {'snap': 5, 'tick': 89}
+  main_com.android.settings_0926-024153.log            rows=   144 02:41:53.876~02:42:01.800  {'snap': 8, 'tick': 136}
+  main_com.android.settings_0926-024217.log            rows=   111 02:42:17.886~02:42:23.885  {'snap': 6, 'tick': 105}
+  main_com.coolapk.market_0926-023651.log              rows=  1285 02:36:51.757~02:38:00.681  {'snap': 69, 'tick': 1216}
+  main_com.coolapk.market_0926-023948.log              rows=   191 02:39:48.838~02:39:59.721  {'snap': 11, 'tick': 180}
+  main_com.coolapk.market_0926-024332.log              rows=   109 02:43:32.934~02:43:38.926  {'snap': 6, 'tick': 103}
+  main_com.coolapk.market_0926-024350.log              rows=   216 02:43:50.941~02:44:02.920  {'snap': 12, 'tick': 204}
+  main_com.coolapk.market_0926-024413.log              rows=  1397 02:44:13.964~02:45:37.960  {'snap': 84, 'tick': 1313}
+  main_com.coolapk.market_0926-024540.log              rows=  3008 02:45:40.991~02:48:49.965  {'snap': 189, 'tick': 2819}
+  main_com.coolapk.market_0926-024922.log              rows=   485 02:49:22.075~02:49:49.001  {'snap': 27, 'tick': 458}
+  main_com.coolapk.market_0926-024955.log              rows=   906 02:49:55.094~02:50:44.043  {'snap': 49, 'tick': 857}
+  main_com.coolapk.market_0926-025144.log              rows=   169 02:51:44.139~02:51:53.002  {'snap': 9, 'tick': 160}
+  main_com.coolapk.market_0926-025243.log              rows=  1081 02:52:43.173~02:53:44.043  {'snap': 61, 'tick': 1020}
+  main_com.coolapk.market_0926-025356.log              rows=   430 02:53:56.204~02:54:19.081  {'snap': 23, 'tick': 407}
+  main_com.coolapk.market_0926-025703.log              rows=  1939 02:57:03.265~02:58:51.241  {'snap': 108, 'tick': 1831}
+  main_com.coolapk.market_0926-025904.log              rows=    59 02:59:04.342~02:59:07.242  {'snap': 3, 'tick': 56}
+  main_com.coolapk.market_0926-025930.log              rows=   288 02:59:30.348~02:59:46.283  {'snap': 16, 'tick': 272}
+  main_com.duokan.phone.remotecontroller_0926-024020.log rows=    82 02:40:20.850~02:40:24.841  {'snap': 4, 'tick': 78}
+  main_com.larus.nova_0926-023959.log                  rows=   305 02:39:59.839~02:40:15.726  {'snap': 16, 'tick': 289}
+  main_com.larus.nova_0926-024338.log                  rows=   220 02:43:38.934~02:43:50.923  {'snap': 12, 'tick': 208}
+  main_com.mfcloudcalculate.networkdisk_0926-023920.log rows=   491 02:39:20.808~02:39:45.801  {'snap': 25, 'tick': 466}
+  main_com.mfcloudcalculate.networkdisk_0926-025044.log rows=  1170 02:50:44.114~02:51:44.042  {'snap': 60, 'tick': 1110}
+  main_com.mfcloudcalculate.networkdisk_0926-025222.log rows=   308 02:52:22.149~02:52:38.121  {'snap': 16, 'tick': 292}
+  main_com.miui.home_0926-023557.log                   rows=    85 02:35:57.735~02:36:03.720  {'snap': 6, 'tick': 78, 'event': 1}
+  main_com.miui.home_0926-024307.log                   rows=    56 02:43:07.921~02:43:10.763  {'snap': 3, 'tick': 53}
+  main_com.miui.home_0926-024402.log                   rows=    57 02:44:02.945~02:44:05.801  {'snap': 3, 'tick': 54}
+  main_com.resukisu.resukisu_0926-025957.log           rows=   272 02:59:57.362~03:00:12.361  {'snap': 15, 'tick': 257}
+  main_com.ss.android.ugc.aweme_0926-024029.log        rows=   374 02:40:29.848~02:40:48.842  {'snap': 19, 'tick': 355}
+  main_com.ss.android.ugc.aweme_0926-024056.log        rows=    75 02:40:56.861~02:41:00.845  {'snap': 4, 'tick': 71}
+  main_com.ss.android.ugc.aweme_0926-024105.log        rows=    73 02:41:05.860~02:41:09.808  {'snap': 4, 'tick': 69}
+  main_com.ss.android.ugc.aweme_0926-024255.log        rows=    57 02:42:55.904~02:42:58.761  {'snap': 3, 'tick': 54}
+  main_com.ss.android.ugc.aweme_0926-025537.log        rows=   598 02:55:37.227~02:56:10.121  {'snap': 33, 'tick': 565}
+  main_com.tencent.mobileqq_0926-023603.log            rows=   217 02:36:03.745~02:36:17.640  {'snap': 14, 'tick': 202, 'event': 1}
+  main_com.tencent.mobileqq_0926-023629.log            rows=   360 02:36:29.742~02:36:48.680  {'snap': 19, 'tick': 341}
+  main_com.tencent.mobileqq_0926-023800.log            rows=  1424 02:38:00.779~02:39:20.681  {'snap': 80, 'tick': 1344}
+  main_com.tencent.mobileqq_0926-024114.log            rows=   687 02:41:14.868~02:41:53.802  {'snap': 39, 'tick': 648}
+  main_com.tencent.mobileqq_0926-024201.log            rows=   265 02:42:01.879~02:42:17.802  {'snap': 16, 'tick': 249}
+  main_com.tencent.mobileqq_0926-024223.log            rows=   579 02:42:23.888~02:42:55.886  {'snap': 32, 'tick': 547}
+  main_com.tencent.mobileqq_0926-024258.log            rows=   180 02:42:58.909~02:43:07.881  {'snap': 9, 'tick': 171}
+  main_com.tencent.mobileqq_0926-024310.log            rows=   405 02:43:10.926~02:43:32.841  {'snap': 22, 'tick': 383}
+  main_com.tencent.mobileqq_0926-024405.log            rows=   155 02:44:05.949~02:44:13.803  {'snap': 8, 'tick': 147}
+  main_com.tencent.mobileqq_0926-024537.log            rows=    52 02:45:37.994~02:45:40.848  {'snap': 3, 'tick': 49}
+  main_com.tencent.mobileqq_0926-024850.log            rows=   374 02:48:50.060~02:49:09.965  {'snap': 20, 'tick': 354}
+  main_com.tencent.mobileqq_0926-024913.log            rows=   176 02:49:13.068~02:49:21.962  {'snap': 9, 'tick': 167}
+  main_com.tencent.mobileqq_0926-024949.log            rows=   120 02:49:49.092~02:49:55.085  {'snap': 6, 'tick': 114}
+  main_com.tencent.mobileqq_0926-025153.log            rows=   478 02:51:53.137~02:52:22.123  {'snap': 29, 'tick': 449}
+  main_com.tencent.mobileqq_0926-025238.log            rows=    96 02:52:38.152~02:52:43.083  {'snap': 5, 'tick': 91}
+  main_com.tencent.mobileqq_0926-025344.log            rows=   217 02:53:44.194~02:53:56.040  {'snap': 12, 'tick': 205}
+  main_com.tencent.mobileqq_0926-025419.log            rows=  1265 02:54:19.205~02:55:28.201  {'snap': 69, 'tick': 1196}
+  main_com.tencent.mobileqq_0926-025610.log            rows=   985 02:56:10.249~02:57:03.242  {'snap': 53, 'tick': 932}
+  main_com.tencent.mobileqq_0926-025851.log            rows=   237 02:58:51.336~02:59:04.200  {'snap': 13, 'tick': 224}
+  main_com.tencent.mobileqq_0926-025907.log            rows=   408 02:59:07.354~02:59:30.283  {'snap': 23, 'tick': 385}
+  main_com.tencent.mobileqq_0926-025946.log            rows=   156 02:59:46.360~02:59:54.280  {'snap': 8, 'tick': 148}
+  main_com.tencent.mobileqq_0926-030012.log            rows=   114 03:00:12.366~03:00:18.282  {'snap': 6, 'tick': 108}
+  main_com.tencent.mobileqq_0926-030027.log            rows=   144 03:00:27.378~03:00:35.247  {'snap': 8, 'tick': 136}
+  main_com.tencent.mobileqq_0926-030045.log            rows=   210 03:00:45.383~03:00:56.360  {'snap': 11, 'tick': 199}
+  main_nopkg_0926-023555.log                           rows=    37 02:35:55.880~02:35:57.640  {'tick': 36, 'snap': 1}
+
+# [3] mode × package（tick = 决策轨迹；snap = 1s 环境）
+#     decide vs actual：cur_freq/max_freq 是**写入 scaling_max 的决策值**，
+#     比值 = cap%；实际频率看 snap 的 cpu_cur_khz（见 [6]）。
+#     deb_up/deb_down 是 up_wait/down_wait 的**连续方向 streak 计数**，
+#     不是错误计数；下表报「最大连续值」。
+#     `-` = 本行该列无样本（如 FAS/tuned 段无 tick → 无决策值、无 cap）。
+batch                  mode      package                  n_snap n_tick span                    battT  cpuT capAvg | l_cap% b_cap% p_cap% | debUp debDn | cap<100 in_band  ratio
+x_devimp_0926-030100   default   -                             1     36 02:35:55.880~02:35:57.640  30.7  84.0    100 |   55.8   81.3   65.1 |     5     2 |       0       0      -
+x_devimp_0926-030100   default   bin.mt.plus.canary           10    181 03:00:35.381~03:00:45.321  30.5  53.5    100 |   76.0   60.4   34.2 |    10     6 |       0       0      -
+x_devimp_0926-030100   default   com.android.fileexplorer      9    157 03:00:18.372~03:00:27.240  30.5  54.8    100 |   77.5   58.4   25.7 |    11    10 |       0       0      -
+x_devimp_0926-030100   default   com.android.quicksearchb     46    776 02:36:17.740~03:00:58.928  30.3  69.5    100 |   74.9   59.5   49.9 |    16     5 |       0       0      -
+x_devimp_0926-030100   default   com.android.settings         32    567 02:40:48.856~02:42:23.885  30.2  54.6    100 |   78.0   57.9   31.2 |    13    11 |       0       0      -
+x_devimp_0926-030100   default   com.coolapk.market          667  10896 02:36:51.757~02:59:46.283  29.1  52.5    100 |   70.5   53.3   29.4 |    35    60 |       0       0      -
+x_devimp_0926-030100   default   com.duokan.phone.remotec      4     78 02:40:20.850~02:40:24.841  30.2  78.9    100 |   60.9   59.3   31.0 |    10    11 |       0       0      -
+x_devimp_0926-030100   default   com.larus.nova               28    497 02:39:59.839~02:43:50.923  29.8  67.0    100 |   73.1   62.7   58.1 |    13    21 |       0       0      -
+x_devimp_0926-030100   default   com.mfcloudcalculate.net    101   1868 02:39:20.808~02:52:38.121  29.6  60.9    100 |   76.2   60.7   38.5 |    65    11 |       0       0      -
+x_devimp_0926-030100   default   com.miui.home                12    185 02:35:57.735~02:44:05.801  30.0  74.3     99 |   86.4   77.0   59.0 |    21     4 |      15       0   0.0%
+x_devimp_0926-030100   default   com.resukisu.resukisu        15    257 02:59:57.362~03:00:12.361  30.4  56.3    100 |   76.3   62.1   37.9 |    19    16 |       0       0      -
+x_devimp_0926-030100   default   com.ss.android.ugc.aweme     63   1114 02:40:29.848~02:56:10.121  30.3  58.9    100 |   79.9   65.3   45.5 |    17     6 |       0       0      -
+x_devimp_0926-030100   default   com.tencent.mobileqq        514   8789 02:36:03.745~03:00:56.360  29.9  58.5    100 |   72.7   58.1   33.9 |    32    37 |      19       3  15.8%
+
+# [4] decision / reason 分布（tick 行，按 mode×package）
+  default   com.coolapk.market     decision = up:3536, up_wait:2580, down:2395, hold:1513, down_wait:872
+                                   reason   = -:10896
+  default   com.tencent.mobileqq   decision = up:3246, up_wait:2049, down:1607, hold:1103, down_wait:784
+                                   reason   = -:8789
+  default   com.mfcloudcalculate.n decision = up:831, up_wait:414, down:230, hold:222, down_wait:171
+                                   reason   = -:1868
+  default   com.ss.android.ugc.awe decision = up:397, up_wait:290, down:160, hold:151, down_wait:116
+                                   reason   = -:1114
+  default   com.android.quicksearc decision = up:317, up_wait:170, down:125, down_wait:85, hold:79
+                                   reason   = -:776
+  default   com.android.settings   decision = up:180, up_wait:146, down:123, hold:64, down_wait:54
+                                   reason   = -:567
+  default   com.larus.nova         decision = up:157, down:128, up_wait:116, hold:48, down_wait:48
+                                   reason   = -:497
+  default   com.resukisu.resukisu  decision = up:83, up_wait:66, down:49, hold:38, down_wait:21
+                                   reason   = -:257
+
+# [5] 热：thermal_change 事件与压制带 `(soft_perf_cap, free_above)` 内 tick 占比
+#     `cap=85` ≠ 已压制：压制只落在 (cap, free_above) 区间，`>= free_above` 不钳制；
+#     tuned 段（playback/akmode 等）cap 列恒为 `-`（FAS/tuned 接管时不走 CLG 限幅）。
+## 批次 x_devimp_0926-030100
+  default   com.miui.home          batt=30.8 cpu=90.7 cap=85 free=95
+  default   com.tencent.mobileqq   batt=30.9 cpu=86.9 cap=100 free=95
+
+# [6] snap 侧：每 policy 的 cur/max kHz、governor；wakeups/migrations ÷2（2s 增量）
+#     迁移率量级带（2026-09-23 实测 8550，仅作对照）：
+#       bili 播放态: 4500~7000/s
+#       亮屏 UI（launcher/kernelsu）: 3000~6000/s
+#       MOBA（王者）FAS: 9000~16000/s
+  mode      policy       n   cur_avg   max_avg cur/max%  governor
+  default   policy0   1502   1370192   1466358     93.4  schedutil:1502
+  default   policy3   1502   1259505   1564519     80.5  schedutil:1502
+  default   policy7   1502    902247    954797     94.5  schedutil:1502
+
+#      wakeups/migrations（÷2 后 = 每秒）
+  mode          n  wakeups/s  migrations/s
+  default    1502      12603          6450
+

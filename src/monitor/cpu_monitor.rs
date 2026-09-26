@@ -1,4 +1,5 @@
-//! cpu_monitor.rs: [consts] [helpers] [setup] [global-util] [fg-util] [telemetry] [interval] [snap-procs] [tgid-util] [thread-util]
+//! cpu_monitor.rs: [consts] [helpers] [setup] [global-util] [fg-util] [telemetry] [interval] [snap-procs]
+//! [tgid-util] [thread-util]
 
 use crate::common::{DaemonEvent, ProcSnap};
 use crate::utils::get_ktime_ns;
@@ -15,16 +16,16 @@ use crate::fluent_args;
 use crate::i18n::{t, t_with_args};
 
 // [consts]
-/// 常规采样周期由调用方（main.rs 按 SoC）传入：ChiRi 160ms / 非 ChiRi 200ms，见 `start_cpu_loop` 的 `sample_ms_normal`；
-/// 特调采样周期（ms）：特调激活时缩短到 40ms，保证档位判定的响应度
+/// 常规采样周期由调用方（main.rs 按 SoC）传入：ChiRi 160ms / 非 ChiRi 200ms，见 `start_cpu_loop` 的 `sample_ms_normal`；特调采样周期（ms）：
+/// 特调激活时缩短到 40ms，保证档位判定的响应度
 const SAMPLE_MS_TUNED: u64 = 40;
-/// 前台应用 CPU 利用率计算开关：仅 FAS 消费 foreground_max_util；禁用期间调度器忽略该字段、跳过计算省开销。
-/// start_cpu_loop 入口按「ChiRi 且 FAS 配置可用」动态置位，非 ChiRi 恒 false。
+/// 前台应用 CPU 利用率计算开关：仅 FAS 消费 foreground_max_util；禁用期间调度器忽略该字段、跳过计算省开销start_cpu_loop 入口按「ChiRi 且 FAS 配置可用」动态置位，
+/// 非 ChiRi 恒 false
 static FAS_FG_UTIL_ENABLED: AtomicBool = AtomicBool::new(false);
 
 // [core-state]
-/// 每核心运行时状态：与 `yumi-ebpf/src/main.rs` 的 `CoreState` 逐字段一致，两侧必须同批发布（布局不一致会读到错位数据）。
-/// `#[repr(C)]` u64×3+u32×2 = 32 字节无 padding；合并单 map 后探针每次 sched_switch、用户态每采样各只查 1 次（原先 5 次）。
+/// 每核心运行时状态：与 `yumi-ebpf/src/main.rs` 的 `CoreState` 逐字段一致，两侧必须同批发布（布局不一致会读到错位数据）`#[repr(C)
+/// ]` u64×3+u32×2 = 32 字节无 padding；合并单 map 后探针每次 sched_switch、用户态每采样各只查 1 次（原先 5 次）
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct CoreState {
@@ -35,11 +36,11 @@ pub struct CoreState {
     pub cur_tgid: u32,
 }
 
-// SAFETY: `#[repr(C)]` 纯 POD（全 u32/u64、32 字节、无 padding、无 Drop），满足 aya::Pod 按字节拷贝约束。
+// SAFETY: `#[repr(C)]` 纯 POD（全 u32/u64、32 字节、无 padding、无 Drop），满足 aya::Pod 按字节拷贝约束
 unsafe impl aya::Pod for CoreState {}
 
 // [helpers]
-/// PerCpuArray 计数 map 的全核总和（key 0 各 cpu 槽累加）；map 缺失（产物与 daemon 版本偏差）返回 0，计数保持可选语义。
+/// PerCpuArray 计数 map 的全核总和（key 0 各 cpu 槽累加）；map 缺失（产物与 daemon 版本偏差）返回 0，计数保持可选语义
 #[inline]
 fn percpu_total(map: Option<&PerCpuArray<&mut aya::maps::MapData, u64>>) -> u64 {
     let Some(map) = map else {
@@ -50,7 +51,7 @@ fn percpu_total(map: Option<&PerCpuArray<&mut aya::maps::MapData, u64>>) -> u64 
         .unwrap_or(0)
 }
 
-/// 读前台进程全部 TID。消费方：foreground 利用率降级路径（仅 FAS_FG_UTIL_ENABLED 置位时）与 chiri 1s 块 aff `@S` 下钻（diag_active 时每秒一次）。
+/// 读前台进程全部 TID消费方：foreground 利用率降级路径（仅 FAS_FG_UTIL_ENABLED 置位时）与 chiri 1s 块 aff `@S` 下钻（diag_active 时每秒一次）
 pub fn get_thread_tids(pid: u32) -> Vec<u32> {
     let task_dir = format!("/proc/{}/task", pid);
     let mut tids = Vec::new();
@@ -94,8 +95,7 @@ pub async fn start_cpu_loop(
         FAS_FG_UTIL_ENABLED.store(true, Ordering::Relaxed);
     }
 
-// ChiRi 专属可选扩展探针（唤醒/迁移/频切计数，遥测用）：仅 ChiRi 尝试挂载；
-// 内核缺对应 tracepoint 时 warn 一次后跳过，不影响主探针。
+// ChiRi 专属可选扩展探针（唤醒/迁移/频切计数，遥测用）：仅 ChiRi 尝试挂载；内核缺对应 tracepoint 时 warn 一次后跳过，不影响主探针
     let chiri_telemetry = crate::common::is_chiri_soc();
     if chiri_telemetry {
         for (name, cat, tp) in [
@@ -150,7 +150,7 @@ pub async fn start_cpu_loop(
     let bpf_ptr = bpf as *mut Ebpf;
 
 // TGID_RUN_TIME 句柄全链只读（写入只在内核侧），不对同一 MapData 活 &mut；Ebpf 已 Box::leak 常驻、地址稳定，
-// snapshot_procs 从静态量重建只读句柄（见 SNAP_TGID_MAP 注释）。
+// snapshot_procs 从静态量重建只读句柄（见 SNAP_TGID_MAP 注释）
     let tgid_map_ref: Option<&aya::maps::Map> = unsafe { &*bpf_ptr }.map("TGID_RUN_TIME");
     SNAP_TGID_MAP.store(
         tgid_map_ref
@@ -168,7 +168,7 @@ pub async fn start_cpu_loop(
 // TGID 级聚合运行时间 map（只读视图，同 SNAP_TGID_MAP，全链无 &mut）
     let tgid_run_map: BpfHashMap<_, u32, u64> = BpfHashMap::try_from(tgid_map_ref.unwrap())?;
 
-// 扩展探针计数 map：可选语义——ELF 缺失（产物偏差）时计数恒 0 并 warn 一次，绝不 panic。
+// 扩展探针计数 map：可选语义——ELF 缺失（产物偏差）时计数恒 0 并 warn 一次，绝不 panic
     let fetch_counter_map =
         |name: &'static str| -> Option<PerCpuArray<&mut aya::maps::MapData, u64>> {
             match unsafe { &mut *bpf_ptr }
@@ -189,8 +189,8 @@ pub async fn start_cpu_loop(
     let migrate_map = fetch_counter_map("MIGRATE_COUNT");
     let freq_trans_map = fetch_counter_map("FREQ_TRANS_COUNT");
 
-// 线程级记账开关（K2）：与 FAS_FG_UTIL_ENABLED 同条件置位，只被「TGID 主路径失败」的降级路径消费，
-// 关闭时探针侧跳过 THREAD_RUN_TIME 查找/插入；旧产物缺此 map 时仅告警、探针保持恒记账，版本偏差无行为差异。
+// 线程级记账开关（K2）：与 FAS_FG_UTIL_ENABLED 同条件置位，只被「TGID 主路径失败」的降级路径消费，关闭时探针侧跳过 THREAD_RUN_TIME 查找/插入；旧产物缺此 map 时仅告警、
+// 探针保持恒记账，版本偏差无行为差异
     if FAS_FG_UTIL_ENABLED.load(Ordering::Relaxed) {
         match unsafe { &mut *bpf_ptr }.map_mut("THREAD_ACCT") {
             Some(m) => match Array::<&mut aya::maps::MapData, u32>::try_from(m) {
@@ -267,8 +267,8 @@ let mut last_tgid_pid: u32 = 0;
             let mut core_utils = vec![0.0_f32; max_cpu_id + 1];
 
 // [global-util]
-// 1. 全局单核利用率计算（含实时状态补偿）。core_utils 按真实 CPU ID 索引（长度 max_cpu_id+1）与 CLG 端一致；
-//    若按在线列表顺序 push，在线核不连续（如 [0,2,4,6]）时 CLG 取错核、负载归零。
+// 1. 全局单核利用率计算（含实时状态补偿）core_utils 按真实 CPU ID 索引（长度 max_cpu_id+1）与 CLG 端一致；
+// 若按在线列表顺序 push，在线核不连续（如 [0,2,4,6]）时 CLG 取错核、负载归零
             for &cpu_id in &online_cpus_list {
                 let idx = cpu_id as usize;
 
@@ -311,7 +311,7 @@ pending_delta = 0;
 
 // [fg-util]
 // 2. 前台利用率：主路径查 1 个 TGID key（不受 thread_run_time HASH 驱逐影响）；
-// FAS 禁用时 foreground_max_util 无消费方，跳过计算（见 FAS_FG_UTIL_ENABLED）。
+// FAS 禁用时 foreground_max_util 无消费方，跳过计算（见 FAS_FG_UTIL_ENABLED）
             let foreground_max_util = if FAS_FG_UTIL_ENABLED.load(Ordering::Relaxed) {
                 if fg_pid == 0 {
                     0.0_f32
@@ -410,7 +410,7 @@ pending_delta = 0;
             }
 
 // [telemetry]
-// ChiRi 遥测：读扩展探针累计计数发周期增量；探针未挂载时增量恒 0、事件照发保下游 CSV 列对齐（watchdog 不消费）。
+// ChiRi 遥测：读扩展探针累计计数发周期增量；探针未挂载时增量恒 0、事件照发保下游 CSV 列对齐（watchdog 不消费）
             if chiri_telemetry && last_stats_check.elapsed() >= STATS_INTERVAL {
                 last_stats_check = std::time::Instant::now();
                 let w = percpu_total(wakeup_map.as_ref());
@@ -431,7 +431,7 @@ pending_delta = 0;
             }
 
 // [interval]
-// 按特调状态切采样周期：akmode 激活 40ms 快速跟随，否则常规间隔（ChiRi 160 / 非 ChiRi 200ms）；切换时按新周期重建。
+// 按特调状态切采样周期：akmode 激活 40ms 快速跟随，否则常规间隔（ChiRi 160 / 非 ChiRi 200ms）；切换时按新周期重建
             let target = if ak_active.load(Ordering::Relaxed) {
                 std::time::Duration::from_millis(SAMPLE_MS_TUNED)
             } else {
@@ -449,7 +449,7 @@ pending_delta = 0;
 
 // [snap-procs]
 /// 读进程名：cmdline 首段优先（应用即包名；native 取文件名段），退化 /proc/<pid>/comm（15 字节截断），全失败给 "<pid>"；
-/// 供 snapshot_procs 的 pid→name 缓存填充（命中后不再读 /proc）。
+/// 供 snapshot_procs 的 pid→name 缓存填充（命中后不再读 /proc）
 fn proc_name(pid: u32) -> String {
     if let Ok(s) = std::fs::read_to_string(format!("/proc/{pid}/cmdline")) {
         if let Some(first) = s.split('\0').find(|s| !s.is_empty()) {
@@ -466,7 +466,7 @@ fn proc_name(pid: u32) -> String {
         .unwrap_or_else(|| format!("<{pid}>"))
 }
 
-/// @S 快照的进程级差分状态；与 foreground 基线（`last_tgid_adj`）完全独立互不干扰。
+/// @S 快照的进程级差分状态；与 foreground 基线（`last_tgid_adj`）完全独立互不干扰
 #[derive(Default)]
 struct SnapState {
     /// 上次快照时刻（None = 首帧：只建基线、util 全 0）
@@ -479,20 +479,20 @@ struct SnapState {
 static SNAP_STATE: OnceLock<Mutex<SnapState>> = OnceLock::new();
 
 /// TGID_RUN_TIME 共享只读句柄（跨线程给 `snapshot_procs`）：指向 Box::leak 常驻 Ebpf 内的 Map（生命周期 'static、地址稳定），
-/// 以原始指针存静态量绕开 MapData 的 Send/Sync 约束；只做 get/keys 读取，与 monitor 循环并发读安全。
+/// 以原始指针存静态量绕开 MapData 的 Send/Sync 约束；只做 get/keys 读取，与 monitor 循环并发读安全
 static SNAP_TGID_MAP: AtomicPtr<aya::maps::Map> = AtomicPtr::new(std::ptr::null_mut());
 
-/// 每秒进程快照供数（aff `@S` 帧）：遍历 TGID_RUN_TIME 全 map（差分基线滚动重建）产出全系统每进程 util。
-/// util = 窗口（≈1s）运行时间增量 / 墙钟，**百分比**、多核并行可 >100（仅 9999 上限）；首帧/新进程只建基线 util=0。
-/// 进程名走 `proc_name` + pid→name 缓存，稳态每帧零 /proc 名字读取；调用方自行排序取 top-N，本函数不排序不落盘。
-/// 仅 `diag_active()` 开启时被 chiri 主循环每秒调用（关闭零开销，开启约毫秒级）。
+/// 每秒进程快照供数（aff `@S` 帧）：遍历 TGID_RUN_TIME 全 map（差分基线滚动重建）产出全系统每进程 util
+/// util = 窗口（≈1s）运行时间增量 / 墙钟，**百分比**、多核并行可 >100（仅 9999 上限）；首帧/新进程只建基线 util=0
+/// 进程名走 `proc_name` + pid→name 缓存，稳态每帧零 /proc 名字读取；调用方自行排序取 top-N，本函数不排序不落盘
+/// 仅 `diag_active()` 开启时被 chiri 主循环每秒调用（关闭零开销，开启约毫秒级）
 pub fn snapshot_procs() -> Vec<ProcSnap> {
     let ptr = SNAP_TGID_MAP.load(Ordering::Acquire);
     if ptr.is_null() {
 // start_cpu_loop 尚未注册句柄 / map 缺失：无数据可采
         return Vec::new();
     }
-// SAFETY: 指针指向 Box::leak 常驻 Ebpf 内的 Map（见 SNAP_TGID_MAP），生命周期覆盖进程；只构造只读句柄不写入。
+// SAFETY: 指针指向 Box::leak 常驻 Ebpf 内的 Map（见 SNAP_TGID_MAP），生命周期覆盖进程；只构造只读句柄不写入
     let map: &aya::maps::Map = unsafe { &*ptr };
     let Ok(tgid_run_map) = BpfHashMap::<&aya::maps::MapData, u32, u64>::try_from(map) else {
         return Vec::new();
@@ -541,13 +541,11 @@ pub fn snapshot_procs() -> Vec<ProcSnap> {
 }
 
 // [tgid-util]
-/// 主路径：TGID 级聚合 map 计算前台利用率。只查 1 个 key、map 容量 1024 足够，
-/// 完全规避 thread_run_time HASH 容量不足 / LRU 驱逐问题。
-///
+/// 主路径：TGID 级聚合 map 计算前台利用率只查 1 个 key、map 容量 1024 足够，
+/// 完全规避 thread_run_time HASH 容量不足 / LRU 驱逐问题
 /// 关键设计：基线与本轮同口径 adj = raw + pending，util = adj 差分 / 墙钟，与降级路径一致；
-/// 旧「raw 差分 + 当前 pending」会把上一轮 pending 中未提交时段重复计入，前台 util 系统性高估、FAS 输入失真。
-///
-/// 返回 None 表示走降级路径。仅 FAS_FG_UTIL_ENABLED 置位时被 foreground 计算调用。
+/// 旧「raw 差分 + 当前 pending」会把上一轮 pending 中未提交时段重复计入，前台 util 系统性高估、FAS 输入失真
+/// 返回 None 表示走降级路径仅 FAS_FG_UTIL_ENABLED 置位时被 foreground 计算调用
 fn compute_tgid_util(
     fg_pid: u32,
     tgid_run_map: &BpfHashMap<&aya::maps::MapData, u32, u64>,
@@ -606,8 +604,7 @@ fn compute_tgid_util(
 }
 
 // [thread-util]
-/// 降级路径：逐 TID 遍历取最重线程利用率（原始逻辑）；含防驱逐保护（返回值 < 上次记录则跳过该 TID）。
-/// 仅 FAS_FG_UTIL_ENABLED 置位且 TGID 主路径失败时被调用。
+/// 降级路径：逐 TID 遍历取最重线程利用率（原始逻辑）；含防驱逐保护（返回值 < 上次记录则跳过该 TID）仅 FAS_FG_UTIL_ENABLED 置位且 TGID 主路径失败时被调用
 fn compute_thread_level_util(
     fg_pid: u32,
     thread_run_map: &BpfHashMap<&mut aya::maps::MapData, u32, u64>,

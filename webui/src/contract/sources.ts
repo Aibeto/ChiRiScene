@@ -1,6 +1,5 @@
-// sources.ts: [device] [files] [logs] [readMany]
-// 各接触点的原始读取入口（不解析，解析见 src/data/*）。缺失语义：白名单类只有 ChiRi
-// 机型会产生（→ chiri-only），日志/快照类是「尚未产生」（→ not-created）；失败一律 failed。
+// sources.ts: [device] [files] [logs] [readMany]各接触点的原始读取入口（不解析，解析见 src/data/*）缺失语义：
+// 白名单类只有 ChiRi 机型会产生（→ chiri-only），日志/快照类是「尚未产生」（→ not-created）；失败一律 failed
 import { REL, absOf, shQuote } from './paths'
 import { listDir, readTail, readText } from './read'
 import { readActiveConfigRel } from './meta'
@@ -16,7 +15,7 @@ let deviceCache: DeviceKind | null = null
 
 /**
  * 是否 ChiRi 专属机型：以 active_config.chr 是否指向 SoC 子目录（含 '/'）为判据
- * （与 daemon 的 is_chiri_soc 同结果）。仅用于界面文案呈现，不作权限/写入判断依据。
+ * （与 daemon 的 is_chiri_soc 同结果）仅用于界面文案呈现，不作权限/写入判断依据
  */
 export async function deviceKind(): Promise<DeviceKind> {
   if (deviceCache !== null) return deviceCache
@@ -76,9 +75,9 @@ export function listLogd(): Promise<ReadResult<string[]>> {
 }
 
 /**
- * 删除历史归档：只删 logd/（整目录删掉，下次归档自动重建）。devimp/ 不是历史归档：
+ * 删除历史归档：只删 logd/（整目录删掉，下次归档自动重建）devimp/ 不是历史归档：
  * 它是当前诊断写入现场，调度启动归档时才整体打包进 logd 并清空，删它会毁掉进行中
- * 的诊断记录；当前会话的 logs/（daemon.log / status.csv）同样不在此列。
+ * 的诊断记录；当前会话的 logs/（daemon.log / status.csv）同样不在此列
  */
 export async function clearArchives(): Promise<ReadResult<true>> {
   if (!isLive()) return absent<true>('unsupported-env')
@@ -105,8 +104,8 @@ const RM_END = (i: number): string => `__CHIRI_RM_${i}_END__`
 
 /**
  * 一次 shell exec 完成多个文件的读取：每个 fork 的 su -c 都很贵，把 N 次读拼成一条
- * 脚本只付一次 fork，是轮询降开销的原语。单个文件缺失不算失败（对应项为 null）；
- * 只有 exec 本身失败（桥错误/命令整体失败）才返回 failed——与 readText 三分类一致。
+ * 脚本只付一次 fork，是轮询降开销的原语单个文件缺失不算失败（对应项为 null）；
+ * 只有 exec 本身失败（桥错误/命令整体失败）才返回 failed——与 readText 三分类一致
  */
 export async function readMany(specs: readonly ReadManySpec[]): Promise<ReadManyResult> {
   if (!isLive()) return absent<Record<string, string | null>>('unsupported-env')

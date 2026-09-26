@@ -1,0 +1,695 @@
+# dvaff —— aff_*.log 探针
+# dir: E:\code\ChiRi\devimpbin\0925-194326
+# 文件: 6
+
+## E:\code\ChiRi\devimpbin\0925-194326\x_devimp_0925-112150\aff_0925-065503.log
+# ───────────────────────── 判读校准（务必先读）─────────────────────────
+# 1. `@S` 帧是**差分集**：前台线程与被管（pinned）条目每帧全量，长尾线程只在
+#    `u/core/home/pin` 变化时落行，每 30 帧一次全量刷新。**缺失行 = 与上一帧相同**。
+#    因此「行数 ≠ 线程数」；下表所有状态都是跨帧累积重建的结果。
+# 2. `<场景>_bulk` 是**清理规模的正解**（value = 本次条数）；逐条 `bind_release`
+#    只代表真有内核动作的条目。
+# 3. `result=e0` 不是成功：`io_result_tag` 拿不到 errno 时写 e0。e3=ESRCH（线程已退出，
+#    正常）、e22=EINVAL（偶发）。
+# 4. 绑定轨迹统计的是累计 `pin=1 且 home=-1` 的线程数（组掩码绑定、未钉核），
+#    单调上升到高位不回落 = 只绑不解的疑似泄漏。
+# ─────────────────────────────────────────────────────────────────────
+
+@S 帧数: 7029   nfg 帧头值: min=0 max=861
+
+### @A 动作计数 (act, reason, result)  —— result 归类见头部校准
+  act           reason                 result                count
+  pin           normal_busy            ok                     5124
+  restore       fg_group_reset         ok                     5076
+  bind_release  stale_bulk             ok                     1558
+  restore       fg_group_reset         e3(ESRCH)               149
+  bind_release  gone                   e3(ESRCH)               147
+  uclamp        bg_apply               ok                      121
+  uclamp        bg_apply               e0(errno 不可得)           121
+  bind_release  gone_bulk              ok                      107
+  pin           normal_press           ok                      101
+  pin           normal_busy            e22(EINVAL)              75
+  pin           normal_press           e22(EINVAL)              20
+  bind_release  departed_bulk          ok                       15
+  bind_release  departed               ok                        4
+  bind_release  departed               e3(ESRCH)                 2
+  cpuset_cpus   cpuset-cpus            ok                        1
+
+### @A 按 reason 的成功率（e0 不计入成功）
+  reason                        total       ok    rate
+  fg_group_reset                 5225     5076   97.1%
+  normal_busy                    5199     5124   98.6%
+  stale_bulk                     1558     1558  100.0%
+  bg_apply                        242      121   50.0%
+  gone                            147        0    0.0%
+  normal_press                    121      101   83.5%
+  gone_bulk                       107      107  100.0%
+  departed_bulk                    15       15  100.0%
+  departed                          6        4   66.7%
+  cpuset-cpus                       1        1  100.0%
+
+### bulk 汇总帧（清理规模正解；单列，不与逐条 bind_release 混算）
+  reason                       Σvalue      帧数            act
+  stale_bulk                    88721    1558   bind_release
+  departed_bulk                  1906      15   bind_release
+  gone_bulk                       575     107   bind_release
+                                   合计 = 91202
+
+### 绑定线程轨迹：累计 `pin=1 且 home=-1` 的前台线程数（逐帧累积重建）
+  首帧出现于第 14 帧；final=136 peak=466（@ 0925-072130）  单调不降=False
+  [i] 非单调：存在释放（正常亦可能）；重点看 final 是否随会话上行。
+   frame             ts   bound
+       1    0925-065504       0
+       2    0925-065505       0
+       3    0925-065506       0
+     200    0925-065824       4
+     400    0925-070149     353
+     600    0925-070510      90
+     800    0925-070830      92
+    1000    0925-071150     439
+    1200    0925-071510      96
+    1400    0925-071830     114
+    1600    0925-072151     466
+    1800    0925-072644     150
+    2000    0925-073558     150
+    2200    0925-074510     150
+    2400    0925-075355     150
+    2600    0925-080334     150
+    2800    0925-081211     150
+    3000    0925-082055     150
+    3200    0925-082856     150
+    3400    0925-083752     150
+    3600    0925-084627     150
+    3800    0925-085606     150
+    4000    0925-090523     150
+    4200    0925-091404     150
+    4400    0925-092245     150
+    4600    0925-093025     150
+    4800    0925-093845     149
+    5000    0925-094816     136
+    5200    0925-095804     136
+    5400    0925-100739     136
+    5600    0925-101700     136
+    5800    0925-102650     136
+    6000    0925-103459     136
+    6200    0925-104335     136
+    6400    0925-105216     136
+    6600    0925-110132     136
+    6800    0925-111120     136
+    7000    0925-112051     136
+
+### 末帧 pin / home 直方图（累积状态快照）
+  tracked tids = 10370
+  pin  直方图: {0: 10234, 1: 136}
+  home 直方图: {-1: 10370}
+
+### 绑定线程（pin=1）出现次数最多的 comm（累积行数，非并发数）
+  DefaultDispatch                             11996
+  OkHttpExecutor_                              3398
+  RxComputationTh                              3018
+  V8_DefaultWorke                              2653
+  ModImmediatelyD                              2478
+  ThreadPoolForeg                              2348
+  ImageLoaderDisp                              1668
+  ijk_ff_audiodec                              1374
+  CodecLooper                                  1298
+  CRON.Main                                    1277
+  ModMultiDownloa                              1227
+  ThreadPoolSingl                              1119
+  pool-21-thread-                               894
+  ijk_io_0                                      869
+  ijk_io_1                                      869
+
+## E:\code\ChiRi\devimpbin\0925-194326\x_devimp_0925-144208\aff_0925-112150.log
+# ───────────────────────── 判读校准（务必先读）─────────────────────────
+# 1. `@S` 帧是**差分集**：前台线程与被管（pinned）条目每帧全量，长尾线程只在
+#    `u/core/home/pin` 变化时落行，每 30 帧一次全量刷新。**缺失行 = 与上一帧相同**。
+#    因此「行数 ≠ 线程数」；下表所有状态都是跨帧累积重建的结果。
+# 2. `<场景>_bulk` 是**清理规模的正解**（value = 本次条数）；逐条 `bind_release`
+#    只代表真有内核动作的条目。
+# 3. `result=e0` 不是成功：`io_result_tag` 拿不到 errno 时写 e0。e3=ESRCH（线程已退出，
+#    正常）、e22=EINVAL（偶发）。
+# 4. 绑定轨迹统计的是累计 `pin=1 且 home=-1` 的线程数（组掩码绑定、未钉核），
+#    单调上升到高位不回落 = 只绑不解的疑似泄漏。
+# ─────────────────────────────────────────────────────────────────────
+
+@S 帧数: 8280   nfg 帧头值: min=0 max=1070
+
+### @A 动作计数 (act, reason, result)  —— result 归类见头部校准
+  act           reason                 result                count
+  pin           normal_busy            ok                     6081
+  restore       fg_group_reset         ok                     5849
+  bind_release  stale_bulk             ok                     1855
+  bind_release  gone_bulk              ok                      780
+  pin           normal_busy            e22(EINVAL)             617
+  restore       fg_group_reset         e3(ESRCH)               606
+  bind_release  departed               e3(ESRCH)               421
+  bind_release  departed               ok                      401
+  pin           normal_press           ok                      376
+  bind_release  gone                   e3(ESRCH)               185
+  pin           normal_press           e22(EINVAL)             141
+  uclamp        bg_apply               ok                      140
+  uclamp        bg_apply               e0(errno 不可得)           140
+  bind_release  departed_bulk          ok                       47
+  cpuset_cpus   cpuset-cpus            ok                        1
+
+### @A 按 reason 的成功率（e0 不计入成功）
+  reason                        total       ok    rate
+  normal_busy                    6698     6081   90.8%
+  fg_group_reset                 6455     5849   90.6%
+  stale_bulk                     1855     1855  100.0%
+  departed                        822      401   48.8%
+  gone_bulk                       780      780  100.0%
+  normal_press                    517      376   72.7%
+  bg_apply                        280      140   50.0%
+  gone                            185        0    0.0%
+  departed_bulk                    47       47  100.0%
+  cpuset-cpus                       1        1  100.0%
+
+### bulk 汇总帧（清理规模正解；单列，不与逐条 bind_release 混算）
+  reason                       Σvalue      帧数            act
+  stale_bulk                   106700    1855   bind_release
+  departed_bulk                  9338      47   bind_release
+  gone_bulk                      2638     780   bind_release
+                                   合计 = 118676
+
+### 绑定线程轨迹：累计 `pin=1 且 home=-1` 的前台线程数（逐帧累积重建）
+  首帧出现于第 2080 帧；final=329 peak=599（@ 0925-143311）  单调不降=False
+  [i] 非单调：存在释放（正常亦可能）；重点看 final 是否随会话上行。
+   frame             ts   bound
+       1    0925-112151       0
+       2    0925-112153       0
+       3    0925-112157       0
+     200    0925-112944       0
+     400    0925-113911       0
+     600    0925-114815       0
+     800    0925-115717       0
+    1000    0925-120626       0
+    1200    0925-121620       0
+    1400    0925-122510       0
+    1600    0925-123408       0
+    1800    0925-124300       0
+    2000    0925-125217       0
+    2200    0925-125700       2
+    2400    0925-130020     379
+    2600    0925-130340     379
+    2800    0925-130700     235
+    3000    0925-131020     233
+    3200    0925-131341     239
+    3400    0925-131701     237
+    3600    0925-132021     241
+    3800    0925-132341     396
+    4000    0925-132701     305
+    4200    0925-133021     287
+    4400    0925-133342     273
+    4600    0925-133715     268
+    4800    0925-134035     267
+    5000    0925-134423     370
+    5200    0925-134827     273
+    5400    0925-135147     272
+    5600    0925-135508     272
+    5800    0925-135828     258
+    6000    0925-140204     260
+    6200    0925-140524     272
+    6400    0925-140929     264
+    6600    0925-141328     262
+    6800    0925-141648     233
+    7000    0925-142008     249
+    7200    0925-142329     250
+    7400    0925-142649     250
+    7600    0925-143044     250
+    7800    0925-143404     597
+    8000    0925-143724     401
+    8200    0925-144044     316
+
+### 末帧 pin / home 直方图（累积状态快照）
+  tracked tids = 20131
+  pin  直方图: {0: 19802, 1: 329}
+  home 直方图: {-1: 20131}
+
+### 绑定线程（pin=1）出现次数最多的 comm（累积行数，非并发数）
+  DefaultDispatch                              3661
+  RenderThread                                 1317
+  ThreadPoolForeg                              1074
+  ThreadPoolSingl                               490
+  m.aliyun.tongyi                               470
+  thread_general_                               417
+  OkHttp_Connecti                               406
+  UNetForePool                                  324
+  encent.mobileqq                               303
+  Okio_Watchdog                                 294
+  xfu_TaskRunner                                288
+  ThreadPoolServi                               284
+  tdi_thread_name                               280
+  libra-active-re                               276
+  LibraPicLoader_                               260
+
+## E:\code\ChiRi\devimpbin\0925-194326\x_devimp_0925-155742\aff_0925-144208.log
+# ───────────────────────── 判读校准（务必先读）─────────────────────────
+# 1. `@S` 帧是**差分集**：前台线程与被管（pinned）条目每帧全量，长尾线程只在
+#    `u/core/home/pin` 变化时落行，每 30 帧一次全量刷新。**缺失行 = 与上一帧相同**。
+#    因此「行数 ≠ 线程数」；下表所有状态都是跨帧累积重建的结果。
+# 2. `<场景>_bulk` 是**清理规模的正解**（value = 本次条数）；逐条 `bind_release`
+#    只代表真有内核动作的条目。
+# 3. `result=e0` 不是成功：`io_result_tag` 拿不到 errno 时写 e0。e3=ESRCH（线程已退出，
+#    正常）、e22=EINVAL（偶发）。
+# 4. 绑定轨迹统计的是累计 `pin=1 且 home=-1` 的线程数（组掩码绑定、未钉核），
+#    单调上升到高位不回落 = 只绑不解的疑似泄漏。
+# ─────────────────────────────────────────────────────────────────────
+
+@S 帧数: 4520   nfg 帧头值: min=0 max=1092
+
+### @A 动作计数 (act, reason, result)  —— result 归类见头部校准
+  act           reason                 result                count
+  restore       fg_group_reset         ok                     7272
+  pin           normal_busy            ok                     6919
+  bind_release  stale_bulk             ok                     1045
+  bind_release  gone_bulk              ok                      864
+  bind_release  departed               ok                      787
+  pin           normal_press           ok                      447
+  pin           normal_busy            e22(EINVAL)             165
+  restore       fg_group_reset         e3(ESRCH)                94
+  bind_release  gone                   e3(ESRCH)                89
+  uclamp        bg_apply               ok                       75
+  uclamp        bg_apply               e0(errno 不可得)            75
+  pin           normal_press           e22(EINVAL)              38
+  bind_release  departed_bulk          ok                       37
+  bind_release  departed               e3(ESRCH)                 5
+  move_group    promote                ok                        2
+  move_group    stale                  ok                        2
+  bind_release  stale                  ok                        2
+  cpuset_cpus   cpuset-cpus            ok                        1
+  pin           bg_busy                ok                        1
+  pin           bg_busy                e22(EINVAL)               1
+  restore       reset                  ok                        1
+
+### @A 按 reason 的成功率（e0 不计入成功）
+  reason                        total       ok    rate
+  fg_group_reset                 7366     7272   98.7%
+  normal_busy                    7084     6919   97.7%
+  stale_bulk                     1045     1045  100.0%
+  gone_bulk                       864      864  100.0%
+  departed                        792      787   99.4%
+  normal_press                    485      447   92.2%
+  bg_apply                        150       75   50.0%
+  gone                             89        0    0.0%
+  departed_bulk                    37       37  100.0%
+  stale                             4        4  100.0%
+  promote                           2        2  100.0%
+  bg_busy                           2        1   50.0%
+  cpuset-cpus                       1        1  100.0%
+  reset                             1        1  100.0%
+
+### bulk 汇总帧（清理规模正解；单列，不与逐条 bind_release 混算）
+  reason                       Σvalue      帧数            act
+  stale_bulk                    59875    1045   bind_release
+  departed_bulk                 11368      37   bind_release
+  gone_bulk                      2485     864   bind_release
+                                   合计 = 73728
+
+### 绑定线程轨迹：累计 `pin=1 且 home=-1` 的前台线程数（逐帧累积重建）
+  首帧出现于第 3 帧；final=85 peak=433（@ 0925-152038）  单调不降=False
+  [i] 非单调：存在释放（正常亦可能）；重点看 final 是否随会话上行。
+   frame             ts   bound
+       1    0925-144209       0
+       2    0925-144210       0
+       3    0925-144211       2
+     200    0925-144529       3
+     400    0925-144849       1
+     600    0925-145209       2
+     800    0925-145531      72
+    1000    0925-145851     389
+    1200    0925-150212     224
+    1400    0925-150534      59
+    1600    0925-150855      61
+    1800    0925-151215      62
+    2000    0925-151535     225
+    2200    0925-151855      79
+    2400    0925-152215     159
+    2600    0925-152536      93
+    2800    0925-152856      91
+    3000    0925-153216     160
+    3200    0925-153536      94
+    3400    0925-153856      93
+    3600    0925-154217      92
+    3800    0925-154537      90
+    4000    0925-154857      92
+    4200    0925-155217      92
+    4400    0925-155537      85
+
+### 末帧 pin / home 直方图（累积状态快照）
+  tracked tids = 12357
+  pin  直方图: {0: 12272, 1: 85}
+  home 直方图: {-1: 12357}
+
+### 绑定线程（pin=1）出现次数最多的 comm（累积行数，非并发数）
+  DefaultDispatch                              2799
+  thread_general_                              1989
+  RenderThread                                 1679
+  LibraPicLoader_                              1557
+  RenderScToolkit                              1382
+  libra-active-re                              1322
+  thread_sp_norma                              1100
+  taobao.idlefish                              1092
+  thread_sp_file_                              1048
+  NetExcutor5Thre                              1006
+  pool-32-thread-                               996
+  nt_HttpThread                                 917
+  GifRenderingExe                               898
+  io_thread                                     891
+  net_thread                                    891
+
+## E:\code\ChiRi\devimpbin\0925-194326\x_devimp_0925-172908\aff_0925-155742.log
+# ───────────────────────── 判读校准（务必先读）─────────────────────────
+# 1. `@S` 帧是**差分集**：前台线程与被管（pinned）条目每帧全量，长尾线程只在
+#    `u/core/home/pin` 变化时落行，每 30 帧一次全量刷新。**缺失行 = 与上一帧相同**。
+#    因此「行数 ≠ 线程数」；下表所有状态都是跨帧累积重建的结果。
+# 2. `<场景>_bulk` 是**清理规模的正解**（value = 本次条数）；逐条 `bind_release`
+#    只代表真有内核动作的条目。
+# 3. `result=e0` 不是成功：`io_result_tag` 拿不到 errno 时写 e0。e3=ESRCH（线程已退出，
+#    正常）、e22=EINVAL（偶发）。
+# 4. 绑定轨迹统计的是累计 `pin=1 且 home=-1` 的线程数（组掩码绑定、未钉核），
+#    单调上升到高位不回落 = 只绑不解的疑似泄漏。
+# ─────────────────────────────────────────────────────────────────────
+
+@S 帧数: 5274   nfg 帧头值: min=0 max=967
+
+### @A 动作计数 (act, reason, result)  —— result 归类见头部校准
+  act           reason                 result                count
+  restore       fg_group_reset         ok                     7916
+  pin           normal_busy            ok                     7728
+  pin           normal_busy            e22(EINVAL)            1667
+  bind_release  stale_bulk             ok                     1229
+  bind_release  gone_bulk              ok                      657
+  pin           normal_press           ok                      344
+  bind_release  departed               ok                      332
+  pin           normal_press           e22(EINVAL)             238
+  restore       fg_group_reset         e3(ESRCH)               154
+  bind_release  gone                   e3(ESRCH)               150
+  uclamp        bg_apply               ok                       88
+  uclamp        bg_apply               e0(errno 不可得)            88
+  bind_release  departed_bulk          ok                       41
+  move_group    promote                ok                       25
+  pin           bg_busy                ok                       15
+  move_group    stale                  ok                       15
+  bind_release  stale                  ok                       15
+  restore       reset                  ok                        5
+  bind_release  departed               e3(ESRCH)                 4
+  cpuset_cpus   cpuset-cpus            ok                        1
+
+### @A 按 reason 的成功率（e0 不计入成功）
+  reason                        total       ok    rate
+  normal_busy                    9395     7728   82.3%
+  fg_group_reset                 8070     7916   98.1%
+  stale_bulk                     1229     1229  100.0%
+  gone_bulk                       657      657  100.0%
+  normal_press                    582      344   59.1%
+  departed                        336      332   98.8%
+  bg_apply                        176       88   50.0%
+  gone                            150        0    0.0%
+  departed_bulk                    41       41  100.0%
+  stale                            30       30  100.0%
+  promote                          25       25  100.0%
+  bg_busy                          15       15  100.0%
+  reset                             5        5  100.0%
+  cpuset-cpus                       1        1  100.0%
+
+### bulk 汇总帧（清理规模正解；单列，不与逐条 bind_release 混算）
+  reason                       Σvalue      帧数            act
+  stale_bulk                    69850    1229   bind_release
+  departed_bulk                 11722      41   bind_release
+  gone_bulk                      2191     657   bind_release
+                                   合计 = 83763
+
+### 绑定线程轨迹：累计 `pin=1 且 home=-1` 的前台线程数（逐帧累积重建）
+  首帧出现于第 10 帧；final=99 peak=548（@ 0925-160620）  单调不降=False
+  [i] 非单调：存在释放（正常亦可能）；重点看 final 是否随会话上行。
+   frame             ts   bound
+       1    0925-155743       0
+       2    0925-155744       0
+       3    0925-155745       0
+     200    0925-160102       7
+     400    0925-160424     246
+     600    0925-160744     155
+     800    0925-161104     121
+    1000    0925-161424     108
+    1200    0925-161746     160
+    1400    0925-162106     114
+    1600    0925-162426     112
+    1800    0925-162751      87
+    2000    0925-163258      87
+    2200    0925-163618      90
+    2400    0925-163940      91
+    2600    0925-164302     497
+    2800    0925-164624     108
+    3000    0925-164945     108
+    3200    0925-165321     107
+    3400    0925-165656     205
+    3600    0925-170016     110
+    3800    0925-170341     108
+    4000    0925-170707      99
+    4200    0925-171031      95
+    4400    0925-171404      94
+    4600    0925-171728      94
+    4800    0925-172102      94
+    5000    0925-172424      94
+    5200    0925-172751      93
+
+### 末帧 pin / home 直方图（累积状态快照）
+  tracked tids = 16464
+  pin  直方图: {0: 16365, 1: 99}
+  home 直方图: {-1: 16464}
+
+### 绑定线程（pin=1）出现次数最多的 comm（累积行数，非并发数）
+  DefaultDispatch                              8184
+  thread_general_                              2032
+  libra-active-re                              1716
+  RenderThread                                 1472
+  RenderScToolkit                              1290
+  LibraPicLoader_                              1219
+  pool-32-thread-                              1087
+  ThreadPoolForeg                              1084
+  pool-18-thread-                              1071
+  tdi_thread_name                              1068
+  nt_HttpThread                                1064
+  thread_sp_norma                              1007
+  io_thread                                    1006
+  net_thread                                   1006
+  simple_thread                                1006
+
+## E:\code\ChiRi\devimpbin\0925-194326\x_devimp_0925-191526\aff_0925-172909.log
+# ───────────────────────── 判读校准（务必先读）─────────────────────────
+# 1. `@S` 帧是**差分集**：前台线程与被管（pinned）条目每帧全量，长尾线程只在
+#    `u/core/home/pin` 变化时落行，每 30 帧一次全量刷新。**缺失行 = 与上一帧相同**。
+#    因此「行数 ≠ 线程数」；下表所有状态都是跨帧累积重建的结果。
+# 2. `<场景>_bulk` 是**清理规模的正解**（value = 本次条数）；逐条 `bind_release`
+#    只代表真有内核动作的条目。
+# 3. `result=e0` 不是成功：`io_result_tag` 拿不到 errno 时写 e0。e3=ESRCH（线程已退出，
+#    正常）、e22=EINVAL（偶发）。
+# 4. 绑定轨迹统计的是累计 `pin=1 且 home=-1` 的线程数（组掩码绑定、未钉核），
+#    单调上升到高位不回落 = 只绑不解的疑似泄漏。
+# ─────────────────────────────────────────────────────────────────────
+
+@S 帧数: 6050   nfg 帧头值: min=0 max=998
+
+### @A 动作计数 (act, reason, result)  —— result 归类见头部校准
+  act           reason                 result                count
+  restore       fg_group_reset         ok                     3117
+  pin           normal_busy            ok                     2970
+  bind_release  stale_bulk             ok                     1370
+  pin           normal_busy            e22(EINVAL)            1294
+  bind_release  gone_bulk              ok                      634
+  pin           normal_press           e22(EINVAL)             454
+  pin           normal_press           ok                      376
+  bind_release  departed               ok                      241
+  restore       fg_group_reset         e3(ESRCH)               229
+  bind_release  gone                   e3(ESRCH)               152
+  uclamp        bg_apply               ok                      101
+  uclamp        bg_apply               e0(errno 不可得)           101
+  move_group    promote                ok                       87
+  bind_release  departed               e3(ESRCH)                74
+  move_group    stale                  ok                       65
+  bind_release  stale                  ok                       65
+  bind_release  departed_bulk          ok                       60
+  pin           bg_busy                e22(EINVAL)              48
+  pin           bg_busy                ok                       20
+  restore       reset                  ok                       18
+  move_group    demote                 ok                        5
+  bind_release  stale                  e3(ESRCH)                 4
+  cpuset_cpus   cpuset-cpus            ok                        1
+  move_group    stale                  e3(ESRCH)                 1
+  restore       reset                  e3(ESRCH)                 1
+
+### @A 按 reason 的成功率（e0 不计入成功）
+  reason                        total       ok    rate
+  normal_busy                    4264     2970   69.7%
+  fg_group_reset                 3346     3117   93.2%
+  stale_bulk                     1370     1370  100.0%
+  normal_press                    830      376   45.3%
+  gone_bulk                       634      634  100.0%
+  departed                        315      241   76.5%
+  bg_apply                        202      101   50.0%
+  gone                            152        0    0.0%
+  stale                           135      130   96.3%
+  promote                          87       87  100.0%
+  bg_busy                          68       20   29.4%
+  departed_bulk                    60       60  100.0%
+  reset                            19       18   94.7%
+  demote                            5        5  100.0%
+  cpuset-cpus                       1        1  100.0%
+
+### bulk 汇总帧（清理规模正解；单列，不与逐条 bind_release 混算）
+  reason                       Σvalue      帧数            act
+  stale_bulk                    78318    1370   bind_release
+  departed_bulk                 15463      60   bind_release
+  gone_bulk                      3862     634   bind_release
+                                   合计 = 97643
+
+### 绑定线程轨迹：累计 `pin=1 且 home=-1` 的前台线程数（逐帧累积重建）
+  首帧出现于第 10 帧；final=133 peak=487（@ 0925-173928）  单调不降=False
+  [i] 非单调：存在释放（正常亦可能）；重点看 final 是否随会话上行。
+   frame             ts   bound
+       1    0925-172910       0
+       2    0925-172911       0
+       3    0925-172912       0
+     200    0925-173230       5
+     400    0925-173550       2
+     600    0925-173910     226
+     800    0925-174231     161
+    1000    0925-174551     101
+    1200    0925-174928     110
+    1400    0925-175249     107
+    1600    0925-175612     106
+    1800    0925-180125     106
+    2000    0925-180521      75
+    2200    0925-180841      85
+    2400    0925-181207      84
+    2600    0925-181603      84
+    2800    0925-181923      89
+    3000    0925-182243     147
+    3200    0925-182604      87
+    3400    0925-182925      82
+    3600    0925-183245      89
+    3800    0925-183605      90
+    4000    0925-183926      91
+    4200    0925-184246      98
+    4400    0925-184607     147
+    4600    0925-184929     147
+    4800    0925-185258     146
+    5000    0925-185622     147
+    5200    0925-190010     139
+    5400    0925-190334     139
+    5600    0925-190655     271
+    5800    0925-191027     138
+    6000    0925-191433     133
+
+### 末帧 pin / home 直方图（累积状态快照）
+  tracked tids = 20517
+  pin  直方图: {0: 20383, 1: 134}
+  home 直方图: {-1: 20516, 5: 1}
+
+### 绑定线程（pin=1）出现次数最多的 comm（累积行数，非并发数）
+  DefaultDispatch                              2691
+  RenderThread                                 1503
+  ThreadPoolForeg                               954
+  OkHttp_Dispatch                               909
+  c10086.activity                               484
+  OkHttp_Connecti                               480
+  ThreadPoolSingl                               404
+  FrescoDecodeExe                               344
+  RxCachedThreadS                               336
+  encent.mobileqq                               313
+  M-PL-MP-cn_shar                               276
+  pool-35-thread-                               275
+  Okio_Watchdog                                 274
+  V8_DefaultWorke                               274
+  libra-active-re                               264
+
+## E:\code\ChiRi\devimpbin\0925-194326\x_devimp_0925-194321\aff_0925-191526.log
+# ───────────────────────── 判读校准（务必先读）─────────────────────────
+# 1. `@S` 帧是**差分集**：前台线程与被管（pinned）条目每帧全量，长尾线程只在
+#    `u/core/home/pin` 变化时落行，每 30 帧一次全量刷新。**缺失行 = 与上一帧相同**。
+#    因此「行数 ≠ 线程数」；下表所有状态都是跨帧累积重建的结果。
+# 2. `<场景>_bulk` 是**清理规模的正解**（value = 本次条数）；逐条 `bind_release`
+#    只代表真有内核动作的条目。
+# 3. `result=e0` 不是成功：`io_result_tag` 拿不到 errno 时写 e0。e3=ESRCH（线程已退出，
+#    正常）、e22=EINVAL（偶发）。
+# 4. 绑定轨迹统计的是累计 `pin=1 且 home=-1` 的线程数（组掩码绑定、未钉核），
+#    单调上升到高位不回落 = 只绑不解的疑似泄漏。
+# ─────────────────────────────────────────────────────────────────────
+
+@S 帧数: 1436   nfg 帧头值: min=0 max=927
+
+### @A 动作计数 (act, reason, result)  —— result 归类见头部校准
+  act           reason                 result                count
+  restore       fg_group_reset         ok                      656
+  pin           normal_busy            ok                      530
+  bind_release  stale_bulk             ok                      317
+  bind_release  gone_bulk              ok                      146
+  pin           normal_press           ok                      137
+  pin           normal_press           e22(EINVAL)             114
+  bind_release  departed               ok                       56
+  uclamp        bg_apply               ok                       24
+  uclamp        bg_apply               e0(errno 不可得)            24
+  bind_release  departed_bulk          ok                       14
+  restore       fg_group_reset         e3(ESRCH)                 8
+  bind_release  gone                   e3(ESRCH)                 8
+  cpuset_cpus   cpuset-cpus            ok                        1
+
+### @A 按 reason 的成功率（e0 不计入成功）
+  reason                        total       ok    rate
+  fg_group_reset                  664      656   98.8%
+  normal_busy                     530      530  100.0%
+  stale_bulk                      317      317  100.0%
+  normal_press                    251      137   54.6%
+  gone_bulk                       146      146  100.0%
+  departed                         56       56  100.0%
+  bg_apply                         48       24   50.0%
+  departed_bulk                    14       14  100.0%
+  gone                              8        0    0.0%
+  cpuset-cpus                       1        1  100.0%
+
+### bulk 汇总帧（清理规模正解；单列，不与逐条 bind_release 混算）
+  reason                       Σvalue      帧数            act
+  stale_bulk                    18567     317   bind_release
+  departed_bulk                  4705      14   bind_release
+  gone_bulk                       647     146   bind_release
+                                   合计 = 23919
+
+### 绑定线程轨迹：累计 `pin=1 且 home=-1` 的前台线程数（逐帧累积重建）
+  首帧出现于第 3 帧；final=29 peak=198（@ 0925-193526）  单调不降=False
+  [i] 非单调：存在释放（正常亦可能）；重点看 final 是否随会话上行。
+   frame             ts   bound
+       1    0925-191527       0
+       2    0925-191528       0
+       3    0925-191529       2
+     200    0925-191918       2
+     400    0925-192450       0
+     600    0925-192923       2
+     800    0925-193243       2
+    1000    0925-193603      38
+    1200    0925-193924       6
+    1400    0925-194244      39
+
+### 末帧 pin / home 直方图（累积状态快照）
+  tracked tids = 8252
+  pin  直方图: {0: 8223, 1: 29}
+  home 直方图: {-1: 8252}
+
+### 绑定线程（pin=1）出现次数最多的 comm（累积行数，非并发数）
+  RenderThread                                  418
+  .coolapk.market                               370
+  DefaultDispatch                               178
+  RxComputationSc                                94
+  V8_DefaultWorke                                70
+  GDT_NET_THREAD                                 66
+  ThreadPoolForeg                                52
+  ksad-async5-thr                                50
+  CodecLooper                                    44
+  encent.mobileqq                                39
+  ThreadPoolSingl                                34
+  ndroid.settings                                31
+  OkHttp_Dispatch                                30
+  default_npth_th                                28
+  CCodecWatchdog                                 28
+

@@ -1,0 +1,110 @@
+# 由 scripts/devimp-analyze.py 生成（subprocess 捕获，按批次）
+
+# ── batch x_devimp_0925-112150 ──
+# cmd: C:\Users\Aibeto Zhu\AppData\Local\Python\pythoncore-3.14-64\python.exe E:\code\ChiRi\scripts\devimp-analyze.py E:\code\ChiRi\devimpbin\0925-194326\x_devimp_0925-112150 --since 0000-000000 --min-n 30
+== 版本指纹 module:ChiRi Canary Alpha06-16 (versionCode 10616) | soc:8550 board=kalama model=PHB110 | android:16 (sdk 36) kernel=5.15.180-android13-8-o-01178-gfc2079499f31
+== E:\code\ChiRi\devimpbin\0925-194326\x_devimp_0925-112150  files=22  schema=44列新(拆分版)  last_ts=11:21:44.238
+   放电方向: batt_i>0 侧 （枚举：batt_i>0 侧为放电）
+   行类型: {'snap': 7029, 'tick': 102193, 'event': 8}
+mode      package                        n  P_avg   p50    p95 battT  cpuT  cap   gpu   psi    mig |          little             big           prime
+playback  tv.danmaku.bili              893   3.18  2.92   4.74  40.7  55.3   88  12.7  18.9  10991 |  47.9/ 55.2 u0.50  54.9/ 70.9 u0.59  30.8/ 50.0 u0.30
+default   me.weishu.kernelsu           111   3.83  2.94   8.13  40.4  56.9   93  15.6  19.2  11467 |  56.9/100.0 u0.57  59.3/ 82.9 u0.55  29.9/ 81.3 u0.19
+default   com.android.launcher          59   3.70  3.01   7.79  36.8  48.9   96  15.9  26.8   7686 |  47.7/ 88.6 u0.48  32.4/ 54.8 u0.29  24.2/ 27.1 u0.14
+default   ru.zdevs.zarchiver.pro        39   3.64  3.25   5.96  39.6  56.1  100  20.2  20.3  10481 |  55.7/ 88.6 u0.56  62.4/ 87.7 u0.57  36.9/ 81.3 u0.33
+--- tgtop 线程占比（近全时段） ---
+
+
+# ── batch x_devimp_0925-144208 ──
+# cmd: C:\Users\Aibeto Zhu\AppData\Local\Python\pythoncore-3.14-64\python.exe E:\code\ChiRi\scripts\devimp-analyze.py E:\code\ChiRi\devimpbin\0925-194326\x_devimp_0925-144208 --since 0000-000000 --min-n 30
+== 版本指纹 module:ChiRi Canary Alpha06-16 (versionCode 10616) | soc:8550 board=kalama model=PHB110 | android:16 (sdk 36) kernel=5.15.180-android13-8-o-01178-gfc2079499f31
+== E:\code\ChiRi\devimpbin\0925-194326\x_devimp_0925-144208  files=79  schema=44列新(拆分版)  last_ts=14:42:04.913
+   放电方向: batt_i>0 侧 [!] 两侧功率都『合理』或都异常，方向需人工确认；本次按 batt_i>0 侧统计
+   行类型: {'snap': 8280, 'tick': 134591, 'event': 5}
+mode      package                        n  P_avg   p50    p95 battT  cpuT  cap   gpu   psi    mig |          little             big           prime
+default   com.hypergryph.skland        528   3.22  2.52   6.78  38.0  50.5  100   8.9  19.3   9142 |  55.8/ 94.3 u0.55  52.6/ 78.1 u0.48  33.5/ 89.2 u0.27
+default   com.tencent.mobileqq         455   4.39  3.68   9.56  39.3  54.4   90  21.7  21.8   9526 |  57.2/ 94.3 u0.56  51.0/ 87.7 u0.48  33.4/ 89.2 u0.26
+default   com.aliyun.tongyi            411   3.68  3.06   7.45  39.2  54.2  100  18.1  19.0  10655 |  52.1/ 94.3 u0.51  49.3/ 78.1 u0.45  31.8/ 81.3 u0.23
+default   com.tencent.mm               321   6.53  6.24  11.13  39.6  66.7   96  39.9  25.2  11371 |  53.1/100.0 u0.52  56.1/ 96.6 u0.52  41.3/100.0 u0.35
+default   com.android.launcher         184   4.72  4.31   9.66  38.7  53.3   99  22.7  24.0  10794 |  50.4/100.0 u0.49  46.2/ 96.6 u0.43  38.4/100.0 u0.33
+default   com.microsoft.emmx.beta      172   4.53  3.38  11.01  38.2  55.1  100  11.3  28.1   8211 |  51.8/100.0 u0.50  40.2/ 87.7 u0.37  30.8/ 85.5 u0.22
+default   com.taobao.idlefish          160   4.99  4.21  10.73  35.3  50.9  100  32.7  24.4  11561 |  53.3/ 88.6 u0.54  59.6/ 92.5 u0.57  40.4/ 92.8 u0.35
+default   com.coolapk.market           146   5.04  3.56  10.60  36.4  55.5  100  33.1  20.7  12020 |  51.1/ 82.9 u0.51  54.5/ 87.7 u0.51  35.8/ 92.8 u0.29
+playback  tv.danmaku.bili              144   3.57  2.99   6.80  39.0  53.1  100  16.0  24.5  12294 |  51.1/ 55.2 u0.55  56.0/ 70.9 u0.60  32.9/ 50.0 u0.34
+default   me.weishu.kernelsu           110   3.62  3.20   9.39  38.9  54.3   89  17.7  22.8  12317 |  61.0/ 88.6 u0.59  61.1/ 78.1 u0.57  26.8/ 50.0 u0.17
+default   com.android.adservices.api    50   4.82  3.43  10.52  39.5  63.3   97   8.0  26.2   8477 |  57.7/100.0 u0.59  55.8/100.0 u0.54  42.8/100.0 u0.37
+default   com.oplus.wirelesssettings    39   4.99  4.20  10.74  39.4  62.9  100  24.6  27.1  16452 |  67.0/100.0 u0.67  66.6/ 96.6 u0.63  44.6/ 92.8 u0.41
+default   com.cnspeedtest.globalspee    37   4.06  3.91   6.86  39.5  60.1  100  12.7  16.4   8932 |  49.6/ 88.6 u0.52  51.6/ 73.3 u0.49  49.3/100.0 u0.42
+--- tgtop 线程占比（近全时段） ---
+
+
+# ── batch x_devimp_0925-155742 ──
+# cmd: C:\Users\Aibeto Zhu\AppData\Local\Python\pythoncore-3.14-64\python.exe E:\code\ChiRi\scripts\devimp-analyze.py E:\code\ChiRi\devimpbin\0925-194326\x_devimp_0925-155742 --since 0000-000000 --min-n 30
+== 版本指纹 module:ChiRi Canary Alpha06-16 (versionCode 10616) | soc:8550 board=kalama model=PHB110 | android:16 (sdk 36) kernel=5.15.180-android13-8-o-01178-gfc2079499f31
+== E:\code\ChiRi\devimpbin\0925-194326\x_devimp_0925-155742  files=49  schema=44列新(拆分版)  last_ts=15:57:39.260
+   放电方向: batt_i>0 侧 [!] 两侧功率都『合理』或都异常，方向需人工确认；本次按 batt_i>0 侧统计
+   行类型: {'snap': 4520, 'tick': 78024, 'event': 3}
+mode      package                        n  P_avg   p50    p95 battT  cpuT  cap   gpu   psi    mig |          little             big           prime
+default   com.taobao.idlefish          951   4.80  3.76  10.93  42.2  67.7   85  33.3  21.4  10374 |  50.0/ 88.6 u0.49  49.8/ 87.7 u0.46  35.6/ 89.2 u0.28
+default   com.tencent.mobileqq         679   5.86  4.87  11.26  42.3  72.0   85  41.1  30.5  12946 |  70.1/100.0 u0.68  68.8/100.0 u0.66  43.2/100.0 u0.38
+default   com.tencent.mm               202   6.37  6.06  11.32  41.1  63.2   86  31.7  27.5  10140 |  47.2/100.0 u0.46  45.6/ 96.6 u0.42  35.5/100.0 u0.28
+default   com.microsoft.emmx.beta       49   3.76  3.02   7.17  40.4  55.9   85  18.6  25.5   9119 |  62.2/100.0 u0.62  52.6/ 87.7 u0.46  31.9/ 77.7 u0.24
+playback  tv.danmaku.bili               48   4.32  3.66   8.05  40.4  56.7   85  17.1  29.9  11300 |  52.5/ 55.2 u0.59  54.1/ 75.9 u0.58  34.1/ 50.0 u0.36
+default   com.android.launcher          46   4.46  4.01   8.07  41.6  61.6   85  16.3  33.7   9507 |  61.1/100.0 u0.60  49.8/100.0 u0.47  39.1/100.0 u0.33
+--- tgtop 线程占比（近全时段） ---
+
+
+# ── batch x_devimp_0925-172908 ──
+# cmd: C:\Users\Aibeto Zhu\AppData\Local\Python\pythoncore-3.14-64\python.exe E:\code\ChiRi\scripts\devimp-analyze.py E:\code\ChiRi\devimpbin\0925-194326\x_devimp_0925-172908 --since 0000-000000 --min-n 30
+== 版本指纹 module:ChiRi Canary Alpha06-16 (versionCode 10616) | soc:8550 board=kalama model=PHB110 | android:16 (sdk 36) kernel=5.15.180-android13-8-o-01178-gfc2079499f31
+== E:\code\ChiRi\devimpbin\0925-194326\x_devimp_0925-172908  files=56  schema=44列新(拆分版)  last_ts=17:29:05.556
+   放电方向: batt_i>0 侧 [!] 两侧功率都『合理』或都异常，方向需人工确认；本次按 batt_i>0 侧统计
+   行类型: {'snap': 5274, 'tick': 85854, 'event': 4}
+mode      package                        n  P_avg   p50    p95 battT  cpuT  cap   gpu   psi    mig |          little             big           prime
+default   com.tencent.mobileqq        1064   5.56  4.33  11.37  41.0  63.7   85  37.2  27.0  11613 |  59.3/ 88.6 u0.58  57.8/100.0 u0.53  40.0/100.0 u0.33
+default   com.taobao.idlefish          247   4.50  4.12   8.38  41.1  61.8   85  40.6  27.8  15491 |  56.4/ 94.3 u0.55  55.8/ 96.6 u0.53  39.3/100.0 u0.32
+default   com.android.launcher         170   4.12  3.31   8.39  39.6  57.9   89  12.4  23.3   9347 |  47.9/100.0 u0.48  29.5/ 68.5 u0.21  28.8/ 81.3 u0.18
+default   com.android.adservices.api   106   3.45  2.79   8.75  43.9  85.5   85   7.9  21.0   8325 |  59.6/100.0 u0.58  44.5/ 78.1 u0.42  28.4/ 77.7 u0.18
+default   com.tencent.mm                58   5.05  4.66   9.99  41.9  71.7   86  41.2  46.2  14533 |  74.2/100.0 u0.74  72.4/100.0 u0.70  58.9/100.0 u0.56
+default   com.coloros.gallery3d         46   4.21  3.19  11.33  38.6  51.4   86  10.6  23.4   7962 |  54.7/ 88.6 u0.53  40.9/ 82.9 u0.36  31.3/ 73.5 u0.24
+default   com.google.android.gms        39   2.72  2.35   4.61  44.2  90.6   85   1.5  29.0   5007 |  71.5/100.0 u0.70  42.7/ 63.7 u0.37  30.5/ 92.8 u0.18
+default   com.greenpoint.android.mc1    35   3.28  3.30   4.37  44.2  75.8   85  20.8  49.0  12597 |  74.0/100.0 u0.73  71.2/100.0 u0.69  56.2/100.0 u0.53
+--- tgtop 线程占比（近全时段） ---
+
+
+# ── batch x_devimp_0925-191526 ──
+# cmd: C:\Users\Aibeto Zhu\AppData\Local\Python\pythoncore-3.14-64\python.exe E:\code\ChiRi\scripts\devimp-analyze.py E:\code\ChiRi\devimpbin\0925-194326\x_devimp_0925-191526 --since 0000-000000 --min-n 30
+== 版本指纹 module:ChiRi Canary Alpha06-16 (versionCode 10616) | soc:8550 board=kalama model=PHB110 | android:16 (sdk 36) kernel=5.15.180-android13-8-o-01178-gfc2079499f31
+== E:\code\ChiRi\devimpbin\0925-194326\x_devimp_0925-191526  files=98  schema=44列新(拆分版)  last_ts=19:15:23.424
+   放电方向: batt_i>0 侧 （枚举：batt_i>0 侧为放电）
+   行类型: {'snap': 6050, 'tick': 99923, 'event': 22}
+mode      package                        n  P_avg   p50    p95 battT  cpuT  cap   gpu   psi    mig |          little             big           prime
+default   com.tencent.mobileqq         754   5.01  4.03  11.56  38.5  57.1   99  22.0  25.5   9695 |  54.6/100.0 u0.54  47.3/ 96.6 u0.42  35.1/100.0 u0.27
+default   com.coolapk.market           600   4.81  4.08  10.28  39.6  63.5   91  19.6  26.1   9026 |  60.1/100.0 u0.60  54.6/ 96.6 u0.52  40.7/100.0 u0.34
+default   com.android.launcher         474   4.00  3.35   8.77  39.9  57.0   93  10.6  22.7   7033 |  45.1/100.0 u0.44  37.9/ 87.7 u0.34  30.9/ 89.2 u0.22
+playback  tv.danmaku.bili              304   3.74  3.06   7.93  39.2  53.1   98   5.5  24.1   6987 |  39.2/ 55.2 u0.40  45.3/ 70.9 u0.48  31.3/ 50.0 u0.30
+default   com.microsoft.emmx.beta      303   4.44  3.62  10.19  39.3  61.3   98  11.6  30.6   9090 |  64.8/100.0 u0.65  54.8/ 96.6 u0.51  34.5/ 92.8 u0.27
+default   com.tencent.mm               173   5.24  3.28  11.68  38.1  74.0   94  27.3  24.5   9036 |  56.1/ 94.3 u0.56  58.1/100.0 u0.53  39.0/100.0 u0.33
+default   com.xingin.xhs               169   6.05  4.73  11.57  41.1  59.5   85  27.1  26.2  10094 |  57.1/100.0 u0.58  62.1/100.0 u0.59  46.0/100.0 u0.41
+default   com.oplus.wirelesssettings   131   5.37  3.95  10.71  38.6  66.2   89  11.5  34.1   9479 |  59.3/100.0 u0.60  55.7/100.0 u0.53  46.7/100.0 u0.41
+default   com.coloros.colordirectser   109   5.21  4.23  11.55  39.8  53.8  100   5.0  15.2   5282 |  51.9/ 94.3 u0.51  49.0/ 92.5 u0.49  32.6/100.0 u0.26
+default   com.greenpoint.android.mc1    89   4.41  3.87   9.85  39.3  58.6  100  11.3  19.9   6056 |  79.0/100.0 u0.78  53.7/ 92.5 u0.52  38.7/ 92.8 u0.33
+default   me.weishu.kernelsu            75   3.46  3.41   6.77  37.0  53.9  100  19.0  20.8  14009 |  67.5/ 88.6 u0.65  62.6/ 78.1 u0.59  27.4/ 62.0 u0.18
+default   com.cnspeedtest.globalspee    71   4.09  3.20   9.78  41.0  57.8   85  15.3  27.8  10488 |  60.3/100.0 u0.61  62.0/ 96.6 u0.58  39.8/100.0 u0.33
+default   com.asus.aihome               63   2.89  2.50   4.46  38.2  49.0  100   5.8  16.2   6971 |  45.3/100.0 u0.46  40.8/ 73.3 u0.37  27.5/ 62.0 u0.18
+default   com.taobao.idlefish           51   5.33  4.35  10.66  36.7  55.5  100  19.2  25.9  10012 |  67.8/100.0 u0.68  68.0/100.0 u0.65  47.7/100.0 u0.42
+--- tgtop 线程占比（近全时段） ---
+
+
+# ── batch x_devimp_0925-194321 ──
+# cmd: C:\Users\Aibeto Zhu\AppData\Local\Python\pythoncore-3.14-64\python.exe E:\code\ChiRi\scripts\devimp-analyze.py E:\code\ChiRi\devimpbin\0925-194326\x_devimp_0925-194321 --since 0000-000000 --min-n 30
+== 版本指纹 module:ChiRi Canary Alpha06-16 (versionCode 10616) | soc:8550 board=kalama model=PHB110 | android:16 (sdk 36) kernel=5.15.180-android13-8-o-01178-gfc2079499f31
+== E:\code\ChiRi\devimpbin\0925-194326\x_devimp_0925-194321  files=16  schema=44列新(拆分版)  last_ts=19:43:20.725
+   放电方向: batt_i>0 侧 （枚举：batt_i>0 侧为放电）
+   行类型: {'snap': 1436, 'tick': 23833, 'event': 12}
+mode      package                        n  P_avg   p50    p95 battT  cpuT  cap   gpu   psi    mig |          little             big           prime
+default   com.coolapk.market           561   4.43  3.30  10.24  37.7  53.2  100  32.1  18.8  10418 |  53.3/ 94.3 u0.53  56.4/ 87.7 u0.51  34.7/ 85.5 u0.28
+default   com.tencent.mobileqq         176   3.02  2.43   6.23  37.4  49.6  100  18.2  15.8   6640 |  57.0/ 94.3 u0.56  52.7/ 78.1 u0.51  33.1/ 92.8 u0.25
+default   com.android.settings          33   5.57  5.23  10.43  38.4  54.0  100  15.4  30.3  14123 |  73.1/100.0 u0.73  71.6/100.0 u0.69  54.8/100.0 u0.52
+--- tgtop 线程占比（近全时段） ---
+
+

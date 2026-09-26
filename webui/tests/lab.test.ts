@@ -1,5 +1,4 @@
-// lab.test.ts: [parse] [write]
-// 解析口径与守护进程 src/rhine.rs::parse_state 对齐，重点覆盖两边易分歧的形态（注释/引号/多行/未知 key）。
+// lab.test.ts: [parse] [write]解析口径与守护进程 src/rhine.rs::parse_state 对齐，重点覆盖两边易分歧的形态（注释/引号/多行/未知 key）
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -155,8 +154,10 @@ describe('实验室接管的 meta 开关', () => {
     expect(Object.keys(LAB_TAKEOVER).sort()).toEqual([...LAB_MODE_KEYS].sort())
   })
 
-  /** 读 daemon 的实验室模式定义（module/config/rhine-init.yaml）：模式 key → 影响项字段。
-   *  只做够用的顶层解析：顶层 `key:` 开模式，缩进一级 `field:` 为影响项，`key: {}` 为空列表。 */
+  /**
+   * 读 daemon 的实验室模式定义（module/config/rhine-init.yaml）：模式 key → 影响项字段
+   * 只做够用的顶层解析：顶层 `key:` 开模式，缩进一级 `field:` 为影响项，`key: {}` 为空列表
+   */
   function readRhineInit(): Record<string, string[]> {
     const text = readFileSync(join(process.cwd(), '..', 'module/config/rhine-init.yaml'), 'utf8')
     const defs: Record<string, string[]> = {}
@@ -176,8 +177,8 @@ describe('实验室接管的 meta 开关', () => {
     return defs
   }
 
-  // 刚性断言（故意做绊线）：直接读 daemon 的 rhine-init.yaml 比对，不写死字面量（写死则改 yaml 也不变红）。
-  // 只比 meta.yaml 里有的字段：global_mode / special_tuned 不是 meta 字段，界面管不着。
+  // 刚性断言（故意做绊线）：直接读 daemon 的 rhine-init.yaml 比对，不写死字面量（写死则改 yaml 也不变红）只比 meta.yaml 里有的字段：
+  // global_mode / special_tuned 不是 meta 字段，界面管不着
   it('接管表与 rhine-init.yaml 的影响项同步', () => {
     const defs = readRhineInit()
     expect(Object.keys(defs).sort()).toEqual([...LAB_MODE_KEYS].sort())

@@ -53,16 +53,30 @@ Thermal:
   # 单传感器回退；本机若需增删节点才写 cpu_temp_zone_types 覆盖
   batt_soft_temp_c: 41
   batt_hard_temp_c: 45
+  # 电池中限：软/硬限中点 (41+45)/2。2026-09-27 实测：41→45°C 这 4°C 占会话时长
+  # 64%，原三级阶梯在该区间几乎无压制力（cap=85 窗口真钳制率仅 13.8%、实机一路升到
+  # 45.8°C 才撞硬限），故中段补一级。必须 soft < mid < hard（normalize 越界钳制 + warn）。
+  # 注：mid 的合法区间是 (soft+0.5, hard-0.5)，故 normalize 要求 hard >= soft + 1.0——
+  # 硬限比软限只高不到 1°C 的配置会被兜底改写（旧判据只看 hard <= soft，差在 (0,1) 时
+  # 会造出 lo > hi 并让 f32::clamp panic）。
+  batt_mid_temp_c: 43
   # CPU 温度仅极端热时参与（内核 ~95°C 温控兜底）：soc_max 合成温区在大型游戏
   # 高负载下常态 85°C+，75/85 会导致过半时间被软件压制、比官调更卡；90/95
   # 只在接近内核起控点时提前轻压
   cpu_soft_temp_c: 90
   cpu_hard_temp_c: 95
+  # CPU 中限取软/硬中点向下取整：soc_max 聚合温区噪声大，中档刻意贴硬限一侧
+  cpu_mid_temp_c: 92
   # 2026-09-22 实测调整（仅本机型）：原 0.70 是一刀切，电池 40.7℃ 触发后瞬间砍掉
   # 三成上限 = 断崖式掉帧。改 0.85 让压制更平缓（少掉帧、也不至于失控），
   # 真正的解法是 P1/P3 把功耗压下去让温度不上来——这条只是把「断崖」改成「斜坡」。
   # 安全阈值本身（batt_soft_temp_c / batt_hard_temp_c）不动。
   soft_perf_cap: 0.85
+  # 中档 cap（P0-2）：41–45°C 之间再给一档，形成 1.0 → 0.85 → 0.60 → 0.40 四级。
+  # 只压 cap 值不动阈值——CLG 自己选的 current_perf 通常低于 0.85，抬阈值不会增加
+  # 命中率（实测 13.8%），只有把 cap 值降到负载真的贴住的位置才有压制力。
+  # 必须 hard <= mid <= soft。
+  mid_perf_cap: 0.60
   hard_perf_cap: 0.40
   # 豁免档：仅在 clamp_heavy=false（重钳关闭）时生效——热压制只落在
   # (soft_perf_cap, free_above) 区间，>= 豁免档不钳制。必须 > soft_perf_cap
@@ -74,7 +88,21 @@ Thermal:
   # 2026-09-26 真机：cap85 窗口 37 分钟高载簇决策值恒为满频、降档 0 次——旧豁免带
   # （>= free_above 完全不钳）过于宽松，故改恒钳。false = 回退 free_above 豁免旧行为。
   clamp_heavy: true
+  # 软/中档回滞：降到 软限-3=38°C 才解除软限档
   hysteresis_c: 3
+  # 硬档专用回滞（P0-1）：原实现硬档→软档这条边**无回滞**，batt 一降到 44.9°C 就从
+  # 0.40 跳回 0.85，批次2 75 分钟内 5 次进硬档、两次 60s 内重入（最近相隔 2.0 s）。
+  # 取 2.0（而非与 hysteresis_c 同为 3）——中档 43°C 在 43 附近接棒，硬档退到 43 即交
+  # 给中档 0.60，不必压到 42；45↔43 的 2°C 带回滞已足够吃掉 0.1°C 级抖动。
+  hysteresis_hard_c: 2
+  # 热态 tuned 响应（P0-3）：cap 同时下发 tuned（playback/akmode 不走 CLG，原本对温度
+  # 零响应）。有效上限 = min(档位天花板, max(cap, tuned_thermal_floor))——只看 cap 是否
+  # 低于天花板：播放态天花板 little 0.55 / big 0.75 / prime 0.50，软限 0.85 对它是 no-op，
+  # 真正会咬住的是中档 0.60（big 0.75→0.60）与硬档（→floor）。
+  tuned_resp_enabled: true
+  # 性能下限：不把硬档 0.40 直接套到播放态（掉帧风险实打实；播放态帧信号 2026-09-27 起有，
+  # 但只是离线直方图 `event` 行 decision=playback_fps，在线无判据）。normalize 保证 >= hard_perf_cap。
+  tuned_thermal_floor: 0.55
 
 # [sched]
 # 内核调度器参数微调（借鉴 LittleYouran CTS 的 Scheduler 段）：migration_cost 由

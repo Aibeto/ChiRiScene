@@ -1,24 +1,22 @@
-// lab.ts: [keys] [takeover] [parse] [lock]
-// 实验室（rhine）状态解析：rhine.chr 内容是 YAML 标量（模式 key），空文件/只有注释 = 未启用。
-// 口径必须与守护进程 src/rhine.rs::parse_state 一致，否则「界面说已启用、守护进程判非法并重置」：
-// 两边都做三件事——剥空行与 # 注释、只接受单行标量、key 必须在内置定义里。
+// lab.ts: [keys] [takeover] [parse] [lock]实验室（rhine）状态解析：rhine.chr 内容是 YAML 标量（模式 key），空文件/只有注释 = 未启用
+// 口径必须与守护进程 src/rhine.rs::parse_state 一致，否则「界面说已启用、守护进程判非法并重置」：两边都做三件事——剥空行与 # 注释、只接受单行标量、key 必须在内置定义里
 
 // [keys]
 /**
- * LAB_MODE_KEYS：rhine-init.yaml 里已定义的实验室模式。key 是实际做的事，界面名字走 i18n `lab.mode.*`，两边不要混用。
- * 新增模式要同步改这里、locale、rhine-init.yaml。
+ * LAB_MODE_KEYS：rhine-init.yaml 里已定义的实验室模式key 是实际做的事，界面名字走 i18n `lab.mode.*`，两边不要混用
+ * 新增模式要同步改这里、locale、rhine-init.yaml
  */
 export const LAB_MODE_KEYS = ['vector', 'contingency', 'babel', 'frozen'] as const
 export type LabModeKey = (typeof LAB_MODE_KEYS)[number]
 
-/** 界面上放开启用的模式。frozen（待春归）已实现，不再是 rhine-init.yaml 里的空映射；与 rhine-init.yaml 保持同步。 */
+/** 界面上放开启用的模式frozen（待春归）已实现，不再是 rhine-init.yaml 里的空映射；与 rhine-init.yaml 保持同步 */
 export const LAB_ENABLEABLE: readonly LabModeKey[] = ['vector', 'contingency', 'babel', 'frozen']
 
 // [takeover]
 /**
  * 各实验室模式会接管的 meta 开关（字段名与 meta.yaml 一致），配置页置灰不可切换：锁定期间手改会被守护进程
- * reassert 拉回去。与 rhine-init.yaml 的影响项一一对应、必须同步改（与 LAB_MODE_KEYS 一样硬编码），
- * tests/lab.test.ts 有刚性断言兜底。
+ * reassert 拉回去与 rhine-init.yaml 的影响项一一对应、必须同步改（与 LAB_MODE_KEYS 一样硬编码），
+ * tests/lab.test.ts 有刚性断言兜底
  */
 export const LAB_TAKEOVER: Record<LabModeKey, readonly string[]> = {
   // 与 rhine-init.yaml 一致：实验室期间 FAS/息屏场景模式被关（global_mode/special_tuned 不是 meta 字段）
@@ -31,8 +29,8 @@ export const LAB_TAKEOVER: Record<LabModeKey, readonly string[]> = {
 
 // [parse]
 /**
- * 保留字：强制关闭。与「写空内容」的区别在锁定期间：空内容会被挡回去，off 不会（清锁定、还原快照、写回未启用）。
- * 必须与守护进程 src/rhine.rs::is_force_off 同口径（忽略大小写、允许带引号）。
+ * 保留字：强制关闭与「写空内容」的区别在锁定期间：空内容会被挡回去，off 不会（清锁定、还原快照、写回未启用）
+ * 必须与守护进程 src/rhine.rs::is_force_off 同口径（忽略大小写、允许带引号）
  */
 export const LAB_FORCE_OFF = 'off'
 
@@ -44,13 +42,13 @@ export type LabState =
   /** 内容不是合法标量或写了未定义的模式名——守护进程会把它重置掉 */
   | { kind: 'invalid'; raw: string }
 
-/** 剥 YAML 行内注释：`#` 前必须是行首或空白才算注释。daemon 侧由 serde_yaml 剥，这里必须自己剥，否则 `vector # 注释` 会误判非法。 */
+/** 剥 YAML 行内注释：`#` 前必须是行首或空白才算注释daemon 侧由 serde_yaml 剥，这里必须自己剥，否则 `vector # 注释` 会误判非法 */
 function stripComment(line: string): string {
   const at = line.search(/\s#/)
   return at >= 0 ? line.slice(0, at) : line
 }
 
-/** is_force_off 在 YAML 解析之前做字面量比较（剥注释→trim→逐边剥引号→忽略大小写），不能套 YAML 标量口径。 */
+/** is_force_off 在 YAML 解析之前做字面量比较（剥注释→trim→逐边剥引号→忽略大小写），不能套 YAML 标量口径 */
 function isForceOff(line: string): boolean {
   return stripComment(line)
     .trim()
@@ -58,8 +56,9 @@ function isForceOff(line: string): boolean {
     .toLowerCase() === LAB_FORCE_OFF
 }
 
-/** 按 daemon serde_yaml 口径取字符串标量：剥注释→trim→成对同型引号剥一层（不 trim 内侧）。
- *  不成对引号判非法，否则出现「界面说已启用、守护进程判非法并重置」的裂缝。 */
+/**
+ * 按 daemon serde_yaml 口径取字符串标量：剥注释→trim→成对同型引号剥一层（不 trim 内侧）不成对引号判非法，否则出现「界面说已启用、守护进程判非法并重置」的裂缝
+ */
 function yamlScalar(line: string): string | null {
   const s = stripComment(line).trim()
   const head = s.charAt(0)
@@ -98,8 +97,10 @@ export function labFileContent(mode: LabWriteTarget): string {
 }
 
 // [lock]
-/** 锁定标记：tmpfs 上落一个标记，存在即表示本次开机后启用过（运行时关不掉，重启消失）。
- *  文件名与候选目录必须与守护进程 src/rhine.rs 的 LOCK_NAME/LOCK_DIRS 一致，否则界面说「未锁定」而设备其实锁着。 */
+/**
+ * 锁定标记：tmpfs 上落一个标记，存在即表示本次开机后启用过（运行时关不掉，重启消失）文件名与候选目录必须与守护进程 src/rhine.rs 的 LOCK_NAME/LOCK_DIRS 一致，
+ * 否则界面说「未锁定」而设备其实锁着
+ */
 export const LAB_LOCK_NAME = 'chiri-labs.lock'
 export const LAB_LOCK_DIRS = ['/tmp', '/dev'] as const
 
@@ -112,7 +113,7 @@ export interface LabLock {
   notes: string[]
 }
 
-/** 解析标记文件内容。`exists` 为 false 时（文件不存在）一律视为未锁定。 */
+/** 解析标记文件内容`exists` 为 false 时（文件不存在）一律视为未锁定 */
 export function parseLabLock(text: string, exists: boolean): LabLock {
   if (!exists) return { locked: false, mode: '', notes: [] }
   const lines = text.split('\n')
@@ -127,7 +128,7 @@ export function parseLabLock(text: string, exists: boolean): LabLock {
   return { locked: true, mode, notes }
 }
 
-/** 运行配置一致性问题的稳定代号（界面层映射成 i18n 文案，便于单测）；仅已锁定时才有意义。 */
+/** 运行配置一致性问题的稳定代号（界面层映射成 i18n 文案，便于单测）；仅已锁定时才有意义 */
 export type LabWarningCode =
   /** rhine.chr 内容不是合法标量：被手改坏过，守护进程会重置它 */
   | 'state-invalid'

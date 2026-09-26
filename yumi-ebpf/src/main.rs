@@ -2,19 +2,16 @@
 
 /*
  * Copyright (C) 2026 yuki
- *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
+ * (at your option) any later version
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
+ * GNU General Public License for more details
  * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>
  */
 #![no_std]
 #![no_main]
@@ -62,14 +59,14 @@ fn try_handle_frame(_ctx: ProbeContext) -> Result<u32, u32> {
 // [cpu-probe]
 // CPU Probe — tracepoint on sched/sched_switch
 
-// sched_switch 参数布局（offset → field）：24 = prev_pid、56 = next_pid
-// （完整布局含 pad/prev_comm/prev_prio/prev_state/next_comm 等，写死偏移需对照内核 tracepoint 格式）
+// sched_switch 参数布局（offset → field）：24 = prev_pid、56 = next_pid （完整布局含
+// pad/prev_comm/prev_prio/prev_state/next_comm 等，写死偏移需对照内核 tracepoint 格式）
 const OFF_PREV_PID: usize = 24;
 const OFF_NEXT_PID: usize = 56;
 
-/// 每核心运行时状态（合并原 5 个独立 PerCpuArray，sched_switch 的 map 查找 5 次 → 1 次）。
-/// 布局硬契约：必须与用户态 src/monitor/cpu_monitor.rs 同名结构逐字段一致——#[repr(C)]、
-/// u64×3 在前（last_time/idle/busy，单位 ns）、u32×2 在后（cur_tid/cur_tgid），恰 32 字节无 padding；两侧必须同批发布。
+/// 每核心运行时状态（合并原 5 个独立 PerCpuArray，sched_switch 的 map 查找 5 次 → 1 次）布局硬契约：必须与用户态 src/monitor/cpu_monitor
+/// rs 同名结构逐字段一致——#[repr(C)]、u64×3 在前（last_time/idle/busy，单位 ns）、u32×2 在后（cur_tid/cur_tgid），恰 32 字节无 padding；
+/// 两侧必须同批发布
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct CoreState {
@@ -91,9 +88,8 @@ static THREAD_RUN_TIME: HashMap<u32, u64> = HashMap::with_max_entries(32768, 0);
 #[map]
 static TGID_RUN_TIME: HashMap<u32, u64> = HashMap::with_max_entries(1024, 0);
 
-/// 线程级记账开关（0 = 关，非 0 = 开）：由用户态写，置位条件与 cpu_monitor 的
-/// FAS_FG_UTIL_ENABLED 相同（ChiRi SoC 且 FAS 配置可用）。关闭时 sched_switch 跳过
-/// THREAD_RUN_TIME 的 hash 查找/插入——该 map 只被用户态「TGID 主路径失败」降级路径消费。
+/// 线程级记账开关（0 = 关，非 0 = 开）：由用户态写，置位条件与 cpu_monitor 的FAS_FG_UTIL_ENABLED 相同（ChiRi SoC 且 FAS 配置可用）
+/// 关闭时 sched_switch 跳过THREAD_RUN_TIME 的 hash 查找/插入——该 map 只被用户态「TGID 主路径失败」降级路径消费
 #[map]
 static THREAD_ACCT: Array<u32> = Array::with_max_entries(1, 0);
 

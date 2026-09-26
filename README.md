@@ -87,11 +87,11 @@ ChiRi CLG 调度核心，使用白名单适配soc
 
 ## Star History
 
-<a href="https://www.star-history.com/?repos=Aibeto%2FChiRi&type=date&legend=top-left">
+<a href="https://www.star-history.com/?repos=Aibeto%2FChiRiScene&type=date&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=Aibeto/ChiRi&type=date&theme=dark&legend=top-left&sealed_token=tf3zEomCrJwH8mUjjoPJ4AYEGRMg4j2ikzBb69MYPk8hz7_LJPCxNNlSn_EzPeOCmXuuudIcf4hXzvAheF8cIHNIzUjGPZ0odO4AEGoNdkeQbOA5kRfoHg" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=Aibeto/ChiRi&type=date&legend=top-left&sealed_token=tf3zEomCrJwH8mUjjoPJ4AYEGRMg4j2ikzBb69MYPk8hz7_LJPCxNNlSn_EzPeOCmXuuudIcf4hXzvAheF8cIHNIzUjGPZ0odO4AEGoNdkeQbOA5kRfoHg" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=Aibeto/ChiRi&type=date&legend=top-left&sealed_token=tf3zEomCrJwH8mUjjoPJ4AYEGRMg4j2ikzBb69MYPk8hz7_LJPCxNNlSn_EzPeOCmXuuudIcf4hXzvAheF8cIHNIzUjGPZ0odO4AEGoNdkeQbOA5kRfoHg" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=Aibeto/ChiRiScene&type=date&theme=dark&legend=top-left&sealed_token=tf3zEomCrJwH8mUjjoPJ4AYEGRMg4j2ikzBb69MYPk8hz7_LJPCxNNlSn_EzPeOCmXuuudIcf4hXzvAheF8cIHNIzUjGPZ0odO4AEGoNdkeQbOA5kRfoHg" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=Aibeto/ChiRiScene&type=date&legend=top-left&sealed_token=tf3zEomCrJwH8mUjjoPJ4AYEGRMg4j2ikzBb69MYPk8hz7_LJPCxNNlSn_EzPeOCmXuuudIcf4hXzvAheF8cIHNIzUjGPZ0odO4AEGoNdkeQbOA5kRfoHg" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=Aibeto/ChiRiScene&type=date&legend=top-left&sealed_token=tf3zEomCrJwH8mUjjoPJ4AYEGRMg4j2ikzBb69MYPk8hz7_LJPCxNNlSn_EzPeOCmXuuudIcf4hXzvAheF8cIHNIzUjGPZ0odO4AEGoNdkeQbOA5kRfoHg" />
  </picture>
 </a>
 
@@ -100,7 +100,7 @@ ChiRi CLG 调度核心，使用白名单适配soc
 ## 联系方式
 
 - **QQ群** - 1091201364
-- **GitHub Issues** - [项目问题和建议](https://github.com/Aibeto/ChiRi/issues)
+- **GitHub Issues** - [项目问题和建议](https://github.com/Aibeto/ChiRiScene/issues)
 
 ## 开放源代码许可
 

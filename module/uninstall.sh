@@ -22,15 +22,13 @@ for d in /sys/devices/system/cpu/cpufreq/policy*; do
   fi
 done
 
-# [restore-vendor] 恢复 OPPO/OnePlus/Realme 的 Oiface（当前注释停用）
-# if [ -n "$(getprop persist.sys.oiface.enable)" ]; then
-#   setprop persist.sys.oiface.enable 1
-# fi
+# [restore-vendor] 恢复 OPPO/OnePlus/Realme 的 Oiface（当前注释停用）if [ -n "$(getprop persist.sys.oiface.enable)" ];
+# then setprop persist.sys.oiface.enable 1 fi
 
 # 恢复小米的 Joyose 服务
 # PACKAGE_NAME="com.xiaomi.joyose"
 # if pm list packages | grep -q "$PACKAGE_NAME"; then
-#   pm enable "$PACKAGE_NAME" >/dev/null 2>&1
+# pm enable "$PACKAGE_NAME" >/dev/null 2>&1
 # fi
 
 echo "ChiRi 调度已卸载，重启手机生效"

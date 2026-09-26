@@ -1,10 +1,7 @@
 //! notify.rs: [content] [dispatch] [worker] [post]
-// 常驻状态通知（daemon → 系统通知栏）：用 `cmd notification post` 投递调度状态快照
-// （标题=前台包名；正文单行=模式 · 家族 · 子模式 · 温度 · 功耗，各参数只出值、不带字段标签）。
-// 只有 daemon 能持续更新（WebUI 打开才存在），由 1s 调度循环按周期调用；投递在 notify
-// 自己的线程上串行执行（容量 1 通道，落后丢本次）——`cmd` 是新建进程快慢不可控，
-// 不能阻塞调度循环，内容去重/失败冷却/进程创建都在该线程。
-// 「关闭调度」时 daemon 被信号杀死（无清理时机），由 WebUI 调 `cmd notification post -d chiri-status` 取消。
+// 常驻状态通知（daemon → 系统通知栏）：用 `cmd notification post` 投递调度状态快照（标题=前台包名；正文单行=模式 · 家族 · 子模式 · 温度 · 功耗，各参数只出值、不带字段标签）
+// 只有 daemon 能持续更新（WebUI 打开才存在），由 1s 调度循环按周期调用；投递在 notify 自己的线程上串行执行（容量 1 通道，落后丢本次）——`cmd` 是新建进程快慢不可控，不能阻塞调度循环，
+// 内容去重/失败冷却/进程创建都在该线程「关闭调度」时 daemon 被信号杀死（无清理时机），由 WebUI 调 `cmd notification post -d chiri-status` 取消
 
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -102,9 +99,8 @@ fn fmt_power(v: Option<f32>) -> String {
 /// 正文各参数之间的分隔符（单行展示）
 const SEPARATOR: &str = " · ";
 
-/// 组装正文：单行列出各参数（模式 · 家族 · 子模式 · 温度 · 功耗），用 [`SEPARATOR`] 分隔——
-/// 各参数只出值、不带字段标签，靠顺序与单位自解释；折起时系统按需截断，展开（bigtext）看全。
-/// 家族/子模式按信息量去重（与 WebUI 模式卡片同口径，见 [`family_adds_info`]）。
+/// 组装正文：单行列出各参数（模式 · 家族 · 子模式 · 温度 · 功耗），用 [`SEPARATOR`] 分隔——各参数只出值、不带字段标签，靠顺序与单位自解释；折起时系统按需截断，展开（bigtext）看全
+/// 家族/子模式按信息量去重（与 WebUI 模式卡片同口径，见 [`family_adds_info`]）
 fn body(snap: &Snapshot) -> String {
     let label = mode_label(snap.mode);
     let mut lines = vec![t_with_args(
@@ -151,8 +147,8 @@ pub fn update(snap: &Snapshot) {
     });
 }
 
-/// 请求撤销常驻通知（meta.yaml `notify: false` 时由调度循环调用；daemon 还活着，可自行清理）。
-/// `force` = 无条件投一条 `-d`（清上一次运行残留），否则仅在本次确实投递过时动手；非阻塞。
+/// 请求撤销常驻通知（meta.yaml `notify: false` 时由调度循环调用；daemon 还活着，可自行清理）`force` = 无条件投一条 `-d`（清上一次运行残留），否则仅在本次确实投递过时动手；
+/// 非阻塞
 pub fn cancel(force: bool) {
     send(Msg::Cancel { force });
 }
@@ -163,7 +159,7 @@ enum Msg {
     Cancel { force: bool },
 }
 
-/// 投递线程发送端（懒启动，进程内一条）。与通知渠道常量 `CHANNEL` 是两回事
+/// 投递线程发送端（懒启动，进程内一条）与通知渠道常量 `CHANNEL` 是两回事
 static WORKER_TX: OnceLock<SyncSender<Msg>> = OnceLock::new();
 
 /// 取发送端，首次调用时起线程；线程起不来则 try_send 得 Disconnected，退化成「不投递」，调度线程照旧跑
@@ -254,7 +250,7 @@ fn handle_cancel(force: bool) {
 }
 
 /// 按候选命令行顺序尝试投递（各 ROM 对 `cmd notification` 旗标支持不同）：
-/// ① 渠道+常驻（-c/-o）→ ② 去渠道 → ③ 最简形式；单条失败记 debug，全部失败才 warn（本进程一次）。
+/// ① 渠道+常驻（-c/-o）→ ② 去渠道 → ③ 最简形式；单条失败记 debug，全部失败才 warn（本进程一次）
 fn post(title: &str, text: &str) -> bool {
     let attempts: [Vec<&str>; 3] = [
         vec![

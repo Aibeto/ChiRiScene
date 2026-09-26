@@ -70,6 +70,8 @@ WebUI 侧：
 
 - **FAS 帧源与校验修复（2026-09-25/26 契约）**：① 帧源——`libgui.so` 的 `Surface::queueBuffer` mangled 名随 Android 版本变化，硬编码签名解析失败即 uprobe 挂不上 → FAS 档位永不调整且每 500ms 重试、每秒 2 条 warn（一个会话数千行）。现 `scan_queue_buffer_symbols()` 读 ELF64 dynsym 按 `_ZN7android7Surface11queueBufferE` 前缀取全部变体（候选顺序：短签名→长签名→扫描变体），attach 失败按符号类 60s/其余 1/2/5s 退避（首次与每 10 次 warn、其余 debug），退避窗口内不再解析 ELF。判读：mode=fas 行 fps 列全空 + `error resolving symbol` 即此症。② 校验——`fas-freq-mismatch` 大部分是校验时序自噪声（升频先 max 后 min 后立刻读 scaling_cur_freq，内核调频异步、读到旧档）：verify 计时起点 = 目标值最后一次变化，稳定 ≥ `VERIFY_SETTLE`(200ms) 后抽查；QoS 被钳（内核 thermal/限频）时进 `qos_clamped` 态不重写不告警、`force_reapply` 跳过（300s 长窗口才 warn）——防篡改语义不变（口径见 CLG 节）。③ 接管期写 `/proc/sys/kernel/sched_migration_cost_ns`（`FasRulesConfig.migration_cost_ns`，sgame 400000），deactivate 按快照恢复。
 
+- **FAS 帧源门控与播放态旁路（2026-09-27 契约，P2-3）**：`monitor::FasSignal` 在 FAS 激活位（生产方 `FasManager`）之外增一个**播放态旁路采样**位，生产方是 `TunedGovernor`——`init_policies` 接管 `playback` 时 `set_playback(true)`、`release()` 清零（只碰这一位，不碰 FAS 激活位，故「FAS 是否接管」的判定不失真）。fps 探针挂载谓词从「FAS 激活」扩为 `frame_source_active()` = **FAS 激活 或（playback 接管 + `diag_active()`）**，`monitor/mod.rs` 的首激活待机与 `fps_probe` 循环顶部同用它：无限等待（稳态 0 周期唤醒），只有「playback 在接管但诊断总闸关着」这一支用 **1s 有界等待**兜底——诊断开关（`meta.dev_record`）改动不经过本信号、没有唤醒通道，挂上探针就每帧过 eBPF 比每秒醒一次贵两个数量级，故诊断关闭期间宁可摘掉。分流：FAS 会话帧全喂控制路径；FAS 未激活时帧只累**离线直方图**（投喂只白烧通道——调度侧对 FAS 未激活的 `FrameUpdate` 本就 no-op），满 1s 落一行 `event`（`decision=playback_fps`、`reason=n=<帧数>;b<档号>=<计数>`，档宽 4ms、窗口内无帧即整行不落；进入/离开旁路时窗口重起，防两段之间被算成同一秒），判读口径见 `.cursor/commands/devimp-log-analysis.md` 判定要点。**播放态不写 status.csv 的 fps 列、不判 jank**：视频没有应用申报的目标帧率，且同进程多 Surface（视频层 24/30fps + 弹幕层 120Hz）混流。
+
 - 调度能力范围（相对 CLG 的扩展仅频率维度）：per-policy min=max 锁频（PolicyController，1.5s 回读校验防内核覆写）+ 容量加权分频 + util 软封顶 + PID/Jank 帧级响应；FAS 自身不做 cpuset/uclamp/core_ctl——线程摆放复用 boost 布局（fas 亮屏入 boost，见亲和章节），uclamp.max 放开经 fas_affinity_hook（特调同机制但经 `apply_affinity_and_corectl` 按模式同步，见上条）。
 
 ### CLG 调频语义（动态上限制）
@@ -92,6 +94,7 @@ WebUI 侧：
 - 热切换配置重放 perf_init：`reload_config` 重置 current_perf 到新 perf_init 并立即写频，避免接管间隙 current_perf 掉到 0 后频率要从地板缓慢爬升数秒（息屏 doze/scenemode 切换同样经此热切换恢复，见「息屏省电与屏幕状态」）；模式变更 / ConfigReload 热重载同理。
 
 - **写频滞回契约（2026-09-24 起）**：决策值到落盘之间有滞回层——CLG `write_dwell_ms` 缺省 320ms（2×160 tick）+ `write_deadzone` 0.03（决策落点在死区内不写频）；tuned 用 `gated_write` 80ms（2×40 tick）。两者可配（钳 0..5000ms / 0..0.2，0=关闭），feature.yaml 模板刻意不写。**豁免**（直接写、不过滞回）：触摸提频（升向）、fast_down（降向）、模式接管/释放、写失败补写；**热保护 clamp 零豁免**（过热有内核温控兜底，若豁免则温度毛刺绕过滞回直写频率、反致策略频繁调整）。背景：改前 little 决策翻转 2.0-2.3 次/s、prime 2.5 次/s 而实际写频仅 0.15 次/s（up_wait/hold 标签振荡），死区进决策层 + dwell 才压得住。三断链教训见 04。
+- **方向稳定：死区 gate 双向对称（2026-09-27 修，P1-2）**：`on_load_update` 的 `[dir_stabilize]`——**上边补齐与下边同源的死区 gate**（落点与当前频差 <= `deadzone_band(write_deadzone)` = 写不进 sysfs 的 no-op up → 记 `hold`、不累计 `up_wait`、**不清 `down_wait`**），下边的 `up_wait = 0` 从死区判定**之前**挪到之后。根因改动前只有下边有这条 gate，上边任意 `+1e-6` 的目标抬升都走 up 分支并清零 `down_wait`，于是「本 tick 根本写不出一次频差」的单 tick 噪声也在翻转方向（实测 big 簇 52~86 次/分：coolapk 4.4 min 379 次、1s 内最多 6 次；QQ 达 7 次/s），两个方向的确认进度被互相抹掉。修后方向只由「真能写出一个死区以上频差」的 intent 决定，翻转至少要跨一个 OPP 档；没有新增参数，保守化的旋钮就是 `write_deadzone`（每档死区 = 该值 × 簇硬件最高频）。
 
 ### Thermal 热保护（ChiRi 专属）
 
@@ -102,9 +105,10 @@ WebUI 侧：
 - 压制解除带斜坡（`THERMAL_UNPRESS_STEP=0.15`）：压制加深立即生效，解除方向每采样周期（2s）最多恢复 0.15，8s 级渐进；立即全量解除会让温度马上反弹再触发深压，重现振荡。
 
 - **恒钳开关 `clamp_heavy`（2026-09-26 契约）**：`Thermal.clamp_heavy: bool`（serde 默认 `true`），`Config::load` 同步到 CLG（启动与热重载均生效）；`true` = cap 窗口内所有簇恒钳写频目标、下条 `free_above` 豁免档被忽略，`false` = 精确回退旧 `free_above` 豁免行为。开关只改钳制判据，仍**只钳写频、不回写 `current_perf`**。8550 feature.yaml 已置 `true`；行为级证据为 `clamp_apply` 跃迁事件（bind/unbind 状态跃迁时、`diag_active()` 门控内）。
-- 压制带豁免档 `free_above`（8550 0.95 / 8475、8998 0.80；normalize 见下，仅 `clamp_heavy=false` 时生效）：热压制只落在 `(soft_perf_cap, free_above)` 区间，Worker flush 中 `current_perf < free_above` 才 `min(cap)`，且**只钳写频、不回写 `current_perf`**（回写会让状态卡死在 cap：升频步长够不到豁免档时永远被压回，「持续高负载涨过豁免档」就不成立）。decision 状态照常向 target 平滑，持续高负载可平滑涨过豁免档拿全速，任何温度下都能到达硬件最高频，过热兜底交给系统/内核温控；但压制意图保留：中低负载区间仍被压在 cap 以下，减少发热积累。**豁免档必须严格大于 soft_perf_cap**（相等 = 压制带为空、软限档完全空转），normalize 对「过低或相等」统一抬到 `soft_perf_cap + 0.10`；也不要贴 1.0，否则持续高负载涨不过豁免档。热压制只作用于 CLG，tuned（playback/akmode）不参与（tick 的 cap 列为 `-`）。
+- 压制带豁免档 `free_above`（8550 0.95 / 8475、8998 0.80；normalize 见下，仅 `clamp_heavy=false` 时生效）：热压制只落在 `(soft_perf_cap, free_above)` 区间，Worker flush 中 `current_perf < free_above` 才 `min(cap)`，且**只钳写频、不回写 `current_perf`**（回写会让状态卡死在 cap：升频步长够不到豁免档时永远被压回，「持续高负载涨过豁免档」就不成立）。decision 状态照常向 target 平滑，持续高负载可平滑涨过豁免档拿全速，任何温度下都能到达硬件最高频，过热兜底交给系统/内核温控；但压制意图保留：中低负载区间仍被压在 cap 以下，减少发热积累。**豁免档必须严格大于 soft_perf_cap**（相等 = 压制带为空、软限档完全空转），normalize 对「过低或相等」统一抬到 `soft_perf_cap + 0.10`；也不要贴 1.0，否则持续高负载涨不过豁免档。
+- **热态 tuned 响应（2026-09-27 契约，P0-3）**：`Thermal.tuned_resp_enabled`（默认 true）+ `tuned_thermal_floor`（默认 0.55）；cap 除 CLG 外还经 `tuned::set_thermal_cap()` 下发到 tuned 执行器（进程级 `AtomicU32` 镜像，与 CLG 同口径、同点写入），`on_load_update` 每 tick 读一次，热重载经 `Config::load` 的 `set_thermal_response()` 同步开关与下限。tuned 侧有效上限 = `min(档位天花板, max(cap, floor))`：`cap >= floor` 时退化为 `min(天花板, cap)`，无压制（cap=1.0）时结果就是档位天花板本身、行为零变化。**只看 cap 是否低于该簇天花板**——软限 0.85 对播放态是 no-op（little 0.55 / big 0.75 / prime 0.50 全部 <= 0.85），真正咬住的是中档 0.60 与硬档；用 `max(cap, floor)` 而非直接套 cap，是因为硬档 0.40 直接砍到播放态有掉帧风险，而播放态帧信号只服务**离线**判读（见 FAS 帧源门控条）。验证看 tuned tick 行的 `cur_max` 与 status.csv 的 `batt_power_w`（按 package 均值）。
 
-- scheduler_ipc 启动时探测一次传感器（CPU `find_cpu_temp_path()` 缺失打点 `clg-thermal-no-sensor` 静默降级），事件循环内每 2s（`THERMAL_CHECK_INTERVAL`）采样双温度，逐传感器三级判定（>= 硬限压 hard_cap（默认 0.40）；>= 软限压 soft_cap（默认 0.70）；回落到 软限-hysteresis 才解除；回滞带内压制中先退软限档防阶跃）后取两者较小值。cap 或豁免档变化时经 `cpu_governor.set_thermal_limits(cap, free_above)`（f32 bit pattern 存 `AtomicU32`，启动即同步一次豁免档）下发，debug 打点 `clg-thermal-cap`（含电池/CPU 温度，缺失显示 "-"）。
+- scheduler_ipc 启动时探测一次传感器（CPU `find_cpu_temp_path()` 缺失打点 `clg-thermal-no-sensor` 静默降级），事件循环内每 2s（`THERMAL_CHECK_INTERVAL`）采样双温度，逐传感器**四级判定**（`mod.rs::eval_thermal_cap` + `ThermalLadder`）后取两者较小值：>= 硬限压 hard_cap（默认 0.40）；>= 中限压 mid_cap（默认 0.60）；>= 软限压 soft_cap（默认 0.70，8550 为 0.85）；回落到 **软限 − hysteresis_c** 以下才解除。**每级的上/下两条边都带回滞**（2026-09-27 修）：退出该级必须降到「该级阈值 − 该级回滞」以下，判据里的 `current <= 本级 cap` 表示「上周期仍压在本级或更深」，故退档只能逐级回退、不会跨级跳；硬档用独立配置 `hysteresis_hard_c`（8550 = 2；缺省与 `hysteresis_c` 同值 3）——改前硬档→软档这条边**无回滞**，batt 一降到 44.9°C 就从 0.40 跳回 0.85，2026-09-27 批次2 在 75 分钟内 5 次进硬档、两次 60s 内重入（最近相隔 2.0 s）。四级阈值/cap 的单调性（`soft < mid < hard`、`hard_cap <= mid_cap <= soft_cap`）由 `ThermalGuardConfig::normalize` 越界**钳到最近合法值 + warn**（`thermal-config-clamped`，不 panic）。硬限兜底判据是 `hard < soft + 1.0`（**不是** `hard <= soft`）：mid 的钳制区间为 `(soft+0.5, hard-0.5)`，硬限只比软限高不到 1°C 时（如 batt 44.9/45.0）旧判据不兜底，`f32::clamp` 因 `min > max` **panic**，`Config::load` 崩溃经 watchdog 变重启循环（2026-09-27 修；`thermal_clamp_warn` 另加 `hi < lo` 时夹成 `hi = lo` 的兜底）。cap 或豁免档变化时经 `cpu_governor.set_thermal_limits(cap, free_above)`（f32 bit pattern 存 `AtomicU32`，启动即同步一次豁免档）下发，debug 打点 `clg-thermal-cap`（含电池/CPU 温度，缺失显示 "-"）；同一份 cap 经 `tuned::set_thermal_cap(cap)` 另发一份给 tuned 执行器（见下条）。
 
 - 仅作用于 CLG 接管的模式，fast/akmode 不受影响。
 
@@ -135,7 +139,6 @@ WebUI 侧：
 - **sysfs 投票检测已 [PAUSED]（2026-09-26）**：原 backlight/leds/fb/lcd/drm 五类节点枚举 + 全节点多数票仲裁（`enumerate_screen_nodes`/`tally_screen_nodes`/`screen_off_confirmed`）整体块注释在 `screen_detect.rs`（grep `PAUSED` 定位，注意块注释里的 sysfs 通配路径已改写成不含 `/*` 的写法，Rust 块注释嵌套会吃掉配对）。恢复 = 解开该块 + 还原 `update_state_if_changed` 投票块与 uevent 的 power/backlight/leds 分支（uevent 线程现仅服务 CPU hotplug：`CPU_HOTPLUG_DIRTY`，函数参数带下划线待还原）。
 
 - 屏幕事件去重守卫不变：属性轮询线程与 app_detect 的 verify 兜底可能对同一次切换各发一次事件，两套调度器的 ScreenStateChange 分支开头的 `screen_on == is_screen_on` 去重守卫必须保留——新增屏幕事件生产点同样必须维持该守卫。
-
 
 - **scenemode 长息屏兜底（2026-09-11 补丁）**：进入门槛 `standby_max >= SCENEMODE_SAT_UTIL(0.75)` 在后台常驻负载下会整夜拒绝进入（实测小核 util 长期 60-70%、峰值触 0.75）。现息屏时长 ≥4×`scene_mode_delay_secs` 时绕过负载门槛进入 scenemode——短息屏仍按原门槛防「进→10s 饱和退出→300s 冷却」拉锯；门槛的防拉锯语义只对短息屏成立。
 
@@ -215,7 +218,7 @@ WebUI 侧：
 
 - `src/monitor/telemetry.rs` 的 `telemetry_loop` 线程（1s 轮询，仅 `is_chiri_soc()` 时由 monitor/mod.rs 启动）读 PSI（`/proc/pressure/{cpu,io,memory}` 的 some avg10）、GPU busy%（`/sys/class/kgsl/kgsl-3d0/gpu_busy_percentage` → MTK `/sys/kernel/ged/hal/gpu_loading`，缺失为 None）、电池电流/电压。
 
-- **GPU 快照默认关（`GPU_SNAPSHOT_ENABLED=false`，2026-09-22 8550 实测）**：每秒读 Adreno gpuclk / devfreq cur_freq 会把 GPU 从低功耗态唤醒——同场景 playback 1.76→2.59W（**+47%**），而 CPU cpufreq 读取廉价。故 main_ snap 的 GPU 4 列恒 `-`（`devfreq_snapshot` 带 allow(dead_code) 保留、`gpu_snapshot_due` 10s 节流留作恢复路径）；曾修三 bug：devfreq/Adreno 单位是 Hz（直写出现 110GHz 荒谬值，>10MHz 按 Hz 处理换算 kHz）、kgsl-3d0 在 devfreq 与 kgsl 两路径同时存在（按设备名去重、devfreq 优先）、governor 只读标准 devfreq（Adreno 私有目录同名节点是纯数字频率值，判无效写 `-`）。telemetry 的 `gpu_busy_percentage` 每秒读**仍在**（采集成本待 A/B，见 07）。
+- **GPU 快照默认关（`GPU_SNAPSHOT_ENABLED=false`，2026-09-22 8550 实测）**：每秒读 Adreno gpuclk / devfreq cur*freq 会把 GPU 从低功耗态唤醒——同场景 playback 1.76→2.59W（**+47%**），而 CPU cpufreq 读取廉价。故 main* snap 的 GPU 4 列恒 `-`（`devfreq_snapshot` 带 allow(dead_code) 保留、`gpu_snapshot_due` 10s 节流留作恢复路径）；曾修三 bug：devfreq/Adreno 单位是 Hz（直写出现 110GHz 荒谬值，>10MHz 按 Hz 处理换算 kHz）、kgsl-3d0 在 devfreq 与 kgsl 两路径同时存在（按设备名去重、devfreq 优先）、governor 只读标准 devfreq（Adreno 私有目录同名节点是纯数字频率值，判无效写 `-`）。telemetry 的 `gpu_busy_percentage` 每秒读**仍在**（采集成本待 A/B，见 07）。
 
 - **msm_performance 参数读数退避（2026-09-26）**：msmp min/max 节点在 PHB110 不可读（即「无锁频盖写通道」），连续 8 次读空进退避、64 tick（≈128s）重试，退避期记 `-`、恢复即清零——勿把恒 `-` 误判为「msm_performance 未启用」。
 

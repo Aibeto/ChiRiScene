@@ -1,10 +1,6 @@
-/* analyze.css — 本页样式
- *
- * ak-ui.css（包内原文件）提供 token 与少量确实合适的组件（滚动进度条用 ak-progress）。
- * 密集数据页的骨架、表格、图表容器由本文件自建：颜色、间距、字号、动效一律取 ak-ui
- * token，但不用 ak-ui 的组件类排版——那些类（浅色纸面的 ak-notice、inline-block 的
- * ak-card、50px 高的 ak-button）在这种页面上排不出需要的密度与暗色一致性。
- */
+/* analyze.css — 本页样式ak-ui.css（包内原文件）提供 token 与少量确实合适的组件（滚动进度条用 ak-progress）密集数据页的骨架、表格、图表容器由本文件自建：颜色、间距、字号、
+   动效一律取 ak-ui token，但不用 ak-ui 的组件类排版——那些类（浅色纸面的 ak-notice、inline-block 的ak-card、50px 高的 ak-button）
+   在这种页面上排不出需要的密度与暗色一致性/ */
 
 *,
 *::before,
@@ -13,10 +9,10 @@
 }
 
 /* [fonts] 内置字体（均为 SIL OFL 1.1，许可文件见 fonts/ 目录）：
- * - Analyze Sans：Noto Sans SC 子集（400/700），按本页实际用字裁出 441 字 → 各约 65KB。
- *   整份简中子集单字重 1.14MB，子集化是必要的（先例同 webui/src/assets/fonts）。
- * - Analyze Mono：JetBrains Mono 拉丁子集（400/700），数值/表格/刻度都靠它对齐。
- * 只放允许再分发的字体；Windows 的微软雅黑、SimSun 等系统字体不可随项目分发。 */
+   - Analyze Sans：Noto Sans SC 子集（400/700），按本页实际用字裁出 441 字 → 各约 65KB
+   整份简中子集单字重 1.14MB，子集化是必要的（先例同 webui/src/assets/fonts）
+   - Analyze Mono：JetBrains Mono 拉丁子集（400/700），数值/表格/刻度都靠它对齐
+   只放允许再分发的字体；Windows 的微软雅黑、SimSun 等系统字体不可随项目分发 */
 @font-face {
   font-family: 'Analyze Sans';
   src: url('fonts/sans-regular.woff') format('woff'), local('Noto Sans SC');
@@ -194,8 +190,8 @@ body {
   min-width: 0;
 }
 
-/* ---- 曲线平均值（表格 + 自适应列宽：列贴内容，不把剩余宽度摊进去）。
- * 高度不设限：全部行直接展开，不出现内联滚动。边框与滚动条走上面的共享规则 ---- */
+/* ---- 曲线平均值（表格 + 自适应列宽：列贴内容，不把剩余宽度摊进去）
+   高度不设限：全部行直接展开，不出现内联滚动边框与滚动条走上面的共享规则 ---- */
 .app__avg-scroll {
   overflow: auto;
 }
@@ -346,8 +342,7 @@ body {
 .app__chart {
   position: relative;
   min-width: 0;
-  /* 高度可由用户在右下角手柄拖拽调整（原生 resize:vertical）：
-     SVG 填满容器（height:100%），尺寸变化经 ResizeObserver 触发重绘 */
+  /* 高度可由用户在右下角手柄拖拽调整（原生 resize:vertical）：SVG 填满容器（height:100%），尺寸变化经 ResizeObserver 触发重绘 */
   height: var(--analyze-chart);
   min-height: 10rem;
   resize: vertical;
@@ -464,8 +459,7 @@ body {
   cursor: pointer;
 }
 
-/* hidden 属性会被上面的 display:grid 覆盖（类选择器权重高于 UA 的 [hidden]），
-   必须显式压回去——否则面板永远显示、无法收起 */
+/* hidden 属性会被上面的 display:grid 覆盖（类选择器权重高于 UA 的 [hidden]），必须显式压回去——否则面板永远显示、无法收起 */
 .app__colpanel[hidden] {
   display: none;
 }
@@ -486,8 +480,7 @@ body {
   width: 10rem;
 }
 
-/* 原生下拉的自绘弹层不吃页面主题——背景与文字都要显式给定，
-   否则深色页面上出现白底白字 */
+/* 原生下拉的自绘弹层不吃页面主题——背景与文字都要显式给定，否则深色页面上出现白底白字 */
 .app__filter {
   background-color: var(--ak-surface-inverse);
 }
@@ -585,8 +578,7 @@ body {
   background: var(--ak-signal-action);
 }
 
-/* 数据表单独限高（平均值表用 .app__avg-scroll 自己的）；
-   高度同样可在右下角拖拽调整 */
+/* 数据表单独限高（平均值表用 .app__avg-scroll 自己的）；高度同样可在右下角拖拽调整 */
 .app__table-scroll {
   height: var(--analyze-rows);
   min-height: 6rem;

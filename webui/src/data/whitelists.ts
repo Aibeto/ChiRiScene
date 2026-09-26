@@ -1,6 +1,5 @@
-// whitelists.ts: [special] [fas]
-// 两个 daemon 导出文件的行格式（src/main.rs:156-179）：special_tuned.yaml 是 `包名:模式列表(逗号分隔):优先回退模式`（仅精确条目，re: 正则条目不导出，UI 非特调全集）；
-// fas_whitelist.yaml 是 `包名:配置名`。两文件只在 ChiRi 机型 + daemon 成功启动过时存在，启动后不再自愈重写。
+// whitelists.ts: [special] [fas]两个 daemon 导出文件的行格式（src/main.rs:156-179）：special_tuned.yaml 是 `包名:模式列表(逗号分隔):
+// 优先回退模式`（仅精确条目，re: 正则条目不导出，UI 非特调全集）；fas_whitelist.yaml 是 `包名:配置名`两文件只在 ChiRi 机型 + daemon 成功启动过时存在，启动后不再自愈重写
 
 // [special]
 export interface SpecialTunedEntry {

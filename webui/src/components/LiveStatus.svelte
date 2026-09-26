@@ -1,6 +1,5 @@
 <script lang="ts">
-  // LiveStatus.svelte: [status]
-  // 复用 ak-ui 状态原语（.ak-status 深色底 + 脉冲信号点）；三种存活态用文字 + 修饰类双重表达（不只靠颜色）。
+  // LiveStatus.svelte: [status]复用 ak-ui 状态原语（.ak-status 深色底 + 脉冲信号点）；三种存活态用文字 + 修饰类双重表达（不只靠颜色）
   let {
     state,
     label,

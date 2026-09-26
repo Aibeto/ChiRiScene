@@ -1,5 +1,5 @@
 <script lang="ts">
-  // StateBox.svelte: [states] 空/缺失/失败/加载四种占位：状态用文字 + 信号条表达，不依赖颜色单独区分。
+  // StateBox.svelte: [states] 空/缺失/失败/加载四种占位：状态用文字 + 信号条表达，不依赖颜色单独区分
   import type { Snippet } from 'svelte'
 
   let {
@@ -35,8 +35,7 @@
 </div>
 
 <style>
-  /* 骨架/排版来自官方 .ak-notice（深色适配在 app.css [ak-adapt]）；
-     这里只保留信号色分支、加载脉冲与两点结构修正 */
+  /* 骨架/排版来自官方 .ak-notice（深色适配在 app.css [ak-adapt]）；这里只保留信号色分支、加载脉冲与两点结构修正 */
   /* 中性状态（empty/loading）信号条用信息色；error/missing 由 ak-notice--danger/--warning 管 */
   .state[data-kind='empty'],
   .state[data-kind='loading'] {

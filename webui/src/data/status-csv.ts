@@ -1,8 +1,7 @@
-// status-csv.ts: [columns] [types] [parse]
-// logs/status.csv 契约（src/logger.rs STATUS_HEADER / status_log_snapshot）：23 列、首行表头、type 恒为 snap；
-// timestamp 是设备本地时间 HH:MM:SS.mmm（无日期）；缺测值统一 '-'，screen_on/clg_active 用 0/1；
-// fps 预留列（仅 FAS 激活且帧窗口有样本为实测值）；screen_prop 是 debug.tracing.screen_state 原始值（'-' = 属性缺失）。
-// 该文件仅 ChiRi 机型的调度线程产生，读取一律取尾部窗口。
+// status-csv.ts: [columns] [types] [parse]logs/status.csv 契约（src/logger.rs STATUS_HEADER / status_log_snapshot）
+// ：23 列、首行表头、type 恒为 snap；timestamp 是设备本地时间 HH:MM:SS.mmm（无日期）；缺测值统一 '-'，screen_on/clg_active 用 0/1；
+// fps 预留列（仅 FAS 激活且帧窗口有样本为实测值）；screen_prop 是 debug.tracing.screen_state 原始值（'-' = 属性缺失）该文件仅 ChiRi 机型的调度线程产生，
+// 读取一律取尾部窗口
 
 // [columns]
 export const STATUS_COLUMNS = [
@@ -85,7 +84,7 @@ function str(raw: string | undefined): string {
   return v === NA ? '' : v
 }
 
-/** 解析 CSV 为快照行。窗口可能从行中间开始（tail -c），按「字段数必须等于 23」过滤残缺行，表头按首列名识别；按文件顺序返回，展示方向由调用方定。 */
+/** 解析 CSV 为快照行窗口可能从行中间开始（tail -c），按「字段数必须等于 23」过滤残缺行，表头按首列名识别；按文件顺序返回，展示方向由调用方定 */
 export function parseStatusCsv(text: string, maxRows = 300): StatusRow[] {
   const rows: StatusRow[] = []
   const lines = text.split('\n')

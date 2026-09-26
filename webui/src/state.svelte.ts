@@ -1,5 +1,4 @@
-// state.svelte.ts: [common] [overview] [config] [apps] [logs]
-// 应用级状态：把契约层三分类读取结果映射成界面可渲染的状态，并区分「读失败」与「不适用」。
+// state.svelte.ts: [common] [overview] [config] [apps] [logs]应用级状态：把契约层三分类读取结果映射成界面可渲染的状态，并区分「读失败」与「不适用」
 import {
   hasActionScript,
   judgeLiveness,
@@ -132,7 +131,7 @@ class AppStore {
 
   // [logs] 增量解析锚点（endsWith 内容锚定）：
   // - xxxTailCache = 上次尾部窗口原文；新读尾部以它结尾（endsWith 命中）说明文件只在尾部追加
-  //   （轮转/截断必不命中）→ 前缀部分即纯新增字节
+  // （轮转/截断必不命中）→ 前缀部分即纯新增字节
   // - xxxAnchorLen = 已完整解析长度（按最后一个换行符切）；尾部半行不进显示（瞬时竞态，下轮补全后照常解析）
   /** 上次 daemon.log 尾部窗口原文（null = 无锚点，整段重解析） */
   private logTailCache: string | null = null
@@ -155,8 +154,10 @@ class AppStore {
     this.statusAnchorLen = 0
   }
 
-  /** 窗口尾部「未解析半行」长度（最后一个换行符之后字符数；无换行则整个窗口）。
-   *  > 0 时本轮放弃增量走整段重解析——半行是瞬时竞态（行缓冲写盘），不值得维护合并语义。 */
+  /**
+   * 窗口尾部「未解析半行」长度（最后一个换行符之后字符数；无换行则整个窗口）
+   * > 0 时本轮放弃增量走整段重解析——半行是瞬时竞态（行缓冲写盘），不值得维护合并语义
+   */
   private static tailPartialLen(text: string): number {
     const lastNl = text.lastIndexOf('\n')
     return lastNl >= 0 ? text.length - (lastNl + 1) : text.length
@@ -201,8 +202,9 @@ class AppStore {
   /** 展示行数上限：720 行 ≈ 12 分钟（每秒 1 行），与既有展示口径一致 */
   private static readonly STATUS_MAX_ROWS = 720
 
-  /** [logs] statusRows 追加入口（增量解析专用）：新行 concat 到尾部、超上限从头部裁剪
-   *  （倒序副本同步交给 setStatusRows）；空批次直接跳过。 */
+  /**
+   * [logs] statusRows 追加入口（增量解析专用）：新行 concat 到尾部、超上限从头部裁剪（倒序副本同步交给 setStatusRows）；空批次直接跳过
+   */
   private appendStatusRows(rows: StatusRow[]): void {
     if (rows.length === 0) return
     let merged = this.statusRows.concat(rows)
@@ -227,13 +229,12 @@ class AppStore {
   /**
    * 静态项加载（module.prop、meta、特调/FAS 白名单、hasActionScript、deviceKind，天级变化，
    * 退出秒级轮询）：loadOverview 每 30s 补拉、各写路径成功后 force 刷新；
-   * force=false 且命中 TTL 窗口直接返回，避免每秒 tick 白付这几次 exec。
+   * force=false 且命中 TTL 窗口直接返回，避免每秒 tick 白付这几次 exec
    */
   async loadStatic(force = false): Promise<void> {
     if (this.staticJob) {
       if (!force) return this.staticJob
-      // force 请求不能被在飞的非 force 补拉吞掉：那次 job 读的是写前数据，复用会让本次写入的
-      // 静态项最长 30s 不更新。先等它落地，再走下方强制重读。
+      // force 请求不能被在飞的非 force 补拉吞掉：那次 job 读的是写前数据，复用会让本次写入的静态项最长 30s 不更新先等它落地，再走下方强制重读
       await this.staticJob
     }
     if (!force && Date.now() - this.staticLoadedAt < STATIC_TTL_MS) return
@@ -287,33 +288,30 @@ class AppStore {
   private overviewJob: Promise<void> | null = null
 
   async loadOverview(): Promise<void> {
-    // 并发调用共享在飞请求（子组件 onMount 先于父组件执行，首次会被触发两次）。
-    // 不能 `if (this.loading) return`：后来者拿到空状态，依赖 isChiri 的页面会静默跳过（如接管置灰失效）
+    // 并发调用共享在飞请求（子组件 onMount 先于父组件执行，首次会被触发两次）不能 `if (this.loading) return`：后来者拿到空状态，
+    // 依赖 isChiri 的页面会静默跳过（如接管置灰失效）
     if (this.overviewJob) return this.overviewJob
     this.loading = true
     this.overviewJob = (async () => {
       try {
-      // 静态项（module.prop/meta/白名单/hasActionScript/机型）退出秒级轮询：
-      // 陈旧（从未加载或距上次 >30s）时与本 tick 并行补拉一次，不阻塞活跃项读取
+      // 静态项（module.prop/meta/白名单/hasActionScript/机型）退出秒级轮询：陈旧（从未加载或距上次 >30s）时与本 tick 并行补拉一次，不阻塞活跃项读取
       const staticRefresh =
         Date.now() - this.staticLoadedAt >= STATIC_TTL_MS ? this.loadStatic() : null
-      // [tag] 秒级开销收敛：活跃项合并为一次 readMany（稳态 = 1 次 exec）——current_mode.chr、
-      // PowerAVG.chr、status.csv 尾部、特调/FAS 白名单，及 LiveTime.chr（存活判据 judgeLiveness）
+      // [tag] 秒级开销收敛：活跃项合并为一次 readMany（稳态 = 1 次 exec）——current_mode.chr、PowerAVG.chr、status.csv 尾部、特调/FAS 白名单，
+      // 及 LiveTime.chr（存活判据 judgeLiveness）
       const rm = await readMany([
         { key: 'mode', path: absOf('currentMode') },
         { key: 'powerAvg', path: absOf('powerAvg') },
         { key: 'status', path: absOf('statusCsv'), tailBytes: 4096 },
-        // 特调/FAS 白名单挂在同一次批量读上（0 次额外 exec）：计数与模式名翻译
-        // 均秒级可达；原文未变只付一次字符串比对（见下方处理）
+        // 特调/FAS 白名单挂在同一次批量读上（0 次额外 exec）：计数与模式名翻译均秒级可达；原文未变只付一次字符串比对（见下方处理）
         { key: 'special', path: absOf('specialTuned') },
         { key: 'fas', path: absOf('fasWhitelist') },
-        // [liveness] 心跳文件并入批量读（64B）：key 为 null = 文件缺失 = stopped，
-        // 与旧 probeLiveness 的 absent→stopped 口径一致
+        // [liveness] 心跳文件并入批量读（64B）：key 为 null = 文件缺失 = stopped，与旧 probeLiveness 的 absent→stopped 口径一致
         { key: 'liveTime', path: absOf('liveTime'), tailBytes: 64 }
       ])
 
-      // [liveness] 三分类映射：批量 ok 时 liveTime null（缺失）→ stopped、内容非法 → unknown + 详情；
-      // 整体 absent（非 live 环境）→ unknown + unsupportedEnv；整体 failed → unknown + batchError
+      // [liveness] 三分类映射：批量 ok 时 liveTime null（缺失）→ stopped、内容非法 → unknown + 详情；整体 absent（非 live 环境）
+      // → unknown + unsupportedEnv；整体 failed → unknown + batchError
       const okEntries = rm.kind === 'ok' ? rm.value : null
       const batchError = rm.kind === 'failed' ? rm.error : ''
       if (okEntries !== null) {
@@ -329,8 +327,8 @@ class AppStore {
         this.daemonError = batchError
       }
 
-      // readMany → 单文件三分类的映射：'ok' 里某 key 为 null = 该文件缺失（≈absent），
-      // 整体 'absent' = 非 live 环境（全部按缺失），'failed' = exec 本身失败（全部按失败）
+      // readMany → 单文件三分类的映射：'ok' 里某 key 为 null = 该文件缺失（≈absent），整体 'absent' = 非 live 环境（全部按缺失），
+      // 'failed' = exec 本身失败（全部按失败）
 
       // current_mode.chr：缺失按「尚未生成」（modeMissing），真实失败才报 modeError
       const modeText = okEntries?.mode ?? null
@@ -348,8 +346,7 @@ class AppStore {
       const lastStatus = tailRows[tailRows.length - 1]
       this.powerNowWatt = lastStatus?.battPower ?? null
 
-      // 特调白名单（挂本次批量读，0 额外 exec）：原文未变只付一次字符串比对、变了才重解析；
-      // failed 不动上次结果（瞬时故障不抖动清零），缺失按空表处理
+      // 特调白名单（挂本次批量读，0 额外 exec）：原文未变只付一次字符串比对、变了才重解析；failed 不动上次结果（瞬时故障不抖动清零），缺失按空表处理
       const specialRaw = okEntries?.special ?? null
       if (specialRaw !== this.specialRawCache) {
         this.specialRawCache = specialRaw
@@ -370,8 +367,7 @@ class AppStore {
       }
       this.whitelistError = rm.kind === 'failed' ? batchError : ''
 
-      // 依赖静态项的派生（白名单模式名 / meta 快照的口径开关）等静态补拉就位后再算；
-      // 静态新鲜时这里是已完成的 promise，await 无额外开销
+      // 依赖静态项的派生（白名单模式名 / meta 快照的口径开关）等静态补拉就位后再算；静态新鲜时这里是已完成的 promise，await 无额外开销
       if (staticRefresh) await staticRefresh
       this.currentMode = mode
       this.modeInfo = describeMode(mode, this.modeNameSet)
@@ -417,8 +413,7 @@ class AppStore {
     this.writeError = ''
     this.writeReverted = false
     try {
-      // 期望值 = 写入前的字段值 + 本次草稿；回读后若有字段不等于期望值，
-      // 说明守护进程判定文件非法并整体重置（界面必须如实说“已恢复默认值”）
+      // 期望值 = 写入前的字段值 + 本次草稿；回读后若有字段不等于期望值，说明守护进程判定文件非法并整体重置（界面必须如实说“已恢复默认值”）
       const patchKeys = Object.keys(this.draft) as WritableField[]
       const expected: Record<string, unknown> = {}
       for (const key of patchKeys) expected[key] = this.draft[key]
@@ -500,9 +495,9 @@ class AppStore {
   }
 
   /**
-   * 实验室模式接管的 meta 开关（配置页据此置灰）；实验室未启用时为空。
+   * 实验室模式接管的 meta 开关（配置页据此置灰）；实验室未启用时为空
    * 优先看 rhine.chr 里的模式；文件读不出模式但锁定标记里还记着模式时按标记推导——
-   * 那一刻守护进程正按标记里的模式 reassert，置灰一松用户改的开关马上被写回。
+   * 那一刻守护进程正按标记里的模式 reassert，置灰一松用户改的开关马上被写回
    */
   get labTakeover(): readonly string[] {
     const fromFile = this.labMode
@@ -562,7 +557,7 @@ class AppStore {
     }
   }
 
-  /** 启用（传 key）或关闭（传 null）实验室。写后回读，状态以文件实际内容为准。 */
+  /** 启用（传 key）或关闭（传 null）实验室写后回读，状态以文件实际内容为准 */
   async setLabMode(mode: LabModeKey | null): Promise<void> {
     // 锁定期间关不掉（守护进程会把 rhine.chr 原样写回）：先挡住；要关走 forceDisableLab（写保留字 off）
     if (mode === null && this.labLocked) {
@@ -573,15 +568,15 @@ class AppStore {
     await this.commitLab(mode, mode ? t('lab.toast.enabled') : t('lab.toast.disabled'))
   }
 
-  /** 强制关闭实验室：写保留字 off，守护进程清锁定标记、按快照还原 meta、把 rhine.chr 写回未启用（恢复原地调度）。 */
+  /** 强制关闭实验室：写保留字 off，守护进程清锁定标记、按快照还原 meta、把 rhine.chr 写回未启用（恢复原地调度） */
   async forceDisableLab(): Promise<void> {
     // 等待窗口交给 commitLab：必须落在 pending 区间内，否则按钮复活、与守护进程抢写 rhine.chr
     await this.commitLab(LAB_FORCE_OFF, t('lab.toast.forceOff'), 400)
   }
 
   /**
-   * 写 rhine.chr 并刷新相关状态（启用/关闭/强制关闭共用）。settleMs > 0 时写后多等再回读：
-   * 守护进程处理 off 要走「清标记 → 还原 meta → 写回未启用」，立刻读会停在中间态。
+   * 写 rhine.chr 并刷新相关状态（启用/关闭/强制关闭共用）settleMs > 0 时写后多等再回读：
+   * 守护进程处理 off 要走「清标记 → 还原 meta → 写回未启用」，立刻读会停在中间态
    */
   async commitLab(mode: LabWriteTarget, done: string, settleMs = 0): Promise<void> {
     if (this.labPending) return
@@ -603,8 +598,8 @@ class AppStore {
       // 实验室会改写 meta.yaml 的 fas/scenemode 开关，配置页那份快照已过期
       await this.refreshCommon()
       if (settleMs > 0) {
-        // 等守护进程把 off 收敛完（清标记 → 还原 meta → 写回未启用）：直接读文件（绕过 labJob
-        // 守卫）轮询到不再是 force-off 或超时为止，避免停在中间态、按钮复活抢写 rhine.chr
+        // 等守护进程把 off 收敛完（清标记 → 还原 meta → 写回未启用）：直接读文件（绕过 labJob 守卫）轮询到不再是 force-off 或超时为止，避免停在中间态、按钮复活抢写 rhine
+        // chr
         const deadline = Date.now() + settleMs * 10
         for (;;) {
           await new Promise(resolve => setTimeout(resolve, settleMs))
@@ -659,26 +654,26 @@ class AppStore {
     return this.metaSnapshot?.values?.powerbase_enabled === true
   }
 
-  /** 息屏判定值（meta.yaml `screen_off_value`，缺省 1）：debug.tracing.screen_state
-   *  等于该值视为息屏；非法值与缺失一律按默认 1 呈现（daemon 侧同口径） */
+  /**
+   * 息屏判定值（meta.yaml `screen_off_value`，缺省 1）：debug.tracing.screen_state 等于该值视为息屏；非法值与缺失一律按默认 1 呈现（daemon 侧同口径）
+   */
   get screenOffValue(): number {
     return this.metaSnapshot?.values?.screen_off_value === 0 ? 0 : 1
   }
 
   // [powerMax]
-  /** 耗电仪表盘满量程（W）：meta.yaml 可选字段 `power_max_w`，缺省/越界/非法一律按 12。
-   *  只在 meta.yaml 手改（高级设置不提供输入框），此处仅供仪表盘换算读取 */
+  /**
+   * 耗电仪表盘满量程（W）：meta.yaml 可选字段 `power_max_w`，缺省/越界/非法一律按 12只在 meta.yaml 手改（高级设置不提供输入框），此处仅供仪表盘换算读取
+   */
   get powerMaxWatt(): number {
     const v = this.metaSnapshot?.values?.power_max_w
     return typeof v === 'number' && Number.isFinite(v) && v > 0 && v <= 200 ? v : 12
   }
 
-  /**
-  /**
-   * PowerAVG 无值时说明原因（空串 = 说不清，界面回退 overview.power.missing）。
-   * 判据来自本 tick 批量读取的 status.csv 末行：① 非放电不取样 ② 平均模式且息屏不取样
-   * ③ 放电且条件满足却为空 → 电压/电流读数不可用。
-   */
+  /** /**
+      PowerAVG 无值时说明原因（空串 = 说不清，界面回退 overview.power.missing）
+      判据来自本 tick 批量读取的 status.csv 末行：① 非放电不取样 ② 平均模式且息屏不取样
+      ③ 放电且条件满足却为空 → 电压/电流读数不可用 */
   private powerStaleWhyOf(last: StatusRow | undefined): string {
     if (!last) return ''
     if (last.charge !== 'discharging') {
@@ -704,8 +699,10 @@ class AppStore {
   get currentDouble(): boolean {
     return this.metaSnapshot?.values?.current_double === true
   }
-  /** 电压校准除数：缺省/非法一律按 1000000（标准 Android µV 口径，与 daemon DEFAULT_UNIT_DIVISOR 同值）；
-   *  OPlus 私有节点报 mV（安装脚本写成 1000）；旧键 unit_divisor 兜底 */
+  /**
+   * 电压校准除数：缺省/非法一律按 1000000（标准 Android µV 口径，与 daemon DEFAULT_UNIT_DIVISOR 同值）；OPlus 私有节点报 mV（安装脚本写成 1000）；
+   * 旧键 unit_divisor 兜底
+   */
   get voltageDivisor(): number {
     const values = this.metaSnapshot?.values
     for (const v of [values?.voltage_divisor, values?.unit_divisor]) {
@@ -722,7 +719,7 @@ class AppStore {
   battPending = $state(false)
   /**
    * meta.yaml 直写互斥：写路径是「读-改-写」，两笔并发会各自读旧内容、后一笔覆盖前一笔（丢字段）；
-   * 页面直写入口（setBatteryFields / setPowerAvg）共用这一把锁。
+   * 页面直写入口（setBatteryFields / setPowerAvg）共用这一把锁
    */
   metaWritePending = $state(false)
   battError = $state('')
@@ -740,7 +737,7 @@ class AppStore {
     }
   }
 
-  /** 开启/解除 DOWN 停摆。写后回读，状态以 down.chr 实际内容为准 */
+  /** 开启/解除 DOWN 停摆写后回读，状态以 down.chr 实际内容为准 */
   async setDown(active: boolean): Promise<void> {
     if (this.downPending) return
     this.downPending = true
@@ -765,8 +762,8 @@ class AppStore {
   }
 
   /**
-   * 高级设置：直写 meta.yaml 的 `power_avg`（不走草稿，立即热重载）。关闭 = 参考值（旧值×10 与
-   * 新值 10:1 加权递推，偏历史，含息屏）；开启 = 累计平均值（等权全史，仅亮屏放电）。写后回读。
+   * 高级设置：直写 meta.yaml 的 `power_avg`（不走草稿，立即热重载）关闭 = 参考值（旧值×10 与
+   * 新值 10:1 加权递推，偏历史，含息屏）；开启 = 累计平均值（等权全史，仅亮屏放电）写后回读
    */
   async setPowerAvg(useAverage: boolean): Promise<void> {
     if (this.powerAvgPending || this.metaWritePending) return
@@ -795,8 +792,8 @@ class AppStore {
   }
 
   /**
-   * 高级设置：直写 meta.yaml 的 `powerbase_enabled`（不走草稿，立即热重载）。开启后 CLG 档改由
-   * PowerBase 按放电功耗调频，模式名/规则/界面等外部接口不变。写后回读。
+   * 高级设置：直写 meta.yaml 的 `powerbase_enabled`（不走草稿，立即热重载）开启后 CLG 档改由
+   * PowerBase 按放电功耗调频，模式名/规则/界面等外部接口不变写后回读
    */
   async setPowerbase(enabled: boolean): Promise<void> {
     if (this.powerbasePending || this.metaWritePending) return
@@ -825,8 +822,8 @@ class AppStore {
   }
 
   /**
-   * 高级设置：直写 meta.yaml 的 `screen_off_value`（不走草稿，立即热重载）。
-   * debug.tracing.screen_state 等于该值视为息屏；默认 1，安装脚本按安装期实测值自动校正。写后回读。
+   * 高级设置：直写 meta.yaml 的 `screen_off_value`（不走草稿，立即热重载）
+   * debug.tracing.screen_state 等于该值视为息屏；默认 1，安装脚本按安装期实测值自动校正写后回读
    */
   async setScreenOffValue(value: 0 | 1): Promise<void> {
     if (this.screenOffPending || this.metaWritePending) return
@@ -855,8 +852,8 @@ class AppStore {
   }
 
   /**
-   * 电池读数页：直写 meta.yaml（不走草稿，立即热重载）。开启 OPlus 私有节点时把倍电压/倍电流
-   * 一并清掉——两者互斥（daemon 侧也只认私有节点）；界面已置灰，这里再兜底。写后回读。
+   * 电池读数页：直写 meta.yaml（不走草稿，立即热重载）开启 OPlus 私有节点时把倍电压/倍电流
+   * 一并清掉——两者互斥（daemon 侧也只认私有节点）；界面已置灰，这里再兜底写后回读
    */
   async setBatteryFields(
     patch: Partial<{
@@ -908,7 +905,7 @@ class AppStore {
   exportTotal = $state(0)
   exportBytes = $state(0)
 
-  /** 进度百分比：封顶 99，100 留给完成态。分母是文件数，文件少时粒度偏粗 */
+  /** 进度百分比：封顶 99，100 留给完成态分母是文件数，文件少时粒度偏粗 */
   get exportPercent(): number {
     if (this.exportTotal <= 0) return 0
     return Math.min(99, Math.round((this.exportDone / this.exportTotal) * 100))
@@ -920,7 +917,7 @@ class AppStore {
 
   /**
    * 导出历史归档到 /sdcard/Download：打包在设备上后台跑（gzip 压几百 MB 需要时间），
-   * 这里只轮询产物，期间界面照常可用。
+   * 这里只轮询产物，期间界面照常可用
    */
   async startExport(): Promise<void> {
     if (this.exportPhase === 'running') return
@@ -1065,9 +1062,9 @@ class AppStore {
   /**
    * daemon.log 尾部应用（endsWith 内容锚定）：
    * - 命中（新尾部以旧窗口结尾 = 文件只在尾部追加）→ 解析新增字节里的完整行并 concat
-   *   （首行续行语义交给 parseDaemonLog 的 continuation 参数）；
-   * - 不命中（轮转/截断/首次）或上轮留有半行 → 整段重解析重建（半行是瞬时竞态，不进显示、下轮补全）。
-   * 展示上限沿用 LOG_MAX_LINES，concat 后从头部裁剪，防增量路径无界增长。
+   * （首行续行语义交给 parseDaemonLog 的 continuation 参数）；
+   * - 不命中（轮转/截断/首次）或上轮留有半行 → 整段重解析重建（半行是瞬时竞态，不进显示、下轮补全）
+   * 展示上限沿用 LOG_MAX_LINES，concat 后从头部裁剪，防增量路径无界增长
    */
   private applyDaemonLog(fresh: string): void {
     const cache = this.logTailCache
@@ -1100,8 +1097,9 @@ class AppStore {
     this.logAnchorLen = AppStore.anchorLenOf(fresh)
   }
 
-  /** status.csv 尾部应用：与 applyDaemonLog 同一套锚定模式；追加走 appendStatusRows
-   *  （超 720 行头部裁剪 + 倒序副本同步）。 */
+  /**
+   * status.csv 尾部应用：与 applyDaemonLog 同一套锚定模式；追加走 appendStatusRows （超 720 行头部裁剪 + 倒序副本同步）
+   */
   private applyStatusCsv(fresh: string): void {
     const cache = this.statusTailCache
     const hit =

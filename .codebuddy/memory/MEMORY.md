@@ -157,6 +157,7 @@
 - **.gitignore 已合并为根单文件（2026-09-22）**：webui/、module/ 的子 .gitignore 已删除；根内新增 WebUI 段（`webui/` 前缀）与 Magisk 段；根 `/package.json`、`/package-lock.json` 刻意忽略（npm init 残留）。后续新增忽略规则一律进根文件。
 - `mdocs/` 只放项目原有文档；AI 产出放 `.codebuddy/docs/`（已忽略）；`.codebuddy/memory/` 跟踪。
 - **devimp 日志包分析入口 = 命令 `/devimp-log-analysis`（2026-09-23 用户定，同日由 skill 转入）**：正文在 `.cursor/commands/devimp-log-analysis.md`（唯一副本，勿再建 skill 或镜像），聚合脚本在 `scripts/devimp-analyze.py`（git mv 自 skill 目录，用法 `python scripts\devimp-analyze.py <解压目录>`）。`.agents/skills/` 下已无项目 skill，旧「skill 位置/镜像」约定随之作废。
+- **审查辅助脚本与「禁止机械重排注释」（2026-09-27）**：代码审查走 `python scripts\devreview.py`（`codediff [--staged] [--code-only]` = 改动 diff 剔注释后看 HEAD vs 工作区/暂存区、`locate` = 打行号）；aff 的「某个核/簇上活跃的是谁」走 `scripts/devimp/dvaff.py --groups "0-2,3-6,7"`（核分布段，簇分界按机型 DT 给，脚本不猜拓扑）。**禁止对注释做机械重排**（合并断行 / 删句末标点 / 按宽度收口）：会把缩进续行与被注释掉的代码压平、断点落在标识符中间，属破坏性操作——用户已判定该做法为错误经验，相关工具与快照机制已撤销。
 - 评估与准备 ≠ 批准开工。没说「开始改」就不建不改源码；改动前 `git status` 核对足迹，汇报给文件级清单。
 - **只改任务范围内的东西，不「顺手修」**：未提交改动、被注释的代码可能是用户 WIP。检查报错若指向用户正在编辑的文件，只报告不动手。汇报区分「我改的」与「工作区里已有的」。
 - **Yumi 权重归零（2026-09-20 用户声明）**：性能优化及同类工作中，`src/scheduler/` 与 Yumi 设备兼容**不再作为约束**，改动即使波及也可进行（通常只做类型适配，不主动改逻辑）。2026-09-22 Yumi 调度本体已删，`agentsdocs/` 口径已同步，本条冲突消解。

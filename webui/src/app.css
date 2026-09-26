@@ -1,11 +1,13 @@
 /* app.css: [fonts] [brand-map] [base] [utilities] [signal-map] [ak-adapt] [buttons] [rows] [lists] */
 
-/* [fonts]
+/*
+ * [fonts]
  * 拉丁/数字 → 'ChiRi Sans'（Poppins，SIL OFL 1.1）；中文 → 'ChiRi Sans CJK'（Noto Sans SC，SIL OFL 1.1）；
- * 等宽 → 'ChiRi Mono'（JetBrains Mono 拉丁子集，SIL OFL 1.1）——遥测数值/日志/路径走等宽栈，内置后数字对齐与字形稳定。
- * 许可正文随仓库同目录（LICENSE-OFL-*.txt）；Poppins/Noto 二进制不入库，构建期由 scripts/fetch-fonts.mjs 拉取，等宽已入库。
+ * 等宽 → 'ChiRi Mono'（JetBrains Mono 拉丁子集，SIL OFL 1.1）——遥测数值/日志/路径走等宽栈，内置后数字对齐与字形稳定
+ * 许可正文随仓库同目录（LICENSE-OFL-*.txt）；Poppins/Noto 二进制不入库，构建期由 scripts/fetch-fonts.mjs 拉取，等宽已入库
  * 中文字体已按仓库用字裁剪、不含拉丁字形，拉丁自然落到 Poppins、中文落到本字体，无需 unicode-range（范围过宽缺字会出豆腐块）；
- * 衬线已按用户要求停用：--ak-font-serif 保留 token、回落系统衬线。 */
+ * 衬线已按用户要求停用：--ak-font-serif 保留 token、回落系统衬线
+ */
 @font-face {
   font-family: 'ChiRi Sans';
   src: url('./assets/fonts/poppins-regular.woff2') format('woff2');
@@ -62,9 +64,11 @@
   font-display: swap;
 }
 
-/* [brand-map]
- * ak-ui 语义 token 的品牌映射：单产品因此在 :root 覆盖；只换色值/字体，不改任何 token 的语义角色。
- * 深色分层 canvas < panel < muted < raised，文字三级对比随之设计。 */
+/*
+ * [brand-map]
+ * ak-ui 语义 token 的品牌映射：单产品因此在 :root 覆盖；只换色值/字体，不改任何 token 的语义角色
+ * 深色分层 canvas < panel < muted < raised，文字三级对比随之设计
+ */
 :root {
   --ak-surface-canvas: #0e1114;
   --ak-surface-panel: #171b21;
@@ -83,8 +87,10 @@
   --ak-signal-danger: #e5484d;
   --ak-signal-disabled: #6b7280;
 
-  /* 设备端字体栈：拉丁走内置 Poppins、中文走内置 Noto Sans SC，系统栈只作兜底；等宽映射进 ak-ui 语义 token。
-   * 等宽栈必须插 'ChiRi Sans CJK'：ChiRi Mono 只裁了拉丁，等宽组件（标签/字段名/进度表头/日志）里的中文没它会落到系统默认字体 */
+  /*
+   * 设备端字体栈：拉丁走内置 Poppins、中文走内置 Noto Sans SC，系统栈只作兜底；等宽映射进 ak-ui 语义 token等宽栈必须插 'ChiRi Sans CJK'：
+   * ChiRi Mono 只裁了拉丁，等宽组件（标签/字段名/进度表头/日志）里的中文没它会落到系统默认字体
+   */
   --ak-font-sans: 'ChiRi Sans', 'ChiRi Sans CJK', system-ui, -apple-system, 'PingFang SC',
     'Noto Sans SC', 'Source Han Sans SC', Roboto, 'Helvetica Neue', Arial, sans-serif;
   --ak-font-mono: 'ChiRi Mono', 'ChiRi Sans CJK', ui-monospace, SFMono-Regular, Menlo, Monaco,
@@ -130,7 +136,7 @@ label {
   outline-offset: var(--ak-focus-offset);
 }
 
-/* [utilities] 项目级通用类：只做布局与排版，视觉决策一律走 --ak-* token。 */
+/* [utilities] 项目级通用类：只做布局与排版，视觉决策一律走 --ak-* token */
 .u-row {
   display: flex;
   align-items: center;
@@ -176,8 +182,9 @@ label {
   gap: var(--ak-space-2);
 }
 
-/* 页面/面板内的纵向分组（视图根节点与字段组共用）。
- * 列宽必须显式 minmax(0,1fr)：网格项默认 min-width:auto，日志这类 nowrap 宽内容会把整列（乃至整页）撑出屏幕 */
+/*
+ * 页面/面板内的纵向分组（视图根节点与字段组共用）列宽必须显式 minmax(0,1fr)：网格项默认 min-width:auto，日志这类 nowrap 宽内容会把整列（乃至整页）撑出屏幕
+ */
 .u-stack {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -191,8 +198,9 @@ label {
   gap: var(--ak-space-3);
 }
 
-/* 说明性小字：面板底注/状态附注/字段提示。
- * .u-mt-* 必须定义在其后，组合使用时 margin-top 才不会被 margin:0 吃掉。 */
+/*
+ * 说明性小字：面板底注/状态附注/字段提示.u-mt-* 必须定义在其后，组合使用时 margin-top 才不会被 margin:0 吃掉
+ */
 .u-note {
   margin: 0;
   color: var(--ak-text-secondary);
@@ -241,8 +249,10 @@ label {
   list-style: none;
 }
 
-/* [signal-map]
- * data-signal="info|action|danger|success|accent" → --signal 单点映射：Panel 信号条与总览页模式名共用一个源 */
+/*
+ * [signal-map]
+ * data-signal="info|action|danger|success|accent" → --signal 单点映射：Panel 信号条与总览页模式名共用一个源
+ */
 [data-signal] {
   --signal: var(--ak-signal-info);
 }
@@ -263,13 +273,17 @@ label {
   --signal: var(--ak-signal-accent);
 }
 
-/* [ak-adapt]
- * ak-ui 原语三类修正：① 表单类硬编码浅色，深色不可读；② 表面类底色浅，层级叠不开；③ 字体族硬编码绕开 --ak-font-* token。
- * 只在 [data-ak-ui] 作用域内把颜色/表面/字体映射回语义 token，不动 :root；几何/间距/交互反馈/状态一律仍来自 ak-ui。 */
+/*
+ * [ak-adapt]
+ * ak-ui 原语三类修正：① 表单类硬编码浅色，深色不可读；② 表面类底色浅，层级叠不开；③ 字体族硬编码绕开 --ak-font-* token
+ * 只在 [data-ak-ui] 作用域内把颜色/表面/字体映射回语义 token，不动 :root；几何/间距/交互反馈/状态一律仍来自 ak-ui
+ */
 
-/* ③ 字体族收回：官方 dist 把 font-family 硬编码进 78 处组件规则，token 完全失效（拉丁落到 Roboto、中文落到系统字体）。
- * 按官方用法分两组收回：正文类走 --ak-font-sans，等宽类（标签/字段名/提示/进度表头/眉头字/分段项）走 --ak-font-mono。
- * 选择器一律带 [data-ak-ui] 前缀提升特异性，压过官方单类规则（与本文其余覆盖一致）。 */
+/*
+ * ③ 字体族收回：官方 dist 把 font-family 硬编码进 78 处组件规则，token 完全失效（拉丁落到 Roboto、中文落到系统字体）
+ * 按官方用法分两组收回：正文类走 --ak-font-sans，等宽类（标签/字段名/提示/进度表头/眉头字/分段项）走 --ak-font-mono
+ * 选择器一律带 [data-ak-ui] 前缀提升特异性，压过官方单类规则（与本文其余覆盖一致）
+ */
 [data-ak-ui] :is(
   .ak-button,
   .ak-button__label,
@@ -408,8 +422,10 @@ label {
   color: var(--ak-dialog-signal);
 }
 
-/* ak-status（LiveStatus 顶栏芯片）：与顶栏按钮同规格——官方 min-height 走 content-box，叠 padding 会超高，改 border-box + 纯水平内距；
- * align-content 居中必须保留：官方两行网格会把多余高度分给信号条所在的空行，文字上浮 */
+/*
+ * ak-status（LiveStatus 顶栏芯片）：与顶栏按钮同规格——官方 min-height 走 content-box，叠 padding 会超高，改 border-box + 纯水平内距；
+ * align-content 居中必须保留：官方两行网格会把多余高度分给信号条所在的空行，文字上浮
+ */
 [data-ak-ui] .ak-status {
   box-sizing: border-box;
   min-height: var(--ak-density-control-height);
@@ -445,8 +461,9 @@ label {
   background: var(--ak-segmented-signal);
 }
 
-/* 横向滑动变体（项目侧钩子 data-ak-scroll，非上游修饰类）：项多时窄屏被压到看不清，
- * 改成「项按内容宽度排、整条左右滑」——官方只处理窄屏铺满，没有滑动档位 */
+/*
+ * 横向滑动变体（项目侧钩子 data-ak-scroll，非上游修饰类）：项多时窄屏被压到看不清，改成「项按内容宽度排、整条左右滑」——官方只处理窄屏铺满，没有滑动档位
+ */
 [data-ak-ui] .ak-segmented[data-ak-scroll] {
   overflow-x: auto;
   overscroll-behavior-x: contain;
@@ -482,8 +499,10 @@ label {
   font-size: 0.6875rem;
 }
 
-/* [buttons]
- * 复用 .ak-button 的交互语义，尺寸/阴影/配色按 token 重绘：官方按钮 150×50 固定尺寸 + 重阴影，不适合行内与紧凑布局。 */
+/*
+ * [buttons]
+ * 复用 .ak-button 的交互语义，尺寸/阴影/配色按 token 重绘：官方按钮 150×50 固定尺寸 + 重阴影，不适合行内与紧凑布局
+ */
 .btn {
   display: inline-flex;
   align-items: center;

@@ -1,7 +1,7 @@
 // mock-shell.ts: [scenario] [fs] [seed] [exec] [install]
 // 无 KernelSU 环境（浏览器 dev / 自动化走查）下的设备替身：用构建期嵌入的仓库配置 + 生成的假日志
-// 构成内存文件系统，并按契约层实际发出的命令形态回放。URL 参数切换设备形态，便于走查空态/错误态：
-//   ?soc=chiri（ChiRi 专属，影响白名单与 status.csv） ?state=normal|empty|error（正常/从未启动/读取失败） ?daemon=running|stopped（存活探测）
+// 构成内存文件系统，并按契约层实际发出的命令形态回放URL 参数切换设备形态，便于走查空态/错误态：
+// ?soc=chiri（ChiRi 专属，影响白名单与 status.csv） ?state=normal|empty|error（正常/从未启动/读取失败） ?daemon=running|stopped（存活探测）
 import embedded from 'virtual:chiri-config'
 import { load as loadYaml } from 'js-yaml'
 import { setShell, type ExecResult, type ShellRunner } from '@/kernel/shell'
@@ -135,7 +135,7 @@ function fakeStatusCsv(): string {
   return rows.join('\n') + '\n'
 }
 
-/** aff_ 线程流样例：3 行 @A 动作帧（含失败观测 e3）+ 一帧 @S 快照（帧头 ntop/nfg 计数与随后 p/t 行数严格一致），帧格式见 agentsdocs/02-convention.md。 */
+/** aff_ 线程流样例：3 行 @A 动作帧（含失败观测 e3）+ 一帧 @S 快照（帧头 ntop/nfg 计数与随后 p/t 行数严格一致），帧格式见 agentsdocs/02-convention.md */
 function fakeAffLog(): string {
   return [
     '# ts-column=local format_now',
@@ -177,7 +177,7 @@ function fasWhitelistExport(): string {
   }
 }
 
-/** 心跳内容按**读取时刻**生成（见 handle 的 TAIL 分支）：daemonRunning 取当前 MM:SS，stopped 取 8 分钟前（远超 20s 容差）；静态播种会在预览打开 20s 后自然过期。 */
+/** 心跳内容按**读取时刻**生成（见 handle 的 TAIL 分支）：daemonRunning 取当前 MM:SS，stopped 取 8 分钟前（远超 20s 容差）；静态播种会在预览打开 20s 后自然过期 */
 function liveTimeText(): string {
   const beat = new Date(Date.now() - (daemonRunning ? 0 : 8 * 60_000))
   const pad = (n: number) => String(n).padStart(2, '0')
@@ -251,7 +251,7 @@ const TAIL_CMD = /^tail -c (\d+) (.+)$/
 const LS_CMD = /^ls -1 (.+)$/
 const WRITE_CMD = /^printf '%s' (\S+) \| base64 -d > (.+) && mv -f (.+) (.+) \|\| \{ rm -f (.+); exit 1; \}$/
 const KILL_CMD = /killall -9 chiri/
-// 导出历史日志：启动命令与轮询探测。mock 直接回「gzip 回退产物已生成」，预览里免等轮询超时
+// 导出历史日志：启动命令与轮询探测mock 直接回「gzip 回退产物已生成」，预览里免等轮询超时
 const EXPORT_START_CMD = /^nohup sh -c /
 const EXPORT_POLL_CMD = /\/sdcard\/Download\/logd_\d{4}-\d{6}\.tar\.gz/
 

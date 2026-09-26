@@ -8,7 +8,7 @@ use crate::i18n::t_with_args;
 use super::FasController;
 use super::pid::scale_frames;
 
-// [decision] 
+// [decision]
 // GearDecision
 
 pub(super) enum GearDecision {
@@ -73,7 +73,7 @@ impl FasController {
         );
     }
 
-    // [gear] 
+    // [gear]
     // Phase 3: 齿轮决策
 
     pub(super) fn evaluate_gear(&mut self, avg_fps: f32, recent30: f32) -> GearDecision {
@@ -134,8 +134,7 @@ impl FasController {
                             dampen: scale_frames(self.cfg.gear_dampen_frames, next),
                         };
                     }
-                // 低 perf 稳帧升档路径：打破「频率被压住 → 帧率上不去 → 升不了档」死锁——
-                // perf 低说明档位下频率有余量，游戏稳帧跑满当前目标（stddev 低），
+                // 低 perf 稳帧升档路径：打破「频率被压住 → 帧率上不去 → 升不了档」死锁——perf 低说明档位下频率有余量，游戏稳帧跑满当前目标（stddev 低），
                 // 即使 recent30 未达 next-10 也给升档机会；余量门槛 0.40，仍低于爆发路径的 0.45
                 } else if avg_fps >= tfps - 2.0
                     && self.perf_index < 0.40

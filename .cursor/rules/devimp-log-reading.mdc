@@ -29,8 +29,9 @@ alwaysApply: false
    二次平滑前先分行来源。
 8. `@A result=e0` 不是成功——errno 拿不到时写 `e0`；`e3`（ESRCH，线程已退出）属正常，
    `e22`（EINVAL）偶发。
-9. `cap=85` 不等于已压制：`free_above` 是豁免档不是温度带，压制只落在
-   `(soft_perf_cap, free_above)`；tuned 段 cap 列为 `-`。
+9. `cap=85` 不等于已压制：热阶梯是四级 `100 → soft_perf_cap → mid_perf_cap → hard_perf_cap`
+   （8550 = 100/85/60/40，触发点 batt 41/43/45℃），每级上下两条边都带回滞；`free_above` 是
+   豁免档不是温度带，仅 `clamp_heavy=false` 时生效（8550 为 true = 恒钳）；tuned 段 cap 列为 `-`。
 
 ## 正反例
 

@@ -1,5 +1,4 @@
-// i18n.test.ts: [parity] [static] [dynamic]
-// 文案防回归：中英键集合一致，源码用键都有定义（t() 缺键直接显示键名，界面易忽略）。
+// i18n.test.ts: [parity] [static] [dynamic]文案防回归：中英键集合一致，源码用键都有定义（t() 缺键直接显示键名，界面易忽略）
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -24,8 +23,7 @@ describe('文案完整性', () => {
 
   it('源码里静态使用的键都有定义', () => {
     const used = new Set<string>()
-    // 只匹配独立的 t('key')：排除 put(/get(/split( 等以 t 结尾的函数名。
-    // 先剔掉 HTML/行注释——被注释掉的调用不算「使用」（注释里会留被隐藏键的原文）。
+    // 只匹配独立的 t('key')：排除 put(/get(/split( 等以 t 结尾的函数名先剔掉 HTML/行注释——被注释掉的调用不算「使用」（注释里会留被隐藏键的原文）
     const pattern = /(?:^|[^\w$])t\(\s*'([^']+)'/g
     for (const file of walk(SRC)) {
       const text = readFileSync(file, 'utf8')

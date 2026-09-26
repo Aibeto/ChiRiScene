@@ -1,0 +1,3133 @@
+//! mod.rs: [consts] [thermal] [policies] [aff_snap] [affinity] [threads] [config_watcher] [ipc_main] [ipc_state] [evt_loop] [evt_screen] [evt_mode] [evt_pkg_switch] [evt_load] [evt_frame] [evt_reload] [evt_bpf] [panic_recovery]
+
+use anyhow::Result;
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, RwLock, OnceLock, mpsc};
+use std::thread;
+use std::time::{Duration, Instant};
+
+// [consts]
+// CLG 看门狗：SystemLoadUpdate 常规 160ms / 特调 40ms 投喂一次，超过 CLG_STALE_MAX 未收到
+// 事件即判负载源失效（eBPF 失败/探针崩溃/通道断开），release() 回系统调频防锁频。
+const CLG_STALE_MAX: Duration = Duration::from_secs(5);
+/// 事件轮询间隔：主事件通道无事件时的最大阻塞时长（动态超时上限）。
+/// 实际阻塞到最近周期任务的 deadline，空闲不再固定空转；性能敏感路径（负载事件/
+/// 模式切换/触摸）均为推送事件、到达即唤醒零延迟，此值仅作 deadline 兜底上限。
+const EVENT_POLL_MS: Duration = Duration::from_millis(1000);
+/// 热保护温度采样间隔：2s 一次，温度变化缓慢，更密的采样只浪费 IO。
+const THERMAL_CHECK_INTERVAL: Duration = Duration::from_secs(2);
+/// 遥测 CSV 落盘间隔：1s 一次（功耗统计精度 1s；telemetry 线程 1s 刷新共享原子量）。
+const TELEMETRY_LOG_INTERVAL: Duration = Duration::from_secs(1);
+/// scenemode 饱和退出：**常驻簇（小核 + 大核）** max_util 持续高于该值视为
+/// 顶满性能上限（util 是忙时占比，与频率无关——后台负载压不住常驻核时即饱和）
+const SCENEMODE_SAT_UTIL: f32 = 0.75;
+/// 饱和持续判定时长：连续满足才退出，防止瞬时突发误触发
+const SCENEMODE_SAT_SECS: Duration = Duration::from_secs(10);
+/// scenemode 冷却：饱和退出后 300s 内不得重新进入（防止与后台负载反复拉锯）
+const SCENEMODE_COOLDOWN: Duration = Duration::from_secs(300);
+/// scheduler_ipc 事件循环 panic 自愈：连续崩溃超过该次数后放弃重启（防止
+/// poisoned lock 等确定性 panic 变成打满 CPU 的重启风暴），仅保留最终清理
+const SCHEDULER_IPC_RESTART_MAX: u32 = 5;
+/// panic 重启退避：每次重启前等待，错开引发 panic 的外部状态（如负载风暴）
+const SCHEDULER_IPC_RESTART_BACKOFF: Duration = Duration::from_secs(1);
+/// 电池状态节点（标准 power_supply 接口）：区分充电/放电
+const BATT_STATUS_PATH: &str = "/sys/class/power_supply/battery/status";
+
+/// status 节点取值不认识时的告警去重（值恢复为认识的内容后重新武装）
+static BATT_STATUS_UNKNOWN_WARNED: AtomicBool = AtomicBool::new(false);
+/// 热保护解除斜坡步长：压制加深立即生效，解除方向每个采样周期（2s）最多恢复 0.15。
+/// 若解除即全量恢复，温度围绕阈值震荡时 cap 会在 40/70/100 间以 ~8s 周期 bang-bang
+/// 跳变、current_perf 反复砸回低位致周期性掉帧；限速解除后反弹会中途重新压制。
+const THERMAL_UNPRESS_STEP: f32 = 0.15;
+
+// [thermal]
+/// 读电池充放电状态（1s snap 处消费）：归一为小写短词；节点缺失或未知值返回
+/// "-"（与 CSV 缺失占位一致）。电流符号因厂商节点方向不一不可靠，故读 status 字符串。
+fn read_battery_charge_state() -> String {
+    let state = match std::fs::read_to_string(BATT_STATUS_PATH) {
+        Ok(s) => {
+            let raw = s.trim();
+            // 大小写与多余空白都容忍：不同内核会写 Charging / charging，规范化后再比对
+            match raw.to_ascii_lowercase().as_str() {
+                "charging" => "charging",
+                "discharging" => "discharging",
+                "full" => "full",
+                "not charging" => "not_charging",
+                _ => {
+                    // 取值不认识 = 永不取样（门控只认 discharging），必须打出原文
+                    if !BATT_STATUS_UNKNOWN_WARNED.swap(true, Ordering::Relaxed) {
+                        log::warn!(
+                            "{}",
+                            crate::i18n::t_with_args(
+                                "battery-status-unknown",
+                                &crate::fluent_args!("raw" => raw.to_string())
+                            )
+                        );
+                    }
+                    "-"
+                }
+            }
+        }
+        Err(_) => "-",
+    };
+    if state != "-" {
+        BATT_STATUS_UNKNOWN_WARNED.store(false, Ordering::Relaxed);
+    }
+    state.to_string()
+}
+
+/// 温度传感器滤波器：物理范围门 + 毛刺丢弃 + 3 样本中值 + 斜率限制。
+/// MTK soc_max 等合成温区读数跳变极大（2s 内数十度、物理上不可能），直接用于带回滞
+/// 的阈值判定会让 cap 以 ~8s 周期反复跳变，逐级平滑后才能作为秒级热判定的输入。
+struct TempFilter {
+    /// 物理合理区间 [min_c, max_c]：节点异常/未初始化的读数直接丢弃
+    min_c: f32,
+    max_c: f32,
+    /// 相对上次有效输出的最大可信跳变（°C），超过视为传感器毛刺丢弃
+    max_jump: f32,
+    /// 输出斜率限制（°C/样本）：真实热质量决定温度不可能瞬间大幅变化
+    max_step: f32,
+    window: [f32; 3],
+    win_len: usize,
+    win_idx: usize,
+    last_out: Option<f32>,
+}
+
+impl TempFilter {
+    fn new(min_c: f32, max_c: f32, max_jump: f32, max_step: f32) -> Self {
+        Self {
+            min_c,
+            max_c,
+            max_jump,
+            max_step,
+            window: [0.0; 3],
+            win_len: 0,
+            win_idx: 0,
+            last_out: None,
+        }
+    }
+
+    /// 喂入一个原始样本，返回滤波后的温度。样本被丢弃时返回上次输出
+    /// （首个有效样本到来前返回 None）。
+    fn push(&mut self, raw: f32) -> Option<f32> {
+        // 1) 物理范围门：明显不合理的读数（如 0.3°C 的电池温度节点）丢弃
+        if !(raw >= self.min_c && raw <= self.max_c) {
+            return self.last_out;
+        }
+        // 2) 毛刺丢弃：相对上次输出的跳变超过真实热质量上限（如压制后频率骤降叠加
+        //    合成温区切换热点），丢弃以防「骤降→解除→反弹」振荡
+        if let Some(prev) = self.last_out {
+            if (raw - prev).abs() > self.max_jump {
+                return self.last_out;
+            }
+        }
+        // 3) 3 样本中值：滤掉单点毛刺
+        self.window[self.win_idx] = raw;
+        self.win_idx = (self.win_idx + 1) % 3;
+        self.win_len = (self.win_len + 1).min(3);
+        let mut sorted = self.window[..self.win_len].to_vec();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let median = sorted[sorted.len() / 2];
+        // 4) 斜率限制：压制/解除两个方向都平滑，消除控制环振荡
+        let out = match self.last_out {
+            None => median,
+            Some(prev) => prev + (median - prev).clamp(-self.max_step, self.max_step),
+        };
+        self.last_out = Some(out);
+        self.last_out
+    }
+}
+
+/// 单传感器四级热阶梯参数：三级温度阈值 + 对应三档性能上限 + 两级回滞。
+/// batt / cpu 各构一份（阈值不同、cap 与回滞共用），见 `[thermal]` 块。
+/// 契约：温度 soft < mid < hard；cap hard <= mid <= soft <= 1.0（config normalize 保证）。
+#[derive(Clone, Copy)]
+struct ThermalLadder {
+    soft: f32,
+    mid: f32,
+    hard: f32,
+    soft_cap: f32,
+    mid_cap: f32,
+    hard_cap: f32,
+    /// 软/中档回滞（°C）：降到 阈值 - hyst 以下才退出该档
+    hyst: f32,
+    /// 硬档回滞（°C）：独立配置（`Thermal.hysteresis_hard_c`），硬档 0.40 的阶跃比软档敏感
+    hyst_hard: f32,
+}
+
+/// 单传感器四级判定（每级上下两条边都带回滞）：>= 硬限压 hard_cap；>= 中限压 mid_cap；
+/// >= 软限压 soft_cap；回落到 软限-hyst 以下解除。`temp_c` 必须传 `TempFilter::push` 的
+/// 滤波输出（1s snap 写入 last_batt_temp/last_cpu_temp，本 2s 热块复用），喂原始读数会让
+/// cap bang-bang 振荡。
+///
+/// 回滞规则（2026-09-27 修）：每级的**退出**都要降到自己阈值 − 该级回滞以下，判据里的
+/// `current <= 本级 cap` 表示「上周期仍压在本级或更深」（深档值更小、天然满足），所以退档
+/// 只会逐级回退、不会跨级跳。改前硬限→软限这条边**无回滞**：batt 一降到 44.9°C 就从 0.40
+/// 跳回 0.85，批次2 在 75 分钟内 5 次进硬档、两次 60s 内重入（最近相隔 2.0 s）。回滞带内
+/// 且已解除（current >= 1.0）时保持 1.0；压制中退档由调用方的 `THERMAL_UNPRESS_STEP` 斜坡兜住。
+fn eval_thermal_cap(temp_c: f32, current: f32, l: &ThermalLadder) -> f32 {
+    if temp_c >= l.hard || (current <= l.hard_cap && temp_c >= l.hard - l.hyst_hard) {
+        l.hard_cap
+    } else if temp_c >= l.mid || (current <= l.mid_cap && temp_c >= l.mid - l.hyst) {
+        l.mid_cap
+    } else if temp_c >= l.soft || (current <= l.soft_cap && temp_c >= l.soft - l.hyst) {
+        l.soft_cap
+    } else {
+        1.0
+    }
+}
+
+pub mod config;
+pub mod scheduler;
+// FAS（帧感知调度）：引擎位于 crate::scheduler::fas（算法层），ChiRi 侧由 fas_manager 提供多实例生命周期管理。
+pub mod affinity;
+pub mod core_ctl;
+pub mod cpu_load_governor;
+pub mod fas_manager;
+pub mod fast;
+pub mod governor;
+pub mod gpu;
+pub mod power_base;
+pub mod touch_detect;
+pub mod tuned;
+
+use crate::common;
+use crate::common::DaemonEvent;
+use crate::fluent_args;
+use crate::i18n::{load_language, t, t_with_args};
+use crate::logger;
+use crate::utils;
+use config::Config;
+use scheduler::CpuScheduler;
+
+// [policies]
+/// CPU 频率策略簇信息
+pub struct CpuPolicy {
+    /// policy 编号，对应 /sys/devices/system/cpu/cpufreq/policy<id>
+    pub id: i32,
+    /// boost 频率列表（单位 kHz），有的簇没有此文件则为空
+    pub boost_frequencies: Vec<u32>,
+}
+
+/// 枚举系统中实际可用的 cpufreq policy，并读取各 policy 的 boost 频率。
+/// 结果按 policy id 升序返回（供 CLG 遍历初始化）。
+pub fn get_cpu_policies() -> Vec<CpuPolicy> {
+    let mut policies = Vec::new();
+    if let Ok(entries) = std::fs::read_dir("/sys/devices/system/cpu/cpufreq") {
+        for entry in entries.flatten() {
+            if let Some(name) = entry.file_name().to_str() {
+                if name.starts_with("policy") {
+                    if let Ok(pid) = name["policy".len()..].parse::<i32>() {
+                        let boost_freqs = read_boost_frequencies(pid);
+                        policies.push(CpuPolicy {
+                            id: pid,
+                            boost_frequencies: boost_freqs,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    policies.sort_unstable_by_key(|p| p.id);
+    policies
+}
+
+/// main_ snap 行用：各 policy 的**实际**当前频率/上限/下限/调速器，`;` 分隔、每项
+/// `policy<id>:<值>`，读不到写 `-`。只在诊断开启时调用（每秒一次 sysfs 读），不做
+/// 缓存——值会被内核 governor 改写，缓存必过期。与 tick 行 cur_freq_khz/max_freq_khz
+/// （调度器决策值）互补：那两列是「我们写了多少」，这里是「内核实际是多少」。
+pub fn cpu_freq_snapshot() -> (String, String, String, String) {
+    let (mut cur, mut max, mut min, mut gov) =
+        (String::new(), String::new(), String::new(), String::new());
+    for p in get_cpu_policies() {
+        let base = format!("/sys/devices/system/cpu/cpufreq/policy{}", p.id);
+        let read = |f: &str| -> String {
+            std::fs::read_to_string(format!("{base}/{f}"))
+                .map(|s| s.trim().to_string())
+                .unwrap_or_else(|_| "-".to_string())
+        };
+        let push = |dst: &mut String, v: String| {
+            if !dst.is_empty() {
+                dst.push(';');
+            }
+            dst.push_str(&format!("policy{}:{}", p.id, v));
+        };
+        push(&mut cur, read("scaling_cur_freq"));
+        push(&mut max, read("scaling_max_freq"));
+        push(&mut min, read("scaling_min_freq"));
+        push(&mut gov, read("scaling_governor"));
+    }
+    (cur, max, min, gov)
+}
+
+// [clamp_evidence]
+/// P1-2 锁频钳制旁证快照（`clamp_change` 行 reason），把「锁频被压」归因到：
+/// 1. FREQ_QOS 钳制（thermal cooling / msm_performance / input-boost）——smax 读回
+///    低于 ChiRi 写入值，msmp/corectl 佐证第三方并发写；
+/// 2. 硬件热压（LMh/DCVS）——smax 正常而实际频率被压，佐证 dcvsh_freq_limit（每簇
+///    首核）是否低于硬件 max；
+/// 3. 厂商并发写——msm_performance / core_ctl min_cpus/max_cpus/enable 被改；
+///    `/proc/horae_qmi` 只记存在性。
+///
+/// 【临时采集】P2 真机取证用，验证期结束后评估去留。全部只读；节点缺失/读失败记
+/// `-` 并 warn 一次（去重后静默，防 2s 周期刷屏）；msmp 二节点带读取退避（连续 8
+/// 次读空后停读、每 64 次重试一轮，见函数内状态机）。只在 `diag_active()` 时由 2s
+/// 热块调用；调用方比对快照字符串，未变化零落盘。
+fn clamp_evidence_snapshot(warned: &mut HashSet<String>) -> String {
+    /// 缺失节点首见告警一次（key 形如 "smax@policy4"，附完整路径便于排查）
+    fn warn_once(warned: &mut HashSet<String>, key: String, path: &str) {
+        if warned.insert(key.clone()) {
+            log::warn!(
+                "{}",
+                t_with_args(
+                    "clampev-node-missing",
+                    &fluent_args!("key" => key.as_str(), "path" => path)
+                )
+            );
+        }
+    }
+    /// 非空读取：缺失/空串统一返回 None（节点存在但内容空按缺失处理）
+    fn read_trim(path: &str) -> Option<String> {
+        std::fs::read_to_string(path)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+    /// 按 `policy<id>:<val>` 追加分段（与 cpu_freq_snapshot 的多 policy 拼法一致）
+    fn seg_push(dst: &mut String, id: i32, val: &str) {
+        if !dst.is_empty() {
+            dst.push(';');
+        }
+        dst.push_str(&format!("policy{}:{}", id, val));
+    }
+
+    static POLICIES: OnceLock<Vec<i32>> = OnceLock::new();
+    let policies = POLICIES.get_or_init(|| get_cpu_policies().into_iter().map(|p| p.id).collect());
+
+    let mut smax = String::new();
+    let mut dcvsh = String::new();
+    let mut corectl = String::new();
+    for id in policies {
+        // smax：FREQ_QOS_MAX 聚合结果的读回值（低于写入值 = 被 QoS 钳制）
+        let path = format!("/sys/devices/system/cpu/cpufreq/policy{}/scaling_max_freq", id);
+        match read_trim(&path) {
+            Some(v) => seg_push(&mut smax, *id, &v),
+            None => {
+                seg_push(&mut smax, *id, "-");
+                warn_once(warned, format!("smax@policy{}", id), &path);
+            }
+        }
+        // dcvsh：硬件 DCVS 限频佐证（policy id 即簇首核；部分内核未导出属常态）
+        let path = format!("/sys/devices/system/cpu/cpu{}/dcvsh_freq_limit", id);
+        match read_trim(&path) {
+            Some(v) => seg_push(&mut dcvsh, *id, &v),
+            None => {
+                seg_push(&mut dcvsh, *id, "-");
+                warn_once(warned, format!("dcvsh@cpu{}", id), &path);
+            }
+        }
+        // core_ctl：厂商并发写观测（min_cpus/max_cpus/enable 每簇首核一份；目录缺失多为机型不支持，段记 "-"）
+        let cdir = format!("/sys/devices/system/cpu/cpu{}/core_ctl", id);
+        if !std::path::Path::new(&cdir).exists() {
+            seg_push(&mut corectl, *id, "-");
+            warn_once(warned, format!("corectl@cpu{}", id), &cdir);
+        } else {
+            let mut cc = String::new();
+            for (i, name) in ["min_cpus", "max_cpus", "enable"].iter().enumerate() {
+                if i > 0 {
+                    cc.push('/');
+                }
+                let path = format!("{}/{}", cdir, name);
+                match read_trim(&path) {
+                    Some(v) => cc.push_str(&v),
+                    None => {
+                        cc.push('-');
+                        warn_once(warned, format!("corectl.{}@cpu{}", name, id), &path);
+                    }
+                }
+            }
+            seg_push(&mut corectl, *id, &cc);
+        }
+    }
+    // msm_performance 参数（单值，非逐 policy）；horae_qmi 只记存在性。
+    // 【临时】读取退避：此二节点在部分机型恒不可读，连续 MSMP_FAIL_LIMIT 次读空后
+    // 停读（快照项记 `-`），每 MSMP_RETRY_TICKS 次（≈128s）重试一轮，恢复即回归采集。
+    static MSMP_FAIL_STREAK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    static MSMP_SKIP_TICKS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    const MSMP_FAIL_LIMIT: u32 = 8;
+    const MSMP_RETRY_TICKS: u32 = 64;
+    let mut msmp = ["-".to_string(), "-".to_string()];
+    let skip = MSMP_FAIL_STREAK.load(Ordering::Relaxed) >= MSMP_FAIL_LIMIT;
+    // 退避期只在第 MSMP_RETRY_TICKS 个 tick 重试一轮，其余 tick 不读文件、直接记 `-`
+    let retry = skip && MSMP_SKIP_TICKS.fetch_add(1, Ordering::Relaxed) + 1 >= MSMP_RETRY_TICKS;
+    if !skip || retry {
+        let mut all_ok = true;
+        for (i, name) in ["cpu_min_freq", "cpu_max_freq"].iter().enumerate() {
+            let path = format!("/sys/module/msm_performance/parameters/{}", name);
+            match read_trim(&path) {
+                Some(v) => msmp[i] = v,
+                None => {
+                    all_ok = false;
+                    warn_once(warned, format!("msmp.{}", name), &path);
+                }
+            }
+        }
+        if all_ok {
+            // 任一节点恢复可读即清零退避，回归正常采集
+            MSMP_FAIL_STREAK.store(0, Ordering::Relaxed);
+            MSMP_SKIP_TICKS.store(0, Ordering::Relaxed);
+        } else if MSMP_FAIL_STREAK.load(Ordering::Relaxed) < MSMP_FAIL_LIMIT {
+            MSMP_FAIL_STREAK.fetch_add(1, Ordering::Relaxed);
+        } else {
+            // 重试失败：计数归零，下一轮重试再等 MSMP_RETRY_TICKS
+            MSMP_SKIP_TICKS.store(0, Ordering::Relaxed);
+        }
+    }
+    let horae = if std::path::Path::new("/proc/horae_qmi").exists() {
+        "1"
+    } else {
+        "-"
+    };
+    if horae == "-" {
+        warn_once(warned, "horae_qmi".to_string(), "/proc/horae_qmi");
+    }
+    format!(
+        "msmp_min={} msmp_max={} horae={} smax={} dcvsh={} corectl={}",
+        msmp[0], msmp[1], horae, smax, dcvsh, corectl
+    )
+}
+
+/// GPU 频率快照的节流间隔：读 GPU 频率节点（尤其 Adreno 的 `gpuclk`）会把 GPU 从
+/// 低功耗状态拉起，跟随 1s snap 等于每秒唤醒一次 GPU，采集代价盖过数据收益。
+/// 故 GPU 单独按 10s 采一次；CPU 的 cpufreq 节点读取廉价，仍每秒采。
+const GPU_SNAP_INTERVAL_MS: u64 = 10_000;
+
+/// GPU 频率/调速器快照总开关：**当前默认关闭**——读 GPU 频率节点会唤醒 GPU、采集
+/// 代价盖过收益（原因与数据见 GPU_SNAP_INTERVAL_MS），CPU 那 4 列不受影响。
+/// **恢复方式**：确需 GPU 频率数据时改回 true（节流间隔见 GPU_SNAP_INTERVAL_MS）；
+/// 彻底避免唤醒需另找不触碰 GPU 硬件的读数路径，本开关只是先止血。
+const GPU_SNAPSHOT_ENABLED: bool = false;
+static LAST_GPU_SNAP_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// 距上次 GPU 快照是否已超过节流间隔（到点则顺带更新时间戳）
+fn gpu_snapshot_due() -> bool {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let prev = LAST_GPU_SNAP_MS.load(std::sync::atomic::Ordering::Relaxed);
+    if now.saturating_sub(prev) < GPU_SNAP_INTERVAL_MS {
+        return false;
+    }
+    LAST_GPU_SNAP_MS.store(now, std::sync::atomic::Ordering::Relaxed);
+    true
+}
+
+/// 读取指定 policy 的 scaling_boost_frequencies（kHz）。
+/// 文件不存在、为空或解析失败时返回空 Vec，不影响 policy 注册。
+fn read_boost_frequencies(pid: i32) -> Vec<u32> {
+    let path = format!(
+        "/sys/devices/system/cpu/cpufreq/policy{}/scaling_boost_frequencies",
+        pid
+    );
+    std::fs::read_to_string(&path)
+        .unwrap_or_default()
+        .split_whitespace()
+        .filter_map(|s| s.parse().ok())
+        .collect()
+}
+
+/// 按当前模式判定是否为 boost 类模式（亲和收窄/core_ctl 保大核的判定口径）：
+/// boost / vector / 特调（akmode）为 boost 类，reduce/default 及未知模式为 normal。
+/// contingency / babel 有独立分支，不走 boost 亲和收窄。
+fn is_boost_mode(mode: &str) -> bool {
+    mode == "boost" || mode == "vector" || crate::common::is_special_mode(mode)
+}
+
+/// 特调的 boost 亲和开关（参数组 boost_affinity）：游戏特调 true（保响应），
+/// 视频/轻载省电特调 false（不保大核在线、不收窄 cpuset）。非特调恒 true
+/// （实际只对 is_boost_mode 命中的模式有意义）。
+fn tuned_boost_affinity(config: &crate::chiri::config::Config, mode: &str) -> bool {
+    if crate::common::is_special_mode(mode) {
+        config.get_tuned_profile(mode).boost_affinity
+    } else {
+        true
+    }
+}
+
+/// governor/GPU/极速锁频与模式的同步（幂等，可在任意入口调用）：
+/// contingency → performance 调速器 + GPU 锁最高频 + 极速锁频（min=max=硬件最高，
+/// 与 vector 同口径；governor 节点只读的机型写不进 performance，靠锁频窗口等效）；
+/// babel → 仅 performance；其他模式 → governor/GPU 按快照恢复
+/// （fast_lock 不在这里释放：vector 也走 `_` 分支，误释放会锁不住）。
+fn sync_lab_governor_gpu(
+    mode: &str,
+    governor: &mut governor::GovernorGuard,
+    gpu: &mut gpu::GpuGuard,
+    fast_lock: &mut crate::chiri::fast::FastLock,
+) {
+    match mode {
+        "contingency" => {
+            if !governor.is_active() {
+                governor.activate();
+            }
+            if !gpu.is_active() {
+                gpu.lock();
+            }
+            // 全核最高频硬锁：不能只靠 performance——部分机型 scaling_governor
+            // 节点只读（写不进），min=max=硬件最高在任意 governor 下都等效锁频
+            if !fast_lock.is_active() {
+                fast_lock.init(false);
+            }
+        }
+        "babel" => {
+            if !governor.is_active() {
+                governor.activate();
+            }
+            if gpu.is_active() {
+                gpu.release();
+            }
+        }
+        _ => {
+            if governor.is_active() {
+                governor.release();
+            }
+            if gpu.is_active() {
+                gpu.release();
+            }
+        }
+    }
+}
+
+/// 硬锁档判定：vector 与 frozen 都走 `FastLock` 的 min=max 硬锁（不注册 CLG 参数），
+/// 差别只在锁定目标——vector 锁硬件最高频（极速），frozen 锁硬件最低频（待春归：
+/// 最低功耗、最冷，同时停掉亲和/迁移/诊断日志这类额外开销）。
+/// 两档在事件分支、停摆重建、亮屏恢复里都必须同进同出，漏一个就是「切过去没锁上」。
+fn is_fast_lock(mode: &str) -> bool {
+    mode == "vector" || mode == "frozen"
+}
+
+/// CLG 档位参数获取（未知/空模式名禁用 CLG，避免默认参数意外接管）。
+/// 与调度线程内的 get_clg_cfg 闭包同逻辑；文件级供 FAS 延迟退出等辅助函数使用。
+fn clg_cfg_for(
+    config: &crate::chiri::config::Config,
+    mode: &str,
+) -> crate::chiri::config::CpuLoadGovernorConfig {
+    config
+        .get_mode(mode)
+        .map(|m| m.cpu_load_governor.clone())
+        .unwrap_or_else(|| {
+            let mut cfg = crate::chiri::config::CpuLoadGovernorConfig::default();
+            cfg.enabled = false;
+            cfg
+        })
+}
+
+/// 按目标模式接管频率（特调 / vector / CLG）。FAS 正常退出与延迟退出共用。
+/// 调用前提：FAS 已完全退出（频率 + governor 已恢复）、各 governor 处于安全态、亮屏。
+/// akmode init 失败不设冷却（冷却语义只属于前台切换路径），直接 CLG 回退。
+fn apply_mode_takeover(
+    mode: &str,
+    config: &crate::chiri::config::Config,
+    cpu_governor: &mut crate::chiri::cpu_load_governor::CpuLoadGovernor,
+    ak_governor: &mut crate::chiri::tuned::TunedGovernor,
+    fast_lock: &mut crate::chiri::fast::FastLock,
+    power_base: &mut crate::chiri::power_base::PowerBase,
+) {
+    if crate::common::is_special_mode(mode) {
+        let ak_cfg = config.get_tuned_profile(mode);
+        if !ak_governor.init_policies(mode, &ak_cfg) {
+            let clg_cfg = clg_cfg_for(config, mode);
+            if clg_cfg.enabled {
+                cpu_governor.init_policies(&clg_cfg);
+            }
+        }
+    } else if is_fast_lock(mode) {
+        // vector / frozen 都由 fast_lock 硬锁（不注册 CLG 参数），漏 init 就是频率零接管。
+        // 差别只在锁定目标：vector 锁硬件最高频（极速），frozen 锁硬件最低频（待春归）。
+        ak_governor.release();
+        cpu_governor.release();
+        fast_lock.init(mode == "frozen");
+    } else {
+        ak_governor.release();
+        fast_lock.release();
+        let clg_cfg = clg_cfg_for(config, mode);
+        if clg_cfg.enabled && crate::common::powerbase_enabled() {
+            // PowerBase 开启：**原本该 CLG 上场的场合**改由 PowerBase 接管。
+            // 模式名、current_mode.chr、规则与界面等外部接口一律不变，只替换
+            // 「谁来调频」这一段实现。CLG 必须先释放，否则两个调频器同时写
+            // scaling_max_freq 会互相踩。
+            cpu_governor.release();
+            power_base.init(&config.powerbase);
+        } else if clg_cfg.enabled {
+            // PowerBase 关闭时它可能还持着频率：先交还，再让 CLG 上场
+            power_base.release();
+            if cpu_governor.is_active() {
+                cpu_governor.reload_config(&clg_cfg);
+            } else {
+                cpu_governor.init_policies(&clg_cfg);
+            }
+        } else {
+            power_base.release();
+            cpu_governor.release();
+        }
+    }
+}
+
+// [aff_snap]
+/// 长尾线程（线程表里只被扫到、从未被动过的条目）的强制全量刷新间隔（帧，
+/// 1s/帧 = 30s），兼作长尾热窗长度：每 30 帧（含首帧）全量落行一次——下游按
+/// 「缺失行 = 与上一帧相同」重建状态，长期省略会累积漂移，刷新帧重新锚定；
+/// 最近 30 帧内 u/core/home/pin/pid/comm 有变化的长尾保持逐帧采样（差分判定
+/// 需要「本帧 u」），静默满 30 帧后降为刷新帧采样。
+const AFF_LONGTAIL_REFRESH_FRAMES: u64 = 30;
+
+/// 单个 tid 的差分基线 + 上次落盘值（差分省略的对比基准）。
+/// **原地更新**：entry 原地改写 + `retain` 增量清理（旧实现每帧整表新建替换），分配为 0。
+struct ThSnap {
+    /// 上轮采样的 utime+stime（差分减数）
+    ticks: u64,
+    /// 上轮采样时刻：本轮 util 的窗口分母（冷长尾跨刷新帧时 = 实际间隔）
+    at: Instant,
+    /// 上轮**落盘**值（省行判定只看这六项）
+    util: i32,
+    core: i32,
+    home: i16,
+    pin: bool,
+    /// 上轮落盘的归属 pid：tid 被别的进程复用时它会变，必须算「变化」
+    pid: u32,
+    /// 上轮落盘的线程 comm（`sample_one_tid` 的原始 stat 值，**不是**落盘用的
+    /// `aff_token` 归一化串——归一化折叠不同 comm，比对它会把「换线程」判成没变）。
+    /// 变更时借 `clear + push_str` 复用容量，稳态零堆分配
+    comm: String,
+    /// 热窗截止帧号：`frame <= hot_until` 时逐帧采样（见上方的常量说明）
+    hot_until: u64,
+}
+
+/// @S 线程下钻的 stat 差分状态：上次采样时刻 + 帧序号 + 每 tid 基线。
+/// 与 cpu_monitor 的进程级基线（SnapState）分开，各自独立滚动。
+#[derive(Default)]
+struct AffThState {
+    /// 上次采样时刻（None = 首帧：只建基线、util 全 0）
+    last_at: Option<Instant>,
+    /// 帧序号（1 起，首帧 = 1）：刷新帧与热窗判定用
+    frame: u64,
+    /// tid → 差分基线（原地更新、增量清理，不整表重建）
+    base: std::collections::HashMap<u32, ThSnap>,
+}
+static AFF_TH_STATE: std::sync::OnceLock<Mutex<AffThState>> = std::sync::OnceLock::new();
+
+/// stat ticks → 秒的换算（USER_HZ，Android 恒 100）：只探测一次
+fn clk_tck() -> f32 {
+    static CLK_TCK: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *CLK_TCK.get_or_init(|| {
+        let v = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+        if v > 0 { v as f32 } else { 100.0 }
+    })
+}
+
+// （线程所在核 processor 由 affinity::sample_one_tid 同一次 stat 读取顺带解析，
+//  不再单独读 /proc/<tid>/stat——见 ThreadSample::processor）
+
+/// 核占用掩码 hex 位图：`read_tid_mask` 给出允许核列表（如 0..7 全核），转成
+/// 位图 hex（8 核全占 = `ff`）；查不到（线程消亡等）写 `-`
+fn mask_hex(pid: i32) -> String {
+    let Some(cpus) = affinity::read_tid_mask(pid) else {
+        return "-".to_string();
+    };
+    let mut bits: u64 = 0;
+    for c in cpus {
+        if c < 64 {
+            bits |= 1u64 << c;
+        }
+    }
+    format!("{bits:x}")
+}
+
+/// @S 每秒进程/线程快照帧（`devimp/aff_<ts>.log`）组装：top-N 进程 + 前台树/
+/// 被管进程线程下钻。只在 `diag_active()` 时由 1s 块调用（与 main_snap 同门控，
+/// 关闭路径零采样零写入），行数组交 `logger::aff_snapshot`（帧头计数由行反推）。
+///
+/// 落盘集合 = util top-N（N = meta.devimp_top_n）∪ 前台进程+全部线程 ∪ 被管
+/// 进程+被管线程；后两者 rank=0、util=0 也落盘。前台子进程无现成枚举手段，
+/// 只落前台进程+线程（不硬造 /proc 遍历）。
+///
+/// ── 帧内 `t` 行集合（差分帧，读日志必须按此口径）──
+/// `t` 行 = ① 前台进程**全部**线程（全量每帧写：分析最关键）
+///        ∪ ② `AffinityManager` 线程表里**被动过的条目**（home ≥ 0 或组绑定，
+///          thread_diag 的 pinned 即此集合；全量每帧写：它们是 `@A` 动作帧的
+///          作用对象，必须与动作流逐帧对齐）
+///        ∪ ③ **变化的长尾线程**（只被扫到、从未动过的条目里，本帧 u/core/home/
+///          pin/pid/comm 任一与上次落盘值不同者；pid/comm 是线程身份——tid 会被
+///          复用，身份变了必须落行）。
+/// **缺失的 `t` 行 = 与上一帧该 tid 完全相同**（省行不丢语义），每
+/// [`AFF_LONGTAIL_REFRESH_FRAMES`] 帧（含首帧）全量刷新一次防漂移；③ 的 `u` 是
+/// 自上次采样（最多 30 帧）窗口的平均值，①② 仍是 1s 窗口值。`p` 行不走差分
+/// （每帧全量）。代价须知：冷长尾不采样则 u 不可知，首次见到的变化后 30 帧内
+/// 逐帧可见（热窗），一直沉默偶发活跃的最迟下一个刷新帧（≤30s）才被记录，且
+/// 帧窗口内 <30s 的短促占用会被抹平——省的就是「从未动过」的长尾，别拿它做
+/// 短时尖峰归因。
+///
+/// 行格式（util 一律整数百分比）：
+/// - 进程：`p <rank> <pid> <pkg|comm> u=<util%> mask=<核占用hex> home=<核|-1>`
+/// - 线程：`t <pid> <tid> <comm> u=<util%> core=<核|-1> home=<核|-1> pin=<0|1> uclamp=-1`
+///
+/// 数据来源与成本：进程 util 走 `snapshot_procs`（eBPF map 差分）；线程 util 走
+/// `sample_one_tid` stat 差分（只对下钻线程，长尾按热窗/刷新帧降采样）；核掩码
+/// 只对落盘进程查 `read_tid_mask`；home/pin 直取 AffinityManager 状态表；uclamp
+/// 不下钻恒 -1。
+fn build_aff_snapshot(
+    mgr: &affinity::AffinityManager,
+    fg_pid: i32,
+    fg_pkg: &str,
+    top_n: usize,
+) -> Vec<String> {
+    use std::collections::{HashMap, HashSet};
+
+    // 被管线程状态（home/pin）一次取完；进程级 home 从这里派生
+    let diag = mgr.thread_diag();
+    let mut th_state: HashMap<u32, (i16, bool)> = HashMap::with_capacity(diag.len());
+    let mut pid_home: HashMap<u32, i16> = HashMap::new();
+    for (tid, pid, home, pinned) in &diag {
+        th_state.insert(*tid as u32, (*home, *pinned));
+        // 进程级 home（确定性归属，与 HashMap 遍历序无关）：取最小有效 home，
+        // 全无有效记录落 -1——多钉线程进程的 p 行 home 不再逐帧漂移
+        let slot = pid_home.entry(*pid as u32).or_insert(-1);
+        if *home >= 0 && (*slot < 0 || *home < *slot) {
+            *slot = *home;
+        }
+    }
+
+    // ── 线程下钻候选集 = 前台树全量 ∪ 被管线程表（按 tid 去重，稳定排序）──
+    // full = 每帧全量采样 + 全量落行（①前台进程线程 / ②被动过的被管条目；
+    // thread_diag 的 pinned 已含 home ≥ 0 ∪ group_bind ≠ None）；full=false 为长尾
+    let mut tids: Vec<(u32, u32, bool)> = Vec::new(); // (pid, tid, full)
+    let mut seen_tid: HashSet<u32> = HashSet::new();
+    if fg_pid > 0 {
+        for tid in crate::monitor::cpu_monitor::get_thread_tids(fg_pid as u32) {
+            if seen_tid.insert(tid) {
+                tids.push((fg_pid as u32, tid, true));
+            }
+        }
+    }
+    for (tid, pid, _, pinned) in &diag {
+        if seen_tid.insert(*tid as u32) {
+            tids.push((*pid as u32, *tid as u32, *pinned));
+        }
+    }
+    tids.sort_unstable();
+
+    // 线程采样：stat 差分（首见/首帧只建基线 util=0）+ comm；core 取 stat 的
+    // processor 字段（读不到 -1）。采样失败（线程已退出）即不落行。
+    // 末位 bool = 本帧是否落行（差分的核心：采样了也可能省行）
+    let mut th_rows: Vec<(u32, u32, String, i32, i32, bool)> = Vec::with_capacity(tids.len());
+    {
+        let mut st = AFF_TH_STATE
+            .get_or_init(|| Mutex::new(AffThState::default()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let now = Instant::now();
+        let first = st.last_at.is_none();
+        st.last_at = Some(now);
+        st.frame += 1;
+        let frame = st.frame;
+        // 刷新帧：首帧必全量（全建基线、util 全 0），此后每 30 帧一次（防漂移）
+        let refresh = first || frame % AFF_LONGTAIL_REFRESH_FRAMES == 0;
+        for &(pid, tid, full) in &tids {
+            let (home, pinned) = th_state.get(&tid).copied().unwrap_or((-1, false));
+            // 长尾且已退冷：本轮**不采样、不落行**（省 stat 读与行；语义由
+            // 「缺失行 = 与上一帧相同」承载）。刷新帧或热窗内的仍逐帧采样
+            if !full && !refresh && !st.base.get(&tid).is_some_and(|e| e.hot_until >= frame) {
+                continue;
+            }
+            let Some(s) = affinity::sample_one_tid(tid as i32) else {
+                // 线程已退出：顺手回收基线（原地 remove，不整表重建）
+                st.base.remove(&tid);
+                continue;
+            };
+            // 窗口分母取该 tid 自己的上次采样时刻：冷长尾跨刷新帧时窗口 = 实际间隔
+            let win_secs = match st.base.get(&tid) {
+                Some(e) => now.duration_since(e.at).as_secs_f32(),
+                None => 0.0,
+            };
+            // 单线程只能跑在一个核上：util ≤ 100%（采样抖动由 clamp 兜底）
+            let util_pct = match st.base.get(&tid) {
+                Some(e) if win_secs > 0.0 && s.ticks >= e.ticks => {
+                    (((s.ticks - e.ticks) as f32 / clk_tck()) / win_secs * 100.0).clamp(0.0, 100.0)
+                }
+                _ => 0.0,
+            };
+            let util = util_pct.round() as i32;
+            // 基线**原地更新**（复用 entry），顺带按差分决定本帧是否落行
+            let emit = match st.base.get_mut(&tid) {
+                Some(e) => {
+                    // 身份（pid/comm）一并参与差分：冷长尾最长 30 帧才采样一次，
+                    // 期间 tid 复用若不比身份，新线程会沿用旧 pid/comm 的行
+                    let changed = e.util != util
+                        || e.core != s.processor
+                        || e.home != home
+                        || e.pin != pinned
+                        || e.pid != pid
+                        || e.comm != s.comm;
+                    // 有变化即续热窗 30 帧：之后仍逐帧采样（差分判定要看「本帧 u」）；
+                    // 静默满 30 帧自然退冷，回到 30 帧一次的刷新采样
+                    if changed {
+                        e.hot_until = frame + AFF_LONGTAIL_REFRESH_FRAMES;
+                        // comm 只在真变了才改写，复用 String 容量、稳态零分配
+                        if e.comm != s.comm {
+                            e.comm.clear();
+                            e.comm.push_str(&s.comm);
+                        }
+                    }
+                    e.ticks = s.ticks;
+                    e.at = now;
+                    e.util = util;
+                    e.core = s.processor;
+                    e.home = home;
+                    e.pin = pinned;
+                    e.pid = pid;
+                    full || refresh || changed
+                }
+                None => {
+                    // 首见（新线程 / 新进程线程）：必落行，长尾则进热窗观察 30 帧
+                    st.base.insert(
+                        tid,
+                        ThSnap {
+                            ticks: s.ticks,
+                            at: now,
+                            util,
+                            core: s.processor,
+                            home,
+                            pin: pinned,
+                            pid,
+                            comm: s.comm.clone(),
+                            hot_until: frame + AFF_LONGTAIL_REFRESH_FRAMES,
+                        },
+                    );
+                    true
+                }
+            };
+            th_rows.push((pid, tid, crate::logger::aff_token(&s.comm), util, s.processor, emit));
+        }
+        // 增量清理：只保留本轮候选集内的 tid（线程消亡随候选集消失回收），
+        // `retain` 原地收缩零分配。注意保留本轮未采样的冷长尾：其基线 `at` 要
+        // 留到刷新帧才能算出覆盖整段间隔的 util，删掉会把窗口重置为 0
+        st.base.retain(|tid, _| seen_tid.contains(tid));
+    }
+    // 被管进程的 comm 兜底（不在进程快照里时用其任一线程 comm）。
+    // 取**采样到**（含本帧省行）的线程：省行的线程其进程仍可能在补位 p 行上
+    let mut pid_comm: HashMap<u32, &str> = HashMap::new();
+    for (pid, _, comm, _, _, _) in &th_rows {
+        pid_comm.entry(*pid).or_insert(comm.as_str());
+    }
+
+    // ── 进程集合：util top-N ∪ 前台进程 ∪ 被管进程 ──
+    let mut procs = crate::monitor::cpu_monitor::snapshot_procs();
+    // util 降序 + pid 升序 tie-break：等 util（常见于大量 util=0 的冷进程）时
+    // 行序与 top-N 成员不随 BPF map 遍历序逐帧抖动
+    procs.sort_by(|a, b| {
+        b.util
+            .partial_cmp(&a.util)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.pid.cmp(&b.pid))
+    });
+    // config normalize 已钳 1..=64；此处兜底还要接住 Config::load 失败降级路径
+    // （derive Default 的 devimp_top_n=0，未经 normalize）——0 按缺省 10 恢复
+    let top_n = if top_n == 0 { 10 } else { top_n.clamp(1, 64) };
+    let top_len = top_n.min(procs.len());
+    let proc_of: HashMap<u32, _> = procs.iter().map(|p| (p.pid, p)).collect();
+    let mut extra: Vec<u32> = Vec::new();
+    let mut seen_pid: HashSet<u32> = HashSet::new();
+    for p in procs.iter().take(top_len) {
+        seen_pid.insert(p.pid);
+    }
+    if fg_pid > 0 && seen_pid.insert(fg_pid as u32) {
+        extra.push(fg_pid as u32);
+    }
+    let mut managed: Vec<u32> = mgr.managed_pids().into_iter().map(|p| p as u32).collect();
+    managed.sort_unstable();
+    for pid in managed {
+        if seen_pid.insert(pid) {
+            extra.push(pid);
+        }
+    }
+
+    // ── 拼行：p 行在前（top-N rank=1..N 按 util 降序，补位行 rank=0），t 行随后 ──
+    let mut rows: Vec<String> = Vec::with_capacity(top_len + extra.len() + th_rows.len());
+    for (rank, p) in procs.iter().take(top_len).enumerate() {
+        let name = if p.pid as i32 == fg_pid && !fg_pkg.is_empty() {
+            fg_pkg
+        } else {
+            p.comm.as_str()
+        };
+        // comm/cmdline 可含空白与控制字符（含换行会拆帧），过 aff_token 净化
+        let name = crate::logger::aff_token(name);
+        rows.push(format!(
+            "p {} {} {} u={} mask={} home={}",
+            rank + 1,
+            p.pid,
+            name,
+            p.util.round() as i32,
+            mask_hex(p.pid as i32),
+            pid_home.get(&p.pid).copied().unwrap_or(-1),
+        ));
+    }
+    for pid in extra {
+        let (name, util) = match proc_of.get(&pid) {
+            Some(p) => (p.comm.as_str(), p.util),
+            // 快照里没有（不在 TGID map 的冷进程）：comm 兜底用其下钻线程的 comm
+            None => (pid_comm.get(&pid).copied().unwrap_or("-"), 0.0),
+        };
+        // 前台进程优先写包名（pkg|comm 口径）；comm 同样净化（防拆帧）
+        let name = if pid as i32 == fg_pid && !fg_pkg.is_empty() {
+            fg_pkg
+        } else {
+            name
+        };
+        let name = crate::logger::aff_token(name);
+        // 与 t 行取整口径一致（round，非 {:.0} 的向偶取整）
+        let u = util.round() as i32;
+        rows.push(format!(
+            "p 0 {pid} {name} u={u} mask={} home={}",
+            mask_hex(pid as i32),
+            pid_home.get(&pid).copied().unwrap_or(-1),
+        ));
+    }
+    for (pid, tid, comm, util_pct, core, emit) in &th_rows {
+        // 差分省行：本帧与上次落盘值相同（长尾冷线程）→ 不落行
+        if !*emit {
+            continue;
+        }
+        let (home, pinned) = th_state.get(tid).copied().unwrap_or((-1, false));
+        rows.push(format!(
+            "t {pid} {tid} {comm} u={util_pct} core={core} home={home} pin={} uclamp=-1",
+            if pinned { 1 } else { 0 }
+        ));
+    }
+    rows
+}
+
+// [affinity]
+/// 应用 CPU 亲和布局与 core_ctl 在线策略（ChiRi 专属，跟随模式/屏幕/前台 PID）。
+/// 内部带去重：布局与 PID 未变化时无 sysfs 写入，可安全周期性调用。
+/// `core_utils` 为最近一次 SystemLoadUpdate 的逐核 util（按核选核打分输入）。
+/// `scenemode_offline` 为 scenemode 激活标志：抑制 boost（boost 会把 min_cpus
+/// 抬回全组常在线、把被压制的核拉回来）并触发 scenemode 大核压制——首选
+/// WALT core_ctl `max_cpus=0` 收缩 prime 簇，兜底逐核 online 下线（见 core_ctl.rs）。
+fn apply_affinity_and_corectl(
+    affinity: &mut affinity::AffinityManager,
+    corectl: &mut core_ctl::CoreCtlManager,
+    config: &Config,
+    mode: &str,
+    screen_on: bool,
+    fg_pid: i32,
+    core_utils: &[f32],
+    scenemode_offline: bool,
+) {
+    // 实验室静态分组模式（contingency/babel）：停线程迁移、按模式写组级 cpus；
+    // governor/GPU 由调用方 sync（sync_lab_governor_gpu）。周期重入即纠偏
+    // （框架写回的 top-app/foreground 会被重写）。core_ctl 交回系统（NONE）。
+    if mode == "contingency" || mode == "babel" {
+        // lab 静态分组本质是线程/核心摆放，与普通亲和一样受总闸约束（机型子开关与
+        // meta.thread_bind 在 Config::load 取「与」——后者是实验室 frozen 专用闸）
+        if config.affinity.enabled {
+            affinity.lab_static_apply(mode);
+        } else {
+            affinity.lab_static_deactivate();
+        }
+        corectl.set_power_state(false, false);
+        return;
+    }
+    // stardust 家族（scenemode）语义：停线程迁移与动态分组、全部 cpuset 恢复全核——
+    // 压频只压 CLG 频率上限；核心层面仅做 prime 簇压制（首选 WALT core_ctl
+    // max_cpus=0 整簇 halt，兜底逐核 online 下线，见 core_ctl.rs [max_cpus]），
+    // 线程/组摆放不做任何特化。affinity.release 会把此前收窄的组按快照恢复。
+    // 本分支由 2s 周期块与场景事件反复进入：仅在持有接管时 release 一次，
+    // 避免息屏全程每 2s 重复回写后台组 uclamp.max 并刷「已释放接管」日志
+    if scenemode_offline {
+        if affinity.is_active() {
+            affinity.release();
+        }
+        corectl.set_power_state(false, config.core_ctl.enabled);
+        return;
+    }
+    // fas 模式按 boost 处理：FAS 只负责调频，线程摆放沿用 boost 布局（top-app/
+    // foreground 收窄 prime∪big + 前台钉核 + core_ctl 保大核）；FAS 与屏幕状态完全
+    // 解耦（息屏不再释放实例），故全时段入 boost，不按 screen_on 回退 normal。
+    // 语义声明：boost 只看 mode、不查 FAS 引擎是否活跃——初始化失败冷却期（最长
+    // FAS_COOLDOWN=300s）与重激活间隙内 mode 仍为 fas，boost 布局照常生效（调频为
+    // CLG default）。这是有意的：mode=="fas" 时前台必为白名单游戏，摆放非负收益，
+    // gating is_active 反而会引入激活边界的布局抖动
+    // 省电型特调（boost_affinity=false，如 playback/daily）不走 boost：不收窄 cpuset、
+    // 不保大核常在线——与省电目标相反（大核空转漏电、解码线程被低上限压住）
+    let boost = ((is_boost_mode(mode) && tuned_boost_affinity(config, mode)) || mode == "fas")
+        && !scenemode_offline;
+    // top-app uclamp.max 放开（激活期写 100 让重线程可被 EAS 放到 prime）的管理
+    // 归属：特调（akmode）由本函数按当前模式同步 Some(true)；fas 交给
+    // fas_affinity_hook（None = 本函数不干预，避免与其时序打架）；其余 boost 模式
+    // Some(false)——保证离开特调后不残留 100。省电型特调同样不放开（不抬 prime 上限）
+    let uclamp_override = if mode == "fas" {
+        None
+    } else {
+        Some(crate::common::is_special_mode(mode) && tuned_boost_affinity(config, mode))
+    };
+    affinity.apply(
+        screen_on,
+        fg_pid,
+        &config.affinity,
+        boost,
+        core_utils,
+        uclamp_override,
+    );
+    // core_ctl 在线接管随 boost 走；scenemode 的 prime 压制在上方分支处理
+    // （core_ctl max_cpus 首选、逐核 offline 兜底），不与本路径混用
+    corectl.set_power_state(config.core_ctl.enabled && boost, false);
+}
+
+/// FAS 亲和接入点：FAS 激活/去激活时调整线程摆放相关状态。
+/// 当前职责：激活期放开 top-app uclamp.max 写 100（boost 布局写的 85 会钳制 EAS
+/// 对重线程的 capacity 视图、抑制 prime 放置，与 FAS 让 prime 承接负载相悖；FAS
+/// 激活期锁频绕过 schedutil，85 对调频无效），去激活还原。后续 FAS 线程钉核扩展也在此实现。
+fn fas_affinity_hook(
+    affinity_mgr: &mut affinity::AffinityManager,
+    corectl_mgr: &mut core_ctl::CoreCtlManager,
+    active: bool,
+    fg_pid: i32,
+) {
+    let _ = (corectl_mgr, fg_pid);
+    affinity_mgr.set_boost_uclamp_override(active);
+}
+
+// [mode_file]
+/// `current_mode.chr` 的写入记账：值未变且磁盘内容一致时跳过写入。
+/// 5s 自愈块的无条件重写是 5 个 syscall（exists + chmod 664 + write + chmod 444
+/// 及开关文件），稳态下内容几乎从不变化，纯浪费；记账后稳态轮次只剩读一次内容
+/// 比对（1 个 syscall）。**不能只判 `exists()`**：文件被外部清空/改写时它依然存在，
+/// 而「被清空」恰是这类状态文件最常见的损坏形态——读内容比对既保住「外部清空/
+/// 改写也会自愈」的语义，又远便宜于无条件重写。
+/// 写路径、文件权限（664 → 444）与失败处理仍交给 `try_write_file`，与原实现一致。
+struct ModeFile {
+    path: std::path::PathBuf,
+    /// 上次经本写入器落盘的模式值（None = 尚未写过 / 文件已被删除）
+    last: Option<String>,
+}
+
+impl ModeFile {
+    fn new(path: std::path::PathBuf) -> Self {
+        Self { path, last: None }
+    }
+
+    /// 无条件写入（启动初始写入、模式切换 / FAS 退出 / DOWN 进入等事件路径用）：
+    /// 事件发生时模式确实变了，保持原有「每次都写」行为，只顺带更新记账。
+    fn write(&mut self, mode: &str) {
+        let _ = utils::try_write_file(&self.path, mode.as_bytes());
+        self.last = Some(mode.to_string());
+    }
+
+    /// 删除文件（DOWN 退出时调用）：必须一并清记账——否则文件缺失后，一个
+    /// 「与记账相同」的模式切换会被误判为无需写入，留下最长 5s 的文件空窗。
+    fn remove(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+        self.last = None;
+    }
+
+    /// 5s 自愈：记账值相同 **且** 磁盘内容一致才跳过，否则无条件重写
+    /// （外部清空 / 改写 / 删除都会因比对不等而触发自愈）。
+    fn heal(&mut self, mode: &str) {
+        if self.last.as_deref() == Some(mode) && file_content_eq(&self.path, mode.as_bytes()) {
+            return;
+        }
+        self.write(mode);
+    }
+}
+
+/// 读一次文件内容与期望字节比对（供跳过无变化的周期重写）。
+/// 读失败（文件缺失 / 不可读）即判不等 → 由调用方重写自愈。
+fn file_content_eq(path: &std::path::Path, expected: &[u8]) -> bool {
+    matches!(std::fs::read(path), Ok(cur) if cur == expected)
+}
+
+// [threads]
+/// 启动 Chiri 调度线程组（由 main.rs 调用）：`config_watcher` 监听 config 目录，
+/// 热重载 Config 并重放一次性系统调整；`scheduler_ipc` 消费 `DaemonEvent` 状态机，
+/// 驱动 CLG 接管/释放/配置切换。`rx` 为 Monitor↔调度层的有界事件通道，
+/// `shared_config` 为全局共享配置，`ak_active` 为特调激活标志（Monitor 层据此切换
+/// 采样间隔），`fas_signal` 为 FAS 前台激活信号（FasManager 置位并唤醒等待者，
+/// fps_monitor 据此门控 eBPF 探针加载与 uprobe 挂载——反偷跑）。
+pub fn start_scheduler_thread(
+    rx: mpsc::Receiver<DaemonEvent>,
+    shared_config: Arc<RwLock<Config>>,
+    ak_active: Arc<AtomicBool>,
+    fas_signal: Arc<crate::monitor::FasSignal>,
+    rhine_initial: Option<String>,
+) -> Result<()> {
+    let root = common::get_module_root();
+    // 配置路径：8550 等 Chiri 目标 SoC 使用处理器子目录 config/{soc}/meta.yaml，热重载跟随该文件
+    let config_path = common::get_config_path();
+    let config_dir = root.join("config");
+
+    // 初始模式透传 rules.yaml 的 global_mode：硬编码 "default" 会在开机到首个
+    // ModeChange（约 2 秒）前按错误模式接管 CPU；未配置/未注册时回退 default
+    let initial_mode = {
+        // 嵌入 rules.yaml 为唯一规则来源（编译期打包防篡改；磁盘文件仅展示副本）。
+        // 实验室启用时其全局模式覆盖优先，否则开机后 ~2s 会按 rules 旧值接管
+        let rules = crate::common::embedded_rules();
+        let m = crate::common::lab_global_mode().unwrap_or_else(|| rules.global_mode.clone());
+        if m.is_empty() || shared_config.read().unwrap().get_mode(&m).is_none() {
+            "default".to_string()
+        } else {
+            m
+        }
+    };
+
+    // 当前生效模式名（跨线程共享，仅在 scheduler_ipc 线程内写）；另留一份给 DOWN
+    // 停摆退出恢复用，初值只是启动缺省，真正停摆时会被当时的实际模式覆盖
+    let mut down_resume_mode = initial_mode.clone();
+    let shared_mode_name = Arc::new(Mutex::new(initial_mode));
+    // sysfs 路径存在性缓存，避免每次 IO 调整前重复探测
+    let sys_path_exist = Arc::new(utils::SysPathExist::new());
+    // 触摸事件通道（事件驱动）：触摸检测线程发送触摸事件，scheduler_ipc 即时处理并触发大核升频
+    let (touch_tx, touch_rx) = mpsc::sync_channel::<()>(8);
+    // feature/meta 热重载联动标志：config_watcher 成功重载后置位，scheduler_ipc
+    // 轮询消费——修复「调参要等下次 ModeChange 才生效」的热更新断链
+    let config_dirty = Arc::new(AtomicBool::new(false));
+
+    // [down_watcher]
+    // DOWN 停摆状态监听：down.chr 一被写入/清空就切换停摆，与 meta.yaml、rhine.chr
+    // 同语义；这里只维护「该不该停摆」，真正的释放/恢复在调度循环里做（governor
+    // 归它独占）。**必须排在所有会写 sysfs 的线程与首次下发之前**——一次性系统
+    // 调整等都按它决定是否下发，否则「重启后仍停摆」的启动会先写一遍 tweak
+    let down_root = root.clone();
+    crate::down::on_startup(&down_root);
+    thread::Builder::new()
+        .name("down_watcher".to_string())
+        .spawn(move || crate::down::watch_loop(down_root))?;
+
+    // 启动时立即应用一次性系统调整（cpuidle / IO / 屏蔽系统自带触摸升频 / 内核 sched
+    // 参数），避免首次配置变更前未生效（config_watcher 仅在配置变化后重放）。
+    // **停摆启动期跳过**：DOWN 语义是「一切交回系统」，这些节点里正有一批与调度
+    // 直接相关，下发等于停摆期还在替用户调度，基线不再是系统原状；停摆判定在
+    // `apply_system_tweaks` 内（唯一下发入口，带互斥闸），此处不重复判
+    if let Err(e) =
+        CpuScheduler::new(shared_config.clone(), sys_path_exist.clone()).apply_system_tweaks()
+    {
+        log::error!(
+            "{}",
+            t_with_args(
+                "config-apply-tweaks-failed",
+                &fluent_args!("error" => e.to_string())
+            )
+        );
+    }
+
+    // 触摸检测线程（Chiri 专属）：读取 /dev/input 触摸事件，经事件通道驱动大核触摸升频
+    thread::Builder::new()
+        .name("touch_detect".to_string())
+        .spawn(move || {
+            crate::chiri::touch_detect::monitor_touch(touch_tx);
+        })?;
+
+    // [config_watcher]
+    let config_clone = shared_config.clone();
+    let sys_path_clone = sys_path_exist.clone();
+    let dirty_clone = config_dirty.clone();
+    // config_path 下面要被 config_watcher 的闭包吃掉，实验室监听线程留一份
+    let config_path_for_rhine = config_path.clone();
+    // 只关心生效 meta 文件自身的事件：同目录临时文件（WebUI `*.webui.tmp`、自愈
+    // `*.tmp`）必须忽略，否则原子替换完成前提前重载读到旧内容（详见 utils::DirWatcher）
+    let config_file_name = config_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "meta.yaml".to_string());
+
+    thread::Builder::new()
+        .name("config_watcher".to_string())
+        .spawn(move || {
+            // 监听生效配置的父目录而非固定的 config/ 根：生效配置在处理器子目录
+            // （如 config/8550/feature.yaml），inotify 目录监听不递归，监听根目录收
+            // 不到子目录内的 CLOSE_WRITE/MOVED_TO，热重载会完全失效
+            let watch_dir = config_path
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or(config_dir);
+            // inotify 实例跨重载复用（旧实现每轮重建，重载窗口内到达的事件被丢弃）
+            let mut watcher: Option<utils::DirWatcher> = None;
+            loop {
+                if watcher.is_none() {
+                    match utils::DirWatcher::new(&watch_dir) {
+                        Ok(w) => watcher = Some(w),
+                        Err(e) => {
+                            log::error!(
+                                "{}",
+                                t_with_args(
+                                    "config-watch-error",
+                                    &fluent_args!("error" => e.to_string())
+                                )
+                            );
+                            // 退避后再重试，避免持续错误时忙循环刷 CPU
+                            thread::sleep(std::time::Duration::from_secs(2));
+                            continue;
+                        }
+                    }
+                }
+                let waited = watcher.as_mut().unwrap().wait_change(&config_file_name);
+                if let Err(e) = waited {
+                    log::error!(
+                        "{}",
+                        t_with_args(
+                            "config-watch-error",
+                            &fluent_args!("error" => e.to_string())
+                        )
+                    );
+                    // 丢弃异常实例（目录被重建/ fd 异常），下轮重新建立监听
+                    watcher = None;
+                    thread::sleep(std::time::Duration::from_secs(2));
+                    continue;
+                }
+                log::info!("{}", t("config-reloading"));
+
+                // meta.yaml 自愈先于重载：字段非法用嵌入默认整体覆盖并追加警告注释，
+                // 文件缺失则重建，再加载（Config::load 读到的一定是合法 meta）；
+                // nofix 防篡改开启时跳过，非法字段由 Config::load 自行回退（不落盘）
+                if !common::nofix_active() {
+                    common::sync_meta_snapshot(&config_path);
+                }
+
+                let old_lang = config_clone.read().unwrap().meta.language.clone();
+
+                match Config::load(config_path.to_str().unwrap()) {
+                    Ok(new_config) => {
+                        logger::update_level(&new_config.meta.loglevel);
+                        *config_clone.write().unwrap() = new_config;
+
+                        let new_lang = config_clone.read().unwrap().meta.language.clone();
+                        if old_lang != new_lang {
+                            load_language(&new_lang);
+                        }
+
+                        log::info!("{}", t("config-reloaded-success"));
+
+                        // 一次性系统调整的下发要过停摆判定：本线程独立于调度循环、
+                        // 拿不到 `halted`，判定放在唯一入口 apply_system_tweaks（原子
+                        // 标志 + 互斥闸）。停摆期照常重载配置（日志/语言生效）但不写
+                        // 系统，退出停摆时由调度循环补发
+                        let scheduler =
+                            CpuScheduler::new(config_clone.clone(), sys_path_clone.clone());
+                        if let Err(e) = scheduler.apply_system_tweaks() {
+                            log::error!(
+                                "{}",
+                                t_with_args(
+                                    "config-apply-tweaks-failed",
+                                    &fluent_args!("error" => e.to_string())
+                                )
+                            );
+                        }
+
+                        // 通知 scheduler_ipc：运行中的 CLG/akmode/亲和/core_ctl 需按新配置重载
+                        dirty_clone.store(true, Ordering::Release);
+                    }
+                    Err(load_err) => log::error!(
+                        "{}",
+                        t_with_args(
+                            "config-reload-fail",
+                            &fluent_args!("error" => load_err.to_string())
+                        )
+                    ),
+                }
+            }
+        })?;
+
+    log::info!("{}", t("main-config-watch-thread-create"));
+
+    // [rhine_watcher]
+    // 实验室状态监听：rhine.chr 一被写入就套用/还原，与 meta.yaml 热重载同语义，
+    // 不用重启。盯的是模块根下的 rhine.chr（与 config_watcher 盯的 meta.yaml 不是
+    // 一回事）；套用/还原会改写 meta.yaml，写入方只有本线程，无并发改写
+    let rhine_root = root.clone();
+    thread::Builder::new()
+        .name("rhine_watcher".to_string())
+        .spawn(move || {
+            crate::rhine::watch_loop(rhine_root, config_path_for_rhine, rhine_initial)
+        })?;
+
+    // [ipc_main]
+    let config_clone = shared_config.clone();
+    let mode_clone = shared_mode_name.clone();
+    let dirty_ipc = config_dirty.clone();
+    // sysfs 存在性缓存的另一份：停摆退出后由本线程补发一次性系统调整
+    // （ config_watcher 那条路径只在配置文件变化时才重放）
+    let tweaks_sys_path = sys_path_exist.clone();
+
+    thread::Builder::new()
+        .name("scheduler_ipc".to_string())
+        .spawn(move || {
+            log::info!("{}", t("scheduler-ipc-started"));
+
+            // [ipc_state] 
+            let root = common::get_module_root();
+            // 当前模式持久化文件：每次模式切换时写入，供外部（如 WebUI）读取。
+            // 自愈：每 5s 巡检（见 MODE_FILE_REWRITE_INTERVAL 分支），内容未变跳过
+            // 重写，被清空/改写/删除仍在 5s 内恢复，防 WebUI 读不到当前状态
+            let mode_file_path = root.join("current_mode.chr");
+            // 模式文件写入器：记账上次写入值，5s 自愈块在内容未变时跳过重写
+            // （稳态 5 syscall → 1 read，见 ModeFile 注释）
+            let mut mode_file = ModeFile::new(mode_file_path);
+            const MODE_FILE_REWRITE_INTERVAL: Duration = Duration::from_secs(5);
+            let mut last_mode_file_write = Instant::now();
+            // 停摆期心跳间隔 60s：停摆中日志完全静止，靠这条状态行证明「停摆仍在
+            // 生效、进程未死」——间隔再长就区分不出来了
+            const DOWN_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
+            let mut last_down_heartbeat = Instant::now();
+            // 停摆起始时刻（启动即停摆时就是现在）：心跳里带上已持续分钟数
+            let mut halt_since: Option<Instant> = None;
+            // [halt] 停摆状态机：进入/退出 DOWN 时做一次性的释放与恢复。
+            // 放在调度循环里而不是监听线程里——这些 governor 对象归本线程独占。
+            let mut halted = crate::down::is_down();
+            // 停摆状态下启动：内存里的当前模式直接是 down，下面写文件、status.csv 的
+            // mode 列都用它（rules 里的真实模式不受影响，退出停摆时恢复）
+            if halted {
+                *mode_clone.lock().unwrap() = crate::down::DOWN_MODE.to_string();
+                // **开机就停摆必须显式打点**：状态机不会走「进入停摆」分支，日志里
+                // 没有任何停摆字样，与「调度线程根本没起来」完全同形，必须留痕
+                log::warn!("{}", t("down-boot-halted"));
+                halt_since = Some(Instant::now());
+            }
+            // 启动时先写一次初始模式，避免开机后文件缺失/被清空时 WebUI 显示未知状态
+            {
+                let mode = mode_clone.lock().unwrap().clone();
+                mode_file.write(&mode);
+            }
+
+            let mut cpu_governor = crate::chiri::cpu_load_governor::CpuLoadGovernor::new();
+            // 明日方舟特调（akmode）：独立于 CLG 的 4 档齿轮调度器，前台为白名单应用时接管。
+            // 传入特调激活共享标志，接管/释放时联动 Monitor 层切换采样间隔
+            let ak_governor_flag = ak_active.clone();
+            let mut ak_governor = crate::chiri::tuned::TunedGovernor::new(ak_governor_flag);
+
+            // 极速模式（fast）专属锁频器：与 CLG 完全独立、不读 yaml 参数，锁所有
+            // cluster 的 min=max=硬件最高频，每 5s 重写兜底（节点被改写属异常态）
+            let mut fast_lock = crate::chiri::fast::FastLock::new();
+
+            // PowerBase（Stardust 家族，meta.yaml `powerbase_enabled` 控制，默认关）：
+            // 开启时**替换 CLG 的调频实现**（以放电功耗为指标），模式名与所有外部接口不变。
+            let mut power_base = crate::chiri::power_base::PowerBase::new();
+
+            // governor/GPU 接管层（contingency/babel 用；FAS 的 governor 在 FasManager 内部）。
+            // GpuGuard::new 启动探测一次 devfreq 节点并缓存结果。
+            let mut governor_guard = governor::GovernorGuard::new();
+            let mut gpu_guard = gpu::GpuGuard::new();
+
+            // FAS 实例管理器：温度源独立探测（与下方 thermal 的 temp_sensor_path 语义
+            // 不同）。温度看电池不看处理器：电池是热安全边界，处理器长期 95℃ 属正常
+            // 工作区；无电池节点传 None，FAS 限温关闭不影响其他功能。电池温度刻度
+            // 预识别一次（单位因内核/厂商而异）并全局缓存，CLG 热保护与 FAS 护栏共用
+            // 同一结论防口径漂移；探测不出打 debug，读取侧退化为仅 CPU 温度
+            match crate::utils::battery_temp_scale() {
+                Some(scale) => log::info!(
+                    "{}",
+                    t_with_args(
+                        "battery-temp-scale",
+                        &fluent_args!(
+                            "unit" => scale.label().to_string(),
+                            "divisor" => scale.divisor().to_string()
+                        )
+                    )
+                ),
+                None => log::debug!("{}", t("battery-temp-scale-unknown")),
+            }
+            // FAS 温度源只记节点路径，除数每次刷新取全局预识别结论（勿在此固化）
+            let fas_temp_path =
+                crate::utils::find_battery_temp_path().map(std::path::PathBuf::from);
+            let mut fas_mgr = fas_manager::FasManager::new(fas_temp_path, fas_signal.clone());
+
+            // CPU 亲和与线程迁移控制器 + core_ctl 核心在线接管（ChiRi 专属）
+            let mut affinity_mgr = affinity::AffinityManager::new(sys_path_exist.clone());
+            let mut corectl_mgr = core_ctl::CoreCtlManager::new();
+
+            // 最近一次 eBPF 扩展探针统计（BpfStats 事件 2s 一次增量），随遥测 CSV 落盘
+            let mut last_bpf_stats: (u32, u32, u32) = (0, 0, 0);
+            // 遥测 CSV 落盘计时（1s 精度）与 debug 摘要计数（每 20 行 = 20s 一条）
+            let mut last_telemetry_log = Instant::now();
+            let mut telemetry_log_counter: u32 = 0;
+            // 上一次「PowerAVG 取样被跳过」的原因：只在原因变化时打点，避免每秒刷屏
+            let mut sample_skip_reason = String::new();
+
+            // 屏幕状态标记
+            let mut is_screen_on = true;
+            // 息屏计时：屏幕熄灭时记录，超过 scene_mode_delay_secs 后切到 scenemode 低功耗
+            let mut screen_off_at: Option<Instant> = None;
+            // 是否已进入 scenemode（一次性切换，亮屏/模式变更时复位）
+            let mut scene_mode_active = false;
+            // 特调模式冷却：init_policies 因配置缺失/硬件不支持失败后，5 分钟内不再触发
+            const TUNED_COOLDOWN: Duration = Duration::from_secs(300);
+            let mut tuned_cooldown_until: Option<Instant> = None;
+
+            // FAS 初始化失败冷却：load_policies 无可用 policy 后 5 分钟内不再触发，CLG default 接管
+            const FAS_COOLDOWN: Duration = Duration::from_secs(300);
+            let mut fas_cooldown_until: Option<Instant> = None;
+
+            // scenemode 饱和退出冷却：常驻簇（大核簇）util 持续顶满上限退回
+            // reduce 后，300s 内不得重新进入 scenemode（防止与后台负载反复拉锯）
+            let mut scenemode_cooldown_until: Option<Instant> = None;
+            // scenemode 饱和计时起点（常驻大核簇 max_util 连续超阈值的窗口起点）
+            let mut scenemode_sat_since: Option<Instant> = None;
+
+            // scenemode 负载门槛打点去重：持续被拒期间只记一条 scene_hold
+            let mut scene_hold_logged = false;
+
+            // 热保护：启动时探测一次温度传感器（CPU + 电池），缺失的参考静默降级；
+            // 事件循环内每 2s 采样，按 config.thermal 阈值计算压制上限下发给 CLG
+            let temp_sensor_path = crate::utils::find_cpu_temp_path().ok();
+            if temp_sensor_path.is_none() {
+                log::debug!("{}", t("clg-thermal-no-sensor"));
+            }
+            let batt_sensor_exists = crate::utils::find_battery_temp_path().is_some();
+            if !batt_sensor_exists {
+                log::debug!("{}", t("clg-thermal-no-battery"));
+            }
+            let mut last_thermal_check = Instant::now();
+            // 当前生效的热保护上限（1.0 = 无压制）；变化时才写 governor，避免高频原子写
+            let mut thermal_cap_current: f32 = 1.0;
+            // P1-2 旁证采集状态（【临时】，真机验证期用，见 clamp_evidence_snapshot）：
+            // 上次 clamp_change 快照（变化才落行）+ 缺失节点 warn 去重（每节点首见告警一次，之后静默记 "-"）
+            let mut clamp_prev: Option<String> = None;
+            let mut clamp_warned: HashSet<String> = HashSet::new();
+            // 当前生效的压制豁免档（与 governor 内原子量同步，配置热重载时下发新值）
+            let mut thermal_free_current: f32 = config_clone.read().unwrap().thermal.free_above;
+            // 启动即把配置豁免档同步给 governor（内部默认 0.80，配置可能不同）
+            cpu_governor.set_thermal_limits(thermal_cap_current, thermal_free_current);
+            // tuned 侧的 cap 镜像同样启动即同步一次（1.0 = 无压制，与上方初值一致）
+            crate::chiri::tuned::set_thermal_cap(thermal_cap_current);
+
+            let get_clg_cfg = |config: &Config, mode: &str| -> crate::chiri::config::CpuLoadGovernorConfig {
+                config.get_mode(mode).map(|m| m.cpu_load_governor.clone()).unwrap_or_else(|| {
+                    // 未知/空模式名：不意外启用 CLG，避免用默认参数接管 CPU
+                    let mut cfg = crate::chiri::config::CpuLoadGovernorConfig::default();
+                    cfg.enabled = false;
+                    cfg
+                })
+            };
+
+            // 启动时初始化
+            {
+                // 强制上线全部核心：上次运行可能在 scenemode 中途被杀，残留的离线核
+                // 会让 cpufreq policy 目录消失，下方 CLG/fast_lock 初始化枚举不到该簇
+                // （永久失去 worker），必须先于任何接管。**停摆期不做**：它写
+                // `cpuN/online` 是最直接的调度干预，停摆期本来就不做初始化
+                if !halted {
+                    corectl_mgr.force_online_all();
+                }
+                // 调速器残留清理：SIGKILL 等异常退出会把 performance 留在节点上
+                // （收尾 release 不会执行），启动时一律恢复 schedutil。**停摆期只报
+                // 不写**——停摆要记录系统原状，进程无从区分残留与厂商默认
+                if halted {
+                    crate::chiri::governor::GovernorGuard::report_residue();
+                } else {
+                    crate::chiri::governor::GovernorGuard::cleanup_residue();
+                }
+                let current_mode = mode_clone.lock().unwrap().clone();
+                // 启动接管（极速锁频 / CLG）：**停摆期一律不做**。不靠「停摆时内存
+                // 模式是 down」的脆弱不变量间接跳过——feature.yaml 一旦出现名为
+                // down 的模式段，停摆期开机就会直接锁频/接管 CLG
+                if !halted {
+                    if is_fast_lock(&current_mode) {
+                        fast_lock.init(current_mode == "frozen");
+                    } else if current_mode != "fas" {
+                        let config_lock = config_clone.read().unwrap();
+                        let clg_cfg = get_clg_cfg(&config_lock, &current_mode);
+                        if clg_cfg.enabled {
+                            cpu_governor.init_policies(&clg_cfg);
+                            log::info!("{}", t_with_args("scheduler-clg-init", &fluent_args!("mode" => current_mode.clone())));
+                        }
+                    }
+                }
+                // 开发记录开关初始同步：**与停摆无关**（停摆只停调度，采集照常），
+                // 必须先于下面的 halted 门控，否则停摆启动时诊断记录与配置不一致
+                {
+                    let cfg = config_clone.read().unwrap();
+                    crate::logger::set_diag_active(cfg.meta.dev_record);
+                }
+                crate::logger::set_diag_mode(&current_mode);
+                // 启动即按初始模式应用亲和布局与 core_ctl 在线策略。**停摆启动时
+                // 跳过**：接管亲和等于停摆期还在写 cpuset；且 halted 初值就是
+                // is_down()，循环里「进入停摆」分支不会执行，没人会把它收回去
+                if !halted {
+                    let cfg = config_clone.read().unwrap();
+                    sync_lab_governor_gpu(&current_mode, &mut governor_guard, &mut gpu_guard, &mut fast_lock);
+                    apply_affinity_and_corectl(
+                        &mut affinity_mgr,
+                        &mut corectl_mgr,
+                        &cfg,
+                        &current_mode,
+                        is_screen_on,
+                        crate::monitor::app_detect::get_current_pid(),
+                        &[],
+                        scene_mode_active,
+                    );
+                }
+            }
+
+            // 事件循环包在 catch_unwind 中：panic 被捕获并记录，
+            // 不会让调度线程静默挂掉（否则频率会停在最后状态）。
+            // 最近一次 SystemLoadUpdate 到达时间：供 CLG 看门狗判定负载源是否失效
+            let mut last_load_event = Instant::now();
+            // FAS 延迟退出期间记住的目标模式（fas → X 的 ModeChange 被延迟时记录），
+            // 超时退出完成后按它重新接管（1s tick 巡检消费）
+            let mut pending_mode_after_fas: Option<String> = None;
+            // 最近一次 SystemLoadUpdate 的逐核 util 快照（按核亲和选核输入）
+            let mut last_core_utils: Vec<f32> = Vec::new();
+            // 温度缓存（1s snap 块读取一次，status/devimp/thermal 三处共用）：thermal
+            // 2s 块复用 ≤1s 旧值，温度变化秒级，对带回滞判定无影响
+            let mut last_batt_temp: Option<f32> = None;
+            let mut last_cpu_temp: Option<f32> = None;
+            // 温度滤波：MTK soc_max 跳变极大，不滤波会让热保护 cap 周期性 bang-bang 震荡
+            let mut batt_filter = TempFilter::new(-10.0, 70.0, 10.0, 1.0);
+            let mut cpu_filter = TempFilter::new(5.0, 110.0, 12.0, 3.0);
+            // panic 自愈：panic 被捕获后清理到安全态并重新进入事件循环（退避 + 连续
+            // 崩溃上限），仅 channel 关闭才正常退出——否则进程活着但调度已死
+            // [evt_loop] 
+            let mut ipc_restart_count: u32 = 0;
+            loop {
+            let loop_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            loop {
+                // ── DOWN 停摆 ──
+                // 状态机：进入时释放全部接管并把 current_mode.chr 写成 down，
+                // 退出时删掉那个文件，让下一次 ModeChange 或 5s 自愈把真实模式写回去。
+                let down = crate::down::is_down();
+                if down != halted {
+                    if down {
+                        // 先记下进入停摆前的**实际**模式：初值是启动缺省，此后可能
+                        // 已被 app_modes/特调/FAS 改掉，退出要按真实值重建
+                        down_resume_mode = mode_clone.lock().unwrap().clone();
+                        // FAS 延迟退出的目标模式随之失效（DOWN 退出按 down_resume_mode 接管）
+                        pending_mode_after_fas = None;
+                        halt_since = Some(Instant::now());
+                        // 顺序：先把频率与布局交回系统（各 release 会恢复自己的快照），
+                        // 再写状态文件——反了会有一瞬间「既停摆又还持有着」
+                        cpu_governor.release();
+                        ak_governor.release();
+                        fast_lock.release();
+                        // PowerBase 也要在停摆清单里：兜底块虽会在下一轮收掉，但停摆
+                        // 语义是「立刻交回系统」，靠兜底等于留一个仍在写频率的窗口
+                        power_base.release();
+                        fas_mgr.deactivate_all();
+                        affinity_mgr.release();
+                        affinity_mgr.lab_static_deactivate();
+                        governor_guard.release();
+                        gpu_guard.release();
+                        corectl_mgr.set_power_state(false, false);
+                        // 一次性系统调整也是「调度干预」，一并按快照还原：它们不被
+                        // 任何 governor 持有、release 清单碰不到，不还原则整段停摆期
+                        // 记录到的基线是被改过的系统，而不是系统自身
+                        CpuScheduler::restore_system_tweaks();
+                        *mode_clone.lock().unwrap() = crate::down::DOWN_MODE.to_string();
+                        crate::logger::set_diag_mode(crate::down::DOWN_MODE);
+                        mode_file.write(crate::down::DOWN_MODE);
+                        log::warn!("{}", t("scheduler-down-enter"));
+                    } else {
+                        // 恢复目标模式：优先 monitor 的**实时判定**而非停摆前快照——
+                        // 停摆期间前台变化不会补发 ModeChange，沿用旧快照会一直空窗
+                        // （快照仅在 monitor 尚未判定/刚亮屏清空时兜底）
+                        halt_since = None;
+                        let live_mode = crate::monitor::app_detect::last_determined_mode();
+                        let resume_mode = if live_mode.is_empty() {
+                            down_resume_mode.clone()
+                        } else {
+                            live_mode
+                        };
+                        *mode_clone.lock().unwrap() = resume_mode.clone();
+                        crate::logger::set_diag_mode(&resume_mode);
+                        mode_file.remove();
+                        // 停摆期 governors 全被 release 过，退出时**必须按恢复出的
+                        // 模式重新接管**：ModeChange 只在「模式真的变了」时才重接管，
+                        // 前台没换就会一直空着且无异常提示。fas/特调的事件不会再来，
+                        // 必须在此直接重建（口径与 panic 自愈后的重建一致）
+                        {
+                            let mode = resume_mode.clone();
+                            let cfg = config_clone.read().unwrap();
+                            let pkg = crate::monitor::app_detect::get_current_package();
+                            let pid = crate::monitor::app_detect::get_current_pid();
+                            if is_fast_lock(&mode) {
+                                fast_lock.init(mode == "frozen");
+                            } else if mode == "fas" {
+                                // 与 ModeChange 的 fas 分支同款重建：三 governor 互斥释放
+                                // → activate（内部复查白名单，竞态下前台刚变即拒绝）→
+                                // 亲和 hook；失败回退 CLG default 并进入冷却
+                                ak_governor.release();
+                                fast_lock.release();
+                                cpu_governor.release();
+                                if !pkg.is_empty() && fas_mgr.activate(&pkg, pid) {
+                                    fas_affinity_hook(&mut affinity_mgr, &mut corectl_mgr, true, pid);
+                                } else {
+                                    fas_mgr.deactivate_all();
+                                    fas_cooldown_until = Some(Instant::now() + FAS_COOLDOWN);
+                                    log::warn!(
+                                        "{}",
+                                        t_with_args("scheduler-fas-init-failed", &fluent_args!("pkg" => pkg.clone()))
+                                    );
+                                    let clg_cfg = get_clg_cfg(&cfg, "default");
+                                    if clg_cfg.enabled {
+                                        cpu_governor.init_policies(&clg_cfg);
+                                    }
+                                }
+                            } else if crate::common::is_special_mode(&mode) {
+                                // 特调：按实时包名复查白名单（竞态下前台刚变则拒绝接管，
+                                // 与事件路径同语义），接管失败进冷却
+                                if crate::common::is_special_mode_allowed(&pkg, &mode)
+                                    && !ak_governor.init_policies(&mode, &cfg.get_tuned_profile(&mode))
+                                {
+                                    tuned_cooldown_until = Some(Instant::now() + TUNED_COOLDOWN);
+                                    log::warn!(
+                                        "{}",
+                                        t_with_args("scheduler-tuned-cooldown", &fluent_args!("secs" => TUNED_COOLDOWN.as_secs().to_string()))
+                                    );
+                                }
+                            } else {
+                                let clg_cfg = get_clg_cfg(&cfg, &mode);
+                                if clg_cfg.enabled {
+                                    cpu_governor.init_policies(&clg_cfg);
+                                }
+                            }
+                            // lab 模式的 governor/GPU 同步（退出停摆若回到 contingency/babel）
+                            sync_lab_governor_gpu(&mode, &mut governor_guard, &mut gpu_guard, &mut fast_lock);
+                            apply_affinity_and_corectl(
+                                &mut affinity_mgr,
+                                &mut corectl_mgr,
+                                &cfg,
+                                &mode,
+                                is_screen_on,
+                                pid,
+                                &last_core_utils,
+                                scene_mode_active,
+                            );
+                        }
+                        // 停摆期进 DOWN 时还原过的一次性系统调整在此补发（下发会重新记快照用于下次还原）
+                        if let Err(e) =
+                            CpuScheduler::new(config_clone.clone(), tweaks_sys_path.clone())
+                                .apply_system_tweaks()
+                        {
+                            log::error!(
+                                "{}",
+                                t_with_args(
+                                    "config-apply-tweaks-failed",
+                                    &fluent_args!("error" => e.to_string())
+                                )
+                            );
+                        }
+                        // 停摆期负载事件被丢弃、last_load_event 停在进入前，不重置会被 stale 看门狗释放刚重建的接管
+                        last_load_event = Instant::now();
+                        log::info!("{}", t("scheduler-down-exit"));
+                    }
+                    halted = down;
+                }
+
+                // 当前模式文件自愈：每 5s 巡检一次，内容未变不重写（外部清空/改写/删除最多 5s 内自愈，
+                // 比对不等即重写，见 ModeFile::heal）；停摆期只推进计时不落盘——覆盖 down 等于退出停摆
+                if last_mode_file_write.elapsed() >= MODE_FILE_REWRITE_INTERVAL {
+                    last_mode_file_write = Instant::now();
+                    if !halted {
+                        let mode = mode_clone.lock().unwrap().clone();
+                        mode_file.heal(&mode);
+                    }
+                    // watchdog.pid 自愈：logs/ 被删后随目录消失，不重建则旧看门狗杀不掉、与重启实例双写日志
+                    crate::logger::ensure_watchdog_pid_file();
+                }
+
+                // 停摆期心跳（DOWN_HEARTBEAT_INTERVAL=60s 一条）：停摆中调度动作全停、周期块大多被门控
+                // 跳过，日志长时间静默——没有它分不清「停摆生效中」与「线程已死」。采集（status.csv/
+                // devimp/心跳文件）由各自周期块与独立线程维持，与本心跳无关
+                if halted && last_down_heartbeat.elapsed() >= DOWN_HEARTBEAT_INTERVAL {
+                    last_down_heartbeat = Instant::now();
+                    let mins = halt_since
+                        .map(|t| t.elapsed().as_secs() / 60)
+                        .unwrap_or(0);
+                    log::info!(
+                        "{}",
+                        t_with_args("down-heartbeat", &fluent_args!("mins" => mins.to_string()))
+                    );
+                }
+
+                // feature/meta 热重载联动：与 ConfigReload（rules.yaml）同口径——亮屏时按当前模式把新配置
+                // 应用到运行中的 CLG/akmode 并刷新亲和/core_ctl；停摆期照重载（日志开关等仍生效）只是不下发
+                let config_dirty = dirty_ipc.swap(false, Ordering::AcqRel);
+                if config_dirty {
+                    // 诊断采集开关与停摆无关（停摆只停调度）：无条件同步，改 meta.dev_record 即时生效
+                    let cfg = config_clone.read().unwrap();
+                    crate::logger::set_diag_active(cfg.meta.dev_record);
+                }
+                if config_dirty && !halted && is_screen_on {
+                    let current_mode = mode_clone.lock().unwrap().clone();
+                    let config_lock = config_clone.read().unwrap();
+                    log::debug!(
+                        "{}",
+                        t_with_args(
+                            "scheduler-config-dirty-reload",
+                            &fluent_args!("mode" => current_mode.clone())
+                        )
+                    );
+                    if crate::common::is_special_mode(&current_mode) {
+                        // 特调运行中：按新配置重载 akmode
+                        if ak_governor.is_active() {
+                            let ak_cfg = config_lock.get_tuned_profile(&current_mode);
+                            ak_governor.reload_config(&ak_cfg);
+                        }
+                    } else if is_fast_lock(&current_mode) {
+                        // 硬锁档（vector/frozen）不读 yaml 调参，仅需确保 CLG 未意外持有
+                        if cpu_governor.is_active() { cpu_governor.release(); }
+                    } else if current_mode != "fas" {
+                        // fas 模式下 CLG fallback 不参与热重载（FAS 配置编译期嵌入静态）
+                        let clg_cfg = get_clg_cfg(&config_lock, &current_mode);
+                        if clg_cfg.enabled {
+                            if cpu_governor.is_active() { cpu_governor.reload_config(&clg_cfg); }
+                            else { cpu_governor.init_policies(&clg_cfg); }
+                        } else if cpu_governor.is_active() {
+                            cpu_governor.release();
+                        }
+                    }
+                    drop(config_lock);
+                    // 亲和布局/core_ctl 可能随新配置开关变化，刷新一次
+                    let cfg = config_clone.read().unwrap();
+                    crate::logger::set_diag_active(cfg.meta.dev_record);
+                    crate::logger::set_diag_mode(&current_mode);
+                    apply_affinity_and_corectl(
+                        &mut affinity_mgr,
+                        &mut corectl_mgr,
+                        &cfg,
+                        &current_mode,
+                        is_screen_on,
+                        crate::monitor::app_detect::get_current_pid(),
+                        &last_core_utils,
+                        scene_mode_active,
+                    );
+                }
+
+                // 亲和周期刷新（2s）：同模式前台切换不产生 ModeChange 事件，用最新前台 PID 兜底重迁移
+                // （内部去重）；同时同步开发记录开关（meta.dev_record 热重载生效）
+                if !halted && last_thermal_check.elapsed() >= THERMAL_CHECK_INTERVAL {
+                    let cfg = config_clone.read().unwrap();
+                    let current_mode = mode_clone.lock().unwrap().clone();
+                    crate::logger::set_diag_active(cfg.meta.dev_record);
+                    apply_affinity_and_corectl(
+                        &mut affinity_mgr,
+                        &mut corectl_mgr,
+                        &cfg,
+                        &current_mode,
+                        is_screen_on,
+                        crate::monitor::app_detect::get_current_pid(),
+                        &last_core_utils,
+                        scene_mode_active,
+                    );
+                }
+
+                // 状态日志 snapshot 行（1s）：整合遥测 + 热保护 + 模式状态到 logs/status.csv。
+                // telemetry 线程 1s 刷新共享原子量；OPlus 功耗优先走 bcc_parms 私有节点
+                // （标准 power_supply 节点约 10s 才刷新，1s 采样必须绕开）
+                if last_telemetry_log.elapsed() >= TELEMETRY_LOG_INTERVAL {
+                    last_telemetry_log = Instant::now();
+                    let tm = crate::monitor::telemetry::telemetry();
+                    let fmt_opt = |v: Option<f32>, digits: usize| {
+                        v.map(|x| format!("{:.*}", digits, x))
+                            .unwrap_or_else(|| "-".to_string())
+                    };
+                    // status.csv 列全精度：文件保留全部小数位，取整交给显示层（WebUI 统一 toFixed(1)）；
+                    // fmt_opt 的固定位数留给 devimp 与调试打点
+                    let fmt_opt_full = |v: Option<f32>| {
+                        v.map(|x| x.to_string())
+                            .unwrap_or_else(|| "-".to_string())
+                    };
+                    let current_mode = mode_clone.lock().unwrap().clone();
+                    // 温度本秒读一次，status/devimp/thermal 三处共用；滤波值参与热判定，原始值不再直供
+                    last_batt_temp = if batt_sensor_exists {
+                        crate::utils::read_battery_temp_celsius().and_then(|t| batt_filter.push(t))
+                    } else {
+                        None
+                    };
+                    last_cpu_temp = temp_sensor_path
+                        .as_ref()
+                        .and_then(|p| crate::utils::read_f64_from_file(p).ok())
+                        .map(|v| (v / 1000.0) as f32)
+                        .and_then(|t| cpu_filter.push(t));
+                    // 前台包名实时取自 app_detect（含同模式切换；用事件维护会写过期包名）
+                    let fg_package = crate::monitor::app_detect::get_current_package();
+                    // 诊断日志按前台包名分组：变化即切换 main_ 文件（内部去重，空包名不切换）
+                    crate::logger::set_diag_package(&fg_package);
+                    // 充放电状态：1s 一次读 status 节点（电流符号厂商方向不一，不可靠）
+                    let charge_state = read_battery_charge_state();
+                    // fps 列：仅 FAS 激活时取活跃实例窗口均值，其余为 None → 写 "-"
+                    let fas_fps = fas_mgr.current_fps();
+                    // screen_prop 列：debug.tracing.screen_state 原始值，1s 轮询读取（缺失为 "-"）
+                    let screen_prop_raw =
+                        crate::monitor::screen_detect::read_screen_prop_raw()
+                            .unwrap_or_else(|| "-".to_string());
+                    crate::logger::status_log_snapshot(
+                        &current_mode,
+                        &fg_package,
+                        &charge_state,
+                        is_screen_on,
+                        last_batt_temp,
+                        last_cpu_temp,
+                        &format!("{}", thermal_cap_current * 100.0),
+                        &format!("{}", thermal_free_current * 100.0),
+                        cpu_governor.is_active(),
+                        &fmt_opt_full(Some(tm.psi_cpu_some())),
+                        &fmt_opt_full(Some(tm.psi_io_some())),
+                        &fmt_opt_full(Some(tm.psi_mem_some())),
+                        &fmt_opt_full(tm.gpu_busy()),
+                        &fmt_opt_full(tm.batt_voltage_v()),
+                        // 全精度：电流可能只有 0.5 级小数量级，取整会抹平真值、归档无法反推
+                        &fmt_opt_full(tm.batt_current_ma()),
+                        &fmt_opt_full(tm.batt_power_w()),
+                        last_bpf_stats.0,
+                        last_bpf_stats.1,
+                        last_bpf_stats.2,
+                        fas_fps,
+                        &screen_prop_raw,
+                    );
+                    // PowerAVG（耗电参考/平均）：紧跟 status 行**顺序**写入 PowerAVG.chr。取样口径：
+                    // ① 仅电池放电（充电功率不属于耗电均值）；② 平均模式再排除息屏（息屏占时长大，
+                    // 等权全史会拉低均值）；③ 参考值保留息屏（滑动参考要反映整段放电）。
+                    // 判定式 `!use_average || is_screen_on`：平均 = 放电 && 亮屏，参考 = 放电（含息屏）。
+                    // 不满足时传 None → 递推整体跳过；开关 meta.power_avg 热重载即时生效
+                    let (use_average, notify_on) = {
+                        let cfg = config_clone.read().unwrap();
+                        (cfg.meta.power_avg, cfg.meta.notify)
+                    };
+                    let sample_ok =
+                        charge_state == "discharging" && (!use_average || is_screen_on);
+                    let power_reading = if sample_ok { tm.batt_power_w() } else { None };
+                    // 跳过时 PowerAVG.chr 不更新：跳过原因同一原因只报一次，写入样本后重新武装
+                    let skip_reason = if !sample_ok {
+                        if charge_state != "discharging" {
+                            Some(format!("not-discharging({charge_state})"))
+                        } else {
+                            Some("screen-on".to_string())
+                        }
+                    } else if power_reading.is_none() {
+                        Some("no-reading".to_string())
+                    } else {
+                        None
+                    };
+                    match skip_reason {
+                        Some(reason) => {
+                            if sample_skip_reason != reason {
+                                log::info!(
+                                    "{}",
+                                    crate::i18n::t_with_args(
+                                        "power-avg-skip",
+                                        &crate::fluent_args!("reason" => reason.clone())
+                                    )
+                                );
+                                sample_skip_reason = reason;
+                            }
+                        }
+                        None => sample_skip_reason.clear(),
+                    }
+                    let power_now = crate::logger::power_avg_update(power_reading, use_average);
+                    // 首轮标记必须在自增**之前**取——自增后判断恒为 false，首轮清残留通知不会执行
+                    let first_tick = telemetry_log_counter == 0;
+                    telemetry_log_counter += 1;
+                    // 常驻状态通知：每 5s 更新（内容不变不重投，内部自带失败候选与告警去重）。
+                    // 标题 = 前台包名，正文 = 模式/家族/子模式/温度/功耗（口径随 meta.power_avg）。
+                    // 这里只组装并**非阻塞投递**到 notify 线程，调度循环照常跑
+                    if !notify_on {
+                        // 开关关闭：撤销已投递通知；首轮无条件清掉上次运行残留的那条（此后幂等）
+                        crate::notify::cancel(first_tick);
+                    } else if telemetry_log_counter % crate::notify::INTERVAL_SECS == 0 {
+                        crate::notify::update(&crate::notify::Snapshot {
+                            pkg: &fg_package,
+                            mode: &current_mode,
+                            batt_temp: last_batt_temp,
+                            cpu_temp: last_cpu_temp,
+                            power_w: power_now,
+                        });
+                    }
+                    // 开发记录 snap 行（1s）：开启 dev_record 才有 IO；前台包名行内自动填充
+                    if crate::logger::diag_active() {
+                        // 频率/调速器快照只在诊断开启时采集（常态零开销，不缓存——内核会随时改值）。
+                        // CPU 每秒采；GPU 受 GPU_SNAPSHOT_ENABLED 总开关（当前关闭）控制，开启时
+                        // 再叠加 gpu_snapshot_due() 的 10s 节流；关闭期间这 4 列恒为 "-"
+                        let (cpu_cur, cpu_max, cpu_min, cpu_gov) = crate::chiri::cpu_freq_snapshot();
+                        let (gpu_cur, gpu_max, gpu_min, gpu_gov) = if GPU_SNAPSHOT_ENABLED
+                            && gpu_snapshot_due()
+                        {
+                            crate::chiri::gpu::devfreq_snapshot()
+                        } else {
+                            ("-".to_string(), "-".to_string(), "-".to_string(), "-".to_string())
+                        };
+                        crate::logger::main_snap(
+                            is_screen_on,
+                            &fmt_opt(last_batt_temp, 1),
+                            &fmt_opt(last_cpu_temp, 1),
+                            &format!("{:.0}", thermal_cap_current * 100.0),
+                            cpu_governor.is_active(),
+                            &fmt_opt(Some(tm.psi_cpu_some()), 2),
+                            &fmt_opt(Some(tm.psi_io_some()), 2),
+                            &fmt_opt(Some(tm.psi_mem_some()), 2),
+                            &fmt_opt(tm.gpu_busy(), 0),
+                            &fmt_opt(tm.batt_voltage_v(), 3),
+                            &fmt_opt(tm.batt_current_ma(), 0),
+                            &fmt_opt(tm.batt_power_w(), 2),
+                            last_bpf_stats.0,
+                            last_bpf_stats.1,
+                            last_bpf_stats.2,
+                            &cpu_cur,
+                            &cpu_max,
+                            &cpu_min,
+                            &cpu_gov,
+                            &gpu_cur,
+                            &gpu_max,
+                            &gpu_min,
+                            &gpu_gov,
+                        );
+                        // @S 每秒进程/线程快照（aff_* 线程流文件）：top-N 进程 + 前台树/被管进程
+                        // 线程下钻。同 main_snap 的 diag_active 门控（关闭零采样零写入）；开启时为
+                        // getaffinity/stat 读取，冷长尾按 30 帧一次降采样（帧语义见 build_aff_snapshot）
+                        let snap_top_n = config_clone.read().unwrap().meta.devimp_top_n;
+                        let rows = build_aff_snapshot(
+                            &affinity_mgr,
+                            crate::monitor::app_detect::get_current_pid(),
+                            &fg_package,
+                            snap_top_n,
+                        );
+                        crate::logger::aff_snapshot(&rows);
+                    }
+                    if telemetry_log_counter % 20 == 0 && log::log_enabled!(log::Level::Debug) {
+                        log::debug!(
+                            "{}",
+                            t_with_args(
+                                "telemetry-summary",
+                                &fluent_args!(
+                                    "cpu" => format!("{:.1}", tm.psi_cpu_some()),
+                                    "io" => format!("{:.1}", tm.psi_io_some()),
+                                    "mem" => format!("{:.1}", tm.psi_mem_some()),
+                                    "gpu" => fmt_opt(tm.gpu_busy(), 0),
+                                    "wakeups" => last_bpf_stats.0.to_string(),
+                                    "migrations" => last_bpf_stats.1.to_string(),
+                                    "freq" => last_bpf_stats.2.to_string(),
+                                    "power" => fmt_opt(tm.batt_power_w(), 2)
+                                )
+                            )
+                        );
+                    }
+
+                    // FAS 延迟退出巡检（1s）：到期完成退出并按记住的目标模式重新接管；延迟期内切回
+                    // 白名单应用由 activate 无缝续期，这里 no-op。停摆期不可达（DOWN 的 deactivate_all
+                    // 已清 deadline）——改这段别破坏该不变量，否则停摆会被 FAS 重新接管
+                    if !halted && fas_mgr.tick() {
+                        if let Some(mode) = pending_mode_after_fas.take() {
+                            *mode_clone.lock().unwrap() = mode.clone();
+                            crate::logger::set_diag_mode(&mode);
+                            mode_file.write(&mode);
+                            // governor/GPU：目标若是 contingency/babel 则接管，否则恢复
+                            sync_lab_governor_gpu(&mode, &mut governor_guard, &mut gpu_guard, &mut fast_lock);
+                            fas_affinity_hook(&mut affinity_mgr, &mut corectl_mgr, false, 0);
+                            if mode == "contingency" || mode == "babel" {
+                                // 进入 lab 静态模式：先释放全部其它调频接管——CLG/特调的 tick/防篡改会
+                                // 持续压频、release 会恢复 schedutil，全部释放后再 sync 才是终值
+                                cpu_governor.release();
+                                ak_governor.release();
+                                fast_lock.release();
+                                governor_guard.release();
+                                gpu_guard.release();
+                                sync_lab_governor_gpu(&mode, &mut governor_guard, &mut gpu_guard, &mut fast_lock);
+                                // lab 静态分组与屏幕状态无关：分组重建不门控亮屏
+                                let cfg = config_clone.read().unwrap();
+                                apply_affinity_and_corectl(
+                                    &mut affinity_mgr,
+                                    &mut corectl_mgr,
+                                    &cfg,
+                                    &mode,
+                                    is_screen_on,
+                                    crate::monitor::app_detect::get_current_pid(),
+                                    &last_core_utils,
+                                    scene_mode_active,
+                                );
+                            } else if is_screen_on {
+                                apply_mode_takeover(
+                                    &mode,
+                                    &config_clone.read().unwrap(),
+                                    &mut cpu_governor,
+                                    &mut ak_governor,
+                                    &mut fast_lock,
+                                    &mut power_base,
+                                );
+                            } else {
+                                // 息屏：FAS 退出后交 CLG doze（同款低功耗配置），避免延迟期结束到亮屏间零接管
+                                let cfg = config_clone.read().unwrap();
+                                let mut doze_cfg = get_clg_cfg(&cfg, "reduce");
+                                doze_cfg.enabled = true;
+                                doze_cfg.perf_floor = 0.0;
+                                doze_cfg.perf_ceil = doze_cfg.perf_ceil.min(0.30);
+                                doze_cfg.smoothing_up = 0.10;
+                                doze_cfg.touch_boost_enabled = false;
+                                cpu_governor.init_policies(&doze_cfg);
+                            }
+                            log::info!("{}", t_with_args(
+                                "scheduler-fas-delayed-exit",
+                                &fluent_args!("mode" => mode.as_str())
+                            ));
+                        }
+                    }
+
+                    // PackageSwitch 兜底（事件丢失/启动即 fas 自愈）：1s 巡检一次，包名实际变化才触发
+                    // 热切换，天然幂等；借用检查限制与 arm 处各自内联。全时段生效（FAS 息屏保持接管）；
+                    // app_detect 息屏不更新包名，稳态 no-op
+                    if !halted
+                        && mode_clone.lock().unwrap().as_str() == "fas"
+                        && !crate::common::fas_enabled()
+                    {
+                        // fas_enabled=false 热重载生效：立即注销全部 FAS 实例并按屏幕状态恢复接管；
+                        // determine_mode 不再产生 fas 模式，无实例且 governor 已接管时为 no-op
+                        let had_instance = fas_mgr.has_any_instance();
+                        if had_instance {
+                            fas_mgr.deactivate_all();
+                            fas_affinity_hook(&mut affinity_mgr, &mut corectl_mgr, false, 0);
+                            log::warn!("{}", t("scheduler-fas-switch-off"));
+                        }
+                        // 恢复接管：有实例被注销，或三 governor 全停（启动残留/冷却期自愈）
+                        if had_instance
+                            || (!cpu_governor.is_active()
+                                && !ak_governor.is_active()
+                                && !fast_lock.is_active())
+                        {
+                            if is_screen_on {
+                                // 亮屏：CLG default 回退（与 FAS 初始化失败同口径）
+                                let config_lock = config_clone.read().unwrap();
+                                let clg_cfg = get_clg_cfg(&config_lock, "default");
+                                if clg_cfg.enabled {
+                                    cpu_governor.init_policies(&clg_cfg);
+                                }
+                            } else {
+                                // 息屏：交回 CLG doze（与息屏事件同款低功耗配置）
+                                ak_governor.release();
+                                fast_lock.release();
+                                let config_lock = config_clone.read().unwrap();
+                                let mut doze_cfg = get_clg_cfg(&config_lock, "reduce");
+                                doze_cfg.enabled = true;
+                                doze_cfg.perf_floor = 0.0;
+                                doze_cfg.perf_ceil = doze_cfg.perf_ceil.min(0.30);
+                                doze_cfg.smoothing_up = 0.10;
+                                doze_cfg.touch_boost_enabled = false;
+                                cpu_governor.init_policies(&doze_cfg);
+                            }
+                        }
+                    } else if !halted && mode_clone.lock().unwrap().as_str() == "fas" {
+                        // 取 Arc<str> 快照：只做引用计数递增，不再每次克隆 String
+                        let cur_pkg_arc = crate::monitor::app_detect::current_package_arc();
+                        let cur_pkg: &str = &cur_pkg_arc;
+                        if !cur_pkg.is_empty() {
+                            if fas_mgr.is_active() {
+                                if let Some(active) = fas_mgr.active_pkg().map(str::to_string) {
+                                    // 同包（延迟期内切回同一白名单应用）：续期取消退出
+                                    if active == cur_pkg {
+                                        fas_mgr.renew_if_same_pkg(&cur_pkg);
+                                    }
+                                    if active != cur_pkg {
+                                        if crate::common::fas_whitelist_entry(&cur_pkg)
+                                            .and_then(|cfg| crate::common::fas_app_config(cfg))
+                                            .is_some()
+                                        {
+                                            fas_mgr.deactivate_active();
+                                            if !fas_mgr.activate(&cur_pkg, crate::monitor::app_detect::get_current_pid()) {
+                                                fas_mgr.deactivate_all();
+                                                fas_cooldown_until = Some(Instant::now() + FAS_COOLDOWN);
+                                                log::warn!("{}", t_with_args("scheduler-fas-init-failed", &fluent_args!("pkg" => cur_pkg)));
+                                                // CLG default 回退
+                                                let config_lock = config_clone.read().unwrap();
+                                                let clg_cfg = get_clg_cfg(&config_lock, "default");
+                                                if clg_cfg.enabled { cpu_governor.init_policies(&clg_cfg); }
+                                            } else {
+                                                fas_affinity_hook(&mut affinity_mgr, &mut corectl_mgr, true,
+                                                    crate::monitor::app_detect::get_current_pid());
+                                            }
+                                        }
+                                    // 非白名单包（determine 门控保证不应出现）：忽略，ModeChange 会退出 fas
+                                    }
+                                }
+                            } else if fas_cooldown_until.map_or(true, |until| Instant::now() >= until) {
+                                if crate::common::fas_whitelist_entry(&cur_pkg)
+                                    .and_then(|cfg| crate::common::fas_app_config(cfg))
+                                    .is_some()
+                                {
+                                    // FAS 激活优先于 scenemode：scenemode 期间 prime 离线 + 专用小核独占，
+                                    // 不允许 FAS 在残缺拓扑上接管——先恢复全部在线核再激活（与亮屏恢复同序）。
+                                    // 守卫维持「FAS 实例存在 ⇒ 非 scenemode」不变量
+                                    if scene_mode_active {
+                                        scene_mode_active = false;
+                                        scene_hold_logged = false;
+                                        log::info!("{}", t("scheduler-scene-mode-exit-fas"));
+                                        {
+                                            let cfg = config_clone.read().unwrap();
+                                            let cur_mode = mode_clone.lock().unwrap().clone();
+                                            apply_affinity_and_corectl(
+                                                &mut affinity_mgr,
+                                                &mut corectl_mgr,
+                                                &cfg,
+                                                &cur_mode,
+                                                is_screen_on,
+                                                crate::monitor::app_detect::get_current_pid(),
+                                                &last_core_utils,
+                                                false,
+                                            );
+                                        }
+                                        crate::logger::main_event("scene_exit", "-", "fas_activate_preempt");
+                                    }
+                                    ak_governor.release();
+                                    fast_lock.release();
+                                    cpu_governor.release();
+                                    if !fas_mgr.activate(&cur_pkg, crate::monitor::app_detect::get_current_pid()) {
+                                        fas_mgr.deactivate_all();
+                                        fas_cooldown_until = Some(Instant::now() + FAS_COOLDOWN);
+                                        log::warn!("{}", t_with_args("scheduler-fas-init-failed", &fluent_args!("pkg" => cur_pkg)));
+                                        // CLG default 回退
+                                        let config_lock = config_clone.read().unwrap();
+                                        let clg_cfg = get_clg_cfg(&config_lock, "default");
+                                        if clg_cfg.enabled { cpu_governor.init_policies(&clg_cfg); }
+                                    } else {
+                                        fas_affinity_hook(&mut affinity_mgr, &mut corectl_mgr, true,
+                                            crate::monitor::app_detect::get_current_pid());
+                                    }
+                                } else if !cpu_governor.is_active() && !ak_governor.is_active() && !fast_lock.is_active() {
+                                    // 启动残留 fas 模式且前台非 FAS 应用：CLG default 自愈接管
+                                    let config_lock = config_clone.read().unwrap();
+                                    let clg_cfg = get_clg_cfg(&config_lock, "default");
+                                    if clg_cfg.enabled { cpu_governor.init_policies(&clg_cfg); }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 热保护（2s 周期）：电池+CPU 双源取较小值，CPU 只在极端热时参与（阈值 75/85°C，
+                // 内核 95°C 温控才是主力）；当前性能比已高于豁免档时不压制，高负载不挡路
+                if last_thermal_check.elapsed() >= THERMAL_CHECK_INTERVAL {
+                    last_thermal_check = Instant::now();
+                    // 旁证节点采集（diag 开启时每 2s）：锁频被压归因（FREQ_QOS 钳制 / 硬件热压
+                    // LMh·DCVS / 厂商并发写），快照未变则零产出；置于 halted/FAS 门控之外
+                    if crate::logger::diag_active() {
+                        let snap = clamp_evidence_snapshot(&mut clamp_warned);
+                        if clamp_prev.as_deref() != Some(snap.as_str()) {
+                            crate::logger::main_event("clamp_change", "-", &snap);
+                            clamp_prev = Some(snap);
+                        }
+                    }
+                    // FAS 活跃时整体跳过 ChiRi 热保护：温控交由 FAS 引擎（内部独立刷新温度），cap 冻结
+                    // 在当前值。fas 模式但实例未活跃（息屏已释放/冷却/初始化失败）时照常生效，
+                    // 否则 CLG doze 期间将失去热保护
+                    if !halted
+                        && !(mode_clone.lock().unwrap().as_str() == "fas" && fas_mgr.is_active())
+                    {
+                        let (enabled, batt_ladder, cpu_ladder, free_above) = {
+                            let t = &config_clone.read().unwrap().thermal;
+                            let (sc, mc, hc) =
+                                (t.soft_perf_cap, t.mid_perf_cap, t.hard_perf_cap);
+                            (
+                                t.enabled,
+                                ThermalLadder {
+                                    soft: t.batt_soft_temp_c,
+                                    mid: t.batt_mid_temp_c,
+                                    hard: t.batt_hard_temp_c,
+                                    soft_cap: sc,
+                                    mid_cap: mc,
+                                    hard_cap: hc,
+                                    hyst: t.hysteresis_c,
+                                    hyst_hard: t.hysteresis_hard_c,
+                                },
+                                ThermalLadder {
+                                    soft: t.cpu_soft_temp_c,
+                                    mid: t.cpu_mid_temp_c,
+                                    hard: t.cpu_hard_temp_c,
+                                    soft_cap: sc,
+                                    mid_cap: mc,
+                                    hard_cap: hc,
+                                    hyst: t.hysteresis_c,
+                                    hyst_hard: t.hysteresis_hard_c,
+                                },
+                                t.free_above,
+                            )
+                        };
+                        let cur = thermal_cap_current;
+                        // 复用 snap 块（1s）缓存的温度，≤1s 旧值对带回滞的秒级热判定无影响
+                        let batt_t = last_batt_temp;
+                        let cpu_t = last_cpu_temp;
+                        let new_cap = if !enabled {
+                            1.0
+                        } else {
+                            match (batt_t, cpu_t) {
+                                (Some(b), Some(c)) => eval_thermal_cap(b, cur, &batt_ladder)
+                                    .min(eval_thermal_cap(c, cur, &cpu_ladder)),
+                                (Some(b), None) => eval_thermal_cap(b, cur, &batt_ladder),
+                                (None, Some(c)) => eval_thermal_cap(c, cur, &cpu_ladder),
+                                // 双传感器缺失/读失败：保持现状，下轮重试
+                                (None, None) => cur,
+                            }
+                        };
+                        // 解除方向限速：压制加深立即生效，解除每周期最多 +0.15（UNPRESS_STEP）逐级恢复
+                        // ——立即全量解除会温度反弹再触发深压，cap 振荡是高负载周期性卡顿的直接来源
+                        let new_cap = if new_cap > thermal_cap_current {
+                            (thermal_cap_current + THERMAL_UNPRESS_STEP).min(new_cap)
+                        } else {
+                            new_cap
+                        };
+                        let cap_changed = (new_cap - thermal_cap_current).abs() > f32::EPSILON;
+                        let free_changed = (free_above - thermal_free_current).abs() > f32::EPSILON;
+                        if cap_changed || free_changed {
+                            thermal_cap_current = new_cap;
+                            thermal_free_current = free_above;
+                            cpu_governor.set_thermal_limits(new_cap, free_above);
+                            // 同一份 cap 也发 tuned（playback/akmode 不走 CLG，见 tuned.rs [thermal_ceil]）：
+                            // 进程级原子量，与 CLG 侧同口径、值相同，热重载经 Config::load 同步开关与下限
+                            crate::chiri::tuned::set_thermal_cap(new_cap);
+                            let fmt = |v: Option<f32>| {
+                                v.map(|t| format!("{:.1}", t))
+                                    .unwrap_or_else(|| "-".to_string())
+                            };
+                            log::debug!(
+                                "{}",
+                                t_with_args(
+                                    "clg-thermal-cap",
+                                    &fluent_args!(
+                                        "batt" => fmt(batt_t),
+                                        "cpu" => fmt(cpu_t),
+                                        "cap" => format!("{:.0}", new_cap * 100.0),
+                                        "free" => format!("{:.0}", free_above * 100.0)
+                                    )
+                                )
+                            );
+                            crate::logger::main_event(
+                                "thermal_change",
+                                "-",
+                                &format!(
+                                    "batt={} cpu={} cap={:.0} free={:.0}",
+                                    fmt(batt_t),
+                                    fmt(cpu_t),
+                                    new_cap * 100.0,
+                                    free_above * 100.0
+                                ),
+                            );
+                        }
+                        // 功耗监控已并入 status.csv snapshot 行（1s），此处不再重复写
+                    }
+                }
+
+                // 触摸事件（事件驱动）：on_touch 更新共享触摸状态并唤醒全部 Worker 立即 flush 写频
+                // （大核直接应用触摸升频地板，不等 160ms tick）；持续触摸刷新截止时间（FastWriter 去重）
+                while touch_rx.try_recv().is_ok() {
+                    if !halted && cpu_governor.is_active() {
+                        cpu_governor.on_touch();
+                        log::debug!("{}", t("touch-event-received"));
+                    }
+                }
+
+                // 极速模式：每 5s 重写一次硬件最高频兜底收敛（默认无竞争者，节点被改写属异常态）；
+                // 返回距下次重写的剩余时间纳入动态超时计算。停摆期显式断开不碰任何节点——tick 内部
+                // 虽有 is_active 早退，防将来给 FastLock 加的开关绕过这道防线
+                let fast_next = if halted { None } else { fast_lock.tick() };
+
+                // PowerBase 兜底纠正：开关与「谁在接管」不一致时拉齐。主路径外几条直接 init CLG 的
+                // 旁路（启动块/ConfigReload/亮屏恢复/lab 分组重建）不会自动换 PowerBase，在此兜一次
+                // 防「双写 scaling_max_freq」或「切换后无人接管」；停摆期一律交还
+                {
+                    // 先取模式再读配置：保持「mode → config」取锁顺序，不制造反向持有窗口
+                    let cur_mode = mode_clone.lock().unwrap().clone();
+                    let cfg = config_clone.read().unwrap();
+                    // 三条排除缺一不可：
+                    //  - !is_fast_lock：vector/frozen 走硬锁且 vector 段在 feature.yaml 存在且 enabled，
+                    //    不排除会让 PowerBase 与 fast_lock 抢写 min/max；
+                    //  - is_screen_on：PowerBase 目标功耗是亮屏口径，息屏交 doze，接管会放宽升频抬高夜间功耗；
+                    //  - clg_cfg.enabled：特调/FAS 下 get_mode 返回 None，天然排除（优先级更高）
+                    let want = !halted
+                        && is_screen_on
+                        && !is_fast_lock(&cur_mode)
+                        && crate::common::powerbase_enabled()
+                        && clg_cfg_for(&cfg, &cur_mode).enabled;
+                    if want && !power_base.is_active() {
+                        cpu_governor.release();
+                        power_base.init(&cfg.powerbase);
+                    } else if !want && power_base.is_active() {
+                        power_base.release();
+                    }
+                }
+
+                // 动态超时：阻塞到最近周期任务 deadline 或事件到达（先到者打断）。周期任务（telemetry 1s /
+                // thermal+亲和 2s / mode file 5s / fast 重写 5s）取最小值；负载/模式/触摸等推送事件随时
+                // 打断、响应零延迟；空闲稳态从每秒 10 次空转降为 ~1 次
+                let now_loop = Instant::now();
+                let until = |last: Instant, period: Duration| -> Duration {
+                    period.checked_sub(now_loop.duration_since(last)).unwrap_or(Duration::ZERO)
+                };
+                let mut wait = until(last_telemetry_log, TELEMETRY_LOG_INTERVAL)
+                    .min(until(last_thermal_check, THERMAL_CHECK_INTERVAL))
+                    .min(until(
+                        last_mode_file_write,
+                        MODE_FILE_REWRITE_INTERVAL,
+                    ))
+                    .min(EVENT_POLL_MS);
+                if let Some(d) = fast_next {
+                    wait = wait.min(d);
+                }
+                let msg = match rx.recv_timeout(wait) {
+                    Ok(msg) => msg,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        // eBPF 负载源超时自愈：超过 CLG_STALE_MAX 无负载事件 → 释放当前接管（CLG/
+                        // akmode/fast_lock）回系统原生调频防锁频（下次 ModeChange/配置事件会重新接管）
+                        if last_load_event.elapsed() >= CLG_STALE_MAX {
+                            if ak_governor.is_active() {
+                                log::error!(
+                                    "{}",
+                                    t_with_args(
+                                        "tuned-watchdog-release",
+                                        &fluent_args!("secs" => last_load_event.elapsed().as_secs().to_string())
+                                    )
+                                );
+                                ak_governor.release();
+                            }
+                            if cpu_governor.is_active() {
+                                log::error!(
+                                    "{}",
+                                    t_with_args(
+                                        "clg-watchdog-release",
+                                        &fluent_args!("secs" => last_load_event.elapsed().as_secs().to_string())
+                                    )
+                                );
+                                cpu_governor.release();
+                            }
+                            if fast_lock.is_active() {
+                                log::error!(
+                                    "{}",
+                                    t_with_args(
+                                        "fast-watchdog-release",
+                                        &fluent_args!("secs" => last_load_event.elapsed().as_secs().to_string())
+                                    )
+                                );
+                                fast_lock.release();
+                            }
+                        }
+                        continue;
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                };
+                // 停摆期间事件照收但不下发：调度类动作全停，采集与遥测由上面的周期块负责。
+                // **屏幕事件例外**：只更新 is_screen_on 等本地状态（不做调度动作）——停摆期不吸收
+                // 变化的话，退出停摆时 monitor 不会补发，亲和/core_ctl 会按过期屏幕状态应用
+                if halted {
+                    if let DaemonEvent::ScreenStateChange(on) = &msg {
+                        is_screen_on = *on;
+                        screen_off_at = if *on { None } else { Some(Instant::now()) };
+                        scene_mode_active = false;
+                    }
+                    continue;
+                }
+                match msg {
+                    // [evt_screen] 
+                    // 屏幕状态事件：息屏深度睡眠
+                    DaemonEvent::ScreenStateChange(screen_on) => {
+                        // 双源事件去重：uevent 直推与 app_detect 兜底可能重复上报，状态未变只打点
+                        if screen_on == is_screen_on {
+                            log::debug!("{}", t_with_args("scheduler-event-screen", &fluent_args!(
+                                "on" => screen_on.to_string(),
+                                "last" => is_screen_on.to_string()
+                            )));
+                            continue;
+                        }
+                        log::debug!("{}", t_with_args("scheduler-event-screen", &fluent_args!(
+                            "on" => screen_on.to_string(),
+                            "last" => is_screen_on.to_string()
+                        )));
+                        is_screen_on = screen_on;
+                        // 息屏/亮屏 info 打点：uevent 直推绕过 app_detect 的变更日志，统一保证触发点可见
+                        if screen_on {
+                            log::info!("{}", t("scheduler-screen-on"));
+                        } else {
+                            log::info!("{}", t("scheduler-screen-off"));
+                        }
+                        let current_mode = mode_clone.lock().unwrap().clone();
+
+                        if !is_screen_on {
+                            log::info!("{}", t("scheduler-doze-enable"));
+                            // 息屏计时起点：超过 scene_mode_delay_secs 后切到 scenemode 低功耗
+                            screen_off_at = Some(Instant::now());
+                            scene_mode_active = false;
+
+                            // 特调息屏保持 akmode 接管不切 CLG doze：akmode 已统一 schedutil，息屏随负载
+                            // 自然降频，避免 release + 亮屏 re-init 的 governor 反复切换
+                            if crate::common::is_special_mode(&current_mode) {
+                                // akmode 继续运行，CLG 保持释放状态
+                                log::info!("{}", t("scheduler-doze-special-keep"));
+                            } else if current_mode == "fas" && fas_mgr.is_active() {
+                                // FAS 息屏保持接管：不释放实例、不切 CLG doze（与特调同语义）；
+                                // FAS 失效（看门狗释放/初始化冷却）时走下方分支由 doze 接管
+                            } else {
+                                // 非特调模式：交回 CLG 处理深度睡眠。本分支仅在非 fas 模式或 FAS 未活跃
+                                // （看门狗释放/冷却）时执行；不可写低频锁——锁屏无帧事件时将永久锁死最低频
+                                ak_governor.release();
+                                fast_lock.release();
+
+                                // 让 CLG 接管，动态生成一个低功耗配置
+                                let config_lock = config_clone.read().unwrap();
+                                let mut doze_cfg = get_clg_cfg(&config_lock, "reduce");
+                                doze_cfg.enabled = true;
+                                doze_cfg.perf_floor = 0.0;
+                            // 息屏 doze 天花板 0.30：后台任务（sync/JobScheduler）突发时
+                            // 允许短暂借力，但压住"口袋发热"；5 分钟后 scenemode 进一步压到 0.15
+                            // smoothing_up=0.10 升频极迟钝；touch_boost 关闭（息屏无触摸）
+                                doze_cfg.perf_ceil = doze_cfg.perf_ceil.min(0.30);
+                                doze_cfg.smoothing_up = 0.10;
+                                doze_cfg.touch_boost_enabled = false;
+
+                                cpu_governor.init_policies(&doze_cfg);
+                            }
+                            // 亲和/core_ctl 跟随息屏：top-app 恢复快照、后台压小核（特调保持 boost 布局）
+                            {
+                                let cfg = config_clone.read().unwrap();
+                                apply_affinity_and_corectl(
+                                    &mut affinity_mgr,
+                                    &mut corectl_mgr,
+                                    &cfg,
+                                    &current_mode,
+                                    false,
+                                    crate::monitor::app_detect::get_current_pid(),
+                                    &last_core_utils,
+                                    scene_mode_active,
+                                );
+                            }
+                        } else {
+                            log::info!("{}", t("scheduler-doze-restore"));
+                            // 亮屏：清空息屏计时与 scenemode 状态（恢复逻辑在下方重放原模式）
+                            screen_off_at = None;
+                            scene_mode_active = false;
+                            scene_hold_logged = false;
+                            let config_lock = config_clone.read().unwrap();
+
+                            // 亲和/core_ctl 先恢复：此前处于 scenemode 时 prime 仍离线、其 policy 目录不存在
+                            // ——必须先恢复全部核上线，下方 reload/init 才能枚举到完整 policy 列表
+                            // （否则 prime 永久失去 worker，残留离线前的锁频、脱离调度控制）
+                            apply_affinity_and_corectl(
+                                &mut affinity_mgr,
+                                &mut corectl_mgr,
+                                &config_lock,
+                                &current_mode,
+                                true,
+                                crate::monitor::app_detect::get_current_pid(),
+                                &last_core_utils,
+                                scene_mode_active,
+                            );
+
+                            if crate::common::is_special_mode(&current_mode) {
+                                // 亮屏恢复特调：息屏时若看门狗释放过 akmode 必须重新接管，否则特调限频
+                                // 失效、采样间隔不切回 40ms；冷却期内跳过特调直接走 CLG
+                                let in_cooldown = tuned_cooldown_until
+                                    .map_or(false, |until| Instant::now() < until);
+                                if !ak_governor.is_active() && !in_cooldown {
+                                    cpu_governor.release();
+                                    let ak_cfg = config_lock.get_tuned_profile(&current_mode);
+                                    if !ak_governor.init_policies(&current_mode, &ak_cfg) {
+                                        // init 失败（配置缺失/硬件不支持）：冷却 5 分钟，CLG 接管
+                                        tuned_cooldown_until = Some(Instant::now() + TUNED_COOLDOWN);
+                                        log::warn!("{}", t_with_args(
+                                            "scheduler-tuned-cooldown",
+                                            &fluent_args!("secs" => TUNED_COOLDOWN.as_secs().to_string())
+                                        ));
+                                        let clg_cfg = get_clg_cfg(&config_lock, &current_mode);
+                                        if clg_cfg.enabled { cpu_governor.init_policies(&clg_cfg); }
+                                    }
+                                } else if !ak_governor.is_active() {
+                                    // 冷却中：CLG 接管
+                                    let clg_cfg = get_clg_cfg(&config_lock, &current_mode);
+                                    if clg_cfg.enabled { cpu_governor.init_policies(&clg_cfg); }
+                                }
+                            } else if current_mode == "contingency" || current_mode == "babel" {
+                                // 亮屏恢复 lab 静态模式：governor/GPU/极速锁频按模式重建；不能走下面通用
+                                // else——它会释放 fast_lock 且不给 contingency 接管（CLG 未注册），锁频就空了
+                                cpu_governor.release();
+                                ak_governor.release();
+                                fast_lock.release();
+                                sync_lab_governor_gpu(&current_mode, &mut governor_guard, &mut gpu_guard, &mut fast_lock);
+                            } else if is_fast_lock(&current_mode) {
+                                // 亮屏恢复硬锁档：释放 doze CLG 由 fast_lock 接管（vector 锁最高/frozen 锁最低）
+                                ak_governor.release();
+                                cpu_governor.release();
+                                fast_lock.init(current_mode == "frozen");
+                            } else if current_mode == "fas" {
+                                // FAS 活跃：保持接管，亮屏不做任何恢复（CLG 绝不能接管 FAS 已接管的 CPU）。
+                                // FAS 失效（冷却/异常）：激活 CLG default——冷却期内 1s 兜底被短路，此处是
+                                // 退出 doze/scenemode 低性能配置的唯一恢复路径，冷却结束由 1s 兜底重新激活
+                                if !fas_mgr.is_active() {
+                                    let clg_cfg = get_clg_cfg(&config_lock, "default");
+                                    if clg_cfg.enabled {
+                                        if cpu_governor.is_active() { cpu_governor.reload_config(&clg_cfg); }
+                                        else { cpu_governor.init_policies(&clg_cfg); }
+                                    }
+                                    else { cpu_governor.release(); }
+                                }
+                            } else {
+                                ak_governor.release();
+                                fast_lock.release();
+                                let clg_cfg = get_clg_cfg(&config_lock, &current_mode);
+                                if clg_cfg.enabled {
+                                    // 息屏 doze 期间 CLG 仍持有 writer，热切换配置即可
+                                    if cpu_governor.is_active() { cpu_governor.reload_config(&clg_cfg); }
+                                    else { cpu_governor.init_policies(&clg_cfg); }
+                                }
+                                else { cpu_governor.release(); }
+                            }
+                        }
+                        crate::logger::main_event("screen", "-", if is_screen_on { "on" } else { "off" });
+                    },
+
+                    // [evt_mode] 
+                    // 前台模式切换事件
+                    DaemonEvent::ModeChange { package_name, pid, mode, temperature } => {
+                        let mut current_mode_lock = mode_clone.lock().unwrap();
+                        let old_mode = current_mode_lock.clone();
+                        log::debug!("{}", t_with_args("scheduler-event-mode-change", &fluent_args!(
+                            "pkg" => package_name.as_str(),
+                            "old" => old_mode.clone(),
+                            "new" => mode.as_str(),
+                            "temp" => temperature
+                        )));
+                        // 前台切换由 app_detect 直写 status.csv fg 行；ModeChange 仅模式变化时产生
+
+                        if old_mode != mode {
+                            log::info!("{}", t_with_args("scheduler-mode-change-request", &fluent_args!(
+                                "old" => old_mode.clone(), "new" => mode.as_str(), "pkg" => package_name.as_str(), "temp" => temperature
+                            )));
+
+                            // FAS 延迟退出（15s）：fas → 非 fas 不立即切换——FAS 仍持有接管，延迟期内切回
+                            // 白名单应用由 activate 无缝续期，到期由 1s tick 按 pending_mode_after_fas 重新
+                            // 接管。mode_clone 不动，否则出现「文件写 default、FAS 还持着频率」中间态
+                            if old_mode == "fas" && mode != "fas" && fas_mgr.is_active() {
+                                fas_mgr.request_delayed_exit();
+                                pending_mode_after_fas = Some(mode.clone());
+                                drop(current_mode_lock);
+                                continue;
+                            }
+
+                            *current_mode_lock = mode.clone();
+                            drop(current_mode_lock);
+
+                            crate::logger::set_diag_mode(&mode);
+                            crate::logger::main_event(
+                                "mode_change",
+                                &package_name,
+                                &format!("{old_mode}->{mode}"),
+                            );
+
+                            mode_file.write(&mode);
+
+                            // 亲和布局/core_ctl 跟随模式切换（含前台 PID 变化的线程重迁移）
+                            {
+                                let cfg = config_clone.read().unwrap();
+                                apply_affinity_and_corectl(
+                                    &mut affinity_mgr,
+                                    &mut corectl_mgr,
+                                    &cfg,
+                                    &mode,
+                                    is_screen_on,
+                                    pid,
+                                    &last_core_utils,
+                                    scene_mode_active,
+                                );
+                            }
+
+                            // 特调模式激活打点：仅 ChiRi 白名单应用可进入，info 级便于用户定位
+                            if crate::common::is_special_mode(&mode) {
+                                log::info!("{}", t_with_args("scheduler-special-mode-active", &fluent_args!(
+                                    "pkg" => package_name.as_str(),
+                                    "mode" => mode.as_str()
+                                )));
+                            }
+
+                            // 屏幕状态不再影响 FAS 激活（息屏特殊分支已移除）
+                            if mode == "fas" {
+                                // 防御复查：determine_mode 已门控白名单，此处兜底（不应发生）
+                                let fas_ready = crate::common::fas_whitelist_entry(&package_name)
+                                    .and_then(|cfg| crate::common::fas_app_config(cfg))
+                                    .is_some();
+                                let in_cooldown = fas_cooldown_until.map_or(false, |until| Instant::now() < until);
+                                // 防御性去激活（不应有活跃实例，无活跃时为无操作）
+                                fas_mgr.deactivate_active();
+                                if !fas_ready {
+                                    log::warn!(
+                                        "{}",
+                                        t_with_args("scheduler-fas-init-failed", &fluent_args!("pkg" => package_name.as_str()))
+                                    );
+                                    // 可能从特调/极速模式切入：先释放独立 governor 再交给 CLG，避免双 governor 并存
+                                    ak_governor.release();
+                                    fast_lock.release();
+                                    cpu_governor.release();
+                                    let config_lock = config_clone.read().unwrap();
+                                    let clg_cfg = get_clg_cfg(&config_lock, "default");
+                                    if clg_cfg.enabled { cpu_governor.init_policies(&clg_cfg); }
+                                } else if in_cooldown {
+                                    log::warn!(
+                                        "{}",
+                                        t_with_args("scheduler-fas-cooldown", &fluent_args!("secs" => FAS_COOLDOWN.as_secs().to_string()))
+                                    );
+                                    ak_governor.release();
+                                    fast_lock.release();
+                                    cpu_governor.release();
+                                    let config_lock = config_clone.read().unwrap();
+                                    let clg_cfg = get_clg_cfg(&config_lock, "default");
+                                    if clg_cfg.enabled { cpu_governor.init_policies(&clg_cfg); }
+                                } else {
+                                    // 三 governor 全停（互斥），再激活 FAS
+                                    ak_governor.release();
+                                    fast_lock.release();
+                                    cpu_governor.release();
+                                    if !fas_mgr.activate(&package_name, pid) {
+                                        fas_mgr.deactivate_all();
+                                        fas_cooldown_until = Some(Instant::now() + FAS_COOLDOWN);
+                                        log::warn!("{}", t_with_args("scheduler-fas-init-failed", &fluent_args!("pkg" => package_name.as_str())));
+                                        let config_lock = config_clone.read().unwrap();
+                                        let clg_cfg = get_clg_cfg(&config_lock, "default");
+                                        if clg_cfg.enabled { cpu_governor.init_policies(&clg_cfg); }
+                                    } else {
+                                        fas_affinity_hook(&mut affinity_mgr, &mut corectl_mgr, true, pid);
+                                    }
+                                }
+                            } else {
+                                // 退出 FAS：去激活（恢复频率）必须先于任何下一 governor 的 init，保证对方快照真实系统状态
+                                fas_mgr.deactivate_active();
+                                fas_affinity_hook(&mut affinity_mgr, &mut corectl_mgr, false, 0);
+
+                                // 离开 lab 静态模式：先恢复组级 cpus 与 governor/GPU 快照，后续接管方才能
+                                // 快照到真实状态，否则 lab 分组值被当成「系统原值」固化（top-app 永久占大核）
+                                if !matches!(mode.as_str(), "contingency" | "babel") {
+                                    affinity_mgr.lab_static_deactivate();
+                                    governor_guard.release();
+                                    gpu_guard.release();
+                                    // contingency 的极速锁频也要解除：息屏不走亮屏接管块，漏了锁频残留到亮屏
+                                    fast_lock.release();
+                                }
+
+                                // 仅在亮屏时处理调度接管。如果息屏，Doze 配置仍在生效，这里不能覆盖它
+                                if is_screen_on {
+                                    let config_lock = config_clone.read().unwrap();
+                                    if crate::common::is_special_mode(&mode) {
+                                    // 进入特调模式：停止 CLG 改由 akmode 接管；冷却期内跳过特调直接走 CLG
+                                        let in_cooldown = tuned_cooldown_until
+                                            .map_or(false, |until| Instant::now() < until);
+                                        if !in_cooldown {
+                                            cpu_governor.release();
+                                            let ak_cfg = config_lock.get_tuned_profile(&mode);
+                                            if !ak_governor.init_policies(&mode, &ak_cfg) {
+                                                // init 失败：冷却 5 分钟，CLG 接管
+                                                tuned_cooldown_until = Some(Instant::now() + TUNED_COOLDOWN);
+                                                log::warn!("{}", t_with_args(
+                                                    "scheduler-tuned-cooldown",
+                                                    &fluent_args!("secs" => TUNED_COOLDOWN.as_secs().to_string())
+                                                ));
+                                                let clg_cfg = get_clg_cfg(&config_lock, &mode);
+                                                if clg_cfg.enabled { cpu_governor.init_policies(&clg_cfg); }
+                                            }
+                                        } else {
+                                            // 冷却中：CLG 接管
+                                            let clg_cfg = get_clg_cfg(&config_lock, &mode);
+                                            if clg_cfg.enabled { cpu_governor.init_policies(&clg_cfg); }
+                                        }
+                                    } else if is_fast_lock(&mode) {
+                                        // 硬锁档：停止特调/CLG 由 fast_lock 独立锁定（vector 锁满频/frozen 锁最低）
+                                        ak_governor.release();
+                                        cpu_governor.release();
+                                        fast_lock.init(mode == "frozen");
+                                    } else {
+                                        // 退出特调/极速模式：停止 akmode/fast_lock 交回 CLG（PowerBase 开启时交回它）
+                                        ak_governor.release();
+                                        fast_lock.release();
+                                        let clg_cfg = get_clg_cfg(&config_lock, &mode);
+                                        if clg_cfg.enabled && crate::common::powerbase_enabled() {
+                                            cpu_governor.release();
+                                            power_base.init(&config_lock.powerbase);
+                                        } else if clg_cfg.enabled {
+                                            power_base.release();
+                                            // CLG 已激活时热切换配置，避免同模式反复切换全量重建
+                                            if cpu_governor.is_active() { cpu_governor.reload_config(&clg_cfg); }
+                                            else { cpu_governor.init_policies(&clg_cfg); }
+                                        } else {
+                                            power_base.release();
+                                            cpu_governor.release();
+                                        }
+                                    }
+                                }
+
+                                // 进入 lab 静态模式：governor 写 performance / GPU 锁最高频 / contingency
+                                // 极速锁频（sync 内做）。必须在旧 governor 释放之后——先写会被 CLG release
+                                // 恢复的 schedutil 覆盖，且 CLG tick/防篡改会持续压频；息屏路径在此兜底（幂等）
+                                if mode == "contingency" || mode == "babel" {
+                                    cpu_governor.release();
+                                    ak_governor.release();
+                                    fast_lock.release();
+                                }
+                                sync_lab_governor_gpu(&mode, &mut governor_guard, &mut gpu_guard, &mut fast_lock);
+                            }
+                        }
+                    },
+
+                    // [evt_pkg_switch] 
+                    // 同模式前台包切换（fas→fas 热切换通路，ChiRi 专属）
+                    DaemonEvent::PackageSwitch { package_name, pid } => {
+                        let current_mode = mode_clone.lock().unwrap().clone();
+                        // 同包去重前先续期：延迟期内同包回前台即时取消退出（1s 巡检兜底）
+                        if fas_mgr.active_pkg().is_some_and(|a| a == package_name.as_str()) {
+                            fas_mgr.renew_if_same_pkg(&package_name);
+                        }
+                        if current_mode == "fas" && fas_mgr.is_active() {
+                            let switched = match fas_mgr.active_pkg() {
+                                Some(active) if active != package_name.as_str() => {
+                                    if crate::common::fas_whitelist_entry(&package_name)
+                                        .and_then(|cfg| crate::common::fas_app_config(cfg))
+                                        .is_some()
+                                    {
+                                        fas_mgr.deactivate_active();
+                                        if fas_mgr.activate(&package_name, pid) {
+                                            fas_affinity_hook(&mut affinity_mgr, &mut corectl_mgr, true, pid);
+                                            true
+                                        } else {
+                                            false
+                                        }
+                                    } else {
+                                        // 非白名单包（不应出现，determine 门控保证）：视为已处理，忽略
+                                        true
+                                    }
+                                }
+                                // 同包去重：延迟期内同包回前台也续期（即时取消，1s 巡检兜底）
+                                _ => {
+                                    fas_mgr.renew_if_same_pkg(&package_name);
+                                    true
+                                }
+                            };
+                            if !switched {
+                                fas_mgr.deactivate_all();
+                                fas_cooldown_until = Some(Instant::now() + FAS_COOLDOWN);
+                                log::warn!("{}", t_with_args("scheduler-fas-init-failed", &fluent_args!("pkg" => package_name.as_str())));
+                                let config_lock = config_clone.read().unwrap();
+                                let clg_cfg = get_clg_cfg(&config_lock, "default");
+                                if clg_cfg.enabled { cpu_governor.init_policies(&clg_cfg); }
+                            }
+                        }
+                    },
+
+                    // [evt_load] 
+                    // CPU 负载事件 (eBPF 驱动)
+                    DaemonEvent::SystemLoadUpdate { core_utils, foreground_max_util } => {
+                        // 刷新看门狗心跳：只要有负载事件到达即视为负载源存活
+                        last_load_event = Instant::now();
+                        // 逐核 util 快照赋值延后到下方投喂之后：投喂分支只读借用 core_utils，延后可用
+                        // **移动**替代克隆，省掉每 tick 一次 Vec 分配。事件常规 160ms/特调 40ms 一次，
+                        // 摘要仅 DEBUG 输出（log_enabled! 门控，INFO 下零分配）
+                        if log::log_enabled!(log::Level::Debug) {
+                            log::debug!("{}", t_with_args("scheduler-event-load", &fluent_args!(
+                                "cores" => core_utils.iter().map(|u| format!("{:.0}", u * 100.0)).collect::<Vec<_>>().join(",")
+                            )));
+                        }
+                        // 负载投喂优先级链：FAS 活跃优先投喂（前台最重线程 util + 逐核 util）；否则特调
+                        // （akmode）白名单前台投喂做动态限频（无档位负载直拉：max 随组内负载在
+                        // [最低档, 硬件最高] 间连续变化）；否则 CLG 活跃时投喂 CLG（含息屏 Doze）
+                        if fas_mgr.is_active() {
+                            fas_mgr.on_load_update(foreground_max_util, &core_utils);
+                        } else if ak_governor.is_active() {
+                            ak_governor.on_load_update(&core_utils);
+                        } else if power_base.is_active() {
+                            // PowerBase 接管中（替换 CLG 的位置）：以**放电功耗**为指标；非放电或无读数
+                            // 传 None（语义「不做功耗限制」，只按利用率调，与 CLG 类似）
+                            // TODO: touch_active 目前恒 false——CLG 的触摸窗口（AtomicTouchState）是它的
+                            // 私有字段，这里拿不到；等触摸事件接上共享标志后再传，否则「触摸时允许突破
+                            // 功率上限」这条不会生效
+                            let tm_now = crate::monitor::telemetry::telemetry();
+                            // 放电判定**不能看电流正负**（厂商节点方向不一，部分设备充放皆正），与 PowerAVG
+                            // 同口径读 status；非放电传 None = 不做功耗限制（充电功率压频无意义）
+                            let power_w = if read_battery_charge_state() == "discharging" {
+                                tm_now.batt_power_w()
+                            } else {
+                                None
+                            };
+                            power_base.on_load_update(&core_utils, power_w, false);
+                        } else if cpu_governor.is_active() {
+                            // Worker 架构：on_load_update 广播给各核心组 Worker，线程内自主决策+写频
+                            cpu_governor.on_load_update(&core_utils);
+                        }
+
+                        // 逐核 util 快照：选核打分与 devimp tick 行的输入；移动而非克隆（投喂只读借用）
+                        last_core_utils = core_utils;
+
+                        // scenemode：息屏超过 scene_mode_delay_secs 后把 CLG 切到低功耗配置（一次性），
+                        // 亮屏后恢复原模式。任意 FAS 实例存在（活跃或后台保留，60s TTL reap 后放行）即
+                        // 禁止进入——CLG 绝不能接管 FAS 已接管的 CPU；特调由 akmode 接管不参与；
+                        // scenemode 未启用时释放 CLG；饱和退出冷却期内不得重进（防与后台负载拉锯）
+                        let scenemode_cooldown_ok = scenemode_cooldown_until
+                            .map_or(true, |u| Instant::now() >= u);
+                        // scenemode_enabled=false 热重载生效：退出 scenemode，恢复快照并交回 CLG doze
+                        if scene_mode_active && !crate::common::scenemode_enabled() {
+                            scene_mode_active = false;
+                            scene_hold_logged = false;
+                            {
+                                let cfg = config_clone.read().unwrap();
+                                let cur_mode = mode_clone.lock().unwrap().clone();
+                                apply_affinity_and_corectl(
+                                    &mut affinity_mgr,
+                                    &mut corectl_mgr,
+                                    &cfg,
+                                    &cur_mode,
+                                    is_screen_on,
+                                    crate::monitor::app_detect::get_current_pid(),
+                                    &last_core_utils,
+                                    false,
+                                );
+                            }
+                            let config_lock = config_clone.read().unwrap();
+                            let mut doze_cfg = get_clg_cfg(&config_lock, "reduce");
+                            doze_cfg.enabled = true;
+                            doze_cfg.perf_floor = 0.0;
+                            doze_cfg.perf_ceil = doze_cfg.perf_ceil.min(0.30);
+                            doze_cfg.smoothing_up = 0.10;
+                            doze_cfg.touch_boost_enabled = false;
+                            if cpu_governor.is_active() {
+                                cpu_governor.reload_config(&doze_cfg);
+                            } else {
+                                cpu_governor.init_policies(&doze_cfg);
+                            }
+                            log::info!("{}", t("scheduler-scene-mode-exit-switch"));
+                            crate::logger::main_event("scene_exit", "-", "switch_off");
+                        }
+                        if !is_screen_on
+                            && crate::common::scenemode_enabled()
+                            && !scene_mode_active
+                            && scenemode_cooldown_ok
+                        {
+                            // 先用免锁的计时预判（最低 60s），避免息屏期间每个负载 tick 都抢锁
+                            let delay_hit = screen_off_at
+                                .map_or(false, |off| off.elapsed().as_secs() >= 60);
+                            if delay_hit {
+                                let current_mode = mode_clone.lock().unwrap().clone();
+                                // 特调不参与；任意 FAS 实例存在（活跃或后台保留）不参与，reap 后放行
+                                if !crate::common::is_special_mode(&current_mode)
+                                    && !fas_mgr.has_any_instance()
+                                {
+                                    let config_read = config_clone.read().unwrap();
+                                    let delay = config_read.scene_mode_delay_secs.max(60);
+                                    let scene_cfg =
+                                        config_read.scenemode.cpu_load_governor.clone();
+                                    drop(config_read);
+                                    if screen_off_at
+                                        .map_or(false, |off| off.elapsed().as_secs() >= delay)
+                                    {
+                                        // 负载门槛：与饱和退出共用 SCENEMODE_SAT_UTIL——常驻簇仍顶满时进入必然
+                                        // ~10s 后饱和退出，整夜「进→退→300s 冷却」拉锯；跳过本次，后续 tick 复评
+                                        let ranges = crate::common::chiri_core_ranges();
+                                        let standby_max = ranges
+                                            .little
+                                            .clone()
+                                            .chain(ranges.big.clone())
+                                            .filter_map(|c| last_core_utils.get(c).copied())
+                                            .fold(0.0_f32, f32::max);
+                                        // 长息屏兜底：息屏时长 ≥4× 进入延迟时不再受负载门槛——后台常驻负载会把
+                                        // util 长期顶在门槛上方，整夜待机会被永久挡在 scenemode 之外；短息屏仍防抖
+                                        let long_off = screen_off_at.map_or(false, |off| {
+                                            off.elapsed().as_secs() >= delay.saturating_mul(4)
+                                        });
+                                        if standby_max >= SCENEMODE_SAT_UTIL && !long_off {
+                                            if !scene_hold_logged {
+                                                scene_hold_logged = true;
+                                                crate::logger::main_event(
+                                                    "scene_hold",
+                                                    "-",
+                                                    &format!("util={:.0}", standby_max * 100.0),
+                                                );
+                                            }
+                                        } else {
+                                            scene_hold_logged = false;
+                                            if scene_cfg.enabled {
+                                                if cpu_governor.is_active() {
+                                                    cpu_governor.reload_config(&scene_cfg);
+                                                } else {
+                                                    cpu_governor.init_policies(&scene_cfg);
+                                                }
+                                            } else {
+                                                cpu_governor.release();
+                                            }
+                                            log::info!("{}", t("scheduler-scene-mode-enter"));
+                                            scene_mode_active = true;
+                                            // 立即应用 scenemode 核心压制（不等 2s 周期块）：小核+大核常驻低频 +
+                                            // prime 簇压制（WALT core_ctl 优先，兜底逐核 offline）+ 专用小核 cpuset 独占
+                                            {
+                                                let cfg = config_clone.read().unwrap();
+                                                apply_affinity_and_corectl(
+                                                    &mut affinity_mgr,
+                                                    &mut corectl_mgr,
+                                                    &cfg,
+                                                    &current_mode,
+                                                    is_screen_on,
+                                                    crate::monitor::app_detect::get_current_pid(),
+                                                    &last_core_utils,
+                                                    scene_mode_active,
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // scenemode 饱和退出：**常驻簇（小核+大核）** max_util 持续顶满（≥SCENEMODE_SAT_UTIL
+                        // 且持续 SAT_SECS=10s）→ 退回 reduce（恢复全部在线核）+ 300s 冷却不得重进，防拉锯。
+                        // util 是忙时占比（与频率无关），饱和即真饱和，与 perf_ceil 数值无耦合
+                        if scene_mode_active && !is_screen_on {
+                            let ranges = crate::common::chiri_core_ranges();
+                            let standby_max = ranges
+                                .little
+                                .clone()
+                                .chain(ranges.big.clone())
+                                .filter_map(|c| last_core_utils.get(c).copied())
+                                .fold(0.0_f32, f32::max);
+                            if standby_max >= SCENEMODE_SAT_UTIL {
+                                let sustained = match scenemode_sat_since {
+                                    Some(since) => since.elapsed() >= SCENEMODE_SAT_SECS,
+                                    None => {
+                                        scenemode_sat_since = Some(Instant::now());
+                                        false
+                                    }
+                                };
+                                if sustained {
+                                    scenemode_sat_since = None;
+                                    scene_mode_active = false;
+                                    scene_hold_logged = false;
+                                    scenemode_cooldown_until =
+                                        Some(Instant::now() + SCENEMODE_COOLDOWN);
+                                    let current_mode = mode_clone.lock().unwrap().clone();
+                                    // 立即恢复全部在线核 + 解除专用核钉定，必须先于 CLG reload：prime 离线期间
+                                    // policy 目录消失，reload 枚举不到将使 prime 永久失去 worker、脱离调度控制
+                                    {
+                                        let cfg = config_clone.read().unwrap();
+                                        apply_affinity_and_corectl(
+                                            &mut affinity_mgr,
+                                            &mut corectl_mgr,
+                                            &cfg,
+                                            &current_mode,
+                                            is_screen_on,
+                                            crate::monitor::app_detect::get_current_pid(),
+                                            &last_core_utils,
+                                            scene_mode_active,
+                                        );
+                                    }
+                                    // 退回 reduce：核已全部上线、枚举 policy 完整；reduce 未启用时释放（同 ModeChange）
+                                    let ps_cfg = get_clg_cfg(&config_clone.read().unwrap(), "reduce");
+                                    if ps_cfg.enabled {
+                                        if cpu_governor.is_active() {
+                                            cpu_governor.reload_config(&ps_cfg);
+                                        } else {
+                                            cpu_governor.init_policies(&ps_cfg);
+                                        }
+                                    } else {
+                                        cpu_governor.release();
+                                    }
+                                    log::info!(
+                                        "{}",
+                                        t_with_args(
+                                            "scheduler-scene-mode-saturation",
+                                            &fluent_args!("util" => format!("{:.0}", standby_max * 100.0))
+                                        )
+                                    );
+                                    crate::logger::main_event(
+                                        "scene_exit",
+                                        "-",
+                                        "saturation->reduce+300s",
+                                    );
+                                }
+                            } else {
+                                scenemode_sat_since = None;
+                            }
+                        }
+                    },
+
+                    // [evt_frame] 
+                    // 帧率事件 (eBPF 驱动)
+                    DaemonEvent::FrameUpdate { frame_delta_ns } => {
+                        // 帧事件喂给 FAS 活跃实例（内部含 3s 温度刷新）；息屏照常投喂（无帧则 no-op）
+                        if fas_mgr.is_active() {
+                            fas_mgr.on_frame(frame_delta_ns);
+                        }
+                        if log::log_enabled!(log::Level::Debug) {
+                            log::debug!("{}", t_with_args("scheduler-event-frame", &fluent_args!(
+                                "delta_ms" => format!("{:.2}", frame_delta_ns as f64 / 1_000_000.0)
+                            )));
+                        }
+                    }
+
+                    // [evt_reload] 
+                    // 热重载配置事件
+                    DaemonEvent::ConfigReload(_new_rules) => {
+                        let current_mode = mode_clone.lock().unwrap().clone();
+                        log::debug!("{}", t_with_args("scheduler-event-config-reload", &fluent_args!(
+                            "mode" => current_mode.clone(),
+                            "screen_on" => is_screen_on.to_string()
+                        )));
+                        // fas 模式：FAS 配置编译期嵌入静态，rules.yaml 重载不参与
+                        // 息屏时不要用新配置覆盖 Doze
+                        if is_screen_on {
+                            let config_lock = config_clone.read().unwrap();
+                            if crate::common::is_special_mode(&current_mode) {
+                                // 特调模式：重载 akmode 配置
+                                let ak_cfg = config_lock.get_tuned_profile(&current_mode);
+                                if ak_governor.is_active() {
+                                    ak_governor.reload_config(&ak_cfg);
+                                } else {
+                                    let in_cooldown = tuned_cooldown_until
+                                        .map_or(false, |until| Instant::now() < until);
+                                    if !in_cooldown {
+                                        if !ak_governor.init_policies(&current_mode, &ak_cfg) {
+                                            tuned_cooldown_until = Some(Instant::now() + TUNED_COOLDOWN);
+                                            log::warn!("{}", t_with_args(
+                                                "scheduler-tuned-cooldown",
+                                                &fluent_args!("secs" => TUNED_COOLDOWN.as_secs().to_string())
+                                            ));
+                                            let clg_cfg = get_clg_cfg(&config_lock, &current_mode);
+                                            if clg_cfg.enabled { cpu_governor.init_policies(&clg_cfg); }
+                                        }
+                                    } else {
+                                        let clg_cfg = get_clg_cfg(&config_lock, &current_mode);
+                                        if clg_cfg.enabled { cpu_governor.init_policies(&clg_cfg); }
+                                    }
+                                }
+                            } else if is_fast_lock(&current_mode) {
+                                // 硬锁档（vector 锁最高/frozen 锁最低）不读 yaml 参数，仅确保 CLG 未意外启动。
+                                // **frozen 必须进这一支**：落到下面 else 会 fast_lock.release() 放掉刚锁上的
+                                // 最低频——配置热重载（改 meta/rules 即触发）时必现
+                                if cpu_governor.is_active() { cpu_governor.release(); }
+                            } else if current_mode != "fas" {
+                                // 非特调/非极速模式：释放 fast_lock 由 CLG 接管（fas 不参与热重载，配置编译期嵌入）
+                                ak_governor.release();
+                                fast_lock.release();
+                                let clg_cfg = get_clg_cfg(&config_lock, &current_mode);
+                                if clg_cfg.enabled {
+                                    if cpu_governor.is_active() { cpu_governor.reload_config(&clg_cfg); }
+                                    else { cpu_governor.init_policies(&clg_cfg); }
+                                } else if cpu_governor.is_active() {
+                                    cpu_governor.release();
+                                }
+                            }
+                        }
+                        // 亲和/core_ctl 与配置联动（开关变化时切换布局；内部去重）
+                        {
+                            let cfg = config_clone.read().unwrap();
+                            crate::logger::set_diag_active(cfg.meta.dev_record);
+                            crate::logger::set_diag_mode(&current_mode);
+                            apply_affinity_and_corectl(
+                                &mut affinity_mgr,
+                                &mut corectl_mgr,
+                                &cfg,
+                                &current_mode,
+                                is_screen_on,
+                                crate::monitor::app_detect::get_current_pid(),
+                                &last_core_utils,
+                                scene_mode_active,
+                            );
+                        }
+                        crate::logger::main_event("config_reload", "-", "rules.yaml");
+                    }
+
+                    // [evt_bpf] 
+                    // eBPF 扩展探针统计（ChiRi 专属遥测，2s 一次增量）
+                    DaemonEvent::BpfStats { wakeups, migrations, freq_transitions } => {
+                        // 仅缓存供遥测落盘，不参与调频决策也不刷新看门狗心跳（探针失败增量为 0）
+                        last_bpf_stats = (wakeups, migrations, freq_transitions);
+                    }
+                }
+            }
+            }));
+                // [panic_recovery] 
+                if loop_result.is_ok() {
+                    // channel 关闭：正常退出
+                    break;
+                }
+                log::error!("{}", t("scheduler-ipc-panic"));
+                // 清理到安全态（release 幂等；收尾包 catch_unwind，release 再 panic 不击穿重启循环）
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    cpu_governor.release();
+                    ak_governor.release();
+                    fast_lock.release();
+                    fas_mgr.deactivate_all();
+                    corectl_mgr.release();
+                    affinity_mgr.release();
+                }));
+                ipc_restart_count += 1;
+                if ipc_restart_count > SCHEDULER_IPC_RESTART_MAX {
+                    log::error!(
+                        "{}",
+                        t_with_args(
+                            "scheduler-ipc-restart-giveup",
+                            &fluent_args!("count" => SCHEDULER_IPC_RESTART_MAX.to_string())
+                        )
+                    );
+                    // 极端兜底：看门狗（service.sh）只监控**进程**存活（3s 拉起），线程级死亡感知不到
+                    // ——CPU 已清理到安全态，退出整个进程交给看门狗拉起全新 daemon（含全核上线）
+                    std::process::exit(1);
+                }
+                // 重置状态机到亮屏安全态：真实屏幕状态由下一个 ScreenStateChange 事件纠正（必被处理）
+                is_screen_on = true;
+                screen_off_at = None;
+                scene_mode_active = false;
+                scene_hold_logged = false;
+                scenemode_sat_since = None;
+                last_core_utils.clear();
+                std::thread::sleep(SCHEDULER_IPC_RESTART_BACKOFF);
+                // 按当前模式重新接管（等价亮屏恢复语义；特调/fas 由后续事件重建）。**停摆期间必须跳过**
+                // ：重建无 mode 之外门控，模式停在 lab/vector 会把刚释放的接管重新接回
+                if !halted {
+                    let current_mode = mode_clone
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .clone();
+                    if current_mode == "contingency" || current_mode == "babel" {
+                        // lab 静态分组：governor/GPU 与分组都重建
+                        sync_lab_governor_gpu(&current_mode, &mut governor_guard, &mut gpu_guard, &mut fast_lock);
+                        let cfg = config_clone.read().unwrap();
+                        apply_affinity_and_corectl(
+                            &mut affinity_mgr,
+                            &mut corectl_mgr,
+                            &cfg,
+                            &current_mode,
+                            is_screen_on,
+                            crate::monitor::app_detect::get_current_pid(),
+                            &[],
+                            scene_mode_active,
+                        );
+                    } else if is_fast_lock(&current_mode) {
+                        // vector/frozen 档不能漏：不注册 CLG（get_mode 返回 None → enabled=false），漏掉即零接管
+                        fast_lock.init(current_mode == "frozen");
+                    } else if current_mode != "fas"
+                        && !crate::common::is_special_mode(&current_mode)
+                    {
+                        let config_lock = config_clone.read().unwrap();
+                        let clg_cfg = get_clg_cfg(&config_lock, &current_mode);
+                        if clg_cfg.enabled {
+                            cpu_governor.init_policies(&clg_cfg);
+                        }
+                    }
+                }
+                log::warn!(
+                    "{}",
+                    t_with_args(
+                        "scheduler-ipc-restart",
+                        &fluent_args!("count" => ipc_restart_count.to_string())
+                    )
+                );
+            }
+            log::warn!("{}", t("scheduler-channel-closed"));
+            // 收尾：无论 channel 关闭还是 panic，都恢复 CPU 控制状态，避免频率/governor 残留
+            cpu_governor.release();
+            ak_governor.release();
+            fast_lock.release();
+            governor_guard.release();
+            gpu_guard.release();
+            affinity_mgr.lab_static_deactivate();
+            // FAS 全部实例去激活（恢复频率）后清理
+            fas_mgr.deactivate_all();
+            // 亲和布局与 core_ctl 同步恢复系统原始状态
+            corectl_mgr.release();
+            affinity_mgr.release();
+        })?;
+
+    Ok(())
+}

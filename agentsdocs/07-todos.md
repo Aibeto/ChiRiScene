@@ -26,6 +26,16 @@
 - FAS 无帧降级（退出 FAS 交回 CLG 或固定档保底）——会改调度行为，先定取向。
 - FAS 白名单真机验证：speedmobile / lolm / 国服 sgame 首刷看 devimp fps 是否贴 target 档（玩家开 90 帧则 target_fps 调 [60,90,120]）。
 - playback 参数复核（tuned_profiles.yaml 内 TODO）：headroom 0.85、hysteresis 0.06 / down_hold 150、big ceil 0.75。
+- **播放态掉帧验证（P0-3 收尾）**：动态帧信号已落地（2026-09-27：`event` 行 `decision=playback_fps` 直方图），
+  拿到真机包后按「占优簇反推基线 + 超基线长尾档」判读——中档 0.60 / 硬档窗口与播放态重叠时若基线没动，
+  即可把 `tuned_thermal_floor` 从 0.55 下调试探；若出现长尾档即证明 0.55 的下限是必要的（并考虑在线判据）。
+- **播放态「边充边放」温度曲线复核（P0-3 收尾，2026-09-27 追加）**：`tuned.rs:54` `profile_ceil.min(cap.max(floor))`
+  在硬档（cap 0.40）下由 `tuned_thermal_floor`（0.55，定义于 `src/chiri/config.rs::d_tuned_thermal_floor` +
+  各 `module/config/<device>/feature.yaml`）把大核抬到 0.55，即 tuned 接管的播放态在 ≥45°C 时**可比 CLG 跑得更热**
+  （播放态不走 CLG，CLG 此时已压到 0.40）——这是为「视频解码需要稳定档位」有意保留的，见 `tuned.rs [thermal_ceil]`
+  与 `agentsdocs/03-chiri.md` 的「热态 tuned 响应」条。待验证：**边充边放场景**下看整机/壳温曲线是否仍持续爬升；
+  若爬升不止，`0.55` 这个地板即首要嫌疑（次选：`tuned_resp_enabled` 是否需要在充电态额外降 cap）。
+  判据同上行——`tuned` tick 行 `cur_max` + status.csv `batt_power_w`（按 package 均值）+ 电池温度列。
 - `touch_boost_tiers: 3→2` 真机 A/B（8550，滑动/打字流畅度不行回 3 档）；`clamp_heavy` 恒钳 A/B（功耗 + 性能，与 T8 同源）。
 - `background_uclamp_max_pct` 50→35 待复核。
 - PowerBase 触摸突破恒 false（CLG 的 AtomicTouchState 私有，需另备共享触摸标志）；8998 已移出 CHIRI_SOC_HINTS（恢复支持需补 [powerbase] 显式段与 hints 片段，现兜底 3.0W）。

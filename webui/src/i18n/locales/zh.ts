@@ -10,8 +10,7 @@ export default {
   'nav.logs': '日志',
   'nav.main': '主导航',
 
-  // 注释掉的键：手动刷新按钮已移除（状态/日志页改为每秒自刷新）
-  // 'action.refresh': '刷新',
+  // 注释掉的键：手动刷新按钮已移除（状态/日志页改为每秒自刷新）'action.refresh': '刷新',
   'action.toBottom': '回到底部',
   'action.cancel': '取消',
   'action.confirm': '确认',
@@ -93,8 +92,7 @@ export default {
   'config.loglevel': '日志等级',
   'config.writable': '可修改项',
   'config.devRecord': '开发记录',
-  // 开发记录副标题按需求隐藏
-  // 'config.devRecord.hint': '通常保持默认值，不需要修改',
+  // 开发记录副标题按需求隐藏'config.devRecord.hint': '通常保持默认值，不需要修改',
   'config.fasEnabled': 'FAS 帧感知调度',
   'config.fasEnabled.hint': '帧时间间隔感知调度',
   'config.scenemodeEnabled': 'SceneMode',
@@ -230,8 +228,7 @@ export default {
   'logs.source': '数据源',
   'logs.source.daemon': '守护进程日志',
   'logs.source.status': '状态快照',
-  // 日志面板副标题按需求隐藏
-  // 'logs.window': '仅显示最近一段（每次读取固定字节窗口，不加载整个文件）',
+  // 日志面板副标题按需求隐藏'logs.window': '仅显示最近一段（每次读取固定字节窗口，不加载整个文件）',
   'logs.archive': '历史日志已打包进 logd/，可从归档包中查看',
   'logs.devimp': '诊断日志',
   'logs.empty': '暂无内容',
@@ -264,8 +261,7 @@ export default {
   // 'mode.contingency.desc': 'CPU+GPU 全核最高频、performance 调速器、停线程迁移',
   'mode.babel': 'babel',
   'mode.frozen': '待春归',
-  // 'mode.babel.desc': '规整化：后台小核、前台/顶部大核+超大核、系统进程大核',
-  // DOWN 停摆：显示名同样是 id、不分语言
+  // 'mode.babel.desc': '规整化：后台小核、前台/顶部大核+超大核、系统进程大核',DOWN 停摆：显示名同样是 id、不分语言
   'mode.down': 'down',
   // 'mode.down.desc': '调度停摆，只保留采集与日志',
   'mode.scenemode': '息屏场景',

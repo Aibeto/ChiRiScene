@@ -1,6 +1,6 @@
 <script lang="ts">
-  // LogsView.svelte: [source] [terminal] [snapshot]
-  // 两类数据源都只读尾部窗口（daemon.log 上限 50MB、status.csv 8MB），界面写明「最近一段」与归档位置。
+  // LogsView.svelte: [source] [terminal] [snapshot]两类数据源都只读尾部窗口（daemon.log 上限 50MB、status.csv 8MB），界面写明「最近一段」
+  // 与归档位置
   import { onMount } from 'svelte'
   import Panel from '@/components/Panel.svelte'
   import Segmented from '@/components/Segmented.svelte'
@@ -53,8 +53,7 @@
     return key ? t(key) : '—'
   }
 
-  // [follow] 两个子滚动窗口共用「跟随底部」：新数据到达且处于跟随态时自动滚底；
-  // 用户滑离底部即退出跟随（滚回也不自动恢复），只能点「回到底部」恢复
+  // [follow] 两个子滚动窗口共用「跟随底部」：新数据到达且处于跟随态时自动滚底；用户滑离底部即退出跟随（滚回也不自动恢复），只能点「回到底部」恢复
   let daemonBody = $state<HTMLDivElement>()
   let snapshotBody = $state<HTMLDivElement>()
   let followDaemon = $state(true)
@@ -84,8 +83,8 @@
     }
   }
 
-  // [poll] 每秒自刷新（loadLogs 有在飞守卫，轮询不堆积）；跳过 hidden 期 tick 省电，
-  // 恢复可见时立即补一次。回调闭包里 source 取当前值（$state 可变），不能在 onMount 快照
+  // [poll] 每秒自刷新（loadLogs 有在飞守卫，轮询不堆积）；跳过 hidden 期 tick 省电，恢复可见时立即补一次回调闭包里 source 取当前值（$state 可变），
+  // 不能在 onMount 快照
   onMount(() => {
     void app.loadLogs(source)
     const timer = setInterval(() => {

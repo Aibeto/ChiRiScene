@@ -1,6 +1,5 @@
-// down.ts: [read] [write]
-// DOWN 停摆契约（down.chr）：文件对外暴露、支持手改，读写的唯一权威是它本身。
-// 与 lab 同款：文件不存在 = 正常调度（daemon 会补建模板）；解除停摆写空内容而非删文件。
+// down.ts: [read] [write]DOWN 停摆契约（down.chr）：文件对外暴露、支持手改，读写的唯一权威是它本身与 lab 同款：文件不存在 = 正常调度（daemon 会补建模板）；
+// 解除停摆写空内容而非删文件
 import { absOf, shQuote } from './paths'
 import { isLive, run } from '@/kernel/shell'
 import { absent, failed, ok, shellError, type ReadResult } from './errors'
@@ -29,7 +28,7 @@ export async function readDown(): Promise<ReadResult<DownSnapshot>> {
 // [write]
 /**
  * 写停摆状态：`active` true 写保留字 down、false 写空内容；先落同目录临时文件再
- * 原子替换（与配置页同款），避免守护进程读到半截内容。
+ * 原子替换（与配置页同款），避免守护进程读到半截内容
  */
 export async function writeDown(active: boolean): Promise<ReadResult<DownSnapshot>> {
   if (!isLive()) return absent<DownSnapshot>('unsupported-env')

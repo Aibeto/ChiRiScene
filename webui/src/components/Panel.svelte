@@ -1,6 +1,5 @@
 <script lang="ts">
-  // Panel.svelte: [layout] [signal]
-  // 面板容器：复用 .ak-card 结构类，深色表面与切角几何由项目类提供（官方 .ak-card 透明 + 阴影，不适合深色大块布局）。
+  // Panel.svelte: [layout] [signal]面板容器：复用 .ak-card 结构类，深色表面与切角几何由项目类提供（官方 .ak-card 透明 + 阴影，不适合深色大块布局）
   import type { Snippet } from 'svelte'
 
   let {
@@ -39,8 +38,7 @@
 </section>
 
 <style>
-  /* 表面（边框/底色/切角）与排版来自官方 .ak-card（深色适配在 app.css [ak-adapt]）；
-     这里只保留左侧信号条与头部骨架修正 */
+  /* 表面（边框/底色/切角）与排版来自官方 .ak-card（深色适配在 app.css [ak-adapt]）；这里只保留左侧信号条与头部骨架修正 */
   .panel {
     position: relative;
   }

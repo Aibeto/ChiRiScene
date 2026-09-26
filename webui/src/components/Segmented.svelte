@@ -1,6 +1,5 @@
 <script lang="ts">
-  // Segmented.svelte: [switch] [keyboard]
-  // 单选切换：radiogroup/radio 语义（互斥选择而非 tab），补方向键导航满足键盘可达性。
+  // Segmented.svelte: [switch] [keyboard]单选切换：radiogroup/radio 语义（互斥选择而非 tab），补方向键导航满足键盘可达性
   type SegmentedItem = { id: string; label: string }
 
   let {
@@ -29,8 +28,8 @@
   }
 </script>
 
-<!-- 视觉/尺寸/响应式全部来自官方 .ak-segmented（深色终端切换器）；aria-checked 语义由 app.css [ak-adapt] 映射到官方选中态。
-     tabindex=-1：roving tabindex 容器（焦点实际在按钮上，方向键事件冒泡至此） -->
+<!-- 视觉/尺寸/响应式全部来自官方 .ak-segmented（深色终端切换器）；aria-checked 语义由 app.css [ak-adapt] 映射到官方选中态tabindex=-1：
+     roving tabindex 容器（焦点实际在按钮上，方向键事件冒泡至此） -->
 <div
   class="ak-segmented"
   data-ak-scroll={scroll || undefined}

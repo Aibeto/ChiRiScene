@@ -1,6 +1,6 @@
 <script lang="ts">
-  // AppsView.svelte: [search] [list] [rules]
-  // 应用性能模式由 rules.yaml 决定（WebUI 无写入口），只按契约事实打标签：特调命中、FAS 白名单、现存 app_modes。
+  // AppsView.svelte: [search] [list] [rules]应用性能模式由 rules.yaml 决定（WebUI 无写入口），只按契约事实打标签：特调命中、FAS 白名单、
+  // 现存 app_modes
   import { onMount } from "svelte";
   import Panel from "@/components/Panel.svelte";
   import StateBox from "@/components/StateBox.svelte";

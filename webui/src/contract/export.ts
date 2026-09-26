@@ -1,9 +1,6 @@
-// export.ts: [start] [poll]
-// 导出历史归档：把 logd/（历次重启的日志归档）打成 tar.gz 放到 /sdcard/Download。
-// 打包交给外部脚本 scripts/pack.sh（对外暴露的稳定接口，与守护进程启动归档共用、
-// 构建流程不得修改）：先 tar 再 gzip，完成后删除中间 .tar；设备无 gzip 时保留
-// 未压缩 .tar 作为产物。硬约束——后台执行：归档可达几百 MB、压缩数十秒级，前台等
-// ksu exec 会被桥的超时掐断，命令自己 fork 到后台、结束写产物/标记文件，前端只轮询。
+// export.ts: [start] [poll]导出历史归档：把 logd/（历次重启的日志归档）打成 tar.gz 放到 /sdcard/Download打包交给外部脚本 scripts/pack
+// sh（对外暴露的稳定接口，与守护进程启动归档共用、构建流程不得修改）：先 tar 再 gzip，完成后删除中间 .tar；设备无 gzip 时保留未压缩 .tar 作为产物硬约束——后台执行：归档可达几百 MB、
+// 压缩数十秒级，前台等ksu exec 会被桥的超时掐断，命令自己 fork 到后台、结束写产物/标记文件，前端只轮询
 import { absOf, shQuote } from './paths'
 import { isLive, run } from '@/kernel/shell'
 import { absent, failed, ok, shellError, type ReadResult } from './errors'
@@ -38,12 +35,12 @@ function stamp(now = new Date()): string {
 // [start]
 /**
  * 启动后台打包并立刻返回，完成状态由 pollExport 轮询三个标记文件得出；目录不存在
- * / 只剩本次运行的文件等错误由后台脚本写进 failFlag，前端读退出码映射文案。
+ * / 只剩本次运行的文件等错误由后台脚本写进 failFlag，前端读退出码映射文案
  */
 export async function startExport(): Promise<ReadResult<ExportJob>> {
   if (!isLive()) return absent<ExportJob>('unsupported-env')
-  // pack.sh export 的 dest_base 是不带扩展名的基准名（脚本自己生成 <base>.tar 再压成
-  // <base>.tar.gz）：传带 .tar 的名字产物会变 logd_X.tar.tar.gz，轮询永远找不到目标
+  // pack.sh export 的 dest_base 是不带扩展名的基准名（脚本自己生成 <base>.tar 再压成<base>.tar.gz）：传带 .tar 的名字产物会变 logd_X.tar.tar
+  // gz，轮询永远找不到目标
   const base = `${DOWNLOAD_DIR}/logd_${stamp()}`
   const job: ExportJob = {
     target: `${base}.tar.gz`,
@@ -88,10 +85,8 @@ export async function pollExport(job: ExportJob): Promise<ReadResult<ExportProbe
   const tarPath = job.fallback
   const part = `${tarPath}.part`
   const mode = `${job.failFlag}.mode`
-  // 字节进度 = .part（打包中）+ .tar（打包完成/无 gzip）+ .tar.gz（压缩完成）之和，
-  // 同一时刻至多一个存在（脚本 mv 与 gzip 就地删除保证）。三个来源文件先后出现/
-  // 消失：必须先 [ -f ] 守卫再读——`wc -c < 缺失文件` 是输入重定向错误，由 shell
-  // 直接打到 stderr（命令上的 2>/dev/null 覆盖不到），真机 mksh 会判整条命令失败
+  // 字节进度 = .part（打包中）+ .tar（打包完成/无 gzip）+ .tar.gz（压缩完成）之和，同一时刻至多一个存在（脚本 mv 与 gzip 就地删除保证）三个来源文件先后出现/消失：
+  // 必须先 [ -f ] 守卫再读——`wc -c < 缺失文件` 是输入重定向错误，由 shell 直接打到 stderr（命令上的 2>/dev/null 覆盖不到），真机 mksh 会判整条命令失败
   const cmd =
     `[ -f ${shQuote(job.target)} ] && echo s:gz; ` +
     `[ -f ${shQuote(job.failFlag)} ] && echo "s:fail:$(cat ${shQuote(job.failFlag)} 2>/dev/null)"; ` +
@@ -106,8 +101,7 @@ export async function pollExport(job: ExportJob): Promise<ReadResult<ExportProbe
     `exit 0`
   try {
     const { errno, stdout, stderr } = await run(cmd)
-    // 只有「非零且没拿到任何可用输出」才算探测失败——个别 shell 中途返回非零但输出
-    // 齐全，误判会让导出显示假失败
+    // 只有「非零且没拿到任何可用输出」才算探测失败——个别 shell 中途返回非零但输出齐全，误判会让导出显示假失败
     if (errno !== 0 && !/^b:/m.test(stdout)) {
       return failed<ExportProbe>(`查询导出进度失败：${shellError(errno, stderr)}`)
     }
@@ -119,8 +113,7 @@ export async function pollExport(job: ExportJob): Promise<ReadResult<ExportProbe
     }
     const progress: ExportProgress = { done: num('d'), total: num('t'), bytes: num('b') }
     if (/^s:gz$/m.test(out)) return ok({ phase: 'done-gz', progress })
-    // fail 必须先于 s:tar 判定：压缩失败时脚本保留 .tar 并删 .mode，输出会同时含
-    // s:tar 与 s:fail——s:tar 先命中会把「压缩失败」当成「未压缩完成」静默上报
+    // fail 必须先于 s:tar 判定：压缩失败时脚本保留 .tar 并删 .mode，输出会同时含s:tar 与 s:fail——s:tar 先命中会把「压缩失败」当成「未压缩完成」静默上报
     const fail = /^s:fail:(\d+)/m.exec(out)
     if (fail) {
       const phase = fail[1] === '5' ? 'empty' : fail[1] === '3' ? 'no-logd' : 'failed'

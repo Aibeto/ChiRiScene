@@ -1,5 +1,5 @@
-// ksu.ts: [env] [exec] [ui] [packages] [module]
-// KernelSU WebView 桥封装：ksu.* 由原生注入、不同管理器版本可能缺 API，全部调用做能力探测，缺失时降级不抛异常。
+// ksu.ts: [env] [exec] [ui] [packages] [module]KernelSU WebView 桥封装：ksu.* 由原生注入、不同管理器版本可能缺 API，全部调用做能力探测，
+// 缺失时降级不抛异常
 
 interface KsuGlobal {
   exec?: (cmd: string, opts: string, cb: string) => void
@@ -55,7 +55,7 @@ let callbackSeq = 0
 
 /**
  * 执行 shell 命令：无 ksu 环境（浏览器 dev）时 reject，由调用方决定回退；
- * 命令转义/编码由契约层负责，本层不拼接；带超时兜底，原生回调丢失时调用方 loading 不会永久卡死。
+ * 命令转义/编码由契约层负责，本层不拼接；带超时兜底，原生回调丢失时调用方 loading 不会永久卡死
  */
 export function exec(command: string, timeoutMs = 20000): Promise<ExecResult> {
   const api = ksu()
@@ -126,7 +126,7 @@ export function fullScreen(on: boolean): void {
   }
 }
 
-/** 关闭 WebUI：管理器注入了 exit 则原生关闭并返回 true；未注入（旧版/外部浏览器）返回 false，由调用方兜底（WebView 里 window.close() 通常无效）。 */
+/** 关闭 WebUI：管理器注入了 exit 则原生关闭并返回 true；未注入（旧版/外部浏览器）返回 false，由调用方兜底（WebView 里 window.close() 通常无效） */
 export function exitApp(): boolean {
   const api = ksu()
   if (!api?.exit) return false

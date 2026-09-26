@@ -135,19 +135,28 @@ Thermal:
   batt_soft_temp_c: 41
   # 电池硬限（°C）：手握明显发烫
   batt_hard_temp_c: 45
+  # 电池中限（°C）：软/硬限之间再补一档，形成 1.0 → soft → mid → hard 四级阶梯
+  # （必须 soft < mid < hard，越界由 normalize 钳到最近合法值并 warn）
+  batt_mid_temp_c: 43
   # CPU 软限（°C）：接近内核温控起控点才参与。soc_max 在大型游戏高负载下
   # 常态 85°C+，阈值过低（如 75）会导致过半时间被软件压制、比官调更卡
   cpu_soft_temp_c: 90
   # CPU 硬限（°C）：极端情况才触发
   cpu_hard_temp_c: 95
+  # CPU 中限（°C）：同样形成四级阶梯，只在极端热时参与（必须 soft < mid < hard）
+  cpu_mid_temp_c: 92
   # 软限触发后压到的性能比例
   soft_perf_cap: 0.70
-  # 硬限触发后压到的性能比例（必须 <= soft_perf_cap）
+  # 中限触发后压到的性能比例（必须 mid <= soft、hard <= mid）
+  mid_perf_cap: 0.60
+  # 硬限触发后压到的性能比例（必须 <= mid_perf_cap）
   hard_perf_cap: 0.40
   # 豁免档：当前性能比已超过此值时不压制。默认 0.80
   free_above: 0.80
-  # 回滞（°C）：温度降到 软限 - hysteresis 以下才解除压制
+  # 软/中档回滞（°C）：退档要降到「该级阈值 - hysteresis」以下才解除压制
   hysteresis_c: 3
+  # 硬档专用回滞（°C）：硬限退到 硬限 - hysteresis_hard 以下才退档（默认与 hysteresis_c 同值）
+  hysteresis_hard_c: 3
 
 # [modes]
 # 性能模式（CLG 调频参数）

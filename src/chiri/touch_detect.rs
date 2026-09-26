@@ -20,9 +20,8 @@ const ABS_MT_TRACKING_ID: u16 = 0x39; // 57
 const INPUT_EVENT_SIZE: usize = 24;
 
 // [monitor]
-/// 触摸检测线程：读取全部 /dev/input/event* 输入设备，检测触摸按下事件，
-/// 并把触摸事件通过 `tx` 发给 scheduler_ipc（事件驱动，即时触发 CLG 大核升频）。
-/// 阻塞运行（poll + 阻塞 read），随守护进程退出消亡。
+/// 触摸检测线程：读取全部 /dev/input/event* 输入设备，检测触摸按下事件，并把触摸事件通过 `tx` 发给 scheduler_ipc（事件驱动，即时触发 CLG 大核升频）
+/// 阻塞运行（poll + 阻塞 read），随守护进程退出消亡
 pub fn monitor_touch(tx: SyncSender<()>) {
     info!("{}", t("touch-detect-started"));
 
@@ -58,8 +57,7 @@ pub fn monitor_touch(tx: SyncSender<()>) {
                 })
                 .collect();
 
-            // [poll_wait] 超时 -1 = 无限期阻塞。旧 200ms 超时分支（ret==0 → continue）
-            // 不改任何状态、只是每秒 5 次空唤醒，删掉与保留等价；事件处理与重枚举时机不变
+            // [poll_wait] 超时 -1 = 无限期阻塞旧 200ms 超时分支（ret==0 → continue）不改任何状态、只是每秒 5 次空唤醒，删掉与保留等价；事件处理与重枚举时机不变
             let ret = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) };
             if ret < 0 {
                 debug!("{}", t("touch-detect-poll-error"));
@@ -69,12 +67,9 @@ pub fn monitor_touch(tx: SyncSender<()>) {
 
             let mut buf = [0u8; INPUT_EVENT_SIZE];
             for (i, pfd) in fds.iter().enumerate() {
-                // 挂断/错误/无效描述符（部分内核在设备断开时上报）：与读错误同路
-                // 重新枚举。阻塞等待后没有超时兜底，这类 revents 必须显式处理，
-                // 否则 poll 立即返回却无事可做，会原地空转
+                // 挂断/错误/无效描述符（部分内核在设备断开时上报）：与读错误同路重新枚举阻塞等待后没有超时兜底，这类 revents 必须显式处理，否则 poll 立即返回却无事可做，会原地空转
                 if pfd.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
-                    // [poll_backoff] 异常 revents 多为电平触发，重枚举后 poll 会立即
-                    // 返回；退避 500ms（与 poll 出错路径同款）防持续异常时紧循环空转。
+                    // [poll_backoff] 异常 revents 多为电平触发，重枚举后 poll 会立即返回；退避 500ms（与 poll 出错路径同款）防持续异常时紧循环空转
                     std::thread::sleep(Duration::from_millis(500));
                     break 'poll;
                 }
@@ -82,9 +77,8 @@ pub fn monitor_touch(tx: SyncSender<()>) {
                     continue;
                 }
                 match devices[i].read(&mut buf) {
-                    // 读到 0 字节或读取失败 = 设备断开/异常，重新枚举
-                    // [poll_backoff] 读失败多为驱动持续异常（POLLIN 电平触发但 read
-                    // 恒败），与异常 revents 同款退避 500ms，防重枚举后立即再失败的紧循环
+                    // 读到 0 字节或读取失败 = 设备断开/异常，重新枚举[poll_backoff] 读失败多为驱动持续异常（POLLIN 电平触发但 read 恒败），
+                    // 与异常 revents 同款退避 500ms，防重枚举后立即再失败的紧循环
                     Ok(0) | Err(_) => {
                         std::thread::sleep(Duration::from_millis(500));
                         break 'poll;
@@ -105,8 +99,7 @@ pub fn monitor_touch(tx: SyncSender<()>) {
                             let touched = (etype == EV_KEY && code == BTN_TOUCH && value == 1)
                                 || (etype == EV_ABS && code == ABS_MT_TRACKING_ID && value >= 0);
                             if touched {
-                                // 事件驱动：向 scheduler_ipc 发送触摸事件（非阻塞，
-                                // 通道满时丢弃，多余的触摸事件丢了不碍事）
+                                // 事件驱动：向 scheduler_ipc 发送触摸事件（非阻塞，通道满时丢弃，多余的触摸事件丢了不碍事）
                                 let _ = tx.try_send(());
                                 debug!(
                                     "{}",

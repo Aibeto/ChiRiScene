@@ -3,6 +3,7 @@
 
 用法:
     python scripts/devimp/dvaff.py <解压目录> [--since MMDD-HHMMSS] [--out 目录]
+                                   [--groups "0-2,3-6,7"] [--core-top 8]
 
 口径（命令文档「三、判定要点」+ 已知坑 11/13/14）：
 - `@A` 按 `(act, reason, result)` 计数；result 归类 ok / e3(ESRCH) / e22(EINVAL) /
@@ -17,6 +18,9 @@
 - 绑定轨迹：累计 `pin=1 且 home=-1`（组掩码绑定且未钉核）的前台线程数，逐帧输出
   first/last/max + 单调性 + 采样时间戳——用来发现**只绑不解**的泄漏。
 - `p` 行不参与差分（每帧全量），但本探针只统计 `t` 行（pin/home 状态在 t 行）。
+- 核分布段（`t` 行的 `core` → comm 行数 / `u` 行均值）用来回答「某个簇上活跃的是谁」。
+  行数是采样**行数**不是并发线程数（差分集）；`u` 均值里长尾行是 ≤30s 窗口均值。
+  簇分界不猜：按机型 DT 用 `--groups` 显式给（8550 little=0-2 / big=3-6 / prime=7）。
 """
 
 import argparse
@@ -67,6 +71,9 @@ def scan(fn):
     peak_ts = None
     nfg_hdr = []
     comm_bound = collections.Counter()
+    core_rows = collections.Counter()          # core 号 -> t 行数（core=-1 单列）
+    core_comm = collections.Counter()          # (core, comm) -> t 行数
+    core_util = collections.Counter()          # (core, comm) -> Σu（除行数得行均值）
     first_bound_frame = None
     with open(fn, encoding="utf-8", errors="replace") as fh:
         for ln in fh:
@@ -117,11 +124,16 @@ def scan(fn):
                 state[tid] = (pin, home, comm)
                 if pin == 1:
                     comm_bound[comm] += 1
+                core, u = int(m.group(5)), int(m.group(4))
+                core_rows[core] += 1
+                core_comm[(core, comm)] += 1
+                core_util[(core, comm)] += u
     return dict(acts=acts, act_ok=act_ok, act_tot=act_tot, bulk=bulk, bulk_frames=bulk_frames,
                 bulk_by_act=bulk_by_act, state=state, frames=frames, traj=traj,
                 monotonic=monotonic, peak=peak, peak_ts=peak_ts, nfg_hdr=nfg_hdr,
                 comm_bound=comm_bound, first_bound_frame=first_bound_frame,
-                final_bound=prev_bound or 0)
+                final_bound=prev_bound or 0,
+                core_rows=core_rows, core_comm=core_comm, core_util=core_util)
 
 
 HEADER = """\
@@ -139,7 +151,7 @@ HEADER = """\
 """
 
 
-def report(fn, st):
+def report(fn, st, groups=None, top=8):
     out = [f"## {fn}", HEADER]
     out.append(f"@S 帧数: {st['frames']}   nfg 帧头值: min={min(st['nfg_hdr']) if st['nfg_hdr'] else 0} "
                f"max={max(st['nfg_hdr']) if st['nfg_hdr'] else 0}")
@@ -193,6 +205,45 @@ def report(fn, st):
     for cm, n in st["comm_bound"].most_common(15):
         out.append(f"  {cm[:40]:40s} {n:8d}")
     out.append("")
+
+    out.append("### t 行核分布（core → 出现最多的 comm）")
+    out.append("  行数 = 该核上的采样**行数**（`@S` 是差分集，不是并发线程数）；u_avg 是这些行的")
+    out.append("  `u` 均值——长尾行的 u 是 ≤30s 窗口均值，短促占用会被抹平。")
+    out.append("  簇归属按机型 DT 定，勿照搬：8550 little=0-2 / big=3-6 / prime=7（8475 分界不同）；")
+    out.append("  `--groups \"0-2,3-6,7\"` 可让脚本按当前机型分簇汇总。")
+    out.append(f"  逐核 t 行数: {dict(sorted(st['core_rows'].items()))}")
+    for core in sorted(st["core_rows"]):
+        keys = sorted((k for k in st["core_comm"] if k[0] == core),
+                      key=lambda k: -st["core_comm"][k])
+        out.append(f"  core={core:<3d} t 行 {st['core_rows'][core]:8d}")
+        for k in keys[:top]:
+            n = st["core_comm"][k]
+            out.append(f"      {k[1][:36]:36s} {n:8d}  u_avg={st['core_util'][k] / n:6.1f}")
+    for gi, grp in enumerate(groups or [], 1):
+        com, util = collections.Counter(), collections.Counter()
+        for k in st["core_comm"]:
+            if k[0] in grp:
+                com[k[1]] += st["core_comm"][k]
+                util[k[1]] += st["core_util"][k]
+        out.append(f"  group{gi} cores={sorted(grp)}  t 行 {sum(com.values())}")
+        for cm, n in com.most_common(top):
+            out.append(f"      {cm[:36]:36s} {n:8d}  u_avg={util[cm] / n:6.1f}")
+    out.append("")
+    return out
+
+
+def parse_groups(s):
+    """`"0-2,3-6,7"` → [{0,1,2},{3,4,5,6},{7}]（簇分界按机型 DT 给，脚本不猜拓扑）。"""
+    out = []
+    for part in (s or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            lo, hi = part.split("-", 1)
+            out.append(set(range(int(lo), int(hi) + 1)))
+        else:
+            out.append({int(part)})
     return out
 
 
@@ -202,7 +253,10 @@ def main(argv=None):
     ap.add_argument("dir")
     ap.add_argument("--since", default="0000-000000")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--groups", default=None, help='簇分界，如 "0-2,3-6,7"（8550 用这个）')
+    ap.add_argument("--core-top", type=int, default=8, help="每核/每簇列出的 comm 条数")
     a = ap.parse_args(argv)
+    groups = parse_groups(a.groups)
 
     root = os.path.abspath(a.dir)
     files = dc.list_files(root, ("aff_",), a.since)
@@ -215,10 +269,12 @@ def main(argv=None):
     summary = []
     for fn in files:
         st = scan(fn)
-        out += report(fn, st)
+        out += report(fn, st, groups, a.core_top)
+        hot = sorted(st["core_rows"].items(), key=lambda x: -x[1])[:3]
         summary.append(f"{os.path.basename(fn)}: @S {st['frames']} 帧, "
                        f"final_bound={st['final_bound']}, peak={st['peak']} (单调={st['monotonic']}), "
-                       f"@A 行 {sum(st['acts'].values())}, bulkΣ={sum(st['bulk'].values())}")
+                       f"@A 行 {sum(st['acts'].values())}, bulkΣ={sum(st['bulk'].values())}, "
+                       f"core 行数 top3 {hot}")
     workdir = a.out or root
     path = dc.write_report(workdir, "aff.txt", out)
     dc.announce("dvaff", path, summary)

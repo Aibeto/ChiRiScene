@@ -1,0 +1,61 @@
+# dvextract inventory
+# input   : E:\code\ChiRi\devimpbin\logd_0926-162821.tar.gz
+# outdir  : E:\code\ChiRi\devimpbin\0926-162821
+# files   : 53
+#
+        size  compression layer                                  path
+     1627737  tar.gz    0 outer                                0926-162614.tar.lz4
+       78178  tar.gz    0 outer                                0926-162818.tar.lz4
+    23470763  tar.gz    0 outer                                devimp_0926-162614.tar.lz4
+      575205  tar.gz    0 outer                                devimp_0926-162818.tar.lz4
+    13443264  unknown   1 x_0926-162614                        x_0926-162614\daemon.log
+      607076  unknown   1 x_0926-162614                        x_0926-162614\status.csv
+           6  unknown   1 x_0926-162614                        x_0926-162614\watchdog.pid
+      390300  unknown   1 x_0926-162818                        x_0926-162818\daemon.log
+         153  unknown   1 x_0926-162818                        x_0926-162818\service.log
+       15783  unknown   1 x_0926-162818                        x_0926-162818\status.csv
+           6  unknown   1 x_0926-162818                        x_0926-162818\watchdog.pid
+   123209436  unknown   1 x_devimp_0926-162614                 x_devimp_0926-162614\aff_0926-150648.log
+       10454  unknown   1 x_devimp_0926-162614                 x_devimp_0926-162614\main_com.android.launcher_0926-151552.log
+       10463  unknown   1 x_devimp_0926-162614                 x_devimp_0926-162614\main_com.android.launcher_0926-152748.log
+       57010  unknown   1 x_devimp_0926-162614                 x_devimp_0926-162614\main_com.android.launcher_0926-152757.log
+       34682  unknown   1 x_devimp_0926-162614                 x_devimp_0926-162614\main_com.android.launcher_0926-153301.log
+       46677  unknown   1 x_devimp_0926-162614                 x_devimp_0926-162614\main_com.android.launcher_0926-153622.log
+       22392  unknown   1 x_devimp_0926-162614                 x_devimp_0926-162614\main_com.android.launcher_0926-153846.log
+       50263  unknown   1 x_devimp_0926-162614                 x_devimp_0926-162614\main_com.android.launcher_0926-155426.log
+       31534  unknown   1 x_devimp_0926-162614                 x_devimp_0926-162614\main_com.android.launcher_0926-160255.log
+       44035  unknown   1 x_devimp_0926-162614                 x_devimp_0926-162614\main_com.android.launcher_0926-161728.log
+       20501  unknown   1 x_devimp_0926-162614                 x_devimp_0926-162614\main_com.coolapk.market_0926-151546.log
+      267128  unknown   1 x_devimp_0926-162614                 x_devimp_0926-162614\main_com.coolapk.market_0926-153458.log
+      406178  unknown   1 x_devimp_0926-162614                 x_devimp_0926-162614\main_com.coolapk.market_0926-153637.log
+       14195  unknown   1 x_devimp_0926-162614                 x_devimp_0926-162614\main_com.coolapk.market_0926-160304.log
+     1488114  unknown   1 x_devimp_0926-162614                 x_devimp_0926-162614\main_com.perol.pixez_0926-155441.log
+       45337  unknown   1 x_devimp_0926-162614                 x_devimp_0926-162614\main_com.tencent.mobileqq_0926-151555.log
+       35151  unknown   1 x_devimp_0926-162614                 x_devimp_0926-162614\main_com.tencent.mobileqq_0926-153113.log
+       68380  unknown   1 x_devimp_0926-162614                 x_devimp_0926-162614\main_com.tencent.mobileqq_0926-153241.log
+      290295  unknown   1 x_devimp_0926-162614                 x_devimp_0926-162614\main_com.tencent.mobileqq_0926-153311.log
+      241350  unknown   1 x_devimp_0926-162614                 x_devimp_0926-162614\main_com.tencent.mobileqq_0926-154828.log
+       93922  unknown   1 x_devimp_0926-162614                 x_devimp_0926-162614\main_com.tencent.mobileqq_0926-160308.log
+      129652  unknown   1 x_devimp_0926-162614                 x_devimp_0926-162614\main_com.tencent.mobileqq_0926-162241.log
+      251726  unknown   1 x_devimp_0926-162614                 x_devimp_0926-162614\main_me.weishu.kernelsu_0926-150650.log
+       20812  unknown   1 x_devimp_0926-162614                 x_devimp_0926-162614\main_me.weishu.kernelsu_0926-152751.log
+       58026  unknown   1 x_devimp_0926-162614                 x_devimp_0926-162614\main_me.weishu.kernelsu_0926-153440.log
+       40836  unknown   1 x_devimp_0926-162614                 x_devimp_0926-162614\main_me.weishu.kernelsu_0926-154620.log
+        5877  unknown   1 x_devimp_0926-162614                 x_devimp_0926-162614\main_nopkg_0926-150648.log
+      880546  unknown   1 x_devimp_0926-162614                 x_devimp_0926-162614\main_tv.danmaku.bili_0926-150806.log
+     1419963  unknown   1 x_devimp_0926-162614                 x_devimp_0926-162614\main_tv.danmaku.bili_0926-151610.log
+      417838  unknown   1 x_devimp_0926-162614                 x_devimp_0926-162614\main_tv.danmaku.bili_0926-152817.log
+      169868  unknown   1 x_devimp_0926-162614                 x_devimp_0926-162614\main_tv.danmaku.bili_0926-153125.log
+      848091  unknown   1 x_devimp_0926-162614                 x_devimp_0926-162614\main_tv.danmaku.bili_0926-153854.log
+      237663  unknown   1 x_devimp_0926-162614                 x_devimp_0926-162614\main_tv.danmaku.bili_0926-154634.log
+      589011  unknown   1 x_devimp_0926-162614                 x_devimp_0926-162614\main_tv.danmaku.bili_0926-154940.log
+     1678327  unknown   1 x_devimp_0926-162614                 x_devimp_0926-162614\main_tv.danmaku.bili_0926-160337.log
+      635306  unknown   1 x_devimp_0926-162614                 x_devimp_0926-162614\main_tv.danmaku.bili_0926-161743.log
+      373440  unknown   1 x_devimp_0926-162614                 x_devimp_0926-162614\main_tv.danmaku.bili_0926-162321.log
+     3286429  unknown   1 x_devimp_0926-162818                 x_devimp_0926-162818\aff_0926-162614.log
+       82096  unknown   1 x_devimp_0926-162818                 x_devimp_0926-162818\main_com.tencent.mobileqq_0926-162744.log
+       31359  unknown   1 x_devimp_0926-162818                 x_devimp_0926-162818\main_me.weishu.kernelsu_0926-162808.log
+        4804  unknown   1 x_devimp_0926-162818                 x_devimp_0926-162818\main_nopkg_0926-162615.log
+      167461  unknown   1 x_devimp_0926-162818                 x_devimp_0926-162818\main_tv.danmaku.bili_0926-162617.log
+#
+# devimp 侧批次: 2   logd 侧批次: 2

@@ -83,9 +83,21 @@
   `mod.rs` 首激活门控——稳态唤醒 2 次/s → 0。**勿退回裸原子量轮询**：FAS 会在前台 PID
   未变时重新激活（息屏释放、冷却结束），只等 PID 会漏唤醒。
 
+- **播放态帧信号（2026-09-27 契约，P2-3）**：`FasSignal` 增第二个谓词 `playback`，生产方 =
+  `TunedGovernor`（`init_policies` 接管 `playback` 置位、`release()` 清零，只碰这一位），消费方 =
+  fps 探针挂载谓词 `frame_source_active()` = **FAS 激活 或（playback + `diag_active()`）**；探针在
+  FAS 未激活时**不投喂控制路径**，只按秒落离线直方图 `event` 行（`decision=playback_fps`、
+  `reason=n=…;b<档>=…`，档宽 4ms、无帧不落行、进出旁路重起窗口）。`wait_until_active` 已删——
+  统一走 `wait_until_frame_source(timeout)`，只有「playback 在接管但诊断关着」用 1s 有界等待兜底
+  （诊断开关无唤醒通道）。口径正文见 `agentsdocs/03-chiri.md` 的 FAS 帧源门控条。
+
 - ChiRi 是设备上唯一的 userspace sysfs 写频调度程序（口径，2026-09-26 依内核源码分析修正）：设备上**不存在常态竞争的厂商守护进程/第三方调度模块**；频率实际决策链 = waltgov + vendor hook（OMRG/frame_boost）+ FREQ_QOS 聚合，详见 `.cursor/docs/kernel-analysis/06-vendor-inventory.md`，ChiRi 写 scaling_max/min 是 clamp 不是频率决策，内核 thermal QoS 钳制是合法态不算篡改；防篡改/周期重写（fast/power_base 5s、FAS 30s 强制重写、CLG 1s、bg uclamp 60s 再断言等）一律是**异常兜底**——防的是残留旧模块、手动调试、内核异常态下的异常改写，文档/汇报勿再写成厂商对抗。
 
 - **热压制恒钳开关（2026-09-26 契约，配置级）**：`Thermal.clamp_heavy: bool`（serde 默认 `true`），`Config::load` 同步到 CLG，启动与热重载均生效。`true` = cap 窗口内所有簇**恒钳**写频目标、`free_above` 豁免档被忽略；`false` = 精确回退旧 `free_above` 豁免行为。只改钳制判据，仍**只钳写频、不回写 `current_perf`**（状态卡死根因不存在）。8550 feature.yaml 已置 `true`；行为级证据 = governor 侧 `clamp_apply` 跃迁事件（bind/unbind 跃迁时、`diag_active()` 门控内）。口径正文见 `agentsdocs/03-chiri.md` Thermal 段。
+
+- **热阶梯四级 + 逐级回滞（2026-09-27 契约，配置级）**：`ThermalGuardConfig` 由三级扩为**四级** `1.0 → soft_perf_cap → mid_perf_cap → hard_perf_cap`，新增 `batt_mid_temp_c`（默认 43）、`cpu_mid_temp_c`（默认 92）、`mid_perf_cap`（默认 0.60，8550 0.60）、`hysteresis_hard_c`（硬档专用回滞，默认与 `hysteresis_c` 同值 3，8550 取 2）；`normalize` 强制 `soft < mid < hard`、`hard_cap <= mid_cap <= soft_cap`，越界**钳到最近合法值 + warn**（`thermal-config-clamped`，不 panic）。硬限兜底判据是 `hard < soft + 1.0`（**不是** `hard <= soft`）：mid 的钳制区间是 `(soft+0.5, hard-0.5)`，差在 (0,1) 的配置（如 batt 44.9/45.0）在旧判据下不兜底，`f32::clamp` 因 `min > max` **panic** → `Config::load` 崩溃 → watchdog 重启循环（2026-09-27 修，`thermal_clamp_warn` 另加 `hi < lo` 时夹成 `hi = lo` 的兜底）。`eval_thermal_cap` 每一级的上/下两条边都带回滞（改前硬档→软档这条边无回滞，batt 44.9°C 即从 0.40 跳回 0.85）。语义：8550 的 41/43/45°C ↔ 0.85/0.60/0.40。
+- **热态 tuned 响应（2026-09-27 契约，配置级）**：`Thermal.tuned_resp_enabled`（默认 true）+ `tuned_thermal_floor`（默认 0.55，normalize 保证 >= `hard_perf_cap`）；cap 经 `tuned::set_thermal_cap()` 与 CLG 同点下发，tuned 侧有效上限 = `min(档位天花板, max(cap, floor))`（无压制时零变化；软限 0.85 对播放态天花板天然 no-op，中档/硬档才咬得住）。改前 tuned 对温度零响应。
+- **CLG 方向稳定（2026-09-27 修，P1-2）**：`on_load_update` 上边补齐与下边同源的死区 gate（no-op up 记 hold、不清 `down_wait`），下边 `up_wait = 0` 移到死区判定之后；无新增参数，保守化旋钮 = `write_deadzone`（0.03）。**up-hold 期间 `down_wait` 有意不清零**（`cpu_load_governor.rs` `[dir_stabilize_tick]`）——代价是「`down_wait` = 上限-1 → up-hold → 真 down」可比连续 N tick 提前 1 tick 降频（N=`down_rate_limit_ticks`，生产取 1..10）；换来的是噪声 tick 不抹掉降频确认进度，故保留（有意设计，非缺陷）。
 
 ## 进行中
 

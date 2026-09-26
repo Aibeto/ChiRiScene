@@ -1,4 +1,5 @@
-//! logger.rs: [level] [appender] [loglimit] [init] [status] [devimp_state] [devrow] [devimp_writer] [devimp_api] [aff_writer] [aff_api] [archive]
+//! logger.rs: [level] [appender] [loglimit] [init] [status] [devimp_state] [devrow] [devimp_writer] [devimp_api]
+//! [aff_writer] [aff_api] [archive]
 
 use crate::common;
 use crate::fluent_args;
@@ -34,12 +35,9 @@ const LOG_MAX_BYTES: u64 = 50 * 1024 * 1024;
 /// 保留的备份数量（`daemon.1.log` ~ `daemon.N.log`，N = LOG_KEEP_BACKUPS）
 const LOG_KEEP_BACKUPS: u32 = 3;
 
-/// 日志追加器：文件被删除也能自愈、且日志路径上绝不 panic。
-/// 常驻句柄 + 低频巡检：稳态每条日志一次 write，每写满 [`LOG_VERIFY_BYTES`]
-/// 用一次 `metadata` 校正尺寸并发现「被外部删除 / 已轮转」（代价：外部删除后
-/// 最多丢 `LOG_VERIFY_BYTES` 字节日志）；循环轮转全程无 panic（所有重命名/删除
-/// 吞错，轮转前先丢句柄避免写已改名 inode）；锁毒化剥除 poison 继续用。
-/// 写失败只丢弃当条日志（句柄置空、下条重建），不影响进程存活。
+/// 日志追加器：文件被删除也能自愈、且日志路径上绝不 panic常驻句柄 + 低频巡检：稳态每条日志一次 write，每写满 [`LOG_VERIFY_BYTES`]用一次 `metadata` 校正尺寸并发现「被外部删除
+/// / 已轮转」（代价：外部删除后最多丢 `LOG_VERIFY_BYTES` 字节日志）；循环轮转全程无 panic（所有重命名/删除吞错，轮转前先丢句柄避免写已改名 inode）；锁毒化剥除 poison 继续用
+/// 写失败只丢弃当条日志（句柄置空、下条重建），不影响进程存活
 // [appender]
 #[derive(Debug)]
 struct SelfHealingAppender {
@@ -50,7 +48,7 @@ struct SelfHealingAppender {
     state: Mutex<AppendState>,
 }
 
-/// 追加状态：常驻句柄 + 记账尺寸。
+/// 追加状态：常驻句柄 + 记账尺寸
 #[derive(Debug)]
 struct AppendState {
     /// 常驻 append 句柄；轮转或被外部删除后置 None，下次写入重建
@@ -76,7 +74,7 @@ impl SelfHealingAppender {
         parent.join(format!("{stem}.{n}.log"))
     }
 
-    /// 低频巡检：用真实尺寸校正记账值；路径消失（被外部删除 / 已被轮转）则丢弃句柄。
+    /// 低频巡检：用真实尺寸校正记账值；路径消失（被外部删除 / 已被轮转）则丢弃句柄
     fn append_verify(&self, st: &mut AppendState) {
         match fs::metadata(&self.path) {
             Ok(md) => st.size = md.len(),
@@ -88,8 +86,7 @@ impl SelfHealingAppender {
         st.since_verify = 0;
     }
 
-    /// 重建句柄：目录可能也被删，`create_dir_all` 只在这里做；打开后用一次
-    /// `metadata` 校正尺寸（覆盖「运行期新建 appender，但文件已有内容」的场景）。
+    /// 重建句柄：目录可能也被删，`create_dir_all` 只在这里做；打开后用一次`metadata` 校正尺寸（覆盖「运行期新建 appender，但文件已有内容」的场景）
     fn append_open(&self, st: &mut AppendState) {
         if let Some(parent) = self.path.parent() {
             let _ = fs::create_dir_all(parent);
@@ -106,8 +103,7 @@ impl SelfHealingAppender {
         }
     }
 
-    /// 无 panic 的循环轮转：`daemon.log -> daemon.1.log -> ... -> daemon.keep.log`，
-    /// 最旧备份被删除；任何一步失败（如文件恰好不存在）都直接忽略。
+    /// 无 panic 的循环轮转：`daemon.log -> daemon.1.log -> ... -> daemon.keep.log`，最旧备份被删除；任何一步失败（如文件恰好不存在）都直接忽略
     fn rotate(&self) {
         let _ = fs::remove_file(self.archive_path(self.keep));
         for i in (1..self.keep).rev() {
@@ -120,8 +116,7 @@ impl SelfHealingAppender {
 }
 
 impl SelfHealingAppender {
-/// 落盘一行（已格式化字节）。锁内 IO + 计数；`note_write` 达门限会经
-/// `log::info!` 重入本函数，调用方持本锁调用会对非重入 Mutex 死锁。
+/// 落盘一行（已格式化字节）锁内 IO + 计数；`note_write` 达门限会经`log::info!` 重入本函数，调用方持本锁调用会对非重入 Mutex 死锁
     fn append_line(&self, line: &[u8]) {
         let bytes = line.len() as u64;
         {
@@ -161,10 +156,9 @@ impl SelfHealingAppender {
 // 日志打包门限（事件触发，零额外 syscall）：本会话写入 logs/ 与 devimp/ 的字节数
 // 各自累计，任一目录 ≥ LOG_RESTART_THRESHOLD_BYTES（128MB）即退出进程——看门狗
 // 3s 后拉起新进程，由 archive_on_startup 在 logger::init 前打包进 logd/（打包只在
-// 启动路径发生）。按写入字节而非遍历目录记账：写路径仅三条（daemon.log /
+// 启动路径发生）按写入字节而非遍历目录记账：写路径仅三条（daemon.log /
 // status.csv / devimp 当前诊断文件），事件驱动零 stat，累计值即目录增长量；
-// 每进程从 0 计起（启动归档已清空重建两目录）。
-//
+// 每进程从 0 计起（启动归档已清空重建两目录）
 // [loglimit]
 /// logs/ 或 devimp/ 任一目录增长到该大小（128MB）即重启调度以打包日志
 const LOG_RESTART_THRESHOLD_BYTES: u64 = 128 * 1024 * 1024;
@@ -175,12 +169,9 @@ static DEVIMP_BYTES_WRITTEN: AtomicU64 = AtomicU64::new(0);
 /// 已进入重启流程：日志落盘走同一写路径，置位后不再记账/重入
 static LOG_RESTARTING: AtomicBool = AtomicBool::new(false);
 
-/// 记账并判定门限：`counter` 为本目录累计写入量，`dir` 为目录名（日志展示）。
-/// 达到门限即退出进程，由看门狗 3s 后拉起走启动归档。无看门狗
-/// （`watchdog_pid()` 为 None）不退出——退出后无人拉起、调度永久停止；此时
-/// 计数清零并打 warn，等下一门限再判。退出前打点也走本写路径，以
-/// `LOG_RESTARTING` 防重入；**调用方不得持有 appender 锁**（经 `log::info!`
-/// 重入 append 会对非重入 Mutex 死锁）。
+/// 记账并判定门限：`counter` 为本目录累计写入量，`dir` 为目录名（日志展示）达到门限即退出进程，由看门狗 3s 后拉起走启动归档无看门狗（`watchdog_pid()` 为 None）
+/// 不退出——退出后无人拉起、调度永久停止；此时计数清零并打 warn，等下一门限再判退出前打点也走本写路径，以`LOG_RESTARTING` 防重入；**调用方不得持有 appender 锁**（经 `log::info!
+/// `重入 append 会对非重入 Mutex 死锁）
 fn note_write(counter: &AtomicU64, dir: &str, bytes: u64) {
     // 仅 Chiri 调度启用（非 ChiRi 无调度接管，不做自动重启；devimp 本就不产生）
     if !common::is_chiri_soc() {
@@ -223,9 +214,8 @@ fn note_write(counter: &AtomicU64, dir: &str, bytes: u64) {
 }
 
 // [init]
-/// 行格式化：`[YYYY-MM-DD HH:MM:SS] [LEVEL] [module] message\n`（与原 log4rs
-/// 编码器输出逐字节一致，本地时间）；仅剥掉模块路径里重复的 crate 名前缀
-/// （包名与子模块同名，前缀白占列宽），非本 crate 模块路径原样保留。
+/// 行格式化：`[YYYY-MM-DD HH:MM:SS] [LEVEL] [module] message\n`（与原 log4rs 编码器输出逐字节一致，本地时间）；
+/// 仅剥掉模块路径里重复的 crate 名前缀（包名与子模块同名，前缀白占列宽），非本 crate 模块路径原样保留
 fn format_line(record: &Record) -> Vec<u8> {
     let mut out = Vec::with_capacity(128);
     out.push(b'[');
@@ -247,8 +237,7 @@ fn format_line(record: &Record) -> Vec<u8> {
 /// crate 名：daemon.log 模块路径里冗余的前缀（crate 自身日志才有）
 const CRATE_PREFIX: &str = "chiri::";
 
-/// 写入 `[YYYY-MM-DD HH:MM:SS]`（设备本地时间）。任一步失败都退化为 epoch 时间，
-/// 绝不在日志路径上 panic。
+/// 写入 `[YYYY-MM-DD HH:MM:SS]`（设备本地时间）任一步失败都退化为 epoch 时间，绝不在日志路径上 panic
 fn write_local_timestamp(out: &mut Vec<u8>) {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -271,7 +260,7 @@ fn write_local_timestamp(out: &mut Vec<u8>) {
     out.extend_from_slice(&buf[..n.min(buf.len())]);
 }
 
-/// 构造追加器（原为 log4rs `Config`）：路径 / 上限 / 备份数 + 空状态。
+/// 构造追加器（原为 log4rs `Config`）：路径 / 上限 / 备份数 + 空状态
 fn make_appender() -> SelfHealingAppender {
     SelfHealingAppender {
         path: common::get_module_root().join(LOG_REL_PATH),
@@ -285,8 +274,7 @@ fn make_appender() -> SelfHealingAppender {
     }
 }
 
-/// 自写 `log::Log` 实现（替代 log4rs）：仅保留按行格式化落盘与运行时调级，
-/// 省去 log4rs 及其传递依赖。
+/// 自写 `log::Log` 实现（替代 log4rs）：仅保留按行格式化落盘与运行时调级，省去 log4rs 及其传递依赖
 struct ChiriLogger {
     appender: SelfHealingAppender,
 }
@@ -320,8 +308,7 @@ pub fn init(level_str: &str) -> Result<()> {
     Ok(())
 }
 
-/// 模块版本信息：module.prop 的 name / version / versionCode + SoC + kernel。
-/// 缺失字段一律 `-`，绝不因读不到文件而 panic（日志路径零 panic 是硬约束）。
+/// 模块版本信息：module.prop 的 name / version / versionCode + SoC + kernel缺失字段一律 `-`，绝不因读不到文件而 panic（日志路径零 panic 是硬约束）
 fn log_module_version() {
     let root = common::get_module_root();
     let (mut name, mut ver, mut code) = (String::from("-"), String::from("-"), String::from("-"));
@@ -363,8 +350,7 @@ pub fn update_level(level_str: &str) {
     let level = parse_level(level_str);
     let prev = LOG_LEVEL.swap(level as u8, Ordering::AcqRel);
     log::set_max_level(level);
-    // 变化走 info（INFO 级别下可直接确认新等级已生效），未变化仅 debug 避免每次重载刷一行；
-    // 注：框架按新 level 过滤，上调等级时这条 info 可能被自身过滤。
+    // 变化走 info（INFO 级别下可直接确认新等级已生效），未变化仅 debug 避免每次重载刷一行；注：框架按新 level 过滤，上调等级时这条 info 可能被自身过滤
     if prev != level as u8 {
         log::info!(
             "{}",
@@ -386,21 +372,19 @@ pub fn update_level(level_str: &str) {
 
 // 状态日志（logs/status.csv，CSV 宽表）：daemon.log 之外的唯一状态文件，
 // 仅一种行类型——snap 行（1s 一条，chiri 调度线程）：遥测 + 热保护 + 模式状态
-// + 前台包名 + 充放电状态，前台切换点由相邻行的 package 列变化体现。
+// + 前台包名 + 充放电状态，前台切换点由相邻行的 package 列变化体现
 // 开销控制：Mutex 常驻 append 句柄（每次写入仅一次 write）；每 16 行巡检一次
-// （轮转 8MB + 被删自愈）；写失败重开重试一次，全程不 unwrap、不阻塞调度线程。
+// （轮转 8MB + 被删自愈）；写失败重开重试一次，全程不 unwrap、不阻塞调度线程
 // [status]
 /// 状态日志路径（CSV 宽表）
 const STATUS_LOG_REL: &str = "logs/status.csv";
 /// 单文件上限 8MB，保留 1 份备份；1s 一行，数小时轮转一次
 const STATUS_LOG_MAX_BYTES: u64 = 8 * 1024 * 1024;
-/// 每 N 行巡检一次（轮转 + 被删自愈）：常驻句柄被外部删除后指向孤儿 inode、
-/// 写入不报错，只能靠巡检发现；1s 一行时 16 行 ≈ 16s 自愈窗口，stat 开销可忽略。
+/// 每 N 行巡检一次（轮转 + 被删自愈）：常驻句柄被外部删除后指向孤儿 inode、写入不报错，只能靠巡检发现；1s 一行时 16 行 ≈ 16s 自愈窗口，stat 开销可忽略
 const STATUS_CHECK_EVERY: u64 = 16;
 
-/// CSV 表头（23 列，列序由 status_log_snapshot 保证对齐，完整列名见下方
-/// STATUS_HEADER 字符串）。fps 为**预留列**，schema 恒定存在：仅 FAS 激活且
-/// 帧窗口有样本时为实测值，其余一律 "-"；列只在末尾追加，避免打乱既有列索引。
+/// CSV 表头（23 列，列序由 status_log_snapshot 保证对齐，完整列名见下方STATUS_HEADER 字符串）fps 为**预留列**，schema 恒定存在：
+/// 仅 FAS 激活且帧窗口有样本时为实测值，其余一律 "-"；列只在末尾追加，避免打乱既有列索引
 const STATUS_HEADER: &str = "timestamp,type,mode,package,charge,screen_on,batt_temp,cpu_temp,thermal_cap_pct,thermal_free_pct,clg_active,psi_cpu_some,psi_io_some,psi_mem_some,gpu_busy_pct,batt_voltage_v,batt_current_ma,batt_power_w,wakeups,migrations,freq_trans,fps,screen_prop";
 
 /// 常驻写入器：append 句柄 + 巡检计数
@@ -415,8 +399,7 @@ static STATUS_WRITER: Mutex<StatusWriter> = Mutex::new(StatusWriter {
     since_check: 0,
 });
 
-/// 打开（或重建）状态日志：create+append；空文件补表头。
-/// 返回 None 表示打开失败（调用方下次写入时再试）。
+/// 打开（或重建）状态日志：create+append；空文件补表头返回 None 表示打开失败（调用方下次写入时再试）
 fn status_open() -> Option<fs::File> {
     let path = common::get_module_root().join(STATUS_LOG_REL);
     if let Some(parent) = path.parent() {
@@ -486,29 +469,22 @@ fn status_write_line(fields: &[&str]) {
 /// PowerAVG 输出文件（模块根，对外暴露、供 WebUI 只读展示）
 pub const POWER_AVG_CHR: &str = "PowerAVG.chr";
 
-/// PowerAVG 递推状态：（当前留存值, 留存次数）。进程级静态——调度线程 panic 重启
-/// 不丢；daemon 进程重启从零开始（按契约设计：文件只是输出记录，不读回）。
+/// PowerAVG 递推状态：（当前留存值, 留存次数）进程级静态——调度线程 panic 重启不丢；daemon 进程重启从零开始（按契约设计：文件只是输出记录，不读回）
 static POWER_AVG: Mutex<(f32, u64)> = Mutex::new((0.0, 0));
 
-/// 参考模式权重：上次留存值 : 新采样 = 10 : 1——单次异常读数只拉动 1/11，避免跟着尖峰跳。
+/// 参考模式权重：上次留存值 : 新采样 = 10 : 1——单次异常读数只拉动 1/11，避免跟着尖峰跳
 const REFERENCE_WEIGHT: f32 = 10.0;
 
-/// 启动清空 `PowerAVG.chr`（保留文件、内容置空）：文件是本次运行的输出记录、
-/// 不读回，上次运行遗留值对 WebUI 是过期读数；属运行时输出，不受 `nofix` 约束。
+/// 启动清空 `PowerAVG.chr`（保留文件、内容置空）：文件是本次运行的输出记录、不读回，上次运行遗留值对 WebUI 是过期读数；属运行时输出，不受 `nofix` 约束
 pub fn power_avg_reset() {
     let path = common::get_module_root().join(POWER_AVG_CHR);
     let _ = common::write_file_no_panic(&path, b"");
 }
 
-/// 更新 PowerAVG 并写模块根 `PowerAVG.chr`：**在 status.csv 写入流程里顺序调用**
-/// （每 1s 采样一次）。参考模式（默认）：value = (旧值 × 10 + 新值) / 11，偏历史、
-/// 读数稳（单次异常采样只占 1/11）；平均模式：value = (旧值 × 次数 + 新值) /
-/// (次数 + 1)，等权全史。留存次数两模式都累计（切到平均模式即有历史次数可用）。
-/// 功耗缺测（None/非法）时跳过本次、不写文件；**取样口径由调用方保证**：
-/// 仅电池放电；平均模式排除息屏样本（息屏功耗低但占时长，等权会拉低亮屏读数），
-/// 参考值保留息屏；被跳过样本不推进留存次数、不改动文件。
-/// 返回**当前留存值**（W）：接受则为新值，跳过沿用上次值，从未采到为 None
-/// （调用方据此展示，不必回读文件）。
+/// 更新 PowerAVG 并写模块根 `PowerAVG.chr`：**在 status.csv 写入流程里顺序调用**（每 1s 采样一次）参考模式（默认）：value = (旧值 × 10 + 新值) / 11，偏历史、
+/// 读数稳（单次异常采样只占 1/11）；平均模式：value = (旧值 × 次数 + 新值) /(次数 + 1)，等权全史留存次数两模式都累计（切到平均模式即有历史次数可用）功耗缺测（None/非法）时跳过本次、
+/// 不写文件；**取样口径由调用方保证**：仅电池放电；平均模式排除息屏样本（息屏功耗低但占时长，等权会拉低亮屏读数），参考值保留息屏；被跳过样本不推进留存次数、不改动文件返回**当前留存值**（W）：接受则为新值，
+/// 跳过沿用上次值，从未采到为 None （调用方据此展示，不必回读文件）
 pub fn power_avg_update(power_w: Option<f32>, use_average: bool) -> Option<f32> {
     let current = || {
         let state = POWER_AVG.lock().unwrap_or_else(|e| e.into_inner());
@@ -536,17 +512,14 @@ pub fn power_avg_update(power_w: Option<f32>, use_average: bool) -> Option<f32> 
 }
 
 // [live_time]
-/// 心跳文件（模块根，对外暴露、供 WebUI 只读）：每 [`LIVE_TIME_INTERVAL_SECS`]
-/// 秒写一次本地时间 `MM:SS`。WebUI 读它与本机时间比对，差值超容差（20s）即判
-/// 调度已关闭（文件缺失/内容非法同判）。只写分秒：差值按 1 小时取模判新鲜度，
-/// 间隔 15s + 容差 20s 远小于半小时，取模不会把旧值误判为新鲜；写文件原子替换。
+/// 心跳文件（模块根，对外暴露、供 WebUI 只读）：每 [`LIVE_TIME_INTERVAL_SECS`]秒写一次本地时间 `MM:SS`WebUI 读它与本机时间比对，差值超容差（20s）
+/// 即判调度已关闭（文件缺失/内容非法同判）只写分秒：差值按 1 小时取模判新鲜度，间隔 15s + 容差 20s 远小于半小时，取模不会把旧值误判为新鲜；写文件原子替换
 pub const LIVE_TIME_CHR: &str = "LiveTime.chr";
 
 /// 心跳间隔（秒）：与 WebUI 侧容差常量配套（容差必须 > 它，留满一轮余量）
 pub const LIVE_TIME_INTERVAL_SECS: u64 = 15;
 
-/// 写一次心跳（`MM:SS` + 换行，本地时间）。失败静默：模块根不可写时 WebUI
-/// 自然判定为已关闭，不需要额外告警刷日志。
+/// 写一次心跳（`MM:SS` + 换行，本地时间）失败静默：模块根不可写时 WebUI 自然判定为已关闭，不需要额外告警刷日志
 pub fn write_live_time() {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -566,15 +539,13 @@ pub fn write_live_time() {
 /// 缺失数值的占位
 const NA: &str = "-";
 
-/// 数值格式化（None → "-"）。全精度写入：取整是显示层（WebUI toFixed(1)）的职责
+/// 数值格式化（None → "-"）全精度写入：取整是显示层（WebUI toFixed(1)）的职责
 fn fmt_num(v: Option<f32>) -> String {
     v.map(|x| x.to_string()).unwrap_or_else(|| NA.to_string())
 }
 
-/// 写 snapshot 行（1s 一条，chiri 调度线程）：遥测 + 热保护 + 模式状态 + 前台
-/// 包名（切换点由相邻行变化体现）+ 充放电状态（未知为 "-"）+ FAS 实测帧率
-/// （`fps` 预留列，见 STATUS_HEADER）+ `screen_prop`
-/// （debug.tracing.screen_state 原始值，属性缺失为 "-"）。
+/// 写 snapshot 行（1s 一条，chiri 调度线程）：遥测 + 热保护 + 模式状态 + 前台包名（切换点由相邻行变化体现）+ 充放电状态（未知为 "-"）+ FAS 实测帧率（`fps` 预留列，
+/// 见 STATUS_HEADER）+ `screen_prop`（debug.tracing.screen_state 原始值，属性缺失为 "-"）
 #[allow(clippy::too_many_arguments)]
 pub fn status_log_snapshot(
     mode: &str,
@@ -599,7 +570,7 @@ pub fn status_log_snapshot(
     fps: Option<f32>,
     screen_prop: &str,
 ) {
-    // frozen（待春归）：status.csv 属于该模式要停的「额外开销」；闸口集中在此，所有写入路径过同一道。
+    // frozen（待春归）：status.csv 属于该模式要停的「额外开销」；闸口集中在此，所有写入路径过同一道
     if mode == "frozen" {
         return;
     }
@@ -630,9 +601,8 @@ pub fn status_log_snapshot(
     ]);
 }
 
-/// HH:MM:SS.mmm 格式**设备本地时间**（避免引入 chrono 依赖）；status.csv /
-/// devimp/ / daemon.log 时区统一为本地时间，离线对齐无需人工换算。
-/// 经 libc localtime_r 走系统时区；不可用时回退 UTC（仅丢时区正确性）。
+/// HH:MM:SS.mmm 格式**设备本地时间**（避免引入 chrono 依赖）；status.csv /devimp/ / daemon.log 时区统一为本地时间，离线对齐无需人工换算
+/// 经 libc localtime_r 走系统时区；不可用时回退 UTC（仅丢时区正确性）
 fn format_now() -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -648,8 +618,7 @@ fn format_now() -> String {
     format!("{:02}:{:02}:{:02}.{:03}", h, m, s, now.subsec_millis())
 }
 
-/// epoch 秒 → 本地 (时, 分, 秒)。仅 unix（bionic/glibc 均有 localtime_r）；
-/// 非 unix 主机恒 None（回退 UTC），不影响 Android 目标。
+/// epoch 秒 → 本地 (时, 分, 秒)仅 unix（bionic/glibc 均有 localtime_r）；非 unix 主机恒 None（回退 UTC），不影响 Android 目标
 #[cfg(unix)]
 fn local_hms(epoch: i64) -> Option<(u32, u32, u32)> {
     unsafe {
@@ -670,25 +639,24 @@ fn local_hms(_epoch: i64) -> Option<(u32, u32, u32)> {
 // 开发诊断日志（devimp/ 目录下双文件：main_<前台包名>_<MMDD-HHmmss>.log +
 // aff_<MMDD-HHmmss>.log），供离线分析改善调度的按核诊断数据，与 status.csv 分离：
 // - 独立目录 `devimp/`（模块根，与 logs/ 平级），启动时随 logs/ 一起归档到
-//   logd/devimp_<MMDD-HHmmss>.tar.lz4；归档后**不预建空目录**——由首次写入的
-//   main_open / aff_open 惰性 create_dir_all（dev_record 关闭时不得留痕，含空目录）；
+// logd/devimp_<MMDD-HHmmss>.tar.lz4；归档后**不预建空目录**——由首次写入的
+// main_open / aff_open 惰性 create_dir_all（dev_record 关闭时不得留痕，含空目录）；
 // - **main_ 按前台包名分组**：scheduler_ipc 每秒经 set_diag_package 同步包名，
-//   包名变化即下次写入以新包名 + 当前时间戳开新文件（同应用聚合同文件，同秒
-//   重开以 -N 后缀去重）；**aff_ 单滚动文件不分包**（线程动作跨包、快照全系统
-//   视角，分文件会把流切碎），帧格式见 AFF_HEADER；
+// 包名变化即下次写入以新包名 + 当前时间戳开新文件（同应用聚合同文件，同秒
+// 重开以 -N 后缀去重）；**aff_ 单滚动文件不分包**（线程动作跨包、快照全系统
+// 视角，分文件会把流切碎），帧格式见 AFF_HEADER；
 // - 文件头 `#` 元信息注释行：模块名/版本、SoC、机型、Android 版本、内核版本
-//   （diag_meta，两文件共用）；
+// （diag_meta，两文件共用）；
 // - 无包名场景不触发切文件，尚无任何包名时包名段为 `nopkg`；
 // - 单文件软上限 128MB：触顶自动换新时间戳文件继续写（不静默停写），不丢数据
-//   不 panic；写入巡检（每 256 行）换新文件时清理，仅保留最近 DEVIMP_KEEP_FILES
-//   份（main_/aff_ 合并计数，按 mtime 排序，活跃文件不清；旧 devimp_*.log 不迁移）；
+// 不 panic；写入巡检（每 256 行）换新文件时清理，仅保留最近 DEVIMP_KEEP_FILES
+// 份（main_/aff_ 合并计数，按 mtime 排序，活跃文件不清；旧 devimp_*.log 不迁移）；
 // - 总开关 DIAG_ACTIVE 由 scheduler_ipc 按 Config.meta.dev_record 同步（WebUI
-//   开关 + 热重载），各写入点统一过 diag_active() 闸门，关闭时零 IO 零分配。
-//
+// 开关 + 热重载），各写入点统一过 diag_active() 闸门，关闭时零 IO 零分配
 // main_ CSV 宽表 + `type` 列（44 列，main_ 只承载决策/状态/事件三类行，
 // 线程相关行已迁至 aff_ 帧流）：
 // - tick（每决策 tick × 每核心组，**决策签名变化才写 + 2s 心跳**）：调频决策
-//   轨迹，package 列自动填充前台包名
+// 轨迹，package 列自动填充前台包名
 // - snap（1s）：环境上下文（PSI/GPU/电池/温度/热压制），关联决策与功耗
 // - event：decision(事件名)/reason —— 模式/屏幕/热/配置/触摸等状态变化
 
@@ -696,13 +664,10 @@ fn local_hms(_epoch: i64) -> Option<(u32, u32, u32)> {
 // [devimp_state]
 static DIAG_ACTIVE: AtomicBool = AtomicBool::new(false);
 
-/// 当前生效模式名（scheduler_ipc 在启动/模式切换/周期刷新时同步），
-/// 诊断各行 mode 列自动填充，写入点无需感知模式
+/// 当前生效模式名（scheduler_ipc 在启动/模式切换/周期刷新时同步），诊断各行 mode 列自动填充，写入点无需感知模式
 static DIAG_MODE: Mutex<String> = Mutex::new(String::new());
 
-/// 当前前台包名（set_diag_package 每秒同步，原始未清洗值），
-/// 诊断各行 package 列自动填充；行主体有更精确包名时（event）
-/// 由调用方覆盖。空 = 尚未检测到前台应用，package 列保持 "-"
+/// 当前前台包名（set_diag_package 每秒同步，原始未清洗值），诊断各行 package 列自动填充；行主体有更精确包名时（event）由调用方覆盖空 = 尚未检测到前台应用，package 列保持 "-"
 static DIAG_FG_PKG: Mutex<String> = Mutex::new(String::new());
 
 /// 设置开发记录总开关
@@ -719,15 +684,11 @@ pub fn set_diag_mode(mode: &str) {
     }
 }
 
-/// 同步前台包名并按需切换 main_ 文件（scheduler_ipc 每秒调用，内部去重）：
-/// 包名变化即关闭当前文件、下次写入以「新包名 + 当前时间戳」开新文件
-/// （同应用聚合同文件）；空包名不触发切换；aff_ 单滚动文件不分包不受影响。
-/// 顺序敏感：先切文件（MAIN_WRITER）后更新 DIAG_FG_PKG（行 package 列数据源），
-/// 保证切换边界处「行的 package 列」与「所在文件」永不错位。
+/// 同步前台包名并按需切换 main_ 文件（scheduler_ipc 每秒调用，内部去重）：包名变化即关闭当前文件、下次写入以「新包名 + 当前时间戳」开新文件（同应用聚合同文件）；空包名不触发切换；
+/// aff_ 单滚动文件不分包不受影响顺序敏感：先切文件（MAIN_WRITER）后更新 DIAG_FG_PKG（行 package 列数据源），保证切换边界处「行的 package 列」与「所在文件」永不错位
 pub fn set_diag_package(pkg: &str) {
-    // dev_record 关闭时直接返回：两个消费者（package 列填充、按包名切文件）都只在
-    // 诊断路径上，关时不得产生任何数据，省掉每秒两把锁与 String 分配；重开后下一秒
-    // 照常切文件，DIAG_FG_PKG 陈旧值无人读取（读取方都在 diag_active 门控下）。
+    // dev_record 关闭时直接返回：两个消费者（package 列填充、按包名切文件）都只在诊断路径上，关时不得产生任何数据，省掉每秒两把锁与 String 分配；重开后下一秒照常切文件，
+    // DIAG_FG_PKG 陈旧值无人读取（读取方都在 diag_active 门控下）
     if !diag_active() {
         return;
     }
@@ -735,8 +696,7 @@ pub fn set_diag_package(pkg: &str) {
     if p.is_empty() {
         return;
     }
-    // 包名 → 文件名安全段：只保留字母数字与 . _ -（Android 包名合法字符），
-    // 异常字符替换丢弃，超长截断，全被过滤时退化为 nopkg
+    // 包名 → 文件名安全段：只保留字母数字与 . _ -（Android 包名合法字符），异常字符替换丢弃，超长截断，全被过滤时退化为 nopkg
     let seg: String = p
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
@@ -747,7 +707,7 @@ pub fn set_diag_package(pkg: &str) {
     } else {
         seg.as_str()
     };
-    // ① 先切换文件（对比写入器当前归属的包名段）。WRITER 临界区内只做
+    // ① 先切换文件（对比写入器当前归属的包名段）WRITER 临界区内只做
     // writer 自身状态修改（文件 IO 与无锁操作），不获取任何其他锁——
     // 锁序约定见 MAIN_WRITER 定义处
     let pkg_switched = {
@@ -767,14 +727,13 @@ pub fn set_diag_package(pkg: &str) {
         main_tick_state_clear();
     }
     // ② 最后更新 DIAG_FG_PKG：先切文件后更新，避免切换边界处读到新包名却写进
-    // 旧文件的 1~2 行归属错位（顺序敏感详见函数 doc）。
+    // 旧文件的 1~2 行归属错位（顺序敏感详见函数 doc）
     if let Ok(mut g) = DIAG_FG_PKG.lock() {
         *g = p.to_string();
     }
 }
 
-/// frozen（待春归）标记：由 `set_diag_mode`（低频）维护，供 `diag_active()` 高频读取。
-/// 单独存一份原子量，是为了让那条闸门不抢 `DIAG_MODE` 的锁（见函数内注释）。
+/// frozen（待春归）标记：由 `set_diag_mode`（低频）维护，供 `diag_active()` 高频读取单独存一份原子量，是为了让那条闸门不抢 `DIAG_MODE` 的锁（见函数内注释）
 static DIAG_FROZEN: AtomicBool = AtomicBool::new(false);
 
 /// 开发记录是否开启（各写入点检查；关闭时不产生任何 IO/分配）
@@ -782,20 +741,16 @@ pub fn diag_active() -> bool {
     if !DIAG_ACTIVE.load(Ordering::Relaxed) {
         return false;
     }
-    // frozen：诊断记录是 40ms/tick 级高频写入，属该模式要停的「额外开销」，
-    // 按当前模式二次判定；本函数是每条行/帧写入前的闸门，只读原子量、不抢 DIAG_MODE 锁。
+    // frozen：诊断记录是 40ms/tick 级高频写入，属该模式要停的「额外开销」，按当前模式二次判定；本函数是每条行/帧写入前的闸门，只读原子量、不抢 DIAG_MODE 锁
     if DIAG_FROZEN.load(Ordering::Relaxed) {
         return false;
     }
     true
 }
 
-/// devimp 目录相对模块根的路径（目录/归档/记账派生物保留 devimp 名，
-/// main_* 与 aff_* 两种诊断文件同住此目录）
+/// devimp 目录相对模块根的路径（目录/归档/记账派生物保留 devimp 名，main_* 与 aff_* 两种诊断文件同住此目录）
 const DEVIMP_DIR_REL: &str = "devimp";
-/// 保留的历史文件数（按文件 mtime 从旧到新删除，当前活跃文件除外）；
-/// 按包名分组后单轮会话可能产生多份文件，较旧版（一进程一文件）放宽。
-/// main_*.log 与 aff_*.log 合并计数
+/// 保留的历史文件数（按文件 mtime 从旧到新删除，当前活跃文件除外）；按包名分组后单轮会话可能产生多份文件，较旧版（一进程一文件）放宽main_*.log 与 aff_*.log 合并计数
 const DEVIMP_KEEP_FILES: usize = 20;
 /// 单文件软上限：触顶换新时间戳文件继续写（不静默停写），main_ / aff_ 同口径
 const DEVIMP_MAX_BYTES: u64 = 128 * 1024 * 1024;
@@ -804,17 +759,15 @@ const DEVIMP_CHECK_EVERY: u64 = 256;
 /// tick 行无变化时的心跳间隔（决策签名不变时每 2s 仍写一条，保证时间轴连续）
 const MAIN_TICK_HEARTBEAT: Duration = Duration::from_secs(2);
 
-/// tick 行节流状态：cluster 名 → (上次写入的决策签名, 上次写入时刻)。
-/// 签名只含决策结果字段（decision/tgt_perf/cur_freq/max_freq/thermal/touch/
-/// 防抖进度），util/over/under 等逐 tick 抖动的观测值不参与——稳态不写，过渡期逐 tick 记录。
+/// tick 行节流状态：cluster 名 → (上次写入的决策签名, 上次写入时刻)签名只含决策结果字段（decision/tgt_perf/cur_freq/max_freq/thermal/touch/防抖进度），
+/// util/over/under 等逐 tick 抖动的观测值不参与——稳态不写，过渡期逐 tick 记录
 static MAIN_TICK_STATE: OnceLock<Mutex<HashMap<String, (String, Instant)>>> = OnceLock::new();
 
 fn main_tick_state() -> &'static Mutex<HashMap<String, (String, Instant)>> {
     MAIN_TICK_STATE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// 清空 tick 节流状态（包名切换/触顶换新文件时调用：新文件首 tick 即记录，
-/// 不留心跳空窗）
+/// 清空 tick 节流状态（包名切换/触顶换新文件时调用：新文件首 tick 即记录，不留心跳空窗）
 fn main_tick_state_clear() {
     main_tick_state()
         .lock()
@@ -822,25 +775,20 @@ fn main_tick_state_clear() {
         .clear();
 }
 
-/// CSV 表头（列 schema，**44 列**，行类型无关——tick/snap/event 只是 type 列取值，
-/// 各写既有列子集、其余留 "-"，禁止按行类型增删列）；列序由 main_tick /
-/// main_snap / main_event 的写入保证对齐。
+/// CSV 表头（列 schema，**44 列**，行类型无关——tick/snap/event 只是 type 列取值，各写既有列子集、其余留 "-"，禁止按行类型增删列）；
+/// 列序由 main_tick /main_snap / main_event 的写入保证对齐
 // [devrow]
-/// 列 36-43：CPU 各 policy 与 GPU 各节点的**实际**频率/上下限/调速器（追加在
-/// 末尾，不改动既有列索引）。多 policy（节点）用 `;` 分隔，每项 `policy<id>:<值>`
-/// （GPU 为 `<设备名>:<值>`），读不到写 `-`；只在 snap 行填充，其余行类型留 "-"。
-/// 区别于 cur_freq_khz / max_freq_khz：那两列是 TunedGovernor/CLG 的**决策值**，
-/// 这几列是**内核当前实际值**。
+/// 列 36-43：CPU 各 policy 与 GPU 各节点的**实际**频率/上下限/调速器（追加在末尾，不改动既有列索引）多 policy（节点）用 `;` 分隔，每项 `policy<id>:
+/// <值>`（GPU 为 `<设备名>:<值>`），读不到写 `-`；只在 snap 行填充，其余行类型留 "-"区别于 cur_freq_khz / max_freq_khz：
+/// 那两列是 TunedGovernor/CLG 的**决策值**，这几列是**内核当前实际值**
 const MAIN_HEADER: &str = "ts,type,mode,screen_on,pid,package,tid,comm,cluster,core,max_util,over_cores,under_cores,cur_perf,tgt_perf,cur_freq_khz,max_freq_khz,decision,deb_up,deb_down,reason,thermal_cap_pct,touch,psi_cpu,psi_io,psi_mem,gpu_busy,batt_v,batt_i,batt_p,wakeups,migrations,freq_trans,batt_temp,cpu_temp,clg_active,cpu_cur_khz,cpu_max_khz,cpu_min_khz,cpu_governor,gpu_cur_khz,gpu_max_khz,gpu_min_khz,gpu_governor";
 
-// 列索引常量（MainRow.set 用，调用方按列语义取用；48→44 列重排，
-// 保持其余列相对顺序不变）
+// 列索引常量（MainRow.set 用，调用方按列语义取用；48→44 列重排，保持其余列相对顺序不变）
 const DM_TS: usize = 0;
 const DM_TYPE: usize = 1;
 const DM_MODE: usize = 2;
 const DM_SCREEN: usize = 3;
-/// pid/tid/comm/core 四列（列位保留）：place/aff/core 行迁出后暂无写入方，
-/// 常量保留供列位对齐与后续行类型使用
+/// pid/tid/comm/core 四列（列位保留）：place/aff/core 行迁出后暂无写入方，常量保留供列位对齐与后续行类型使用
 #[allow(dead_code)]
 const DM_PID: usize = 4;
 const DM_PKG: usize = 5;
@@ -877,8 +825,7 @@ const DM_FREQT: usize = 32;
 const DM_BATTTEMP: usize = 33;
 const DM_CPUTEMP: usize = 34;
 const DM_CLGACT: usize = 35;
-// 36-43：CPU/GPU 实际频率与调速器（原 48 列版的 40-47，见 MAIN_HEADER 上方
-// 注释，仅 snap 行填充）
+// 36-43：CPU/GPU 实际频率与调速器（原 48 列版的 40-47，见 MAIN_HEADER 上方注释，仅 snap 行填充）
 const DM_CPUCUR: usize = 36;
 const DM_CPUMAX: usize = 37;
 const DM_CPUMIN: usize = 38;
@@ -892,8 +839,7 @@ const DM_GPUGOV: usize = 43;
 struct MainRow([String; 44]);
 
 impl MainRow {
-    /// 新建一行：ts/type/mode/package 已填（mode/package 读全局同步值，无前台
-    /// 包名时 package 留 "-"），其余置 "-"
+    /// 新建一行：ts/type/mode/package 已填（mode/package 读全局同步值，无前台包名时 package 留 "-"），其余置 "-"
     fn new(kind: &str) -> Self {
         let mut row = MainRow(std::array::from_fn(|_| NA.to_string()));
         row.0[DM_TS] = format_now();
@@ -914,8 +860,7 @@ impl MainRow {
         self
     }
 
-    /// 覆盖 package 列：仅当调用方携带有效包名（非空且非 "-"）时覆盖自动
-    /// 填充值；空/"-" 视为未提供，保留前台包名（如 event 行与具体包名无关）
+    /// 覆盖 package 列：仅当调用方携带有效包名（非空且非 "-"）时覆盖自动填充值；空/"-" 视为未提供，保留前台包名（如 event 行与具体包名无关）
     fn set_pkg(&mut self, pkg: &str) -> &mut Self {
         if !pkg.is_empty() && pkg != NA {
             self.0[DM_PKG] = pkg.to_string();
@@ -924,17 +869,16 @@ impl MainRow {
     }
 }
 
-/// 常驻写入器：append 句柄 + 当前文件名 + 当前包名段 + 巡检计数。
+/// 常驻写入器：append 句柄 + 当前文件名 + 当前包名段 + 巡检计数
 /// `cur_name` 为 None 时，下次写入按 `pkg_seg` + 当前时间戳确定新文件名
-/// （包名切换与 128MB 触顶续写都走这条路径）。
-///
+/// （包名切换与 128MB 触顶续写都走这条路径）
 /// 锁序约定（防死锁，诊断子系统五把锁：`DIAG_MODE`/`DIAG_FG_PKG`/
 /// `MAIN_TICK_STATE`/`MAIN_WRITER`/`AFF_WRITER`）：
 /// 1. 各锁均为短临界区，**不嵌套持有**（获取下一个锁前必须释放上一个）；
 /// 2. WRITER 临界区内只允许文件 IO 与 writer 自身状态修改，不获取任何其他锁
-///    ——它是写路径汇合点（scheduler_ipc / CLG Worker / 亲和线程都写入），嵌套最易成环；
-/// 3. 两个写入器互不同时持有，也不与其他任何锁同时持有（两文件独立写入，无跨文件原子性需求）。
-/// 违反任一条都有死锁风险（如反向先取 WRITER 再取 FG_PKG）。
+/// ——它是写路径汇合点（scheduler_ipc / CLG Worker / 亲和线程都写入），嵌套最易成环；
+/// 3. 两个写入器互不同时持有，也不与其他任何锁同时持有（两文件独立写入，无跨文件原子性需求）
+/// 违反任一条都有死锁风险（如反向先取 WRITER 再取 FG_PKG）
 // [devimp_writer]
 struct MainWriter {
     file: Option<fs::File>,
@@ -952,8 +896,7 @@ static MAIN_WRITER: Mutex<MainWriter> = Mutex::new(MainWriter {
     since_check: 0,
 });
 
-/// 本地时间文件名时间戳：`MMDD-HHmmss`（人眼可辨）。经 libc::localtime_r 取
-/// 设备本地时区；localtime_r 失败回退 epoch 秒的十六进制。
+/// 本地时间文件名时间戳：`MMDD-HHmmss`（人眼可辨）经 libc::localtime_r 取设备本地时区；localtime_r 失败回退 epoch 秒的十六进制
 fn filename_ts() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -974,9 +917,8 @@ fn filename_ts() -> String {
     )
 }
 
-/// 生成新文件名：`main_<包名段>_<MMDD-HHmmss>.log`（包名段空 → nopkg）。
-/// 时间戳在每次开新文件时取当前本地时刻，同一包名触顶续写也会得到新文件名。
-/// 同秒内重开（极端：包名快速抖动）由 main_open 的存在性检测补 -N 后缀去重。
+/// 生成新文件名：`main_<包名段>_<MMDD-HHmmss>.log`（包名段空 → nopkg）时间戳在每次开新文件时取当前本地时刻，同一包名触顶续写也会得到新文件名同秒内重开（极端：包名快速抖动）
+/// 由 main_open 的存在性检测补 -N 后缀去重
 fn main_new_name(pkg_seg: &str) -> String {
     if pkg_seg.is_empty() {
         format!("main_nopkg_{}.log", filename_ts())
@@ -985,9 +927,7 @@ fn main_new_name(pkg_seg: &str) -> String {
     }
 }
 
-/// 诊断文件头元信息（`#` 注释行，解析跳过，main_ / aff_ 两文件共用）：
-/// 处理器型号、系统版本、模块版本等，方便多设备/多版本日志离线比对。
-/// 进程内只收集一次。
+/// 诊断文件头元信息（`#` 注释行，解析跳过，main_ / aff_ 两文件共用）：处理器型号、系统版本、模块版本等，方便多设备/多版本日志离线比对进程内只收集一次
 fn diag_meta() -> &'static String {
     static META: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     META.get_or_init(|| {
@@ -1026,8 +966,8 @@ fn diag_meta() -> &'static String {
                 }
             }
         }
-        // getprop 拿跨分区属性的合并视图：ro.product.model 等常不在 /system/build.prop
-        // （Android 10+ 属 /product、/vendor 分区）；getprop 为空时保留上面解析值兜底。
+        // getprop 拿跨分区属性的合并视图：ro.product.model 等常不在 /system/build.prop （Android 10+ 属 /product、/vendor 分区）；
+        // getprop 为空时保留上面解析值兜底
         let gp = |k: &str| crate::common::getprop(k);
         let m = gp("ro.product.model");
         if !m.is_empty() {
@@ -1058,8 +998,7 @@ fn diag_meta() -> &'static String {
     })
 }
 
-/// 诊断文件头（schema 行 + `#` 元信息注释行）拼接，main_ 与 aff_ 共用
-/// （`schema` 分别传 [`MAIN_HEADER`] / [`AFF_HEADER`]；元信息进程内只收集一次）。
+/// 诊断文件头（schema 行 + `#` 元信息注释行）拼接，main_ 与 aff_ 共用（`schema` 分别传 [`MAIN_HEADER`] / [`AFF_HEADER`]；元信息进程内只收集一次）
 fn diag_file_head(schema: &str) -> Vec<u8> {
     let mut head = Vec::with_capacity(schema.len() + diag_meta().len() + 1);
     head.extend_from_slice(schema.as_bytes());
@@ -1068,9 +1007,8 @@ fn diag_file_head(schema: &str) -> Vec<u8> {
     head
 }
 
-/// aff_ 文件头：帧格式说明 + 元信息。元信息的 ts 说明行按文件改写——
-/// main_ 的 ts 列是 format_now（HH:MM:SS.mmm），aff_ 帧 `ts=` 是
-/// MMDD-HHmmss（与文件名同款），两文件不能共用同一句 ts 口径。
+/// aff_ 文件头：帧格式说明 + 元信息元信息的 ts 说明行按文件改写——main_ 的 ts 列是 format_now（HH:MM:SS.mmm），aff_ 帧 `ts=` 是MMDD-HHmmss（与文件名同款），
+/// 两文件不能共用同一句 ts 口径
 fn aff_file_head() -> Vec<u8> {
     let meta = diag_meta().replace(
         "# ts-column=local format_now",
@@ -1083,14 +1021,11 @@ fn aff_file_head() -> Vec<u8> {
     head
 }
 
-/// 打开（或重建）main_ 诊断日志：create+append；空文件整块写入文件头
-/// （CSV 表头 + `#` 元信息注释行）。`cur_name` 为空则按包名段 + 当前本地时间戳
-/// 确定新文件名并记入写入器；同秒重开以 -N 后缀去重。
-/// 返回 None 表示打开失败（调用方下次写入时再试）。
+/// 打开（或重建）main_ 诊断日志：create+append；空文件整块写入文件头（CSV 表头 + `#` 元信息注释行）`cur_name` 为空则按包名段 + 当前本地时间戳确定新文件名并记入写入器；
+/// 同秒重开以 -N 后缀去重返回 None 表示打开失败（调用方下次写入时再试）
 fn main_open(w: &mut MainWriter) -> Option<fs::File> {
     let dir = common::get_module_root().join(DEVIMP_DIR_REL);
-    // devimp/ 目录的唯一创建者（含启动期）：本函数只在 diag_active() 门控的写入
-    // 路径上被调用，故目录的创建天然受 dev_record 开关约束（diag_prepare 不再代创建）
+    // devimp/ 目录的唯一创建者（含启动期）：本函数只在 diag_active() 门控的写入路径上被调用，故目录的创建天然受 dev_record 开关约束（diag_prepare 不再代创建）
     let _ = fs::create_dir_all(&dir);
     let name = match w.cur_name.clone() {
         Some(n) => n,
@@ -1113,8 +1048,7 @@ fn main_open(w: &mut MainWriter) -> Option<fs::File> {
                 name = candidate;
             }
             if !found {
-                // 99 个候选全部存在（同秒理论极限）：绝不复用已有文件追加
-                // （会不写文件头混流），用 pid 做最后唯一化
+                // 99 个候选全部存在（同秒理论极限）：绝不复用已有文件追加（会不写文件头混流），用 pid 做最后唯一化
                 name = format!("{stem}-{}.log", std::process::id());
             }
             w.cur_name = Some(name.clone());
@@ -1132,10 +1066,8 @@ fn main_open(w: &mut MainWriter) -> Option<fs::File> {
     Some(f)
 }
 
-/// 巡检：触顶换新时间戳文件继续写（修复旧版触顶静默停写）、被删自愈
-/// （丢弃句柄后同名重建）、触顶换新文件后做容量清理。
-/// 返回是否发生触顶换文件（调用方在 WRITER 锁释放后据此清 tick 节流状态，
-/// 避免 WRITER 临界区内嵌套获取 TICK_STATE 锁）。
+/// 巡检：触顶换新时间戳文件继续写（修复旧版触顶静默停写）、被删自愈（丢弃句柄后同名重建）、触顶换新文件后做容量清理返回是否发生触顶换文件（调用方在 WRITER 锁释放后据此清 tick 节流状态，
+/// 避免 WRITER 临界区内嵌套获取 TICK_STATE 锁）
 fn main_check(w: &mut MainWriter) -> bool {
     let mut rotated = false;
     if let Some(name) = w.cur_name.clone() {
@@ -1162,10 +1094,8 @@ fn main_check(w: &mut MainWriter) -> bool {
     rotated
 }
 
-/// 容量清理：仅保留最近 DEVIMP_KEEP_FILES 份诊断文件（`main_*.log` 与
-/// `aff_*.log` 两种前缀合并计数），从旧到新删除；`current` 为当前活跃文件名，
-/// 不参与清理。旧 `devimp_*.log` 不在过滤前缀内（不迁移，随启动归档自然
-/// 过期淘汰）。文件名含包名段，字典序不再等于时间序，因此按文件 mtime 排序。
+/// 容量清理：仅保留最近 DEVIMP_KEEP_FILES 份诊断文件（`main_*.log` 与`aff_*.log` 两种前缀合并计数），从旧到新删除；`current` 为当前活跃文件名，不参与清理
+/// 旧 `devimp_*.log` 不在过滤前缀内（不迁移，随启动归档自然过期淘汰）文件名含包名段，字典序不再等于时间序，因此按文件 mtime 排序
 fn diag_prune(current: Option<&str>) {
     let dir = common::get_module_root().join(DEVIMP_DIR_REL);
     let mut files: Vec<(std::time::SystemTime, String)> = fs::read_dir(&dir)
@@ -1200,8 +1130,7 @@ fn main_write_line(row: MainRow) {
         return;
     }
     let line = row.0.join(",");
-    // WRITER 临界区内只做写入与巡检（文件 IO），不获取任何其他锁；
-    // 触顶换文件后的 tick 节流清零移到锁释放之后（锁序约定见 MAIN_WRITER）
+    // WRITER 临界区内只做写入与巡检（文件 IO），不获取任何其他锁；触顶换文件后的 tick 节流清零移到锁释放之后（锁序约定见 MAIN_WRITER）
     let rotated = {
         let mut w = MAIN_WRITER.lock().unwrap_or_else(|p| p.into_inner());
         if w.file.is_none() {
@@ -1235,20 +1164,18 @@ fn main_write_line(row: MainRow) {
     if rotated {
         // 触顶换新文件：清 tick 节流状态（新文件首 tick 即记录，不留心跳空窗）
         main_tick_state_clear();
-        // 触顶即新增了一个 128MB 级文件：顺手执行目录预算清理
-        // （logd/ 与 devimp/ 各自独立计量，各自超 256MB 才从本目录最旧文件删到 <200MB）
+        // 触顶即新增了一个 128MB 级文件：顺手执行目录预算清理（logd/ 与 devimp/ 各自独立计量，各自超 256MB 才从本目录最旧文件删到 <200MB）
         enforce_dir_limits(&common::get_module_root());
     }
-    // 记账（含换行）：写入即事件触发，devimp/ 累计增长达 128MB 触发重启打包
-    // （在 WRITER 锁外调用，遵守锁序约定）
+    // 记账（含换行）：写入即事件触发，devimp/ 累计增长达 128MB 触发重启打包（在 WRITER 锁外调用，遵守锁序约定）
     note_write(&DEVIMP_BYTES_WRITTEN, "devimp/", line.len() as u64 + 1);
 }
 
 /// 启动兜底清理：仅保留最近 DEVIMP_KEEP_FILES 份历史诊断文件（main_/aff_ 合并
-/// 计数，按 mtime 从旧到新删）。main.rs 启动时调用一次；正常路径 devimp/ 已被
-/// 启动归档整体 rename 走，此函数仅作归档 rename 失败时的兜底。
+/// 计数，按 mtime 从旧到新删）main.rs 启动时调用一次；正常路径 devimp/ 已被
+/// 启动归档整体 rename 走，此函数仅作归档 rename 失败时的兜底
 /// **目录不存在即早退、绝不代创建**：devimp/ 整体属 dev_record 产物，关闭时不得
-/// 留痕（含空目录）；目录唯一创建者是 diag_active 门控下的 main_open / aff_open。
+/// 留痕（含空目录）；目录唯一创建者是 diag_active 门控下的 main_open / aff_open
 // [devimp_api]
 pub fn diag_prepare() {
     let dir = common::get_module_root().join(DEVIMP_DIR_REL);
@@ -1259,12 +1186,12 @@ pub fn diag_prepare() {
     diag_prune(None);
 }
 
-/// 看门狗 PID（daemon 由看门狗 sh 前台拉起，`getppid()` 即其 PID）。
+/// 看门狗 PID（daemon 由看门狗 sh 前台拉起，`getppid()` 即其 PID）
 /// 判据两条满足其一：
 /// 1. **pidfile 铁证**：`logs/watchdog.pid` 内容 == `getppid()`（看门狗启动时
-///    `echo $$` 自写、归档时复制回、缺失由 `ensure_watchdog_pid_file` 自愈）；
+/// `echo $$` 自写、归档时复制回、缺失由 `ensure_watchdog_pid_file` 自愈）；
 /// 2. **脱管 shell**（`detached_shell_parent`）：父进程是被 init 收养的 shell
-///    （看门狗 setsid+disown 后必为孤儿；调试直跑的交互 shell 祖字段 ≠ 1）。
+/// （看门狗 setsid+disown 后必为孤儿；调试直跑的交互 shell 祖字段 ≠ 1）
 fn watchdog_pid() -> Option<i32> {
     let ppid = unsafe { libc::getppid() };
     if ppid <= 1 {
@@ -1279,9 +1206,8 @@ fn watchdog_pid() -> Option<i32> {
     detached_shell_parent()
 }
 
-/// 父进程是否为「脱管的 shell」（comm 属 shell 家族且已被 init 收养）。
-/// /proc/<ppid>/stat 第 4 字段 = 其父 pid：==1 即孤儿态（setsid + disown 的
-/// 看门狗必然如此），交互终端链完好的调试直跑不会命中。
+/// 父进程是否为「脱管的 shell」（comm 属 shell 家族且已被 init 收养）/proc/<ppid>/stat 第 4 字段 = 其父 pid：
+/// ==1 即孤儿态（setsid + disown 的看门狗必然如此），交互终端链完好的调试直跑不会命中
 fn detached_shell_parent() -> Option<i32> {
     let ppid = unsafe { libc::getppid() };
     if ppid <= 1 {
@@ -1307,10 +1233,8 @@ fn detached_shell_parent() -> Option<i32> {
     }
 }
 
-/// logs/watchdog.pid 运行时自愈：logs/ 被外部删除时该文件随目录消失，WebUI
-/// 「关闭调度」靠它定位并终止看门狗——缺失会导致 stopScheduler 杀不死看门狗、
-/// 看门狗 3s 后再把 daemon 拉起，最终新旧实例并行、各路日志各写两份。
-/// 由 chiri scheduler_ipc 的 5s 周期块调用；文件存在时零开销直返。
+/// logs/watchdog.pid 运行时自愈：logs/ 被外部删除时该文件随目录消失，WebUI 「关闭调度」靠它定位并终止看门狗——缺失会导致 stopScheduler 杀不死看门狗、
+/// 看门狗 3s 后再把 daemon 拉起，最终新旧实例并行、各路日志各写两份由 chiri scheduler_ipc 的 5s 周期块调用；文件存在时零开销直返
 pub fn ensure_watchdog_pid_file() {
     let root = common::get_module_root();
     let pid_path = root.join("logs/watchdog.pid");
@@ -1320,17 +1244,15 @@ pub fn ensure_watchdog_pid_file() {
     if fs::create_dir_all(root.join("logs")).is_err() {
         return;
     }
-    // 非看门狗拉起（调试直跑/孤儿态）不写，防 stopScheduler 误杀无关进程。
-    // 重建判定用脱管 shell 判据（文件正是缺失状态，pidfile 无从匹配）
+    // 非看门狗拉起（调试直跑/孤儿态）不写，防 stopScheduler 误杀无关进程重建判定用脱管 shell 判据（文件正是缺失状态，pidfile 无从匹配）
     let Some(ppid) = detached_shell_parent() else {
         return;
     };
     let _ = fs::write(&pid_path, ppid.to_string());
 }
 
-/// tick 行：CLG/akmode 调频决策轨迹（每决策 tick × 每核心组一行）。
-/// 写入量控制：按 cluster 节流——决策签名变化即写，无变化时每 2s 心跳一条；
-/// util/over/under 等逐 tick 抖动的观测值不触发写入；防抖与升降过渡期仍逐 tick 记录。
+/// tick 行：CLG/akmode 调频决策轨迹（每决策 tick × 每核心组一行）写入量控制：按 cluster 节流——决策签名变化即写，无变化时每 2s 心跳一条；
+/// util/over/under 等逐 tick 抖动的观测值不触发写入；防抖与升降过渡期仍逐 tick 记录
 #[allow(clippy::too_many_arguments)]
 pub fn main_tick(
     cluster: &str,
@@ -1392,8 +1314,7 @@ pub fn main_tick(
     main_write_line(r);
 }
 
-/// snap 行：1s 环境上下文（遥测 + 热保护；前台包名由 MainRow 自动填充，
-/// scheduler_ipc 每秒 set_diag_package 与此处同值）
+/// snap 行：1s 环境上下文（遥测 + 热保护；前台包名由 MainRow 自动填充，scheduler_ipc 每秒 set_diag_package 与此处同值）
 #[allow(clippy::too_many_arguments)]
 pub fn main_snap(
     screen_on: bool,
@@ -1448,10 +1369,8 @@ pub fn main_snap(
     main_write_line(r);
 }
 
-/// event 行：状态变化（decision 列记事件名：mode_change/screen/thermal_change/
-/// config_reload/touch/ak_cooldown、overload_hold 等；reason 记详情）。pkg 有效时
-/// 覆盖自动填充（mode_change 携带触发包名；screen/thermal 等系统事件保留前台
-/// 包名上下文）
+/// event 行：状态变化（decision 列记事件名：mode_change/screen/thermal_change/config_reload/touch/ak_cooldown、overload_hold 等；
+/// reason 记详情）pkg 有效时覆盖自动填充（mode_change 携带触发包名；screen/thermal 等系统事件保留前台包名上下文）
 pub fn main_event(kind: &str, pkg: &str, reason: &str) {
     let mut r = MainRow::new("event");
     r.set(DM_DECISION, kind).set_pkg(pkg).set(DM_REASON, reason);
@@ -1459,8 +1378,7 @@ pub fn main_event(kind: &str, pkg: &str, reason: &str) {
 }
 
 // [aff_writer]
-/// aff_ 帧格式说明（文件头 schema，`#` 注释行解析跳过；正文按行首字符定界，
-/// 帧格式详见下方 AFF_HEADER 字符串：@A 单行动作帧、@S 快照帧按帧头计数定界）。
+/// aff_ 帧格式说明（文件头 schema，`#` 注释行解析跳过；正文按行首字符定界，帧格式详见下方 AFF_HEADER 字符串：@A 单行动作帧、@S 快照帧按帧头计数定界）
 const AFF_HEADER: &str = "# aff_ 线程数据文件（帧式文本，2026-09-22 拆分版）\n\
 # @A ts=<MMDD-HHmmss> act=<pin|restore|move_group|cpuset_cpus|uclamp|corectl|bind_release|self_pin|self_unpin> pid=<i32> tid=<i32> pkg=<str> comm=<str> dst=<str> value=<str> result=<ok|e{errno}> reason=<str>\n\
 # @S ts=<MMDD-HHmmss> ntop=<进程行数> nfg=<线程行数>\n\
@@ -1486,18 +1404,15 @@ static AFF_WRITER: Mutex<AffWriter> = Mutex::new(AffWriter {
     since_check: 0,
 });
 
-/// 生成新文件名：`aff_<MMDD-HHmmss>.log`（单滚动不分包；同秒重开由
-/// aff_open 的存在性检测补 -N 后缀去重）
+/// 生成新文件名：`aff_<MMDD-HHmmss>.log`（单滚动不分包；同秒重开由aff_open 的存在性检测补 -N 后缀去重）
 fn aff_new_name() -> String {
     format!("aff_{}.log", filename_ts())
 }
 
-/// 打开（或重建）aff_ 线程数据文件：create+append；空文件整块写入文件头
-/// （帧格式说明 + `#` 元信息注释行）。返回 None 表示打开失败（下次写入再试）。
+/// 打开（或重建）aff_ 线程数据文件：create+append；空文件整块写入文件头（帧格式说明 + `#` 元信息注释行）返回 None 表示打开失败（下次写入再试）
 fn aff_open(w: &mut AffWriter) -> Option<fs::File> {
     let dir = common::get_module_root().join(DEVIMP_DIR_REL);
-    // devimp/ 目录的唯一创建者（含启动期）：同 main_open，本函数只在 diag_active()
-    // 门控的写入路径上被调用
+    // devimp/ 目录的唯一创建者（含启动期）：同 main_open，本函数只在 diag_active()门控的写入路径上被调用
     let _ = fs::create_dir_all(&dir);
     let name = match w.cur_name.clone() {
         Some(n) => n,
@@ -1532,8 +1447,7 @@ fn aff_open(w: &mut AffWriter) -> Option<fs::File> {
     Some(f)
 }
 
-/// 巡检：触顶换新时间戳文件继续写、被删自愈（同名重建）、换新后容量清理。
-/// 与 main_check 同口径（aff_ 无 tick 节流，返回值仅用于调用方触发目录预算清理）。
+/// 巡检：触顶换新时间戳文件继续写、被删自愈（同名重建）、换新后容量清理与 main_check 同口径（aff_ 无 tick 节流，返回值仅用于调用方触发目录预算清理）
 fn aff_check(w: &mut AffWriter) -> bool {
     let mut rotated = false;
     if let Some(name) = w.cur_name.clone() {
@@ -1558,9 +1472,8 @@ fn aff_check(w: &mut AffWriter) -> bool {
     rotated
 }
 
-/// 写一个帧块（帧头 + payload 行，`block` 已含换行）到 aff_。
-/// `lines` 为块内行数（巡检计数用）。WRITER 临界区内只做文件 IO
-/// （锁序约定见 MAIN_WRITER 定义处）；写失败重开重试一次，仍失败丢块。
+/// 写一个帧块（帧头 + payload 行，`block` 已含换行）到 aff_`lines` 为块内行数（巡检计数用）WRITER 临界区内只做文件 IO （锁序约定见 MAIN_WRITER 定义处）；
+/// 写失败重开重试一次，仍失败丢块
 fn aff_write_block(block: &str, lines: u64) {
     if !diag_active() {
         return;
@@ -1576,8 +1489,7 @@ fn aff_write_block(block: &str, lines: u64) {
             None => false,
         };
         if !write_ok {
-            // write_all 失败可能已落残块（不回滚）：弃用当前文件、换新时间戳
-            // 文件重写整块，绝不把残块与重试块写进同一文件（防 @S 计数定界错位）
+            // write_all 失败可能已落残块（不回滚）：弃用当前文件、换新时间戳文件重写整块，绝不把残块与重试块写进同一文件（防 @S 计数定界错位）
             w.file = None;
             w.cur_name = None;
             let f = aff_open(&mut w);
@@ -1595,16 +1507,14 @@ fn aff_write_block(block: &str, lines: u64) {
         }
     };
     if rotated {
-        // 触顶即新增一个 128MB 级文件：顺手执行目录预算清理（logd/ 与
-        // devimp/ 各自独立计量，与 main_write_line 同口径）
+        // 触顶即新增一个 128MB 级文件：顺手执行目录预算清理（logd/ 与devimp/ 各自独立计量，与 main_write_line 同口径）
         enforce_dir_limits(&common::get_module_root());
     }
     // 记账（WRITER 锁外，锁序约定）：devimp/ 目录预算与 128MB 归档门限共用
     note_write(&DEVIMP_BYTES_WRITTEN, "devimp/", block.len() as u64);
 }
 
-/// 帧字段净化：空白/控制字符（含换行）替换为 `_`，防字段值破坏单行帧
-/// 边界（comm 可能含空格；reason 为末字段且调用方传短 token，一并净化无损）。
+/// 帧字段净化：空白/控制字符（含换行）替换为 `_`，防字段值破坏单行帧边界（comm 可能含空格；reason 为末字段且调用方传短 token，一并净化无损）
 pub(crate) fn aff_token(s: &str) -> String {
     s.chars()
         .map(|c| {
@@ -1618,9 +1528,9 @@ pub(crate) fn aff_token(s: &str) -> String {
 }
 
 // [aff_api]
-/// `@A` 动作帧：线程/内核节点写入动作 + 结果（`result` 形如 `ok` 或 `e{errno}`）。
-/// act 枚举见 [`AFF_HEADER`]；pid/tid 节点级动作填 0，pkg/comm 无主体填 "-"。
-/// 关闭诊断（diag_active=false）时零分配直接返回。
+/// `@A` 动作帧：线程/内核节点写入动作 + 结果（`result` 形如 `ok` 或 `e{errno}`）
+/// act 枚举见 [`AFF_HEADER`]；pid/tid 节点级动作填 0，pkg/comm 无主体填 "-"
+/// 关闭诊断（diag_active=false）时零分配直接返回
 #[allow(clippy::too_many_arguments)]
 pub fn aff_action(
     act: &str,
@@ -1651,10 +1561,10 @@ pub fn aff_action(
 }
 
 /// `@S` 每秒快照帧：帧头计数由 `rows` 实际行反推（首字符 `p`/`t` 分别计入
-/// ntop/nfg，帧头与行数恒等）；rows 为调用方拼好的 p/t 行（不含换行）。
+/// ntop/nfg，帧头与行数恒等）；rows 为调用方拼好的 p/t 行（不含换行）
 /// **`t` 行是差分集**（见 `chiri::build_aff_snapshot` 文档）：只有前台进程线程、
 /// 被动过的被管条目、值有变化的长尾线程出现在帧内，**缺失的 tid = 与上一帧完全相同**
-/// （调用方每 30 帧全量刷新一次防漂移）；非 p/t 行不写入。
+/// （调用方每 30 帧全量刷新一次防漂移）；非 p/t 行不写入
 pub fn aff_snapshot(rows: &[String]) {
     if !diag_active() || rows.is_empty() {
         return;
@@ -1681,21 +1591,21 @@ pub fn aff_snapshot(rows: &[String]) {
 }
 
 // 启动归档：logs/ → logd/<ts>.tar.lz4、devimp/ → logd/devimp_<ts>.tar.lz4
-//（一次性子线程串行打包），打包完成后执行 logd/ 与 devimp/ 的**各自独立**预算清理。
+// （一次性子线程串行打包），打包完成后执行 logd/ 与 devimp/ 的**各自独立**预算清理
 // 流程（由 main.rs 在 logger::init 之前调用，保证新旧日志文件分离）：
 // 1. logs/ 与 devimp/ 分别原子 rename 为同级 `ziped_<ts>` / `ziped_devimp_<ts>`
-//    临时目录（`ziped_` 是历史命名、遗留扫描按它认目录，保留不动）；logs/ 新建
-//    空目录接住本进程新写入；devimp/ 不预建空目录（诊断写入路径惰性创建，
-//    dev_record 关闭时不得留痕，含空目录）；
+// 临时目录（`ziped_` 是历史命名、遗留扫描按它认目录，保留不动）；logs/ 新建
+// 空目录接住本进程新写入；devimp/ 不预建空目录（诊断写入路径惰性创建，
+// dev_record 关闭时不得留痕，含空目录）；
 // 2. **复制回 watchdog.pid** 到新建 logs/——WebUI stopScheduler 靠它终止看门狗；
 // 3. 单个一次性子线程串行打包：外部脚本 scripts/pack.sh（对外稳定接口，构建
-//    流程不得修改；优先模块自带 core/bin/tar，回退系统 tar）打**无压缩 tar**，
-//    再用内置 lz4_flex 压成 `.tar.lz4` 并删中间 tar（不依赖设备 lz4 二进制；
-//    lz4 失败回落保留 .tar）；成功删临时目录，失败保留并写 ARCHIVE_FAILED.txt
-//    留痕（此时 logger 尚未 init，无法打点）；
+// 流程不得修改；优先模块自带 core/bin/tar，回退系统 tar）打**无压缩 tar**，
+// 再用内置 lz4_flex 压成 `.tar.lz4` 并删中间 tar（不依赖设备 lz4 二进制；
+// lz4 失败回落保留 .tar）；成功删临时目录，失败保留并写 ARCHIVE_FAILED.txt
+// 留痕（此时 logger 尚未 init，无法打点）；
 // 4. 打包完成后目录预算清理：logd/ 与 devimp/ 各自超过 LOGD_MAX_BYTES /
-//    DEVIMP_DIR_MAX_BYTES 时，只删本目录内最旧文件到低于对应 target；
-// 5. rename 失败或原目录为空时跳过对应归档，不影响启动。
+// DEVIMP_DIR_MAX_BYTES 时，只删本目录内最旧文件到低于对应 target；
+// 5. rename 失败或原目录为空时跳过对应归档，不影响启动
 
 // [archive]
 /// logd/ 归档目录自身预算：超过后只清本目录内最旧归档（256MB，2026-09-24 由 128MB 扩容）
@@ -1741,10 +1651,8 @@ fn unique_staging(root: &Path, base: &str) -> PathBuf {
     p
 }
 
-/// 回收上一轮遗留的 staging 目录：进程在打包完成前退出（崩溃 / 日志门限
-/// `exit(0)` / 手动 kill）时，`ziped_*` 永久留在模块根——不在 logd/ 也不在
-/// devimp/，预算清理扫不到、后续启动也不再认领，日志永远进不了 logd。
-/// 在 rename 本轮目录**之前**扫描（避免把本轮刚建目录也算成遗留）。
+/// 回收上一轮遗留的 staging 目录：进程在打包完成前退出（崩溃 / 日志门限`exit(0)` / 手动 kill）时，`ziped_*` 永久留在模块根——不在 logd/ 也不在devimp/，预算清理扫不到、
+/// 后续启动也不再认领，日志永远进不了 logd在 rename 本轮目录**之前**扫描（避免把本轮刚建目录也算成遗留）
 fn collect_staging_dirs(root: &Path) -> Vec<PathBuf> {
     let Ok(rd) = fs::read_dir(root) else {
         return Vec::new();
@@ -1764,12 +1672,10 @@ fn collect_staging_dirs(root: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// 短会话判定阈值：上一轮 daemon 启动距本次启动不足该秒数 → 丢弃其日志、不打包
-/// （防崩溃循环把 logd/ 塞满几 KB 空壳归档、淹没真正的崩溃现场）。
+/// 短会话判定阈值：上一轮 daemon 启动距本次启动不足该秒数 → 丢弃其日志、不打包（防崩溃循环把 logd/ 塞满几 KB 空壳归档、淹没真正的崩溃现场）
 const SHORT_SESSION_SECS: i64 = 30;
 
-/// 本轮是否因「上一轮为短会话」而丢弃了日志（供 main 在 logger::init 之后打点，
-/// 归档发生在 init 之前，当时无日志可打；不打点则日志凭空消失无从解释）
+/// 本轮是否因「上一轮为短会话」而丢弃了日志（供 main 在 logger::init 之后打点，归档发生在 init 之前，当时无日志可打；不打点则日志凭空消失无从解释）
 static SHORT_SESSION_DISCARDED: AtomicBool = AtomicBool::new(false);
 
 /// 本轮是否丢弃了上一轮短会话日志（main 在 logger::init 后查询打点）
@@ -1785,10 +1691,10 @@ fn now_epoch_secs() -> i64 {
         .unwrap_or(0)
 }
 
-/// 解析 daemon.log 行首的 `[YYYY-MM-DD HH:MM:SS]` → epoch 秒。
+/// 解析 daemon.log 行首的 `[YYYY-MM-DD HH:MM:SS]` → epoch 秒
 /// **时区口径**：daemon.log 时间戳由 `libc::localtime_r` 生成的**本地时间**，
 /// 必须用 `mktime`（本地时区）而非 `timegm`（UTC）解析，否则东八区偏 -8h、
-/// 30s 短会话判定彻底失效。`tm_isdst = -1` 交给 libc 按 DST 规则判定。
+/// 30s 短会话判定彻底失效`tm_isdst = -1` 交给 libc 按 DST 规则判定
 #[cfg(unix)]
 fn parse_log_ts_secs(line: &str) -> Option<i64> {
     let s = line.trim_start().strip_prefix('[')?;
@@ -1825,8 +1731,8 @@ fn parse_log_ts_secs(_line: &str) -> Option<i64> {
     None
 }
 
-/// 读 `logs/daemon.log` 首行时间戳（epoch 秒）。daemon.log 单文件可达 50MB，
-/// **只读前 256 字节**（首行必然完整），绝不整读。
+/// 读 `logs/daemon.log` 首行时间戳（epoch 秒）daemon.log 单文件可达 50MB，
+/// **只读前 256 字节**（首行必然完整），绝不整读
 fn first_log_line_secs(path: &Path) -> Option<i64> {
     let mut f = fs::File::open(path).ok()?;
     let mut buf = [0u8; 256];
@@ -1838,8 +1744,7 @@ fn first_log_line_secs(path: &Path) -> Option<i64> {
     parse_log_ts_secs(text.lines().next()?)
 }
 
-/// 上一轮是否为短会话（存活 < SHORT_SESSION_SECS）。
-/// 读不到/解析失败时返回 false —— 保守走正常归档，绝不因判定失败而丢日志。
+/// 上一轮是否为短会话（存活 < SHORT_SESSION_SECS）读不到/解析失败时返回 false —— 保守走正常归档，绝不因判定失败而丢日志
 fn is_short_session(daemon_log: &Path) -> bool {
     let Some(start) = first_log_line_secs(daemon_log) else {
         return false;
@@ -1848,7 +1753,7 @@ fn is_short_session(daemon_log: &Path) -> bool {
     (0..SHORT_SESSION_SECS).contains(&now_epoch_secs().saturating_sub(start))
 }
 
-/// 清空目录内容（**保留 `keep` 里的文件名**，目录本身不删）。
+/// 清空目录内容（**保留 `keep` 里的文件名**，目录本身不删）
 fn clear_dir_keep(dir: &Path, keep: &[&str]) {
     let Ok(rd) = fs::read_dir(dir) else {
         return;
@@ -1867,8 +1772,7 @@ fn clear_dir_keep(dir: &Path, keep: &[&str]) {
     }
 }
 
-/// 串行打包一批 staging 目录：每个目录打成 `logd/<去 ziped_ 前缀名>.tar.lz4`
-/// （沿用其原始时间戳），成功删目录、失败留痕（pack_or_keep）；空目录直接丢弃。
+/// 串行打包一批 staging 目录：每个目录打成 `logd/<去 ziped_ 前缀名>.tar.lz4`（沿用其原始时间戳），成功删目录、失败留痕（pack_or_keep）；空目录直接丢弃
 fn pack_staging_dirs(root: &Path, logd: &Path, dirs: Vec<PathBuf>) {
     for dir in dirs {
         let mut files = Vec::new();
@@ -1889,12 +1793,10 @@ fn pack_staging_dirs(root: &Path, logd: &Path, dirs: Vec<PathBuf>) {
     }
 }
 
-/// 启动归档入口。返回 (logs 归档 tar 名, devimp 归档 tar 名)（logger::init 后供
-/// main info 打点）；未归档（首次安装 / 空目录 / rename 失败 / 短会话丢弃）
-/// 对应项为 None。
+/// 启动归档入口返回 (logs 归档 tar 名, devimp 归档 tar 名)（logger::init 后供main info 打点）；未归档（首次安装 / 空目录 / rename 失败 / 短会话丢弃）
+/// 对应项为 None
 pub fn archive_on_startup(root: &Path) -> (Option<String>, Option<String>) {
-    // 归档命名用本地时间 MMDD-HHmmss（人眼可辨）；同秒内两次启动会重名，
-    // 由 unique_staging 补 -N 后缀（重名会让 rename 失败、本次整个不归档）
+    // 归档命名用本地时间 MMDD-HHmmss（人眼可辨）；同秒内两次启动会重名，由 unique_staging 补 -N 后缀（重名会让 rename 失败、本次整个不归档）
     let ts = filename_ts();
 
     // 先把上一轮遗留的 staging 目录收进本轮打包队列（必须在 rename 之前扫描）
@@ -1903,21 +1805,17 @@ pub fn archive_on_startup(root: &Path) -> (Option<String>, Option<String>) {
     let src_logs = root.join("logs");
     let src_devimp = root.join("devimp");
 
-    // ── 短会话丢弃：上一轮存活不足 30s 直接清空两目录、不打包 ──
-    // 判据取自 logs/daemon.log 首行（上一轮进程的首条日志 ≈ 其启动时刻，本地时间）。
-    // 必须在 rename 之前判定：rename 后 logs/ 已被换成空目录，就读不到上一轮日志了。
+    // ── 短会话丢弃：上一轮存活不足 30s 直接清空两目录、不打包 ──判据取自 logs/daemon.log 首行（上一轮进程的首条日志 ≈ 其启动时刻，本地时间）必须在 rename 之前判定：
+    // rename 后 logs/ 已被换成空目录，就读不到上一轮日志了
     if is_short_session(&src_logs.join("daemon.log")) {
-        // watchdog.pid 必须保留：看门狗先于 daemon 启动、WebUI stopScheduler 靠它
-        // 终止看门狗，清掉会导致「关闭调度」失效（与归档路径同口径）
+        // watchdog.pid 必须保留：看门狗先于 daemon 启动、WebUI stopScheduler 靠它终止看门狗，清掉会导致「关闭调度」失效（与归档路径同口径）
         clear_dir_keep(&src_logs, &["watchdog.pid"]);
         clear_dir_keep(&src_devimp, &[]);
-        // devimp/ 清空后若已成空则连目录一并删：该目录整体属于 dev_record 产物，
-        // 开关关闭时不得留痕（含空目录）。remove_dir 仅在目录存在且为空时成功，
-        // 有残留/不存在时静默失败——开关开启时后续写入自会 create_dir_all 重建。
+        // devimp/ 清空后若已成空则连目录一并删：该目录整体属于 dev_record 产物，开关关闭时不得留痕（含空目录）remove_dir 仅在目录存在且为空时成功，
+        // 有残留/不存在时静默失败——开关开启时后续写入自会 create_dir_all 重建
         let _ = fs::remove_dir(&src_devimp);
         SHORT_SESSION_DISCARDED.store(true, Ordering::Release);
-        // 遗留 staging 目录仍照常回收打包——它们属于更早的会话，不是本轮垃圾，
-        // 且在崩溃循环里正是最有价值的那份现场
+        // 遗留 staging 目录仍照常回收打包——它们属于更早的会话，不是本轮垃圾，且在崩溃循环里正是最有价值的那份现场
         if !orphans.is_empty() {
             let logd = root.join("logd");
             let _ = fs::create_dir_all(&logd);
@@ -1950,8 +1848,7 @@ pub fn archive_on_startup(root: &Path) -> (Option<String>, Option<String>) {
         }
     }
 
-    // ── devimp/：整体 rename 归档（**不新建目录**——交由 diag 写入路径
-    // main_open / aff_open 惰性 create_dir_all，开关关闭时不得留痕，含空目录）──
+    // ── devimp/：整体 rename 归档（**不新建目录**——交由 diag 写入路径main_open / aff_open 惰性 create_dir_all，开关关闭时不得留痕，含空目录）──
     let mut devimp_tmp: Option<PathBuf> = None;
     let devimp_has_entries = fs::read_dir(&src_devimp)
         .map(|mut d| d.next().is_some())
@@ -1963,9 +1860,8 @@ pub fn archive_on_startup(root: &Path) -> (Option<String>, Option<String>) {
         }
     }
 
-    // ── 单个一次性子线程：串行打包（遗留优先）+ 预算清理 ──
-    // tar 名沿用各自 staging 目录名的时间戳段（保留原始时间戳），不再统一用本次 ts；
-    // `ziped_` 前缀是历史命名（遗留扫描按它认目录，保留不动），产物名剥掉它
+    // ── 单个一次性子线程：串行打包（遗留优先）+ 预算清理 ──tar 名沿用各自 staging 目录名的时间戳段（保留原始时间戳），不再统一用本次 ts；`ziped_` 前缀是历史命名（遗留扫描按它认目录，
+    // 保留不动），产物名剥掉它
     fn tar_name_of(dir: &Path) -> String {
         let stem = dir
             .file_name()
@@ -2004,11 +1900,9 @@ pub fn archive_on_startup(root: &Path) -> (Option<String>, Option<String>) {
     (logs_tar, devimp_tar)
 }
 
-/// logd/ 与 devimp/ 目录预算清理（**各自独立计量**，各 256MB→清到 200MB）：任一
-/// 目录超过自己的 MAX 时收到 TARGET 以下。**清理语义不同**：logd/ 按「归档批次」
-/// 原子删（`enforce_logd_limit`），devimp/ 按单文件 mtime 删（`enforce_dir_limit`，
-/// 被删的活跃文件由写入器巡检自愈）。调用时机：启动归档打包完成后 + devimp 触顶
-/// 换文件时（运行中触发频率极低，全目录 metadata 扫描开销可忽略）。
+/// logd/ 与 devimp/ 目录预算清理（**各自独立计量**，各 256MB→清到 200MB）：任一目录超过自己的 MAX 时收到 TARGET 以下**清理语义不同**：logd/ 按「归档批次」
+/// 原子删（`enforce_logd_limit`），devimp/ 按单文件 mtime 删（`enforce_dir_limit`，被删的活跃文件由写入器巡检自愈）调用时机：
+/// 启动归档打包完成后 + devimp 触顶换文件时（运行中触发频率极低，全目录 metadata 扫描开销可忽略）
 fn enforce_dir_limits(root: &Path) {
     enforce_logd_limit(&root.join("logd"));
     enforce_dir_limit(
@@ -2018,8 +1912,7 @@ fn enforce_dir_limits(root: &Path) {
     );
 }
 
-/// 两个诊断写入器的当前活跃文件名（两把 WRITER 锁顺序短取、不嵌套——锁序约定；
-/// 仅在未持任何写入器锁的上下文调用）
+/// 两个诊断写入器的当前活跃文件名（两把 WRITER 锁顺序短取、不嵌套——锁序约定；仅在未持任何写入器锁的上下文调用）
 fn active_diag_names() -> Vec<String> {
     let mut out = Vec::with_capacity(2);
     if let Ok(w) = MAIN_WRITER.lock() {
@@ -2035,11 +1928,9 @@ fn active_diag_names() -> Vec<String> {
     out
 }
 
-/// devimp/ 单目录预算清理：`dir` 总大小超过 `max` 时按 mtime 从最旧文件逐个删除，
-/// 直到低于 `target`。**活跃文件与最新的一个文件永不删除**——单个文件本身
-/// 超过 target 时（如一个 100MB+ 的 aff_），删完其余文件后仍会留下它，避免目录
-/// 被清空（清理目标不可达时以「至少留活跃+一份」为准）。logd/ 不走本函数
-/// （见 `enforce_logd_limit` 的批次原子语义）。
+/// devimp/ 单目录预算清理：`dir` 总大小超过 `max` 时按 mtime 从最旧文件逐个删除，直到低于 `target`
+/// **活跃文件与最新的一个文件永不删除**——单个文件本身超过 target 时（如一个 100MB+ 的 aff_），删完其余文件后仍会留下它，避免目录被清空（清理目标不可达时以「至少留活跃+一份」为准）
+/// logd/ 不走本函数（见 `enforce_logd_limit` 的批次原子语义）
 fn enforce_dir_limit(dir: &Path, max: u64, target: u64) {
     let mut paths: Vec<PathBuf> = Vec::new();
     if collect_files(dir, &mut paths).is_err() {
@@ -2060,8 +1951,7 @@ fn enforce_dir_limit(dir: &Path, max: u64, target: u64) {
         return;
     }
     files.sort();
-    // 保留两个写入器的活跃文件（main_/aff_ 并存后另一活跃文件未必是最新——
-    // 它正在被写，删掉会让后续写入落进孤儿 inode 直到巡检自愈，期间丢数据）
+    // 保留两个写入器的活跃文件（main_/aff_ 并存后另一活跃文件未必是最新——它正在被写，删掉会让后续写入落进孤儿 inode 直到巡检自愈，期间丢数据）
     let active = active_diag_names();
     files.retain(|(_, _, p)| {
         p.file_name()
@@ -2079,11 +1969,8 @@ fn enforce_dir_limit(dir: &Path, max: u64, target: u64) {
     }
 }
 
-/// 归档批次键（`logd/` 预算清理的原子单位）：同一次启动归档产出的
-/// `<MMDD-HHmmss>.tar.lz4`（logs 侧）与 `devimp_<MMDD-HHmmss>.tar.lz4`
-/// （devimp 侧）共享 `<MMDD-HHmmss>` 一段；`unique_path` 去重的 `-N` 后缀剥掉。
-/// 兼容 lz4 回落的历史 `<ts>.tar` 产物；形态不符的外来文件按整名成组
-/// （等价单文件批次），不会被误并组。
+/// 归档批次键（`logd/` 预算清理的原子单位）：同一次启动归档产出的`<MMDD-HHmmss>.tar.lz4`（logs 侧）与 `devimp_<MMDD-HHmmss>.tar.lz4`（devimp 侧）
+/// 共享 `<MMDD-HHmmss>` 一段；`unique_path` 去重的 `-N` 后缀剥掉兼容 lz4 回落的历史 `<ts>.tar` 产物；形态不符的外来文件按整名成组（等价单文件批次），不会被误并组
 fn logd_batch_key(name: &str) -> String {
     let is_ts = |s: &str| {
         let b = s.as_bytes();
@@ -2106,15 +1993,15 @@ fn logd_batch_key(name: &str) -> String {
     name.to_string()
 }
 
-/// logd/ 预算清理：**按归档批次原子删**。按单文件 mtime 删会把同批的 logs 侧
+/// logd/ 预算清理：**按归档批次原子删**按单文件 mtime 删会把同批的 logs 侧
 /// `<ts>.tar`（daemon.log / status.csv 唯一载体）与 `devimp_*.tar` 拆散，导出包
-/// 出现 daemon.log/status.csv 凭空消失。现语义：
+/// 出现 daemon.log/status.csv 凭空消失现语义：
 /// 1. **批次原子**：`<ts>.tar` 与 `devimp_<ts>.tar` 同进退——批次是一次会话的
-///    完整记录，拆掉任何一半都不可再生；
+/// 完整记录，拆掉任何一半都不可再生；
 /// 2. **最新批次永不删**：每次导出必含最近一次会话的 daemon.log/status.csv；
 /// 3. **按批龄旧→新整批删**，删到 < `LOGD_TARGET_BYTES`；
 /// 4. **目标不可达**（最新批次自身 ≥ target）时退化为「收到 MAX 即停」，
-///    预算内的旧批次不再为凑 target 而陪葬。
+/// 预算内的旧批次不再为凑 target 而陪葬
 fn enforce_logd_limit(dir: &Path) {
     let mut paths: Vec<PathBuf> = Vec::new();
     if collect_files(dir, &mut paths).is_err() {
@@ -2187,10 +2074,8 @@ fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
     Ok(())
 }
 
-/// 调用外部打包脚本 `scripts/pack.sh`（对外暴露的稳定接口，构建流程不得修改）
-/// 把 staging 目录打成**无压缩 tar**（优先模块自带 core/bin/tar，回退系统 tar；
-/// lz4 压缩由调用方完成）。成功判据：退出码 0 且目标文件存在；失败 → false，
-/// 调用方保留 staging 并留痕。
+/// 调用外部打包脚本 `scripts/pack.sh`（对外暴露的稳定接口，构建流程不得修改）把 staging 目录打成**无压缩 tar**（优先模块自带 core/bin/tar，回退系统 tar；
+/// lz4 压缩由调用方完成）成功判据：退出码 0 且目标文件存在；失败 → false，调用方保留 staging 并留痕
 fn pack_dir_tar(root: &Path, dir: &Path, out_tar: &Path) -> bool {
     let script = root.join("scripts/pack.sh");
     let ok = std::process::Command::new("/system/bin/sh")
@@ -2204,8 +2089,7 @@ fn pack_dir_tar(root: &Path, dir: &Path, out_tar: &Path) -> bool {
     ok && out_tar.exists()
 }
 
-/// Rust 内置流式压缩（flate2 gzip / lz4_flex，纯 Rust，全部 `io::copy` 不整读
-/// 进内存——归档可达 100MB+）。失败删除半截目标文件。
+/// Rust 内置流式压缩（flate2 gzip / lz4_flex，纯 Rust，全部 `io::copy` 不整读进内存——归档可达 100MB+）失败删除半截目标文件
 fn compress_gzip(src: &Path, dst: &Path) -> bool {
     match (fs::File::open(src), fs::File::create(dst)) {
         (Ok(mut fin), Ok(fout)) => {
@@ -2228,8 +2112,7 @@ fn compress_lz4(src: &Path, dst: &Path) -> bool {
     match (fs::File::open(src), fs::File::create(dst)) {
         (Ok(mut fin), Ok(fout)) => {
             let mut enc = lz4_flex::frame::FrameEncoder::new(fout);
-            // finish(self) 返回 lz4_flex 自家的 frame::Error，不与 io::Error
-            // 同型，不能链进 io::Result，分开判
+            // finish(self) 返回 lz4_flex 自家的 frame::Error，不与 io::Error 同型，不能链进 io::Result，分开判
             let ok = match std::io::copy(&mut fin, &mut enc) {
                 Ok(_) => enc.finish().is_ok(),
                 Err(_) => false,
@@ -2245,11 +2128,8 @@ fn compress_lz4(src: &Path, dst: &Path) -> bool {
     }
 }
 
-/// 内置压缩工具入口（main.rs [toolbox] 分发）：`chiri gzip <file>` 生成
-/// `<file>.gz` 并删除源文件（语义与 `gzip -f` 一致，供 pack.sh export 调用）；
-/// `chiri lz4 <src> <dst>` 压缩到指定目标（备用入口，当前启动归档直接进程内
-/// 调 `compress_lz4`，不走本入口）。返回进程退出码：0 成功、1 压缩失败、
-/// 2 用法错误。
+/// 内置压缩工具入口（main.rs [toolbox] 分发）：`chiri gzip <file>` 生成`<file>.gz` 并删除源文件（语义与 `gzip -f` 一致，供 pack.sh export 调用）；
+/// `chiri lz4 <src> <dst>` 压缩到指定目标（备用入口，当前启动归档直接进程内调 `compress_lz4`，不走本入口）返回进程退出码：0 成功、1 压缩失败、2 用法错误
 pub fn compress_cli(cmd: &str, args: &[String]) -> i32 {
     match cmd {
         "gzip" => match args.first() {
@@ -2289,10 +2169,8 @@ pub fn compress_cli(cmd: &str, args: &[String]) -> i32 {
     }
 }
 
-/// 打包单个 staging 目录：pack.sh 先打无压缩 tar（目标名去掉 `.lz4`），再用
-/// 内置 lz4_flex 压成 `out_final`（.tar.lz4）并删除中间 tar；lz4 落盘失败
-/// （纯 I/O 错误，无环境依赖）回落保留 `.tar`。tar 打包失败写
-/// ARCHIVE_FAILED.txt 保留待查（此时 logger 尚未 init，无法打点）。
+/// 打包单个 staging 目录：pack.sh 先打无压缩 tar（目标名去掉 `.lz4`），再用内置 lz4_flex 压成 `out_final`（.tar.lz4）并删除中间 tar；
+/// lz4 落盘失败（纯 I/O 错误，无环境依赖）回落保留 `.tar`tar 打包失败写ARCHIVE_FAILED.txt 保留待查（此时 logger 尚未 init，无法打点）
 fn pack_or_keep(root: &Path, dir: &Path, out_final: &Path) {
     let Some(tar_str) = out_final.to_str().and_then(|s| s.strip_suffix(".lz4")) else {
         return;

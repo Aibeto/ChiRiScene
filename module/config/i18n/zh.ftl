@@ -182,6 +182,7 @@ clg-watchdog-release = [CLG] 看门狗: 已 { $secs } 秒未收到负载事件�
 clg-touch-boost = [CLG] 触摸升频窗口开启：大核性能下限={ $floor } 保持 { $ms }ms
 clg-thermal-cap = [CLG] 热保护压制: 电池={ $batt }°C / CPU={ $cpu }°C，性能上限压至 { $cap }%（≥{ $free } 豁免）
 clg-thermal-no-sensor = [CLG] 热保护: 未找到 CPU 温度传感器，CPU 参考停用
+thermal-config-clamped = [Thermal] 热配置越界已钳制: { $key } 由 { $value } 修正为 { $fixed }
 clg-thermal-no-battery = [CLG] 热保护: 未找到电池温度节点，仅按 CPU 温度压制
 battery-temp-scale = [Thermal] 电池温度刻度预识别: { $unit }（换算除数 { $divisor }），CLG 热保护与 FAS 温度护栏共用
 battery-temp-scale-unknown = [Thermal] 电池温度刻度预识别未得出结论（节点缺失或读数未就绪），本次退化为仅 CPU 温度

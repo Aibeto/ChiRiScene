@@ -1,5 +1,5 @@
-// module-info.ts: [types] [parse]
-// module.prop 是 Magisk/KernelSU 标准的 KEY=VALUE 清单（module/module.prop）；WebUI 只用于标题展示，缺失时回退 KernelSU moduleInfo()。
+// module-info.ts: [types] [parse]module.prop 是 Magisk/KernelSU 标准的 KEY=VALUE 清单（module/module.prop）；
+// WebUI 只用于标题展示，缺失时回退 KernelSU moduleInfo()
 
 // [types]
 export interface ModuleProp {
