@@ -1,8 +1,7 @@
 <script lang="ts">
   // LabView.svelte: [bar] [notice] [modes] [state]
-  // 实验室二级页（从配置页底部进入）。页面只摆事实：rhine.chr 里写了什么、设备当前
-  // 是什么模式。套用有没有真的生效要看 daemon.log，界面不替守护进程下结论——所以
-  // 「实验室模式」与「设备当前模式」分两处显示，不做因果推断。
+  // 实验室二级页。只摆事实：rhine.chr 内容与设备当前模式分两处显示、不做因果推断，
+  // 套用是否真的生效要看 daemon.log。
   import { onMount } from 'svelte'
   import ConfirmSheet from '@/components/ConfirmSheet.svelte'
   import Panel from '@/components/Panel.svelte'
@@ -195,7 +194,6 @@
     letter-spacing: 0.04em;
   }
 
-  /* 须知清单整体走全局 .u-notice（与总览页导出须知同一份） */
 
   .modes {
     display: grid;
@@ -229,9 +227,7 @@
     letter-spacing: 0.02em;
   }
 
-  /* 只收字号，保留 .ak-tag 自带的高度——状态标签不参与命中区，但也别缩成看不清。
-     「启用中」的配色来自官方 .ak-tag--danger（信号条 + 描边 + 文字一起走危险色），
-     此前只改了描边 → 红框配蓝信号条，颜色不成套 */
+  /* 只收字号、保留 .ak-tag 自带高度；启用中配色走官方 .ak-tag--danger（此前只改描边，颜色不成套） */
   .mode__tag {
     flex: 0 0 auto;
     font-size: 0.6875rem;

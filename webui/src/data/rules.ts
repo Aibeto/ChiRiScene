@@ -1,6 +1,5 @@
 // rules.ts: [types] [parse]
-// rules.yaml 的磁盘副本是 daemon 启动时复制出的**展示副本**（运行时一律读二进制内嵌值），
-// 因此 WebUI 只读展示；`fas_rules` 段随包文件不含，解析时不能假设存在。
+// rules.yaml 磁盘副本是 daemon 启动时复制的展示副本（运行时一律读二进制内嵌值），WebUI 只读展示；fas_rules 段随包文件不含，解析时不能假设存在。
 // 字段来源：src/monitor/config.rs::RulesConfig。
 import { load as loadYaml } from 'js-yaml'
 

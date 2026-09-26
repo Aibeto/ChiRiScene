@@ -7,28 +7,23 @@ use std::sync::LazyLock;
 use std::sync::RwLock;
 
 // [bundle]
-// 全局静态变量，存储当前的语言包
 static BUNDLE: LazyLock<RwLock<FluentBundle<FluentResource, IntlLangMemoizer>>> =
     LazyLock::new(|| {
     let bundle = FluentBundle::new_concurrent(vec!["en".parse().unwrap()]);
     RwLock::new(bundle)
 });
 
-/// 核心函数：加载指定语言的翻译资源。
-/// 语言包编译期嵌入二进制（common::embedded_ftl_str），磁盘 i18n 目录不再被读取。
+/// 加载指定语言的翻译资源：语言包编译期嵌入（common::embedded_ftl_str），磁盘 i18n 目录不再读取。
 fn load_bundle(
     lang: &str,
 ) -> Result<FluentBundle<FluentResource, IntlLangMemoizer>, anyhow::Error> {
-    // 1. 取嵌入的 FTL 内容：zh → zh.ftl，其余语言一律回退 en.ftl
     let ftl_string = crate::common::embedded_ftl_str(lang).to_string();
     log::info!("[i18n] Loading embedded language '{}' (zh/en)", lang);
 
-    // 2. 解析资源
     let resource = FluentResource::try_new(ftl_string)
         .map_err(|e| anyhow::anyhow!("Failed to parse embedded FTL resource: {:?}", e))?;
 
-    // 3. 解析语言标签；非法标签回退 "en"，避免 parse().unwrap() panic
-    //    （类型由 FluentBundle 的 locale 参数推断，无需直接依赖 unic-langid）
+// 非法语言标签回退 "en"，避免 parse().unwrap() panic（locale 类型由 FluentBundle 推断，无需 unic-langid）
     let langid = match lang.parse() {
         Ok(id) => id,
         Err(_) => {
@@ -54,8 +49,7 @@ pub fn load_language(lang: &str) {
 
     match load_bundle(lang) {
         Ok(new_bundle) => {
-            // 毒化防御：锁持有者 panic 后继续可用（与 logger/core_ctl 口径一致），
-            // 翻译服务绝不能因锁状态崩溃
+// 毒化防御：锁持有者 panic 后仍可用（与 logger/core_ctl 同口径），翻译服务不能因锁状态崩溃
             let mut bundle_lock = BUNDLE.write().unwrap_or_else(|p| p.into_inner());
             *bundle_lock = new_bundle;
             log::info!(
@@ -64,7 +58,6 @@ pub fn load_language(lang: &str) {
             );
         }
         Err(e) => {
-            // 如果加载失败，不会覆盖旧的语言包
             log::error!(
                 "[i18n] Failed to load language '{}': {}. Keeping previous language.",
                 lang,

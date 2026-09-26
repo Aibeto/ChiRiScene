@@ -39,7 +39,7 @@ import dvcommon as dc  # noqa: E402
 MAGIC_LZ4_FRAME = 0x184D2204
 MAGIC_LZ4_LEGACY = 0x184C2102
 MAGIC_LZ4_SKIP = 0x184D2A50
-MAGIC_GZIP = 0x8B1F  # 小端前两字节 1f 8b
+MAGIC_GZIP = 0x8B1F
 
 
 def sniff(data):
@@ -83,7 +83,7 @@ def decode_archive_bytes(raw, label):
     if kind == "lz4":
         try:
             out = dvlz4.decompress_bytes(raw)
-        except Exception as e:  # 解码器自身报错也要带上下文
+        except Exception as e:
             raise RuntimeError(f"{label}: LZ4 解码失败（{len(raw)} bytes）: {e}") from e
         if not looks_like_tar(out):
             raise RuntimeError(
@@ -144,7 +144,7 @@ def run(inp, tag, out_root, records):
         tag = m.group(1) if m else "pkg"
     outdir = os.path.abspath(os.path.join(out_root, tag))
     if os.path.exists(outdir):
-        shutil.rmtree(outdir)  # 覆盖式重建：可安全重跑
+        shutil.rmtree(outdir)
     os.makedirs(outdir, exist_ok=True)
 
     with open(inp, "rb") as f:

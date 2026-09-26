@@ -21,8 +21,8 @@ function envUnsupported<T>(): ReadResult<T> {
 
 // [text]
 /**
- * 读取文件内容（限量窗口）。`tail -c` 对小文件返回全部、对大文件只返回尾部，
- * 天然避免整文件装载；窗口从中间开始时可能截断首行，调用方按行解析即可容忍。
+ * 读取文件内容（限量窗口）：`tail -c` 对小文件返回全部、大文件只返回尾部，天然
+ * 避免整文件装载；窗口从中间开始时可能截断首行，调用方按行解析即可容忍。
  */
 export async function readText(
   path: string,

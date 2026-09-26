@@ -1,7 +1,6 @@
 <script lang="ts">
   // ToggleField.svelte: [switch]
-  // 复用 ak-ui 的开关原语（.ak-choice--switch + 原生 checkbox[role=switch]），
-  // 仅把硬编码的浅色值映射回语义 token 以适配深色主题。
+  // 复用 ak-ui 开关原语（.ak-choice--switch + 原生 checkbox[role=switch]），仅把硬编码浅色值映射回语义 token 适配深色。
   let {
     label,
     hint = '',
@@ -43,8 +42,8 @@
 </label>
 
 <style>
-  /* 开关原语（轨道/旋钮/选中色/焦点环）来自官方 .ak-choice--switch，深色适配在
-     app.css [ak-adapt]；这里只保留文本结构与「待提交」标记 */
+  /* 开关原语（轨道/旋钮/选中色/焦点环）来自官方 .ak-choice--switch（深色适配在 app.css [ak-adapt]）；
+     这里只保留文本结构与「待提交」标记 */
   .toggle--disabled {
     cursor: not-allowed;
     opacity: 0.55;

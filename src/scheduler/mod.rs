@@ -1,8 +1,7 @@
 //! mod.rs: [mods] [policy]
 //!
-//! 原 Yumi 调度兜底（`cpu_load_governor.rs` / `scheduler.rs` / `config.rs` 与本模块的
-//! thread/cfgwatch/ipc 接线）已于 2026-09-22 移除——非 ChiRi SoC 不再接管 CPU。
-//! 本模块只保留 FAS 引擎（ChiRi 的 fas 模式在用）与 FAS 依赖的 policy 探测工具。
+//! 原 Yumi 调度兜底已移除（非 ChiRi SoC 不再接管 CPU）：
+//! 本模块只保留 FAS 引擎（fas 模式在用）与 FAS 依赖的 policy 探测工具。
 
 use std::fs;
 
@@ -52,8 +51,7 @@ fn read_boost_frequencies(pid: i32) -> Vec<u32> {
         .collect()
 }
 
-/// 通过 sysfs 探测指定 policy 的 capacity 值
-/// 供 FAS 的 capacity 权重计算使用（fas/policy_mgmt.rs）。
+/// 通过 sysfs 探测指定 policy 的 capacity 值，供 FAS 的 capacity 权重计算使用（fas/policy_mgmt.rs）。
 pub(super) fn probe_policy_capacity(policy_id: i32) -> Option<u32> {
     let related_str = fs::read_to_string(format!(
         "/sys/devices/system/cpu/cpufreq/policy{}/related_cpus",
@@ -67,9 +65,8 @@ pub(super) fn probe_policy_capacity(policy_id: i32) -> Option<u32> {
     })
     .ok()?;
     let first_cpu: u32 = related_str.split_whitespace().next()?.parse().ok()?;
-    // 真机 sysfs 永远优先（8550 真机实测 280/855/1024，与 mainline DT 326/693/1024
-    // 不同——厂商板级覆盖）：cpu_capacity 读不到/解析失败时，才按首核所属核心组
-    // 查 soc.yaml [capacity] 兜底；两边都没有才返回 None。
+    // 真机 sysfs 优先（厂商板级覆盖与 mainline DT 不同）：cpu_capacity 读不到/解析失败时，
+    // 才按首核核心组查 soc.yaml [capacity] 兜底；两边都没有才返回 None。
     if let Some(cap) = fs::read_to_string(format!(
         "/sys/devices/system/cpu/cpu{}/cpu_capacity",
         first_cpu
@@ -82,8 +79,7 @@ pub(super) fn probe_policy_capacity(policy_id: i32) -> Option<u32> {
     crate::common::soc_capacity_for_group(crate::common::core_group_of(first_cpu)?)
 }
 
-/// 根据 CPU capacity 自动计算每个 cluster 的权重
-/// 供 FAS 使用（fas/policy_mgmt.rs）。
+/// 根据 CPU capacity 自动计算每个 cluster 的权重，供 FAS 使用（fas/policy_mgmt.rs）。
 pub(super) fn auto_compute_capacity_weights(policies: &[CpuPolicy]) -> Option<Vec<(i32, f32)>> {
     let caps: Vec<(i32, u32)> = policies
         .iter()

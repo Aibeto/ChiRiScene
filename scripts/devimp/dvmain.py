@@ -30,7 +30,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import dvcommon as dc  # noqa: E402
 
-# 迁移率量级带（命令文档「三、判定要点」2026-09-23 实测 Canary Alpha06-04 / 8550）
+# 迁移率量级带（实测对照值，仅作参考）
 MIG_BANDS = [
     ("bili 播放态", 4500, 7000),
     ("亮屏 UI（launcher/kernelsu）", 3000, 6000),
@@ -43,7 +43,6 @@ def build(files, min_n):
     heads = [dc.parse_head(f) for f in files]
     fp = dc.fingerprint(heads)
 
-    # ── 定版 ──
     out.append("# [1] 定版（文件头元信息）")
     for k in ("module", "soc", "board", "model", "android", "kernel", "schema_tag"):
         vs = sorted(fp.get(k, []))
@@ -58,7 +57,6 @@ def build(files, min_n):
     out.append(f"  ts-column : {', '.join(ts_cols) if ts_cols else '(缺)'}")
     out.append("")
 
-    # ── 行类型分布 / 时间跨度 / 批次 ──
     out.append("# [2] 每文件行类型分布与时间跨度（批次 = 父目录）")
     batches = dc.batches(files)
     for bdir in sorted(batches):
@@ -89,14 +87,13 @@ def mode_package(files, cols, min_n):
         out.append("# [3] 决策轨迹：本 schema 缺列，跳过")
         return out
 
-    # 按 (batch, mode, package) 聚合；tick 行按 cluster 细分
+    # 聚合容器：key=(batch,mode,package)，tick 行按 cluster 细分；agg/kinds 基础聚合，
+    # streak=deb_up/deb_down 按 (key,cluster) 取最大连续值；decisions/reasons 为计数；band=热压制带内 tick 计数
     agg = collections.defaultdict(lambda: collections.defaultdict(list))
     kinds = collections.defaultdict(collections.Counter)
-    # deb streak：按 (batch,mode,package,cluster) 时间序列取最大值
     streak = collections.defaultdict(lambda: collections.defaultdict(int))
     decisions = collections.defaultdict(collections.Counter)
     reasons = collections.defaultdict(collections.Counter)
-    # 热压制带内的 tick 计数
     band = collections.defaultdict(lambda: collections.Counter())
     free_above_by_batch = collections.defaultdict(set)
 
@@ -133,8 +130,7 @@ def mode_package(files, cols, min_n):
                 if p[I["decision"]] == "thermal_change":
                     free_above_by_batch[batch].add(p[I["reason"]])
 
-    # 热压制带：free_above 只出现在 thermal_change 事件（reason 形如
-    # `batt=41.0 cpu=56.4 cap=85 free=95`）里；取该批次解析出的值。
+    # free_above 只出现在 thermal_change 事件的 reason 里（形如 batt=… cpu=… cap=… free=…），按批次取值
     def fa_of(batch):
         vals = free_above_by_batch.get(batch) or set()
         parsed = []
@@ -203,7 +199,6 @@ def mode_package(files, cols, min_n):
                    f"{ca:7d} {b.get('in_band', 0):7d} {ratio}")
     out.append("")
 
-    # decision / reason 分布（取最大的几个 mode×package）
     top = sorted(agg, key=lambda k: -(len(agg[k]["ts"]) + len(agg[k]["snap_ts"])))[:8]
     out.append("# [4] decision / reason 分布（tick 行，按 mode×package）")
     for key in top:

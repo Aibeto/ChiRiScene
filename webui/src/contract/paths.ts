@@ -76,7 +76,7 @@ export function shQuote(value: string): string {
 
 // [safety]
 /**
- * active_config.chr 内容校验：必须是不含上溯的相对路径（可含一层 SoC 子目录）。
+ * active_config.chr 内容校验：必须是不含上溯的相对路径（可含一层 SoC 子目录），
  * 拒绝绝对路径、`..`、空串与反斜杠，防路径注入。
  */
 export function isSafeConfigRel(p: string): boolean {

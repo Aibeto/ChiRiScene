@@ -1,11 +1,6 @@
 #!/system/bin/sh
 # action.sh: [paths] [stop-old] [permissions] [watchdog-start] [result]
-#
-# ChiRi 模块 action 脚本：手动启动/重启调度
-# KernelSU/Magisk 在用户点击模块「Action」按钮时执行本脚本。
-# 作用：显式终止旧看门狗与主进程 → 重新拉起看门狗与主进程 → 分步打印消息。
-# 说明：action 阶段无 ui_print（那是安装期函数），统一用 log() 输出到 stdout 与 service.log。
-#
+# 手动启动/重启调度（用户点击模块 Action 按钮时执行）：杀旧看门狗与主进程 → 重新拉起；action 阶段无 ui_print（安装期函数），统一用 log() 输出到 stdout 与 service.log
 
 # [paths] 
 # 定义路径与日志函数
@@ -22,11 +17,9 @@ mkdir -p "$LOG_DIR"
 # 分步消息：同时打印到 stdout（KernelSU action 弹窗可见）与日志文件
 log() { echo "$(date): $*"; echo "$(date): $*" >> "$LOG_FILE"; }
 
-# [stop-old] 
-# 终止旧看门狗与主进程（确保不残留重复实例，消除竞态）
+# [stop-old] 终止旧看门狗与主进程（确保不残留重复实例，消除竞态）
 log "stopping old watchdog and daemon..."
-# 空文件/读取失败/内容损坏时不执行 kill：kill "" 无意义，kill 0 会向
-# 整个进程组发信号（可能终止本脚本），非纯数字内容一律跳过
+# 空/读取失败/内容损坏的 pid 一律跳过：kill "" 无意义，kill 0 会向整个进程组发信号（可能终止本脚本）
 pid=$(cat "$PID_FILE" 2>/dev/null)
 case "$pid" in
   ''|0|*[!0-9]*) ;;
@@ -41,10 +34,8 @@ log "stopped."
 # 设置权限
 chmod 755 "$DAEMON_PATH"
 
-# [watchdog-start] 
-# 启动 chiri 看门狗（崩溃自动重启，卸载时退出）
-# 看门狗记录自身 PID，供后续 action/WebUI「关闭调度」定位并终止。
-# 使用 setsid 而非 nohup，确保进程完全脱离父进程组，防止关闭界面导致服务终止。
+# [watchdog-start]
+# 看门狗：崩溃自动重启，存在 .uninstalling 或二进制被删时退出；PID 写入 watchdog.pid 供 action/WebUI「关闭调度」终止；用 setsid 完全脱离父进程组。
 
 # 检测 setsid 可用性，优先使用 BusyBox 的 setsid
 SETSID_CMD=""
@@ -82,12 +73,8 @@ WATCHDOG_CMD="sh -c '
   exit 0
 ' sh \"$PID_FILE\" \"$DAEMON_PATH\" \"$STOP_FLAG\" > /dev/null 2>&1"
 
-# 启动看门狗。两个分支都必须「后台化 + 脱离父进程组」：
-# - setsid 直接前台执行会阻塞本脚本（看门狗 while 循环在 daemon 存活期间
-#   永不退出——此前 action 卡在 stopped 之后、"daemon restarted." 永远
-#   打不出来的根因），必须 & 放后台；
-# - nohup 分支同样 & 放后台，但仅 nohup 不够脱离会话，配合 setsid 可用时
-#   优先 setsid（setsid 不可用时 nohup + & 已足够被 init 收养）。
+# 两分支都必须后台化并脱离父进程组：setsid 前台执行会阻塞本脚本（此前 action 卡在 stopped 之后、"daemon restarted." 打不出来的根因），必须 &；
+# nohup 分支同样 & 后台（setsid 不可用时 nohup + & 已足够被 init 收养）。
 if [ -n "$SETSID_CMD" ]; then
   $SETSID_CMD sh -c "$WATCHDOG_CMD" &
 else
@@ -97,7 +84,6 @@ fi
 # 立即与后台作业脱钩：防止某些 shell 环境在脚本退出时向作业发 SIGHUP
 disown 2>/dev/null || true
 
-# [result] 
-# 打印执行结果
+# [result] 打印执行结果
 log "daemon restarted."
 exit 0

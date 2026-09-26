@@ -1,10 +1,8 @@
 // meta.ts: [fields] [active] [read] [validate] [write]
-// meta.yaml 是唯一可写配置。守护进程侧规则（src/common.rs::parse_disk_meta +
-// sync_meta_snapshot）：**字段全部可选**（缺省 = 沿用二进制内嵌默认，与 rhine 影响项
-// 同一「缺省 = 不变更」语义；老文件/精简文件都合法，缺字段不再拒绝写入）、
-// 拒绝未知键、出现即校验类型（布尔只能是
-// YAML 字面量 true/false），任一异常 → 整个文件被内嵌默认覆盖（用户其他键一起丢）。
-// 因此写入策略是「单次读-改-写 + 顶层行替换」，只动目标字段、保留注释与其他键。
+// meta.yaml 是唯一可写配置。daemon 侧规则（src/common.rs::parse_disk_meta +
+// sync_meta_snapshot）：字段全部可选（缺省 = 沿用二进制内嵌默认，与 rhine 影响项
+// 同语义）、拒绝未知键、出现即校验类型，任一异常 → 整个文件被内嵌默认覆盖。
+// 写入策略是「单次读-改-写 + 顶层行替换」：只动目标字段、保留注释与其他键。
 import { load as loadYaml } from 'js-yaml'
 import { configAbs, absOf, isSafeConfigRel, shQuote } from './paths'
 import { isLive, run } from '@/kernel/shell'
@@ -85,8 +83,8 @@ export interface MetaSnapshot {
 
 // [active]
 /**
- * 读取生效配置相对路径（active_config.chr）：daemon 启动时写入、无换行、
- * 形如 `meta.yaml` 或 `8550/meta.yaml`；只在启动时写，停跑后可能是陈旧值。
+ * 读取生效配置相对路径（active_config.chr）：daemon 启动时写入、无换行，形如
+ * `meta.yaml` 或 `8550/meta.yaml`；只在启动时写，停跑后可能是陈旧值。
  */
 export async function readActiveConfigRel(): Promise<ReadResult<string>> {
   const r = await readText(absOf('activeConfig'), 'not-created', 512)
@@ -132,9 +130,8 @@ export async function readMeta(): Promise<ReadResult<MetaSnapshot>> {
 // [validate]
 function normalizeScalar(v: unknown): string {
   if (typeof v !== 'string') return ''
-  // 复刻 daemon common.rs::unquote 的语义：只剥一层「成对且同型」的引号，
-  // 不做逐边剥离（`INFO'` 这类畸形值 daemon 判非法，这里必须同样判非法，
-  // 否则会出现「界面说已保存、守护进程随后整体重置」的体验裂缝）
+  // 复刻 daemon common.rs::unquote 语义：只剥一层「成对且同型」的引号、不做逐边
+  // 剥离——畸形值 daemon 判非法，这里必须同样判非法，避免「界面已保存、daemon 整体重置」
   const s = v.trim()
   if (s.length >= 2) {
     const head = s[0]
@@ -149,8 +146,7 @@ function normalizeScalar(v: unknown): string {
 /** 复刻守护进程 parse_disk_meta 的校验口径（大小写不敏感去引号后比对） */
 export function validateMeta(values: Record<string, unknown>): string[] {
   const problems: string[] = []
-  // **字段全部可选**（缺省 = 沿用二进制内嵌默认，daemon 侧同语义）：缺字段不是问题，
-  // 只剩「未知键」与「类型不符」两类硬错误
+  // 字段全部可选（缺省 = 沿用内嵌默认，daemon 侧同语义）：硬错误只剩「未知键」与「类型不符」
   const known = new Set<string>(META_FIELDS)
   for (const k of Object.keys(values)) {
     if (!known.has(k)) problems.push(`存在未知字段 ${k}`)
@@ -189,8 +185,7 @@ export function validateMeta(values: Record<string, unknown>): string[] {
     }
   }
 
-  // 出现即校验类型（serde 类型不符会让整个文件判非法、被内嵌默认覆盖）；
-  // 数值范围不限报——守护进程对越界的 power_max_w 只回退默认值，界面同口径
+  // 出现即校验类型（类型不符 daemon 会判整个文件非法、被内嵌默认覆盖）；数值越界不限报——daemon 只回退默认值，界面同口径
   if ('nofix' in values && typeof values.nofix !== 'boolean') {
     problems.push('nofix 必须是布尔值 true/false')
   }
@@ -200,9 +195,8 @@ export function validateMeta(values: Record<string, unknown>): string[] {
   ) {
     problems.push('power_max_w 必须是数字')
   }
-  // devimp_top_n 是手改字段（daemon 侧 usize）：非整数/负数判非法；
-  // 用 isSafeInteger 而非 isInteger——超过 2^53 的"整数"（如 1e21）会让 daemon 侧
-  // serde 解析 usize 失败、整个 meta.yaml 判非法被内嵌默认整体重置
+  // devimp_top_n 用 isSafeInteger 而非 isInteger：超过 2^53 的"整数"（如 1e21）会让
+  // daemon 侧 serde 解析 usize 失败、整个 meta.yaml 判非法被内嵌默认整体重置
   if (
     'devimp_top_n' in values &&
     (typeof values.devimp_top_n !== 'number' ||
@@ -275,7 +269,7 @@ export function validateFieldValue(
 /**
  * 顶层行替换：仅匹配缩进为 0 的 `键: 值` 行，保留键名大小写、分隔空白与行内注释；
  * 原值带引号时统一渲染为双引号（daemon 只做去引号比较，两种写法都合法）。
- * 返回 null 表示未找到该字段（调用方应放弃写入，而不是整文件重排）。
+ * 返回 null = 未找到该字段，调用方应放弃写入而不是整文件重排。
  */
 export function replaceTopLevelField(
   content: string,
@@ -288,7 +282,8 @@ export function replaceTopLevelField(
     const line = lines[i]
     const trimmed = line.trimStart()
     if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('-')) continue
-    if (line.length !== trimmed.length) continue // 仅顶层
+    // 仅匹配顶层：缩进非 0 的行跳过
+    if (line.length !== trimmed.length) continue
     const m = /^([^:\s#]+)(\s*:\s*)(.*)$/.exec(trimmed)
     if (!m || m[1].toLowerCase() !== want) continue
 
@@ -331,8 +326,8 @@ export function utf8ToBase64(input: string): string {
 
 /**
  * 单次读-改-写事务：一次写入完成所有字段改动（每次写入都会触发 daemon 全量热重载，
- * 且 tmp+rename 会产生两个 inotify 事件，故绝不做多次写入）。
- * 临时文件后缀固定为 `.webui.tmp`，与 daemon 自身的 `<name>.tmp` 区分，避免互踩。
+ * 且 tmp+rename 会产生两个 inotify 事件，绝不做多次写入）。临时文件后缀固定为
+ * `.webui.tmp`，与 daemon 自身的 `<name>.tmp` 区分，避免互踩。
  */
 export async function writeMetaFields(
   patch: Partial<Record<WritableField, string | boolean | number>>
@@ -359,7 +354,6 @@ export async function writeMetaFields(
     const value = patch[key] as string | boolean | number
     let next = replaceTopLevelField(content, key, value)
     if (next === null) {
-      // 字段缺失本身合法（缺省 = 沿用内嵌默认，daemon 侧同语义）：直接补在文件尾
       next = appendTopLevelField(content, key, value)
     }
     content = next
@@ -368,7 +362,6 @@ export async function writeMetaFields(
   const path = snapshot.value.path
   const tmp = `${path}.webui.tmp`
   const b64 = utf8ToBase64(content)
-  // 先写同目录临时文件再原子替换：避免守护进程 inotify 读到半截内容
   const cmd =
     `printf '%s' ${shQuote(b64)} | base64 -d > ${shQuote(tmp)} && ` +
     `mv -f ${shQuote(tmp)} ${shQuote(path)} || { rm -f ${shQuote(tmp)}; exit 1; }`
@@ -380,6 +373,6 @@ export async function writeMetaFields(
     return failed<MetaSnapshot>(e instanceof Error ? e.message : String(e))
   }
 
-  // 写后回读：daemon 可能已用内嵌默认覆盖（此时界面必须呈现实际值而非期望值）
+  // 写后回读：daemon 可能已用内嵌默认覆盖，界面必须呈现实际值而非期望值
   return readMeta()
 }

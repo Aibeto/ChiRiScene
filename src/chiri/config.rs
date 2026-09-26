@@ -9,8 +9,7 @@ use crate::i18n::t_with_args;
 /// 全局元信息段（对应 meta.yaml 顶层字段）
 // [meta]
 
-/// 把 meta 覆盖值应用到生效配置：**None = 文件里没写该键 → 不改动**（沿用内嵌默认），
-/// 与 common.rs::ExternalMetaOverrides 的「缺省 = 不变更」语义一致。
+/// 把 meta 覆盖值应用到生效配置：**None = 文件里没写该键 → 不改动**（沿用内嵌默认），语义同 common.rs::ExternalMetaOverrides。
 fn apply_meta_overrides(meta: &mut Meta, o: &crate::common::ExternalMetaOverrides) {
     if let Some(v) = &o.loglevel {
         meta.loglevel = v.clone();
@@ -21,9 +20,8 @@ fn apply_meta_overrides(meta: &mut Meta, o: &crate::common::ExternalMetaOverride
     if let Some(v) = o.dev_record {
         meta.dev_record = v;
     }
-    // devimp_top_n 无 meta.yaml 模板载体（模板刻意不写、走代码缺省）：「没写」必须
-    // 回到代码缺省 10——Meta 的 derive Default 给的是 0，不能沿用（0/超限最终由
-    // Meta::normalize 钳到 1..=64，这里只保证「缺省 = 10」的口径）
+    // devimp_top_n 无 meta.yaml 模板载体（模板刻意不写、走代码缺省）：不能沿用
+    // derive Default 的 0，必须回缺省 10（0/超限最终由 Meta::normalize 钳到 1..=64）
     meta.devimp_top_n = o.devimp_top_n.unwrap_or_else(d_devimp_top_n);
     if let Some(v) = o.fas_enabled {
         meta.fas_enabled = v;
@@ -82,55 +80,47 @@ pub struct Meta {
     pub language: String,
 
     /// 开发记录开关：true 时向 devimp/ 写双诊断文件——main_<前台包名>_<MMDD-HHmmss>.log
-    /// 主诊断（tick/snap/event 行）与 aff_<MMDD-HHmmss>.log 线程流（@A 动作帧 +
-    /// @S 每秒快照帧），供离线分析改善调度。
-    /// meta 段中允许外部修改的字段之一（WebUI 开关，热重载生效）。
+    /// 主诊断（tick/snap/event 行）与 aff_<MMDD-HHmmss>.log 线程流（@A 动作帧 + @S 快照帧），
+    /// 供离线分析改善调度。meta 段允许外部修改的字段之一（WebUI 开关，热重载生效）。
     #[serde(default, alias = "DevRecord")]
     pub dev_record: bool,
 
-    /// 快照 top-N 进程数（meta.yaml `devimp_top_n`，缺省 10，0 不合法会被 clamp）：
-    /// aff_* 的 `@S` 每秒快照帧按 util 降序落盘的进程行数；前台树与被管进程不受
-    /// N 截断、恒定落盘。`Meta::normalize` 钳到 1..=64（0 → 1）。
+    /// 快照 top-N 进程数（meta.yaml `devimp_top_n`，缺省 10）：aff_* 的 `@S` 每秒快照帧
+    /// 按 util 降序落盘的进程行数（前台树与被管进程不受截断）；钳到 1..=64（0 → 1）。
     #[serde(default = "d_devimp_top_n", alias = "DevimpTopN")]
     pub devimp_top_n: usize,
 
-    /// FAS 帧感知调度总开关：关闭后 fas_available() 恒为 false（determine_mode
-    /// 不再产生 fas 模式、FAS 监测线程不启动、运行中实例立即注销）。
-    /// meta 段允许外部修改的字段之一（手改 meta.yaml 后热重载生效）。
+    /// FAS 帧感知调度总开关（缺省 true）：关闭后 fas_available() 恒为 false——不再
+    /// 产生 fas 模式、FAS 监测线程不启动、运行中实例立即注销。meta 段可外部修改（热重载生效）。
     #[serde(default = "crate::utils::default_true", alias = "FasEnabled")]
     pub fas_enabled: bool,
 
-    /// 息屏场景模式总开关：关闭后息屏不进入 scenemode（已激活的下个 tick 退出
-    /// 并恢复 affinity/core_ctl 快照 + doze 配置）。
-    /// meta 段允许外部修改的字段之一（手改 meta.yaml 后热重载生效）。
+    /// 息屏场景模式总开关（缺省 true）：关闭后息屏不进入 scenemode（已激活的下个
+    /// tick 退出并恢复 affinity/core_ctl 快照 + doze 配置）。meta 段可外部修改（热重载生效）。
     #[serde(default = "crate::utils::default_true", alias = "ScenemodeEnabled")]
     pub scenemode_enabled: bool,
 
-    /// 线程摆放总闸（meta.yaml `thread_bind`）：**实验室 frozen 专用机制**——用户侧
-    /// 开关已移除（线程功能默认常开），仅 frozen 实验室模式会把它写为 false 以交还
-    /// 线程亲和/绑核与 core_ctl。与 feature.yaml 的 `Affinity.enabled` / `CoreCtl.enabled`
-    /// 取「与」，合并在 Config::load 完成，下游只看那两个子开关。
+    /// 线程摆放总闸（meta.yaml `thread_bind`，缺省 true）：**实验室 frozen 专用机制**——
+    /// 用户侧开关已移除（线程功能默认常开），仅 frozen 实验室模式写 false 以交还
+    /// 线程亲和/绑核与 core_ctl；与 `Affinity.enabled` / `CoreCtl.enabled` 取「与」（Config::load 合并，下游只看子开关）。
     #[serde(default = "crate::utils::default_true", alias = "ThreadBind")]
     pub thread_bind: bool,
 
     /// PowerBase 总开关（meta.yaml `powerbase_enabled`，**高级设置，默认关闭**）：
-    /// 开启后原本由 CLG 接管的场合（reduce / default / boost）改由 PowerBase 接管——
-    /// 以**放电功耗**为指标调频，而不是像 CLG 那样只看利用率。
-    /// FAS / 场景特调 / DOWN 停摆 / 实验室的启停判据一律不受影响（PowerBase 只替换 CLG）。
+    /// 开启后 reduce / default / boost 原由 CLG 接管的场合改由 PowerBase 接管——以
+    /// **放电功耗**为指标调频（CLG 只看利用率）；FAS / 场景特调 / DOWN 停摆 / 实验室判据不受影响。
     #[serde(default, alias = "PowerbaseEnabled")]
     pub powerbase_enabled: bool,
 
-    /// 功耗口径开关（meta.yaml `power_avg`，默认 false = 参考值）：控制 1s 状态
-    /// 采样写模块根 `PowerAVG.chr` 的口径——false 写参考值（(旧值 × 10 + 新值) / 11
-    /// 递推，偏历史，含息屏样本）；true 写累计平均值（(旧值 × 次数 + 新值) / (次数 + 1)，
-    /// 等权全史，**仅亮屏**放电样本）。两者都只在电池放电时取样。
-    /// 热重载即时生效；仅 ChiRi 有 1s 状态采样，非 ChiRi 无效。
+    /// 功耗口径开关（meta.yaml `power_avg`，默认 false = 参考值）：控制 1s 状态采样写
+    /// 模块根 `PowerAVG.chr` 的口径——false 写参考值（(旧值 × 10 + 新值) / 11 递推，
+    /// 偏历史，含息屏样本）；true 写累计平均（(旧值 × 次数 + 新值) / (次数 + 1)，
+    /// 等权全史，仅亮屏）。均只取放电样本；热重载即时生效，仅 ChiRi 有 1s 采样。
     #[serde(default, alias = "PowerAvg")]
     pub power_avg: bool,
 
     /// 息屏判定值（meta.yaml `screen_off_value`，缺省 1）：debug.tracing.screen_state
-    /// 属性等于该值视为息屏。高级设置可改；安装脚本会按安装期属性实测值自动校正。
-    /// Config::load 同步到 common::SCREEN_OFF_VALUE，屏幕检测只读原子量。
+    /// 属性等于该值视为息屏（高级设置；安装脚本按安装期实测自动校正）；Config::load 同步到 common::SCREEN_OFF_VALUE。
     #[serde(default = "default_screen_off_value", alias = "ScreenOffValue")]
     pub screen_off_value: u32,
 
@@ -178,8 +168,7 @@ pub struct Meta {
     pub current_divisor: f32,
 
     /// 「不改」开关（meta.yaml 可选字段 `nofix`，默认 false，默认不写进配置）：
-    /// true = 启动时跳过「二进制内容对外部文件的覆盖类操作」（webui 资产还原与
-    /// meta.yaml 快照自愈），见 src/common.rs::read_nofix_flag 与 src/webui_asset.rs。
+    /// true = 启动时跳过二进制对外部文件的覆盖类操作（webui 资产还原 + meta.yaml 快照自愈，见 common.rs::read_nofix_flag）。
     #[serde(default, alias = "NoFix")]
     pub nofix: bool,
 }
@@ -201,16 +190,14 @@ fn default_screen_off_value() -> u32 {
 }
 
 impl Meta {
-    /// 校验并规范化 meta 段（Config::load 各段 normalize 统一口径）：
-    /// `devimp_top_n` 钳到 1..=64——0（未配置的 derive 默认/手写 0）与超限值
-    /// 都不合法，clamp 后使用（0 → 1、>64 → 64），不判整个文件非法。
+    /// 校验并规范化 meta 段（与 Config::load 各段 normalize 统一口径）：`devimp_top_n`
+    /// 钳到 1..=64（0 → 1、>64 → 64），不判整个文件非法。
     pub fn normalize(&mut self) {
         self.devimp_top_n = self.devimp_top_n.clamp(1, 64);
     }
 }
 
 // [clg_config]
-// CPU Load Governor 配置
 /// CLG（CPU Load Governor）调频参数。
 /// 所有性能比/阈值均为 0.0~1.0 的相对值，`perf_init/perf_floor/perf_ceil` 再换算成最近频率档位。
 #[derive(Debug, Deserialize, Clone)]
@@ -227,11 +214,9 @@ pub struct CpuLoadGovernorConfig {
     /// 升频平滑系数：每 tick 目标性能只逼近该比例，越大响应越快，越小越省电
     #[serde(default = "d_clg_smooth_up")]
     pub smoothing_up: f32,
-    /// 决策负载平滑（EMA 系数，1.0=关闭，语义同 tuned 的 util_smoothing）：抖动负载下
-    /// target_perf 每 tick 大幅摆动 → 决策方向反复翻转、scaling_max_freq 高频改写
-    /// （2026-09-22 8550 QQ 场景日志回放：大核 2048 tick 方向反转 458 次；α=0.5
-    /// 后反转 194 次、写频降约三成）。日常/省电档建议 0.5，性能档保持 1.0。
-    /// 注意：0 = 负载冻结在首个采样值、决策不再跟随负载，勿设 0。
+    /// 决策负载平滑（EMA 系数，1.0=关闭，语义同 tuned 的 util_smoothing）：不平滑时
+    /// 抖动负载会导致决策方向反复翻转、scaling_max_freq 高频改写。日常/省电档建议 0.5，
+    /// 性能档保持 1.0。注意：0 = 负载冻结在首个采样值、决策不再跟随负载，勿设 0。
     #[serde(default = "d_clg_util_smooth")]
     pub util_smoothing: f32,
     /// 降频速率限制：必须连续满足 down_wait >= 该 tick 数才执行一次降频。
@@ -254,10 +239,8 @@ pub struct CpuLoadGovernorConfig {
     /// 性能上限：目标性能永不超过此值（锁频上限的百分比）
     #[serde(default = "d_clg_ceil")]
     pub perf_ceil: f32,
-    /// 按核心组的参数覆盖（键：little / big / prime，大小写敏感）。
-    /// CLG 原本三簇共用同一份参数，而日常负载下三簇形态差很多（8550 实测：util
-    /// little 0.55 / big 0.36 / prime 0.32，但上限都被尖峰顶到 100%）——一刀切只能
-    /// 取「最松的那簇」能接受的上限。未列出的组与字段回退模式级同名参数，
+    /// 按核心组的参数覆盖（键：little / big / prime，大小写敏感）：三簇负载形态差异大，
+    /// 一刀切只能取「最松的那簇」能接受的上限。未列出的组与字段回退模式级同名参数，
     /// **不配置就与加这个字段之前逐位一致**。
     #[serde(default)]
     pub per_cluster: HashMap<String, ClgClusterOverride>,
@@ -291,11 +274,9 @@ pub struct CpuLoadGovernorConfig {
     #[serde(default = "d_clg_touch_boost_tiers")]
     pub touch_boost_tiers: u32,
     // [dwell] 写频决策层滞回（Phase 2）：最小驻留 + 死区
-    /// 写频最小驻留（ms）+ 方向翻摆滞回：距上次实际写频不足该时长且本次写频方向
-    /// 与上次相反（翻摆）时延迟写，到期后的下一次 flush 补写当前 target。
-    /// 缺省 320ms ≈ 2 个负载 tick（ChiRi 采样 160ms；特调侧同名参数 80ms）。
-    /// 豁免路径（触摸 floor 提频 / 极低负载立即降频 / 写失败防篡改补写）不经滞回
-    /// 立即写；热保护 clamp 不豁免（温度毛刺不得绕过滞回直写频率）。
+    /// 写频最小驻留（ms）+ 方向翻摆滞回：距上次实际写频不足该时长且方向相反（翻摆）
+    /// 时延迟写、下次 flush 补写。缺省 320ms ≈ 2 个负载 tick（ChiRi 160ms 采样；特调侧 80ms）。
+    /// 豁免路径（触摸提频 / 极低负载立即降频 / 写失败补写）不经滞回；热保护 clamp 不豁免。
     #[serde(default = "d_clg_write_dwell_ms")]
     pub write_dwell_ms: u64,
     /// 写频死区（比例，占硬件最高频）：|target−current| 小于该阈值不写，防相邻
@@ -369,8 +350,7 @@ fn d_clg_write_deadzone() -> f32 {
 }
 
 /// 按核心组的参数覆盖（CLG `per_cluster` 段的元素）：只覆盖最常用的五个量
-/// （阈值 / 余量 / 上下限），其余沿用模式级——字段越多越难调，这五个足够
-/// 表达「little 压狠点、prime 压狠点、big 放开」这类诉求。
+/// （阈值 / 余量 / 上下限），其余沿用模式级。
 #[derive(Debug, Deserialize, Clone, Default)]
 pub struct ClgClusterOverride {
     pub up_threshold: Option<f32>,
@@ -538,10 +518,9 @@ impl CpuLoadGovernorConfig {
         }
     }
 
-    /// 取某个核心组的**有效参数**：以模式级参数为底，套上 `per_cluster` 覆盖后
-    /// 再走一遍同样的交叉约束（floor/ceil 顺序、perf_init 落在区间内）。
-    /// 未配置该组时返回自身克隆（与加 per_cluster 之前逐位一致）。
-    /// Worker 侧继续按单一 `self.cfg` 使用，不需要感知覆盖的存在。
+    /// 取某个核心组的**有效参数**：以模式级参数为底，套 `per_cluster` 覆盖后再走一遍
+    /// 交叉约束（floor/ceil 顺序、perf_init 落在区间内）。未配置该组时返回自身克隆
+    /// （与加 per_cluster 之前逐位一致）；Worker 侧按单一 `self.cfg` 使用，无需感知覆盖。
     pub fn effective(&self, cluster: &str) -> CpuLoadGovernorConfig {
         let mut c = self.clone();
         let Some(ov) = self.per_cluster.get(cluster) else {
@@ -642,12 +621,10 @@ pub struct FunctionToggles {
     pub io_optimization: bool,
 }
 
-/// 明日方舟特调（akmode）配置，跟 CLG 完全没关系。
+/// 明日方舟特调（akmode）配置，与 CLG 完全解耦。
 /// **无档位**：不做模式分档，按各核心组实时负载直接移动 scaling_max_freq 上限
-/// （FAS 式连续控制，替代原四档 core-count 阈值——后者在「少数线程高占用」负载
-/// （如明日方舟资源校验）下升频条件永远凑不齐、降频条件持续满足，max 单边下探）。
-/// 机制：激活时统一内核调速器为 schedutil、min 压到硬件最低；之后每个负载 tick
-/// 计算目标上限比例 = clamp(组内最大核心占用率 × headroom, perf_floor, 1.0)：
+/// （FAS 式连续控制）。机制：激活时统一内核调速器为 schedutil、min 压到硬件最低；
+/// 之后每个负载 tick 目标上限比例 = clamp(组内最大核心占用率 × headroom, perf_floor, 1.0)：
 ///   升：目标 > 当前上限 + hysteresis → 立即上调（schedutil 在新上限内自由取频）；
 ///   降：目标 < 当前上限 − hysteresis 且持续 down_hold_ms → 上限收到目标档位。
 // [ak_config]
@@ -668,31 +645,26 @@ pub struct SpecialTunedConfig {
     #[serde(default = "d_ak_down_hold_ms")]
     pub down_hold_ms: u64,
     /// 是否走 boost 类亲和（cpuset 收窄到 big+prime + core_ctl 保大核常在线）。
-    /// 游戏特调 true（保响应、防热插拔打架）；视频/轻载省电特调 false——
-    /// 保大核常在线与「贴负载降频」的省电目标相反（空转漏电），且会把
-    /// 视频解码线程钉到大核组被低上限压住。
+    /// 游戏特调 true（保响应、防热插拔打架）；视频/轻载省电特调 false——保大核常在线
+    /// 与「贴负载降频」的省电目标相反（空转漏电、解码线程被低上限压住）。
     #[serde(default = "crate::utils::default_true")]
     pub boost_affinity: bool,
-    /// 决策负载的 EMA 平滑系数（0.05~1.0）：1.0 = 不平滑（游戏默认，瞬时升频
-    /// 是响应性的一部分）；< 1 时 util = α×瞬时 + (1-α)×上次。抖动负载下
-    /// 瞬时尖峰会经「升频立即执行」把上限反复推高（2026-09-17 日志回放证实
-    /// 其上限均值反而高于带平滑的 CLG），视频/轻载用 0.3~0.5 滤掉尖峰。
+    /// 决策负载的 EMA 平滑系数（0.05~1.0）：1.0 = 不平滑（游戏默认，瞬时升频是
+    /// 响应性的一部分）；< 1 时 util = α×瞬时 + (1-α)×上次，滤掉瞬时尖峰、防止上限
+    /// 被「升频立即执行」反复推高。视频/轻载用 0.3~0.5。
     #[serde(default = "d_ak_util_smoothing")]
     pub util_smoothing: f32,
-    /// 性能比例**天花板**（0..1）：目标比例的上限钳制。CLG 有同名参数，tuned 原本
-    /// 只有 floor 没有 ceil——缺它就无法单独压某个核心组的频率上限（8550 视频实测
-    /// 需要压 little/prime、放开 big）。1.0 = 不设天花板（与加该字段前完全一致）。
+    /// 性能比例**天花板**（0..1）：目标比例的上限钳制（CLG 有同名参数；缺它无法
+    /// 单独压某组频率上限）。1.0 = 不设天花板（与加该字段前完全一致）。
     #[serde(default = "d_ak_perf_ceil")]
     pub perf_ceil: f32,
-    /// 按核心组的参数覆盖（键：little / big / prime，大小写敏感）。
-    /// 三个簇的负载形态往往完全不同（8550 视频实测：little 过载、big 合理、prime
-    /// 空转却被尖峰顶到 84%），模式级一刀切必然顾此失彼。未列出的组、或组内未列出
-    /// 的字段，一律回退模式级同名参数——**不给配置就与旧行为逐位一致**。
+    /// 按核心组的参数覆盖（键：little / big / prime，大小写敏感）：三簇负载形态往往
+    /// 完全不同，模式级一刀切顾此失彼。未列出的组/字段一律回退模式级同名参数——
+    /// **不给配置就与旧行为逐位一致**。
     #[serde(default)]
     pub per_cluster: HashMap<String, ClusterTunedOverride>,
-    /// 接管期间写入 `/proc/sys/kernel/sched_migration_cost_ns`（None = 完全不动）。
-    /// 稳态负载（视频播放）下该值偏小会让调度器频繁跨核搬迁（8550 实测 ≈557 次/s），
-    /// 调高可减无谓迁移与 cache 失效；release 时按快照恢复，不污染其它场景。
+    /// 接管期间写入 `/proc/sys/kernel/sched_migration_cost_ns`（None = 完全不动）：
+    /// 偏小会让调度器频繁跨核搬迁，调高可减无谓迁移与 cache 失效；release 按快照恢复。
     #[serde(default)]
     pub migration_cost_ns: Option<u64>,
     // [dwell] 写频决策层滞回（Phase 2，与 CLG 同口径）
@@ -808,7 +780,6 @@ impl SpecialTunedConfig {
             self.headroom = d_ak_headroom();
         }
         // 下限放到 0.5：<1.0 是**收紧**（省电方向），1.0 = 原样，>1.0 = 放大留余量。
-        // 原先写死下限 1.0 会把任何收紧型配置静默抬回 1.0，等于该参数在省电方向失效。
         self.headroom = self.headroom.clamp(0.5, 2.0);
         if !self.perf_floor.is_finite() {
             self.perf_floor = d_ak_perf_floor();
@@ -878,21 +849,14 @@ impl SpecialTunedConfig {
 }
 
 // [thermal_config]
-// 热保护配置
 
 /// 热保护配置（feature.yaml `Thermal` 段）。
-///
-/// 双温度源取较小值：
-/// - 电池温度是主参考——手机壳体发热由电池主导，温升慢但持续，不像 CPU 瞬间飙高又回落
-/// - CPU 温度仅在极端情况参与——大型游戏里 CPU 温度由内核 95°C 温控兜底，
-///   软件层重复压制没意义，阈值设得很高（75/85°C）只防内核兜不住的极端场景
-///
-/// 豁免档 free_above：仅在 `clamp_heavy=false`（重钳关闭）时生效——当前性能上限
-/// 已高于豁免档时不钳制，持续高负载可冲到硬件最高频。`clamp_heavy=true`（默认）时
-/// cap 窗口内对所有簇恒钳写频目标（不回写 current_perf，窗口解除即恢复全速）。
-///
-/// 仅对 CLG 接管模式生效（reduce/default/boost/doze/scenemode）。
-/// vector/akmode 走自己的路径，不受影响。
+/// 双温度源取较小值：电池温度是主参考（壳体发热由电池主导，温升慢但持续）；CPU 温度
+/// 仅在极端情况参与——内核 95°C 温控已兜底，软件层阈值设得很高（90/95°C）只防极端场景。
+/// 豁免档 free_above 仅在 `clamp_heavy=false`（重钳关闭）时生效：当前性能上限已高于
+/// 豁免档时不钳制，持续高负载可冲到硬件最高频；`clamp_heavy=true`（默认）时 cap 窗口
+/// 内对所有簇恒钳写频目标（不回写 current_perf，窗口解除即恢复全速）。
+/// 仅对 CLG 接管模式生效（reduce/default/boost/doze/scenemode）；vector/akmode 不受影响。
 #[derive(Debug, Deserialize, Clone)]
 pub struct ThermalGuardConfig {
     /// false = 完全不采温、不压制
@@ -904,10 +868,10 @@ pub struct ThermalGuardConfig {
     /// 电池硬限（°C）：默认 45°C，手握明显发烫
     #[serde(default = "d_batt_hard_temp")]
     pub batt_hard_temp_c: f32,
-    /// CPU 软限（°C）：默认 75°C，一般游戏不会到这里（内核 95°C 才兜底）
+    /// CPU 软限（°C）：默认 90°C，一般游戏不会到这里（内核 95°C 才兜底）
     #[serde(default = "d_cpu_soft_temp")]
     pub cpu_soft_temp_c: f32,
-    /// CPU 硬限（°C）：默认 85°C，极端情况才触发
+    /// CPU 硬限（°C）：默认 95°C，极端情况才触发
     #[serde(default = "d_cpu_hard_temp")]
     pub cpu_hard_temp_c: f32,
     /// 软限触发后性能上限压到这个比例（0..1）
@@ -920,29 +884,24 @@ pub struct ThermalGuardConfig {
     /// 意味着 sustained load 能冲到 80%+ 硬件频率，只在中低负载积热时压住
     #[serde(default = "d_thermal_free_above")]
     pub free_above: f32,
-    /// 重钳开关（serde 默认 true）：cap 窗口内对**所有簇**恒钳写频目标，窗口解除
-    /// 立即恢复全速；false = 回退旧豁免行为（current_perf >= free_above 的簇不钳制，
-    /// 此时 free_above 生效）。只决定钳制形态，不改 cap 计算与温度判定。
-    /// 由 `Config::load` 同步到 CLG 层原子量（`cpu_load_governor::set_clamp_heavy`），
-    /// 热重载即时生效；老配置文件缺该键时行为 = true。
+    /// 重钳开关（默认 true，老配置缺该键亦 = true）：cap 窗口内对**所有簇**恒钳写频
+    /// 目标、窗口解除立即恢复全速；false = 回退旧豁免行为（current_perf >= free_above
+    /// 的簇不钳制，此时 free_above 生效）。只决定钳制形态，不改 cap 计算与温度判定；
+    /// Config::load 同步到 CLG 层原子量，热重载即时生效。
     #[serde(default = "crate::utils::default_true")]
     pub clamp_heavy: bool,
     /// 回滞（°C）：温度降到 软限 - hysteresis 以下才解除压制。
     /// 设太小会在阈值附近反复触发/解除，频率抖动
     #[serde(default = "d_thermal_hysteresis")]
     pub hysteresis_c: f32,
-    /// CPU 温度 thermal zone type 匹配名单（对 /sys/class/thermal 的 zone type
-    /// 做 contains 匹配，见 utils::find_cpu_temp_path）。默认 = 内置混合名单
-    /// （高通 soc_max/cpuss + MTK mtktscpu/cpu-1-/cpu-0-0-usr），**所有 SoC 的
-    /// feature.yaml 都不必写、行为不变**；个别 SoC 需增删探测节点时用本字段覆盖
-    /// （per-SoC 外挂，不影响其它平台）。Config::load 时同步到 utils 静态缓存。
-    ///
-    /// 语义：`soc_max` 是真机 DTB 的 virtual-sensor 聚合温区（多传感器取 max，
-    /// 保守值、非纯 CPU 温度）；`cpuss*` 是 cluster 级 tsens 单传感器
-    /// （cpuss0-3），作 soc_max 缺失时的回退。匹配按名单序分层扫描（外层
-    /// 名单项、内层 zones，第一个命中项胜出，utils::find_cpu_temp_path），
-    /// 保证 soc_max 优先于 cpuss。依据内核分析
-    /// `.archive/.cursor/docs/kernel-analysis/04-thermal.md`。
+    /// CPU 温度 thermal zone type 匹配名单（对 /sys/class/thermal 的 zone type 做
+    /// contains 匹配，见 utils::find_cpu_temp_path）。默认 = 内置混合名单（高通
+    /// soc_max/cpuss + MTK mtktscpu/cpu-1-/cpu-0-0-usr），**所有 SoC 的 feature.yaml
+    /// 都不必写、行为不变**；个别 SoC 需增删探测节点时用本字段覆盖。Config::load
+    /// 同步到 utils 静态缓存。语义：`soc_max` 是 DTB virtual-sensor 聚合温区（多
+    /// 传感器取 max，保守值、非纯 CPU 温度）；`cpuss*` 是 cluster 级 tsens 单传感器，
+    /// 作 soc_max 缺失时的回退。匹配按名单序分层扫描（外层名单项、内层 zones，
+    /// 首个命中项胜出），保证 soc_max 优先于 cpuss。
     #[serde(default = "crate::utils::default_cpu_temp_zone_types")]
     pub cpu_temp_zone_types: Vec<String>,
 }
@@ -1075,16 +1034,14 @@ pub struct AffinityConfig {
     pub pin_foreground_threads: bool,
     /// 后台分组（background / restricted）的 cpu.uclamp.max 百分比（0 = 不启用）：
     /// 把后台任务的 util 需求钳低（50 = 512），EAS 放置与 schedutil 频率随之回落——
-    /// 后台**不禁止使用任何核心**（空闲时仍会被调度上去），只是权重压低、优先落
-    /// 小核，给 UI/视频等视觉可感的线程让路。normal/boost 两态都持续生效。
-    /// **不含 system-background**：系统后台含媒体/音频等服务（画中画、后台播放
-    /// 等可感知场景），保守跳过；节点缺失/写入无效时静默跳过。
+    /// 后台**不禁止使用任何核心**（空闲时仍会被调度上去），只是权重压低、优先落小核，
+    /// 给 UI/视频等线程让路；normal/boost 两态持续生效。**不含 system-background**
+    /// （系统后台含媒体/音频等可感知服务，保守跳过）；节点缺失/写入无效时静默跳过。
     #[serde(default = "d_aff_bg_uclamp_max")]
     pub background_uclamp_max_pct: u32,
-    /// normal（非 boost）模式下把 top-app/foreground 组掩码剔除 little：
-    /// A510 能效差且 DT 能耗模型低估其真实能耗，EAS 会把 64 位前台线程吸进
-    /// little；cpuset 收窄后 32 位任务的允许核交集由内核兜底（big 内 A710 仍在
-    /// 掩码内）。每 2s 周期纠偏（框架可能把核加回）。默认 false = 保持系统布局。
+    /// normal（非 boost）模式下把 top-app/foreground 组掩码剔除 little：A510 能效差
+    /// 且 DT 能耗模型低估其能耗，EAS 会把 64 位前台线程吸进 little；32 位任务允许核
+    /// 交集由内核兜底。每 2s 周期纠偏（框架可能把核加回）。默认 false = 保持系统布局。
     /// TODO: 待内核信息（32 位核位图 / A710 核位）针对化后决定开启。
     #[serde(default)]
     pub normal_fg_exclude_little: bool,
@@ -1131,14 +1088,9 @@ pub struct CoreCtlConfig {
     /// 总开关：false 时不写任何 core_ctl 节点
     #[serde(default = "crate::utils::default_true")]
     pub enabled: bool,
-    /// scenemode 离线核（息屏深度省电）：进入 scenemode 后仅 prime（超大核）
-    /// 整簇断电消除空转漏电流，小核 + 大核全开常驻（频率上限由 scenemode CLG
-    /// 配置压制）；编号最大的小核独占给调度服务（从业务 cpuset 组移除 + 自身
-    /// 线程移入根组 + 自钉）。亮屏/退出 scenemode 按快照恢复。逐核回读验证，
-    /// 内核拒绝的核自动跳过。
-    /// 【已停用（2026-09-17）】stardust 家族（scenemode；down 是独立家族）语义改为「停线程迁移 +
-    /// 全部 cpuset 恢复全核 + 仅压频」，不再做 prime 整簇下线。字段仅为兼容旧机型
-    /// yaml 保留（deny 解析需要），改值无效果。
+    /// scenemode 离线核（息屏深度省电）。【已停用】stardust 家族（scenemode；down
+    /// 是独立家族）语义已改为「停线程迁移 + 全部 cpuset 恢复全核 + 仅压频」，不再做
+    /// prime 整簇下线；字段仅为兼容旧机型 yaml 保留（deny 解析需要），改值无效果。
     #[serde(default = "crate::utils::default_true")]
     #[allow(dead_code)]
     pub scenemode_offline: bool,
@@ -1268,8 +1220,7 @@ pub struct Config {
     #[serde(default)]
     pub powerbase: PowerBaseConfig,
     /// 息屏场景模式（scenemode）：屏幕熄灭超过 `scene_mode_delay_secs` 秒后切换到的
-    /// 低功耗配置（压低频率上限、禁止主动升频），亮屏后恢复原模式。
-    /// 未定义时回退 CLG 默认参数（兜底，通常 8550 feature.yaml 会显式配置）。
+    /// 低功耗配置（压低频率上限、禁止主动升频），亮屏后恢复原模式；未定义时回退 CLG 默认参数。
     #[serde(default)]
     pub scenemode: Mode,
     /// 息屏进入 scenemode 的延迟（秒）：默认 300s（5 分钟），YAML 可覆盖
@@ -1277,22 +1228,20 @@ pub struct Config {
     pub scene_mode_delay_secs: u64,
 
     /// 热保护配置：按 CPU 温度动态压低 CLG 性能上限（采样在 scheduler_ipc 线程）。
-    /// 省略该段时用代码默认值（enabled=true，软限 60°C/硬限 70°C）。
+    /// 省略该段时用代码默认值（enabled=true，温度阈值见 ThermalGuardConfig 各缺省值）。
     #[serde(default, rename = "Thermal")]
     pub thermal: ThermalGuardConfig,
 
-    /// 特调缺省参数段（`akmode`，明日方舟特调）：来自嵌入的
-    /// config/normal/tuned_profiles.yaml（编译期打包，非处理器绑定；
-    /// 原 {soc}/akmode.yaml 方案已随 4cb4d97 重构移除），与 CLG 完全解耦。
-    /// 前台为白名单应用时由 TunedGovernor 接管，参数不再走 CLG；
+    /// 特调缺省参数段（`akmode`，明日方舟特调）：来自嵌入的 config/normal/tuned_profiles.yaml
+    /// （编译期打包，非处理器绑定），与 CLG 完全解耦。
+    /// 前台为白名单应用时由 TunedGovernor 接管，参数不走 CLG；
     /// 同时充当 tuned_profiles 里未注册模式名的回退参数。
     #[serde(default)]
     pub akmode: SpecialTunedConfig,
 
-    /// 特调参数组：按特调模式名分派（模式名在 special_tuned.yaml 的模式列表中注册）。
-    /// 同一份 tuned_profiles.yaml 的 `tuned_profiles:` 段；未注册的模式回退 `akmode` 段。
-    /// 全部特调共用 TunedGovernor 的连续控制机制，差别只在参数
-    /// （playback 视频稳态 / daily 交互轻载 / …）。
+    /// 特调参数组：按特调模式名分派（模式名在 special_tuned.yaml 的模式列表中注册），
+    /// 即同一份 tuned_profiles.yaml 的 `tuned_profiles:` 段；未注册的模式回退 `akmode` 段。
+    /// 全部特调共用 TunedGovernor 连续控制机制，差别只在参数（playback 视频稳态 / daily 交互轻载 / …）。
     #[serde(default)]
     pub tuned_profiles: std::collections::HashMap<String, SpecialTunedConfig>,
 
@@ -1354,8 +1303,6 @@ impl Config {
         // 周期块（2s）也会兜一次。
         // thread_bind 是实验室 frozen 专用闸（用户开关已移除、默认 true）：frozen 期间
         // 为 false，交还线程亲和/绑核与 core_ctl；其余场合恒 true 等于不干预。
-        // 热重载后由 scheduler_ipc 的 config_dirty 分支调 apply_affinity_and_corectl
-        // 落地，周期块（2s）也会兜一次。
         config.affinity.enabled &= config.meta.thread_bind;
         config.core_ctl.enabled &= config.meta.thread_bind;
         config.merge_tuned_profiles();
@@ -1398,9 +1345,8 @@ impl Config {
                     cfg.normalize();
                 }
                 crate::common::set_special_tuned_available(true);
-                // 白名单注册了模式、却没有对应参数组时会静默回退 akmode 段
-                // （游戏参数：headroom 1.15 + boost 亲和），在省电场景是反效果——
-                // 拼写错/漏配不能静默生效（akmode 本身用缺省段，跳过）
+                // 白名单注册了模式、却没有对应参数组时会静默回退 akmode 段（游戏参数在
+                // 省电场景是反效果）——拼写错/漏配不能静默生效（akmode 本身用缺省段，跳过）
                 for m in crate::common::special_tuned_mode_names() {
                     if m != "akmode" && !self.tuned_profiles.contains_key(&m) {
                         log::warn!(
@@ -1441,7 +1387,8 @@ impl Config {
         ) {
             Ok(value) => match value.get("scenemode").cloned() {
                 Some(v) => v,
-                None => return, // 嵌入文件无 scenemode 段：保持当前已配置的 scenemode
+                // 嵌入文件无 scenemode 段：保持当前已配置的 scenemode
+                None => return,
             },
             Err(e) => {
                 log::warn!(

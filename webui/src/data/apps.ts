@@ -1,8 +1,6 @@
 // apps.ts: [types] [fetch] [build] [filter]
 // 应用列表与标签合成。标签只陈述「已配置」：
-//   - 特调：包名命中 special_tuned.yaml 精确条目（正则条目 UI 不可见）
-//   - FAS：包名命中 fas_whitelist.yaml（真正是否生效取决于白名单应用配置能否解析，UI 不可知）
-//   - 模式：rules.yaml 现存 app_modes 的只读展示
+//   特调=special_tuned.yaml 精确条目（正则条目 UI 不可见）；FAS=fas_whitelist.yaml（是否生效取决于白名单能否解析）；模式=rules.yaml 现存 app_modes 的只读展示。
 import { getPackagesInfo, hasKsu, listPackages } from '@/kernel/ksu'
 import { isLive, run } from '@/kernel/shell'
 import type { SpecialTunedEntry } from './whitelists'
@@ -27,8 +25,7 @@ export interface AppTagContext {
 
 // [fetch]
 /**
- * 安装的应用（第三方）。优先 KernelSU 原生 bridge，失败回退 `pm list packages -3`；
- * 应用名获取失败时静默降级为包名（不影响主流程）。
+ * 安装的应用（第三方）。优先 KernelSU 原生 bridge，失败回退 `pm list packages -3`；应用名获取失败静默降级为包名。
  */
 export async function fetchInstalledPackages(): Promise<InstalledApp[]> {
   let pkgs: string[] = []
@@ -45,7 +42,6 @@ export async function fetchInstalledPackages(): Promise<InstalledApp[]> {
           .filter(Boolean)
       }
     } catch {
-      /* 保持空列表 */
     }
   }
 
@@ -56,7 +52,6 @@ export async function fetchInstalledPackages(): Promise<InstalledApp[]> {
         if (info.packageName && info.appLabel) labels.set(info.packageName, info.appLabel)
       }
     } catch {
-      /* 降级为包名 */
     }
   }
 

@@ -11,11 +11,9 @@ use super::fps_window::FpsWindow;
 use super::pid::{PidController, fps_norm};
 use super::policy_controller::PolicyController;
 
-// [struct] 
-// FasController — 主控制器
-//
-// 帧率档位匹配 + PID 控制
-// CPU 负载集成: core_utils 参与频率分配
+// [struct]
+// FasController — 主控制器：帧率档位匹配 + PID 控制
+// CPU 负载数据（core_utils/fg_util）由 SystemLoadUpdate 事件喂入
 
 pub struct FasController {
     pub(super) cfg: FasRulesConfig,
@@ -62,8 +60,7 @@ pub struct FasController {
 
     // 时间
     pub(super) init_time: Instant,
-    /// 上一次「防篡改强制重写」的时刻（间隔见 FasRulesConfig::freq_force_reapply_interval，
-    /// 单位秒；早期实现是帧计数器，随刷新率放大，见 policy_mgmt::apply_freqs 的注释）
+    /// 上一次「防篡改强制重写」的时刻（间隔 = FasRulesConfig::freq_force_reapply_interval 秒）
     pub(super) freq_force_timer: Instant,
 
     // 缓存
@@ -74,9 +71,8 @@ pub struct FasController {
     // 温度感知
     pub(super) current_temperature: f64,
     pub(super) temp_threshold: f64,
-    /// 温度护栏锁存：≥temp_threshold 进入、<temp_threshold-3℃ 退出。
-    /// PID 只看帧时间，感知不到内核 thermal 已在压频，热限频时继续抬频
-    /// 只会加剧发热形成正反馈（8475 终末地实测 84-96℃/7.7W avg）
+    /// 温度护栏锁存：≥temp_threshold 进入、<temp_threshold-3℃ 退出（迟滞防振荡）。
+    /// PID 只看帧时间，感知不到 thermal 压频，热限频时继续抬频会与 thermal 形成正反馈。
     pub(super) thermal_hold: bool,
 
     // [新] CPU 负载数据 — 由 SystemLoadUpdate 事件更新
@@ -94,15 +90,12 @@ pub struct FasController {
     // util_cap EMA 平滑值，防止 200ms 采样周期的滞后数据造成断崖
     pub(super) ema_fg_util: f32,
 
-    // [Jank 恢复保护] crit/heavy 后的 perf 最低值保护
-    // 防止恢复帧到来后 PID 在 2-3 帧内将 perf 从 1.0 衰减到 floor，
-    // 导致后续帧频率不足再次 jank 形成连锁掉帧
+    // [Jank 恢复保护] crit/heavy 后的 perf 地板：防恢复帧后 PID 2-3 帧内衰减到 floor 再引发连锁 jank
     pub(super) post_jank_perf_floor: f32,
     pub(super) post_jank_guard_frames: u32,
 
-    // [动态 PID] 基于 CPU 利用率的 target_fps 偏移
-    // 范围 [-3.0, 0.0]：当 CPU 利用率持续偏低时逐步降低有效 target_fps，
-    // 让 PID 少给频率，节省功耗；利用率回升时逐步恢复
+    // [动态 PID] CPU 利用率驱动的 target_fps 偏移，范围 [-3.0, 0.0]：
+    // 利用率持续偏低时逐步降低有效 target 让 PID 少给频率省电，回升时逐步恢复
     pub(super) target_fps_offset: f32,
     pub(super) util_sample_timer: Instant,
 }
@@ -168,11 +161,10 @@ impl FasController {
     /// 更新前台最重线程的 CPU 利用率
     pub fn update_cpu_util(&mut self, fg_util: f32) {
         self.foreground_max_util = fg_util;
-        // EMA smooth fg_util to prevent 200ms sampling lag causing cliff drops
         if self.ema_fg_util <= 0.001 {
             self.ema_fg_util = fg_util;
         } else {
-            // Rise fast (alpha=0.4), fall slow (alpha=0.15) to prevent transient lows from killing freq
+            // 升快降慢（alpha 0.4/0.15），防止瞬时低 util 误杀频率
             let alpha = if fg_util > self.ema_fg_util {
                 0.40
             } else {
@@ -191,17 +183,9 @@ impl FasController {
     // [helpers] 
     // 辅助方法
 
-    /// 获取有效 perf_floor —— 根据目标帧率动态抬高地板
-    /// 高刷游戏 (120/144fps) 的 budget 仅 6.9~8.3ms，perf 过低会导致
-    /// CPU 频率不足以在 budget 内渲染完一帧，任何突发负载都立刻卡顿。
-    ///
-    /// 旧公式硬顶 0.35，导致 120fps 下 perf 完全贴地运行(日志中稳态P=0.350)，
-    /// 遇到突发负载需要多帧才能爬升到足够频率，造成可感知卡顿。
-    /// 新公式: floor = base + (target_fps - 60) * 0.004, 上限 0.45
-    ///   60fps  → 0.22 (不变)
-    ///   90fps  → 0.34
-    ///   120fps → 0.40 (原 0.35，多出 5% headroom)
-    ///   144fps → 0.45 (原 0.35)
+    /// 有效 perf_floor：高刷 budget 仅 6.9~8.3ms，perf 过低时突发负载立刻卡顿，故随 target_fps 抬高。
+    /// 旧公式硬顶 0.35 使 120fps 下 perf 贴地；新公式 floor = base + (target_fps-60)*0.004，上限 0.45
+    /// （60fps→0.22、90fps→0.34、120fps→0.40、144fps→0.45）。
     pub(super) fn effective_perf_floor(&self) -> f32 {
         let base = self.cfg.perf_floor;
         let fps_bonus = ((self.current_target_fps - 60.0).max(0.0) * 0.004).min(0.25);
@@ -237,10 +221,8 @@ impl FasController {
         (1_000_000_000.0 / self.max_gear()) as u64 / 2
     }
 
-    /// 当前帧率（fps）——取 fps_window 窗口均值，与齿轮决策所用的 avg_fps
-    /// 同口径（窗口 120 帧，60fps 下约 2s）。
-    /// 供状态日志 status.csv 的 fps 列读取：FAS 未启动写 "-"，故窗口无样本
-    /// （尚未收到帧、加载退出/应用切换后已 clear）时返回 None。
+    /// 当前帧率——fps_window 窗口均值（120 帧窗口，60fps 下约 2s），与齿轮决策 avg_fps 同口径。
+    /// 供 status.csv 的 fps 列读取，窗口无样本（未收到帧/加载退出/切换后已 clear）时返回 None。
     pub fn current_fps(&self) -> Option<f32> {
         if self.fps_window.count() == 0 {
             None
@@ -257,22 +239,16 @@ impl FasController {
         self.pid.adapt_to_target_fps(self.current_target_fps);
     }
 
-    /// 基于 CPU 利用率动态偏移 target_fps
-    ///
-    /// 每秒采样一次 ema_fg_util：
-    ///   util ≤ 0.10 → 重置偏移 (可能在菜单/暂停画面)
-    ///   util ≤ 0.55 → 逐步降低 target (-0.1/s)，最多 -3fps
-    ///   util ≥ 0.65 → 逐步恢复 (+0.1/s) 至 0
-    ///
-    /// 效果：GPU bound 场景自动放宽帧率目标，减少无效拉频
+    /// 基于 CPU 利用率动态偏移 target_fps（每秒采样一次）：
+    /// util ≤ 0.10 重置偏移（可能在菜单/暂停画面）；util ≤ 0.55 逐步降低 -0.1/s、最多 -3fps；
+    /// util ≥ 0.65 逐步恢复 +0.1/s 至 0。效果：GPU bound 场景自动放宽帧率目标，减少无效拉频。
     pub(super) fn adjust_target_for_util(&mut self) {
         if self.util_sample_timer.elapsed().as_millis() < 1000 {
             return;
         }
         self.util_sample_timer = Instant::now();
 
-        // jank_cooldown 期间禁止降低 target，只允许恢复
-        // 防止刚从团战卡顿恢复，util 还没爬满就又把目标降下去
+        // jank_cooldown 期间禁止降低 target（只允许恢复），防止刚从卡顿恢复、util 未爬满就又降目标
         let allow_decrease = self.jank_cooldown == 0 && self.jank_streak == 0;
 
         let util = self.ema_fg_util;

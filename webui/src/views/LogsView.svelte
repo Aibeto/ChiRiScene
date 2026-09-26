@@ -1,7 +1,6 @@
 <script lang="ts">
   // LogsView.svelte: [source] [terminal] [snapshot]
-  // 两类数据源都只读尾部窗口（daemon.log 单文件上限 50MB、status.csv 8MB），
-  // 界面上明确写出「最近一段」，并把归档位置讲清楚。
+  // 两类数据源都只读尾部窗口（daemon.log 上限 50MB、status.csv 8MB），界面写明「最近一段」与归档位置。
   import { onMount } from 'svelte'
   import Panel from '@/components/Panel.svelte'
   import Segmented from '@/components/Segmented.svelte'
@@ -18,8 +17,7 @@
     { id: 'status', label: t('logs.source.status') }
   ])
 
-  // 档位名与 daemon.log 里的级别字面量一致：最宽的一档就是 TRACE（不设阈值 = 显示全部，
-  // 旧文案「全部/ALL」不体现这一点，用户要求直接叫 TRACE）
+  // 档位名与 daemon.log 级别字面量一致；最宽一档即 TRACE（不设阈值 = 显示全部），故不叫「全部/ALL」
   const levelItems = $derived([
     { id: 'TRACE', label: 'TRACE' },
     { id: 'DEBUG', label: 'DEBUG' },
@@ -55,9 +53,8 @@
     return key ? t(key) : '—'
   }
 
-  // [follow] 两个子滚动窗口共用「跟随底部」逻辑：新数据到达时若处于跟随态则
-  // 自动滚到底；用户一旦滑离底部即退出跟随（滚回底也不会自动恢复）——只能点
-  // 「回到底部」恢复。避免用户回看历史时被每秒刷新反复拽到底部。
+  // [follow] 两个子滚动窗口共用「跟随底部」：新数据到达且处于跟随态时自动滚底；
+  // 用户滑离底部即退出跟随（滚回也不自动恢复），只能点「回到底部」恢复
   let daemonBody = $state<HTMLDivElement>()
   let snapshotBody = $state<HTMLDivElement>()
   let followDaemon = $state(true)
@@ -87,10 +84,8 @@
     }
   }
 
-  // 每秒自刷新数据（不重载页面）；loadLogs 内部有在飞守卫，轮询不会堆积。
-  // [poll] WebView 切后台后 interval 仍会被浏览器节流但不为零，主动跳过 hidden
-  // 期的 tick 省电；恢复可见时立即补一次，避免后台期间的数据空窗。
-  // 回调闭包里 source 必须取当前值（$state 可变），不能在 onMount 时快照
+  // [poll] 每秒自刷新（loadLogs 有在飞守卫，轮询不堆积）；跳过 hidden 期 tick 省电，
+  // 恢复可见时立即补一次。回调闭包里 source 取当前值（$state 可变），不能在 onMount 快照
   onMount(() => {
     void app.loadLogs(source)
     const timer = setInterval(() => {
@@ -107,8 +102,7 @@
     }
   })
 
-  // 跟随滚底：$effect 在 DOM 更新后运行。依赖**整个数组**而不是长度——尾部窗口
-  // 行数可能恒定（滚动窗口），只有内容替换时也必须滚到底
+  // 跟随滚底在 $effect（DOM 更新后）运行；依赖整个数组而非长度——尾部窗口行数恒定时，内容替换也要滚到底
   $effect(() => {
     void visible
     if (followDaemon && daemonBody) daemonBody.scrollTop = daemonBody.scrollHeight
@@ -121,15 +115,13 @@
 </script>
 
 {#snippet backToBottomButton()}
-  <!-- 回到底部：仅「滑动离开底部」时出现（点击回底即恢复跟随并消失），
-       绝对定位在所属滚动子块内部，不悬浮到页面其它区域 -->
+  <!-- 回到底部：仅「滑离底部」时出现，绝对定位在所属滚动子块内，不悬浮到页面其它区域 -->
   <button type="button" class="to-bottom" aria-label={t('action.toBottom')} onclick={backToBottom}>
     ↓
   </button>
 {/snippet}
 
 <div class="u-stack">
-  <!-- 副标题已按需求注释（2026-09-17）：desc={t('logs.window')} -->
   <Panel title={t('logs.title')}>
 
     <Segmented items={sourceItems} value={source} label={t('logs.source')} onselect={pick} />
@@ -137,7 +129,7 @@
     {#if source === 'daemon'}
       <div class="ak-field u-mt-3">
         <span class="ak-label">{t('logs.level')}</span>
-        <!-- 5 档在窄屏会被压到看不清：整条左右滑动（scroll），项按内容宽度排列 -->
+        <!-- 5 档在窄屏压不下：整条左右滑动（scroll），项按内容宽度排列 -->
         <Segmented
           items={levelItems}
           value={level}
@@ -186,7 +178,6 @@
     {/if}
 
     {#if app.logdFiles.length > 0}
-      <!-- 副标题已按需求注释（2026-09-17）：desc={t('logs.archive')} -->
       <Panel title="logd/">
         <ul class="files files--scroll u-list-reset u-scroll">
           {#each app.logdFiles as file (file)}
@@ -197,7 +188,6 @@
     {/if}
 
     {#if app.devimpFiles.length > 0}
-      <!-- 副标题已按需求注释（2026-09-17）：desc={t('config.devRecord.hint')} -->
       <Panel title={t('logs.devimp')}>
         <ul class="files files--scroll u-list-reset u-scroll">
           {#each app.devimpFiles as file (file)}
@@ -261,13 +251,11 @@
 <style>
   .terminal {
     border: var(--ak-line-hairline) solid var(--ak-surface-raised);
-    /* 日志终端的沉浸深底（比 canvas 更深）：无对应语义 token 的组件级变量，
-       集中在此定义、不散落色值 */
+    /* 日志终端的沉浸深底（比 canvas 更深）：组件级变量集中在此定义，不散落色值 */
     --terminal-surface: #0a0c0e;
     background: var(--terminal-surface);
   }
 
-  /* 两端布局来自 .u-between，这里只管分隔线与底 */
   .terminal__bar {
     padding: var(--ak-space-2) var(--ak-space-3);
     border-bottom: var(--ak-line-hairline) solid var(--ak-surface-raised);
@@ -280,7 +268,6 @@
     font-size: 0.6875rem;
   }
 
-  /* 滚动行为来自 .u-scroll */
   .terminal__body {
     max-height: 60vh;
     padding: var(--ak-space-3);
@@ -301,9 +288,7 @@
     color: var(--ak-text-secondary);
   }
 
-  /* 级别列不设固定宽：min-width 会给短档名（INFO/WARN 4 字）留出列内空隙，使
-     「级别→内容」的间距大于「时间→级别」（用户要求两者一致）。代价是 4/5 字
-     档名混排时模块列起点相差约一字宽——模块名长短本就不一，可接受 */
+  /* 级别列不设固定宽：min-width 会让「级别→内容」间距大于「时间→级别」（要求两者一致）；代价是 4/5 字档名混排时模块列起点差约一字宽，可接受 */
   .log__level {
     color: var(--ak-text-secondary);
     font-weight: 700;
@@ -338,8 +323,7 @@
   }
 
   .snapshot-wrap {
-    /* 列宽随数据自适应（table auto 布局）；与 daemon 终端同款的子滚动窗口：
-       限高 + 双轴滑动（配合「跟随底部」），滚动行为来自 .u-scroll */
+    /* 列宽随数据自适应；与 daemon 终端同款子滚动窗口：限高 60vh + 双轴滑动（配合跟随底部），滚动行为来自 .u-scroll */
     max-width: 100%;
     max-height: 60vh;
     border: var(--ak-line-hairline) solid var(--ak-surface-raised);
@@ -347,8 +331,7 @@
   }
 
   .snapshot {
-    /* 按内容自适应（用户反馈：width:100% 会把多余宽度摊进各列，列比内容宽很多）；
-       窄于容器时左对齐，宽于容器时由外层 .u-scroll 横向滚动 */
+    /* width: max-content 按内容自适应（width:100% 会把多余宽度摊进各列）；窄于容器左对齐，宽于容器由外层横向滚动 */
     width: max-content;
     border-collapse: collapse;
   }
@@ -360,8 +343,7 @@
     line-height: 1.5;
   }
 
-  /* 内距必须落在 th/td 上：tr 的 padding 不参与表格布局（被忽略，列会糊在一起）；
-   * 全部左对齐 */
+  /* 内距必须落在 th/td 上：tr 的 padding 不参与表格布局（列会糊在一起）；全部左对齐 */
   .snapshot th,
   .snapshot td {
     padding: var(--ak-space-2) var(--ak-space-3);
@@ -382,13 +364,11 @@
     background: var(--ak-surface-raised);
   }
 
-  /* 列表重置来自 .u-list-reset，滚动来自 .u-scroll */
   .files {
     display: grid;
     gap: 0.25rem;
   }
 
-  /* 历史文件可能很多：限高 */
   .files--scroll {
     max-height: 12rem;
   }
@@ -400,7 +380,6 @@
     overflow-wrap: anywhere;
   }
 
-  /* 滚动子块容器：回到底部按钮锚在本块内（而不是悬浮在页面其它位置） */
   .pane {
     position: relative;
   }

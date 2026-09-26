@@ -17,7 +17,7 @@ describe('白名单解析', () => {
     const map = parseSpecialTuned(text)
     expect(map.get('com.hypergryph.arknights')).toEqual({ modes: ['akmode'], fallback: 'akmode' })
     expect(map.get('com.example.multi')?.modes).toEqual(['reduce', 'akmode'])
-    // 缺回退模式时取模式列表首项（与守护进程导出语义一致）
+  // 缺回退模式时取模式列表首项（与 daemon 导出语义一致）
     expect(map.get('com.example.nofallback')?.fallback).toBe('akmode')
     expect(map.has('# 注释行')).toBe(false)
   })
@@ -105,7 +105,7 @@ describe('模式派生', () => {
   it('fas 与特调模式分别归类（特调需命中所见模式集合）', () => {
     expect(describeMode('fas', special).kind).toBe('fas')
     expect(describeMode('akmode', special).kind).toBe('special')
-    // 正则条目对应的特调模式 UI 不可见 → 归为未知，而不是猜成特调
+  // 正则条目的特调模式 UI 不可见 → 归为未知，不猜成特调
     expect(describeMode('secretmode', special).kind).toBe('unknown')
   })
 

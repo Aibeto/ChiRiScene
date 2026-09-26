@@ -1,17 +1,11 @@
 /* app.css: [fonts] [brand-map] [base] [utilities] [signal-map] [ak-adapt] [buttons] [rows] [lists] */
 
 /* [fonts]
- * 拉丁/数字 → 'ChiRi Sans'（Poppins，几何主义无衬线，SIL OFL 1.1）；
- * 中文      → 'ChiRi Sans CJK'（Noto Sans SC / 思源黑体，人文主义无衬线，SIL OFL 1.1）；
- * 等宽      → 'ChiRi Mono'（JetBrains Mono 拉丁子集，SIL OFL 1.1）——遥测数值、日志、
- *             路径都走等宽栈，Android 自带等宽各家不一，内置后数字对齐与字形稳定。
- * 三份许可正文都随仓库同目录：LICENSE-OFL-poppins.txt / LICENSE-OFL-noto-sans-sc.txt /
- * LICENSE-OFL-jetbrains-mono.txt。前两份的二进制不入库，构建期由 scripts/fetch-fonts.mjs
- * 从 jsdelivr 拉取（挂 npm 的 predev/prebuild），等宽那份已入库。
- * 中文那份已按仓库实际用字裁到 CJK 码位、不含拉丁字形，因此拉丁自然落到 Poppins、
- * 中文落到本字体，互不干扰，也就不需要 unicode-range（范围声明过宽会在缺字时出豆腐块）。
- * 衬线已按用户要求（2026-09-18「禁止使用衬线字体」）停用：--ak-font-serif 保留 token、
- * 回落系统衬线。 */
+ * 拉丁/数字 → 'ChiRi Sans'（Poppins，SIL OFL 1.1）；中文 → 'ChiRi Sans CJK'（Noto Sans SC，SIL OFL 1.1）；
+ * 等宽 → 'ChiRi Mono'（JetBrains Mono 拉丁子集，SIL OFL 1.1）——遥测数值/日志/路径走等宽栈，内置后数字对齐与字形稳定。
+ * 许可正文随仓库同目录（LICENSE-OFL-*.txt）；Poppins/Noto 二进制不入库，构建期由 scripts/fetch-fonts.mjs 拉取，等宽已入库。
+ * 中文字体已按仓库用字裁剪、不含拉丁字形，拉丁自然落到 Poppins、中文落到本字体，无需 unicode-range（范围过宽缺字会出豆腐块）；
+ * 衬线已按用户要求停用：--ak-font-serif 保留 token、回落系统衬线。 */
 @font-face {
   font-family: 'ChiRi Sans';
   src: url('./assets/fonts/poppins-regular.woff2') format('woff2');
@@ -69,9 +63,8 @@
 }
 
 /* [brand-map]
- * ak-ui 语义 token 的品牌映射。整站只有一个产品（ChiRi），因此在 :root 覆盖；
- * 只换色值/字体，不改变任何 token 的语义角色（info 仍是信息、danger 仍是危险）。
- * 深色分层：canvas < panel < muted < raised，文字三级对比随之设计。 */
+ * ak-ui 语义 token 的品牌映射：单产品因此在 :root 覆盖；只换色值/字体，不改任何 token 的语义角色。
+ * 深色分层 canvas < panel < muted < raised，文字三级对比随之设计。 */
 :root {
   --ak-surface-canvas: #0e1114;
   --ak-surface-panel: #171b21;
@@ -90,17 +83,14 @@
   --ak-signal-danger: #e5484d;
   --ak-signal-disabled: #6b7280;
 
-  /* 设备端字体栈：拉丁走内置 Poppins（几何主义）、中文走内置 Noto Sans SC（人文主义），
-   * 系统栈只作兜底；等宽走内置 ChiRi Mono（见 [fonts]），映射进 ak-ui 语义 token。
-   * 等宽栈里必须插 'ChiRi Sans CJK'：ChiRi Mono 只裁了拉丁，等宽组件（标签 / 字段名 /
-   * 进度表头 / 日志）里的中文没有它就会落到系统默认字体，与其他位置的中文不一致。 */
+  /* 设备端字体栈：拉丁走内置 Poppins、中文走内置 Noto Sans SC，系统栈只作兜底；等宽映射进 ak-ui 语义 token。
+   * 等宽栈必须插 'ChiRi Sans CJK'：ChiRi Mono 只裁了拉丁，等宽组件（标签/字段名/进度表头/日志）里的中文没它会落到系统默认字体 */
   --ak-font-sans: 'ChiRi Sans', 'ChiRi Sans CJK', system-ui, -apple-system, 'PingFang SC',
     'Noto Sans SC', 'Source Han Sans SC', Roboto, 'Helvetica Neue', Arial, sans-serif;
   --ak-font-mono: 'ChiRi Mono', 'ChiRi Sans CJK', ui-monospace, SFMono-Regular, Menlo, Monaco,
     Consolas, monospace;
   --ak-font-serif: 'Noto Serif SC', serif;
-  /* 用户要求「禁止使用衬线字体」：命令字/标题统一走无衬线栈；原先内置的衬线子集已
-   * 随之移除，--ak-font-serif 保留 token 回落系统衬线，未来需要时再按 [fonts] 先例内置 */
+  /* 命令字/标题统一走无衬线栈（用户要求禁衬线）；衬线子集已移除，--ak-font-serif 保留 token 回落系统衬线，需要时再按 [fonts] 内置 */
   --ak-font-command: var(--ak-font-sans);
 }
 
@@ -140,8 +130,7 @@ label {
   outline-offset: var(--ak-focus-offset);
 }
 
-/* [utilities]
- * 项目级通用类：只做布局与排版，视觉决策一律走 --ak-* token。 */
+/* [utilities] 项目级通用类：只做布局与排版，视觉决策一律走 --ak-* token。 */
 .u-row {
   display: flex;
   align-items: center;
@@ -188,8 +177,7 @@ label {
 }
 
 /* 页面/面板内的纵向分组（视图根节点与字段组共用）。
- * 列宽必须显式 minmax(0,1fr)：网格项默认 min-width:auto，日志这类 nowrap 宽内容
- * 会把整列（乃至整页）撑出屏幕——交给子块自己的 overflow 去滚动 */
+ * 列宽必须显式 minmax(0,1fr)：网格项默认 min-width:auto，日志这类 nowrap 宽内容会把整列（乃至整页）撑出屏幕 */
 .u-stack {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -203,7 +191,7 @@ label {
   gap: var(--ak-space-3);
 }
 
-/* 说明性小字：面板底注 / 状态附注 / 字段提示。
+/* 说明性小字：面板底注/状态附注/字段提示。
  * .u-mt-* 必须定义在其后，组合使用时 margin-top 才不会被 margin:0 吃掉。 */
 .u-note {
   margin: 0;
@@ -228,8 +216,7 @@ label {
 .u-scroll {
   overflow: auto;
   overscroll-behavior: contain;
-  /* WebView 默认的 overlay 滚动条一滑即隐，「还有没有内容」完全看不出来——
-   * 显式绘制细滚动条（Chrome 121+ 走标准属性，旧内核走 webkit 伪元素） */
+  /* WebView 默认 overlay 滚动条一滑即隐，「还有没有内容」看不出来——显式绘制细滚动条（Chrome 121+ 标准属性，旧内核走 webkit 伪元素） */
   scrollbar-width: thin;
   scrollbar-color: color-mix(in srgb, var(--ak-text-secondary) 60%, transparent) transparent;
 }
@@ -255,8 +242,7 @@ label {
 }
 
 /* [signal-map]
- * data-signal="info|action|danger|success|accent" → --signal 单点映射：
- * Panel 的左侧信号条与总览页的模式名称共用一个源，不在组件里各写一份。 */
+ * data-signal="info|action|danger|success|accent" → --signal 单点映射：Panel 信号条与总览页模式名共用一个源 */
 [data-signal] {
   --signal: var(--ak-signal-info);
 }
@@ -278,18 +264,12 @@ label {
 }
 
 /* [ak-adapt]
- * ak-ui 原语有三类需要修正：① 表单类硬编码浅色（标签深字、输入框浅底），深色下不可读；
- * ② 表面类（card/dialog/gauge）自带浅色或近似本主题的底色，层级叠不开；③ 字体族被直接
- * 写死在组件规则里（见下面两条），绕开 --ak-font-* token。
- * 这里只在 [data-ak-ui] 作用域内把颜色/表面/字体映射回语义 token，不动 :root，也不影响
- * 其他使用者；几何、间距、交互反馈、状态一律仍来自 ak-ui。 */
+ * ak-ui 原语三类修正：① 表单类硬编码浅色，深色不可读；② 表面类底色浅，层级叠不开；③ 字体族硬编码绕开 --ak-font-* token。
+ * 只在 [data-ak-ui] 作用域内把颜色/表面/字体映射回语义 token，不动 :root；几何/间距/交互反馈/状态一律仍来自 ak-ui。 */
 
-/* ③ 字体族收回：官方 dist 把 font-family 硬编码进 78 处组件规则（Noto Sans SC, Roboto,
- * Arial, sans-serif / Noto Serif SC, serif / SFMono-Regular, Menlo, …），token 在这
- * 些组件里完全失效——内置的 Poppins / 思源黑体用不上，拉丁落到 Roboto、中文落到系统
- * 字体。按官方自己的用法分两组收回：正文类走 --ak-font-sans，等宽类（标签 / 字段名 /
- * 提示 / 进度表头 / 眉头字 / 分段项）走 --ak-font-mono。
- * 选择器一律带 [data-ak-ui] 前缀提升特异性，压过官方的单类规则（与本文其余覆盖一致）。 */
+/* ③ 字体族收回：官方 dist 把 font-family 硬编码进 78 处组件规则，token 完全失效（拉丁落到 Roboto、中文落到系统字体）。
+ * 按官方用法分两组收回：正文类走 --ak-font-sans，等宽类（标签/字段名/提示/进度表头/眉头字/分段项）走 --ak-font-mono。
+ * 选择器一律带 [data-ak-ui] 前缀提升特异性，压过官方单类规则（与本文其余覆盖一致）。 */
 [data-ak-ui] :is(
   .ak-button,
   .ak-button__label,
@@ -350,8 +330,7 @@ label {
   background-color: var(--ak-surface-panel);
 }
 
-/* 标签里承载的是标识符（包名 / 配置名 / 模式名）：不做大小写变换，
- * 避免界面显示与设备上的真实取值不一致（ak-ui 默认对标签用 uppercase）。 */
+/* 标签里承载标识符（包名/配置名/模式名）：不做大小写变换，避免界面显示与设备真实取值不一致（ak-ui 默认 uppercase） */
 [data-ak-ui] .ak-tag {
   text-transform: none;
   letter-spacing: 0.04em;
@@ -381,8 +360,7 @@ label {
   gap: var(--ak-space-3);
 }
 
-/* —— 直接复用官方原语的深色适配（2026-09-18 第三轮）——
- * 下面这些原语官方已是深色皮肤或只需补齐层级，几何/状态/排版全部用官方。 */
+/* —— 直接复用官方原语的深色适配 —— 这些原语官方已是深色皮肤或只需补齐层级，几何/状态/排版全部用官方 */
 
 /* ak-card（Panel 外壳）：官方是透明 + 阴影的浅色卡 → 实体面板 + 切角 */
 [data-ak-ui] .ak-card {
@@ -400,8 +378,7 @@ label {
   );
 }
 
-/* 卡片标题走品牌命令字体（官方硬编码 Noto Serif SC，会绕开 token）；
- * 字重对齐 700，避免合成粗体 */
+/* 卡片标题走品牌命令字体（官方硬编码 Noto Serif SC 会绕开 token）；字重对齐 700，避免合成粗体 */
 [data-ak-ui] .ak-card__title {
   font-family: var(--ak-font-command);
   font-weight: 700;
@@ -426,16 +403,13 @@ label {
   color: var(--ak-text-secondary);
 }
 
-/* 眉头字（CONFIRM / DANGER）：上游固定用 --ak-dialog-info（信息蓝），与弹层自己的
- * 信号色（左侧竖条 = --ak-dialog-signal，危险弹层由组件内联注入危险色）不一致——
- * 「红条 + 蓝字」。改为跟随弹层信号：CONFIRM 暖黄、DANGER 危险红。 */
+/* 眉头字（CONFIRM/DANGER）：上游固定信息蓝，与弹层自身信号色不一致（红条+蓝字）；改为跟随弹层信号：CONFIRM 暖黄、DANGER 危险红 */
 [data-ak-ui] .ak-dialog__eyebrow {
   color: var(--ak-dialog-signal);
 }
 
-/* ak-status（LiveStatus 顶栏芯片）：与顶栏按钮同规格——官方 min-height 走 content-box，
- * 叠上 padding 会撑成 63px（实测），这里改 border-box + 纯水平内距；align-content
- * 居中是必须的：官方两行网格会把拉伸的多余高度分给信号条所在的空行，文字会上浮 */
+/* ak-status（LiveStatus 顶栏芯片）：与顶栏按钮同规格——官方 min-height 走 content-box，叠 padding 会超高，改 border-box + 纯水平内距；
+ * align-content 居中必须保留：官方两行网格会把多余高度分给信号条所在的空行，文字上浮 */
 [data-ak-ui] .ak-status {
   box-sizing: border-box;
   min-height: var(--ak-density-control-height);
@@ -453,8 +427,7 @@ label {
   letter-spacing: 0.02em;
 }
 
-/* ak-segmented：控制台里作整行切换器（官方仅窄屏铺满）；aria-checked 是我们
- * radiogroup 的语义，映射官方 aria-pressed 选中态；高度取 44px 命中区并上调字号 */
+/* ak-segmented：控制台里作整行切换器（官方仅窄屏铺满）；aria-checked 映射官方选中态；高度取 44px 命中区并上调字号 */
 [data-ak-ui] .ak-segmented {
   display: flex;
   width: 100%;
@@ -472,9 +445,8 @@ label {
   background: var(--ak-segmented-signal);
 }
 
-/* 横向滑动变体（项目侧钩子 data-ak-scroll，不是上游修饰类）：项多时（如日志级别
- * TRACE/DEBUG/INFO/WARN/ERROR 五档）窄屏会被压到看不清，改成「项按内容宽度排、
- * 整条左右滑」——官方只处理了「窄屏铺满」，没有滑动档位。 */
+/* 横向滑动变体（项目侧钩子 data-ak-scroll，非上游修饰类）：项多时窄屏被压到看不清，
+ * 改成「项按内容宽度排、整条左右滑」——官方只处理窄屏铺满，没有滑动档位 */
 [data-ak-ui] .ak-segmented[data-ak-scroll] {
   overflow-x: auto;
   overscroll-behavior-x: contain;
@@ -511,8 +483,7 @@ label {
 }
 
 /* [buttons]
- * 复用 .ak-button 的交互语义，尺寸/阴影/配色按 token 重绘：
- * ak-ui 默认按钮是 150×50 的固定尺寸 + 重阴影，不适合控制台的行内与紧凑布局。 */
+ * 复用 .ak-button 的交互语义，尺寸/阴影/配色按 token 重绘：官方按钮 150×50 固定尺寸 + 重阴影，不适合行内与紧凑布局。 */
 .btn {
   display: inline-flex;
   align-items: center;
@@ -605,8 +576,7 @@ label {
   overflow-wrap: anywhere;
 }
 
-/* [lists]
- * 提示清单：暖色短竖条 + 次要小字（总览页导出须知 / 实验室须知共用）。 */
+/* [lists] 提示清单：暖色短竖条 + 次要小字（总览页导出须知 / 实验室须知共用） */
 .u-notice {
   display: grid;
   gap: 0.5rem;

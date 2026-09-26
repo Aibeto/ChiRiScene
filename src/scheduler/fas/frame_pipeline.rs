@@ -120,8 +120,7 @@ impl FasController {
     // Phase 4.5: EMA 更新
 
     fn update_ema(&mut self, actual_ms: f32, avg_fps: f32) {
-        // [动态 PID] 使用偏移后的目标 fps 计算 EMA baseline，
-        // 保证 EMA 和 PID 看到的 budget 一致
+        // [动态 PID] EMA baseline 用偏移后的 target fps，保证 EMA 与 PID 看到的 budget 一致
         let eff_target = self.effective_target_fps();
         let budget_ms = 1000.0 / eff_target.max(1.0);
         let norm = self.cached_norm;
@@ -272,12 +271,10 @@ impl FasController {
             return;
         }
 
-        // Phase 1
         if self.handle_early_exit(actual_ms) {
             return;
         }
 
-        // Phase 2
         if self.handle_loading(actual_ms, is_heavy) {
             return;
         }
@@ -295,7 +292,6 @@ impl FasController {
         // Phase 2.5: 温度护栏状态机（锁存阈值见 update_thermal_hold）
         self.update_thermal_hold();
 
-        // 帧率采样
         let current_fps = 1_000_000_000.0 / frame_delta_ns as f32;
         self.fps_window.push(current_fps);
         let avg_fps = self.fps_window.mean();
@@ -371,9 +367,8 @@ impl FasController {
             );
         }
 
-        // Phase 7: 温度护栏终值钳制——放最后以覆盖 PID/jank 的全部增量，
-        // 热限频期间 PID 看到的帧时间变长会持续抬频，不钳制会与内核 thermal
-        // 形成正反馈（越热越抬频 → 越抬频越热）
+        // Phase 7: 温度护栏终值钳制——放最后以覆盖 PID/jank 全部增量：热限频期间 PID 看到
+        // 帧时间变长会持续抬频，不钳制会与内核 thermal 形成正反馈（越热越抬频 → 越抬频越热）
         if let Some(cap) = self.thermal_perf_cap() {
             self.perf_index = self.perf_index.min(cap);
         }

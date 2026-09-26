@@ -1,7 +1,6 @@
 <script lang="ts">
   // BatteryView.svelte: [header] [source] [scale] [power]
-  // 电池读数二级页（配置 → 电池读数）：电流/电压/功率的读取来源、双电芯、单位换算与
-  // 功耗显示口径。全部直写 meta.yaml（不走草稿，写后回读），与 daemon 的热重载对齐。
+  // 电池读数二级页：读数来源/双电芯/单位换算/功耗口径；全部直写 meta.yaml（不走草稿，写后回读），与 daemon 热重载对齐。
   import NumberField from '@/components/NumberField.svelte'
   import Panel from '@/components/Panel.svelte'
   import StateBox from '@/components/StateBox.svelte'
@@ -10,16 +9,13 @@
   import { go } from '@/router.svelte'
   import { app } from '@/state.svelte'
 
-  /** 任何一笔 meta.yaml 直写进行中（口径与电池字段共用一把锁，见 state 侧注释） */
+  /** 任一 meta.yaml 直写进行中（与电池字段共用一把锁） */
   const busy = $derived(app.metaWritePending)
   /** 私有节点打开时倍压/倍流置灰（daemon 侧也只认私有节点，互斥） */
   const oplus = $derived(app.oplusChg)
   const canWrite = $derived(app.metaValid && !busy)
 
-  /**
-   * 开关 OPlus 私有节点：打开时同一笔写入里把倍电压/倍电流清掉。
-   * 分开写会让中间态（私有开 + 倍压还开着）被热重载读到一次，值会翻倍。
-   */
+  /** 开关 OPlus 私有节点：同一笔写入里清掉倍压/倍流，否则中间态被热重载读到一次、值翻倍 */
   function toggleOplus(next: boolean): void {
     void app.setBatteryFields(
       next
@@ -39,7 +35,7 @@
   </header>
 
   {#if !app.isChiri}
-    <!-- 遥测线程只在 ChiRi SoC 上启动：这些开关在非 ChiRi 上没有消费方，如实说明 -->
+    <!-- 遥测线程只在 ChiRi SoC 上启动，非 ChiRi 上这些开关没有消费方 -->
     <StateBox kind="missing" message={t('state.notApplicable')} detail={t('state.chiriOnly')} />
   {/if}
 
@@ -48,7 +44,7 @@
   {/if}
 
   {#if !app.metaValid}
-    <!-- meta.yaml 有非法项时写开关被禁用：说明原因，否则「点了没反应」无从排查 -->
+    <!-- meta.yaml 有非法项时写入被禁用：说明原因，避免「点了没反应」无从排查 -->
     <StateBox
       kind="error"
       message={t('battery.metaInvalid')}
@@ -78,8 +74,7 @@
 
   <Panel signal="action" title={t('battery.scale.title')}>
     <div class="ak-form-stack">
-      <!-- 私有节点打开时显示为「未开」：daemon 只认私有节点，这两项此刻确实不生效
-           （手改 meta 把它们留着也一样），下面那行说明给出来 -->
+      <!-- 私有节点打开时这两项显示为「未开」：daemon 只认私有节点，留着也不生效 -->
       <ToggleField
         label={t('battery.voltageDouble')}
         hint={t('battery.voltageDouble.hint')}
@@ -97,7 +92,7 @@
       {#if oplus}
         <p class="u-note">{t('battery.double.mutex')}</p>
       {/if}
-      <!-- 校准分成两个：节点的电压与电流未必同时错单位，分开才能单独校正（W = V×A 自洽） -->
+      <!-- 电压/电流分开校准：二者未必同时错单位，可单独校正（W = V×A 自洽） -->
       <NumberField
         label={t('battery.voltageDivisor')}
         hint={t('battery.voltageDivisor.hint')}

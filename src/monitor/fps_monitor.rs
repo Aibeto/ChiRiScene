@@ -31,15 +31,13 @@ const SYMBOL_LONG: &str =
     "_ZN7android7Surface11queueBufferEP19ANativeWindowBufferiPNS_24SurfaceQueueBufferOutputE";
 const LIBGUI_PATH: &str = "/system/lib64/libgui.so";
 
-/// `android::Surface::queueBuffer` 的 mangled 前缀：类名与方法名固定，参数签名
-/// 随 Android 版本变化（短/长两种硬编码名在新版本机型上都会解析失败 → FAS 收
-/// 不到帧、档位永远不动，表现为 FAS 失效）。扫描按此前缀匹配，签名变化无感。
+/// `android::Surface::queueBuffer` 的 mangled 前缀：类名/方法名固定，参数签名随 Android 版本变化，
+/// 硬编码短/长名在新机型都可能解析失败（FAS 收不到帧、档位不动）；按前缀扫描，签名变化无感。
 const SYMBOL_MANGLED_PREFIX: &str = "_ZN7android7Surface11queueBufferE";
 
-/// attach 失败退避（秒）：符号类故障按档位递增，此后钳在上限
+/// attach 失败退避（秒）：符号类故障按档位递增，之后钳在上限
 const RETRY_BACKOFF_SECS: &[u64] = &[1, 2, 5];
-/// libgui 内根本不存在该符号（帧源永久不可用）时的退避：不必频繁重试，
-/// 每 60s 探一次即可——重试要读并解析一遍 libgui 的 ELF 符号表
+/// libgui 无该符号（帧源永久不可用）时的退避：重试要读并解析 libgui ELF，60s 一次足够。
 const RETRY_BACKOFF_NO_SYMBOL_SECS: u64 = 60;
 /// 无探针时的 poll 超时上限（退避窗口内按此周期醒来，不做 attach）
 const IDLE_POLL_MAX_MS: u64 = 1_000;
@@ -61,9 +59,8 @@ const FRAMETIME_WINDOW: usize = 144;
 struct ProbeState {
     last_ktime_ns: Option<u64>,
     frametimes: VecDeque<Duration>,
-    /// 本次 poll 尚未投喂给调度层的新帧间隔（ns）。
-    /// poll_frames 把 ring 里的每个事件 ingest 后，由 take_pending 全量取走；
-    /// 与 frametimes 分离保证投喂语义是「新帧」而非「最新一条」
+/// 本次 poll 尚未投喂给调度层的新帧间隔（ns）：ingest 后由 take_pending 全量取走；
+/// 与 frametimes 分离保证投喂口径是「新帧」而非「最新一条」。
     pending: VecDeque<u64>,
 }
 
@@ -103,12 +100,11 @@ struct FpsManager {
     states: HashMap<u32, ProbeState>,
     /// 当前关注的目标 PID（最近一次 attach 的 PID）
     current_pid: u32,
-    /// libgui 里扫描到的 queueBuffer 符号变体（建实例时扫一次；空 = 该文件
-    /// 没有该符号，帧源永久不可用）
+/// libgui 扫描到的 queueBuffer 符号变体（建实例时扫一次；空 = 帧源永久不可用）
     symbol_candidates: Vec<String>,
     /// attach 连续失败次数（退避档位与 warn 降频共用）
     attach_fail_count: u32,
-    /// 下次允许重试 attach 的时刻（退避窗口内不再解析 libgui）
+/// 下次允许重试 attach 的时刻（退避窗口内不解析 libgui）
     attach_retry_at: Instant,
 }
 
@@ -156,28 +152,24 @@ impl FpsManager {
         })
     }
 
-    /// 切换到新 PID：detach 旧 PID + attach 新 PID。
-    /// `new_pid == 0` 为「纯 detach」语义：只摘除探针并复位状态，用于 FAS
-    /// 去激活时回到零开销待机（detach 后 has_active_probe()==false）。
+/// 切换到新 PID：detach 旧 + attach 新；new_pid==0 为「纯 detach」：只摘探针并复位状态，
+/// 用于 FAS 去激活时回到零开销待机（detach 后 has_active_probe()==false）。
     fn switch_pid(&mut self, new_pid: u32) -> Result<(), anyhow::Error> {
         if new_pid == self.current_pid {
             return Ok(());
         }
 
-        // detach 旧 PID
         if self.current_pid > 0 {
             if let Some(link_id) = self.links.remove(&self.current_pid) {
                 let program: &mut UProbe =
                     self.bpf.program_mut("handle_frame").unwrap().try_into()?;
                 let _ = program.detach(link_id);
             }
-            // 旧 PID 的帧状态一并清理（PID 不会复用到同一次 attach 生命周期内）
+// 旧 PID 的帧状态一并清理（PID 不会在同一次 attach 生命周期内复用）
             self.states.remove(&self.current_pid);
         }
 
-        // new_pid == 0：纯 detach（FAS 去激活待机），不 attach。
-        // 失败计数一并清零：上一段会话的退避档位不该带到下一段会话（否则新会话
-        // 首次 attach 失败就直接吃上一轮遗留的最长退避）。
+// new_pid==0 纯 detach：失败计数一并清零——上一段会话的退避档位不带入新会话
         if new_pid == 0 {
             self.current_pid = 0;
             self.attach_fail_count = 0;
@@ -186,11 +178,10 @@ impl FpsManager {
             return Ok(());
         }
 
-        // attach 新 PID
         let pid_i32 = new_pid as i32;
         let scope = NonZeroU32::new(new_pid).map(UProbeScope::OneProcess);
         let Some(scope) = scope else {
-            // 防御：非法 PID（理论上不会到这——调用方已过滤 0），不 panic
+// 防御：非法 PID（调用方已过滤 0），不 panic
             warn!(
                 "{}",
                 t_with_args(
@@ -201,16 +192,13 @@ impl FpsManager {
             return Ok(());
         };
 
-        // 建实例时没扫到（libgui 当时不可读）的，每次重试前重扫一遍：退避后重试
-        // 频率极低（最长 60s 一次），成本可忽略，能救回开机早期读不到文件的场景。
+// 建实例时没扫到符号（libgui 当时不可读）则重扫：重试最长 60s 一次成本可忽略，可救回开机早期读不到文件的场景。
         if self.symbol_candidates.is_empty() {
             self.symbol_candidates = scan_queue_buffer_symbols(LIBGUI_PATH);
         }
 
-        // 候选顺序：短签名 → 长签名 → libgui 扫描到的变体（后者覆盖短/长名
-        // 都解析失败的机型：签名随 Android 版本变化，扫描按 mangled 前缀匹配）。
-        // TODO: 两个签名并存时先试短签名（旧版重载）——若真机显示帧数偏少，
-        // 说明挂到了非主路径的重载上，改为长签名优先再验一次。
+// 候选顺序：短签名 → 长签名 → dynsym 扫描变体（覆盖短/长名都解析失败的机型，按 mangled 前缀匹配）。
+// TODO: 两个签名并存时先试短签名（旧版重载）——若真机帧数偏少，说明挂到非主路径重载，改长签名优先再验。
         let mut candidates: Vec<String> = vec![SYMBOL_SHORT.to_string(), SYMBOL_LONG.to_string()];
         for sym in &self.symbol_candidates {
             if !candidates.contains(sym) {
@@ -234,7 +222,7 @@ impl FpsManager {
                     break;
                 }
                 Err(e) => {
-                    // 最后一个候选的失败原因才是有效诊断信息（前面失败只说明签名不匹配）
+// 最后一个候选的失败原因才是有效诊断信息（前面失败只说明签名不匹配）
                     if i + 1 == candidates.len() {
                         return Err(e.into());
                     }
@@ -245,7 +233,6 @@ impl FpsManager {
             return Err(anyhow::anyhow!("no queueBuffer symbol available"));
         };
 
-        // attach 成功：清零失败计数，下一次 PID 切换不受退避影响
         self.attach_fail_count = 0;
         self.attach_retry_at = Instant::now();
         debug!(
@@ -298,8 +285,7 @@ impl FpsManager {
         }
     }
 
-    /// 取走全部待投喂的新帧间隔（ns）。每 PID 独立队列合并返回；
-    /// 多 PID 挂载时顺序按队列拼接，不保证严格时间序（FAS 只消费活跃 PID 的样本）。
+/// 取走全部待投喂的新帧间隔（ns），各 PID 队列拼接返回；不保证严格时间序（FAS 只消费活跃 PID 样本）。
     fn take_pending(&mut self) -> Vec<u64> {
         let mut out = Vec::new();
         for state in self.states.values_mut() {
@@ -312,25 +298,21 @@ impl FpsManager {
         self.current_pid > 0
     }
 
-    /// 是否到了可以重试 attach 的时刻（退避窗口内返回 false）。
-    /// 目的：符号解析失败是持续故障，若按 500ms 轮询反复重试，等于每秒两次
-    /// 读并解析 libgui 的 ELF 符号表——纯浪费且把 daemon.log 冲爆。
+/// 是否到了可重试 attach 的时刻（退避窗口内 false）：符号解析失败是持续故障，按 500ms 反复重试
+/// 等于每秒两次读解析 libgui ELF——纯浪费且刷爆 daemon.log。
     fn attach_retry_due(&self) -> bool {
         Instant::now() >= self.attach_retry_at
     }
 
-    /// 无探针时的 poll 超时：睡到下次可重试时刻，上限 1s（退避窗口内只剩
-    /// 一次空转 poll，不做 attach、不解析 ELF）。
-    /// 上限存在的理由：前台 PID 走 mpsc channel、不注册进 poll，超时返回是它
-    /// 唯一的消费窗口——睡满整个退避会把 PID 切换延迟到几十秒后。
+/// 无探针时的 poll 超时：睡到下次可重试时刻，上限 1s（退避窗口内一次空转 poll，不 attach/不解析）。
+/// 上限理由：前台 PID 走 mpsc、不注册进 poll，超时返回是其唯一消费窗口，睡满退避会把 PID 切换拖到退避结束后。
     fn idle_poll_timeout(&self) -> Duration {
         let left = self.attach_retry_at.saturating_duration_since(Instant::now());
         left.clamp(Duration::from_millis(100), Duration::from_millis(IDLE_POLL_MAX_MS))
     }
 
-    /// 记录一次 attach 失败：推进退避窗口并按降频打日志。
-    /// 首次与每 10 次打 warn，其余降为 debug——此前每次失败都 warn，一个游戏
-    /// 会话能刷出数千行，日志写入本身成了负担。
+/// 记录一次 attach 失败：推进退避窗口并降频打日志——首次与每 10 次打 warn，其余 debug
+/// （此前每次 warn，一个游戏会话能刷数千行，日志写入本身成了负担）。
     fn report_attach_failure(&mut self, err: &anyhow::Error) {
         self.attach_fail_count = self.attach_fail_count.saturating_add(1);
         let no_symbol = self.symbol_candidates.is_empty();
@@ -375,9 +357,8 @@ impl FpsManager {
     }
 }
 
-/// 从 ELF64 的动态符号表里取回所有 `android::Surface::queueBuffer` 变体名。
-/// 只支持小端 ELF64（Android 目标机全部如此）；解析不了就返回空 vec，由调用方
-/// 按「帧源不可用」处理——宁可退避，也不要拿硬编码名反复撞墙。
+/// 从 ELF64 dynsym 取回所有 `android::Surface::queueBuffer` 变体名。只支持小端 ELF64（Android 目标机皆如此）；
+/// 解析不了返回空 vec，由调用方按「帧源不可用」退避处理——不拿硬编码名反复撞墙。
 fn scan_queue_buffer_symbols(path: &str) -> Vec<String> {
     let Ok(data) = std::fs::read(path) else {
         return Vec::new();
@@ -446,7 +427,6 @@ fn le_u64(d: &[u8], off: usize) -> Option<u64> {
 }
 
 // [loop]
-// 主入口
 
 pub async fn start_fps_loop(
     tx: SyncSender<DaemonEvent>,
@@ -455,11 +435,9 @@ pub async fn start_fps_loop(
 ) -> Result<(), anyhow::Error> {
     info!("{}", t("fps-monitor-init"));
 
-    // 订阅 pid_watcher 的共享前台 PID 广播（原 500ms 自轮询已删除）：
-    // FpsManager 由下方 fps_probe 线程独占，这里把变化值桥接给该线程做
-    // switch_pid；watch 接收端克隆一份随闭包进入线程，供 FAS 激活门控
-    // 补挂时读取当前前台 PID（桥接任务只转发变化值，激活瞬间的最新值
-    // 需从 watch 直接借）。
+// 订阅 pid_watcher 的共享前台 PID 广播（原 500ms 自轮询已删）：变化值桥接给 fps_probe 线程做 switch_pid；
+// watch 接收端另克隆一份随闭包进线程，供 FAS 激活门控补挂时读当前前台 PID
+// （桥接任务只转发变化值，激活瞬间的最新值需从 watch 直接借）。
     let (pid_tx, pid_rx) = std::sync::mpsc::channel::<u32>();
     let rx_pid_bridge = rx_pid.clone();
     tokio::spawn(async move {
@@ -490,14 +468,12 @@ pub async fn start_fps_loop(
                 }
             };
 
-            // 反偷跑：FAS 未激活时**不挂任何 uprobe**（eBPF 程序已加载但无
-            // attach 点即零执行）。此前 daemon 启动即对前台应用 attach——桌面/
-            // 普通应用的每帧 queueBuffer 都要过一次探针，而 FrameUpdate 在
-            // 调度侧被 is_active() 直接丢弃，纯白烧。首个 FAS 应用激活后由
-            // PID 广播驱动 switch_pid 正常挂载。
+// 反偷跑：FAS 未激活时不挂任何 uprobe（eBPF 已加载但无 attach 点即零执行）。此前 daemon 启动即 attach，
+// 桌面/普通应用每帧 queueBuffer 都过探针而 FrameUpdate 被调度侧丢弃，纯白烧；
+// 首个 FAS 应用激活后由 PID 广播驱动 switch_pid 正常挂载。
             info!("{}", t("fps-monitor-passive"));
 
-            // mio 轮询（只创建一次；创建失败则本线程无法工作，告警退出交由看门狗自愈）
+// mio 轮询（只创建一次；创建失败本线程无法工作，告警退出交看门狗自愈）
             let mut poll = match Poll::new() {
                 Ok(p) => p,
                 Err(e) => {
@@ -513,21 +489,18 @@ pub async fn start_fps_loop(
             };
             let mut events = Events::with_capacity(64);
             let token = Token(0);
-            // 帧事件统计（周期性输出 debug 摘要）
             let mut frame_counter: u32 = 0;
-            // 事件通道拥塞丢弃的帧样本数（仅计数，EMA 平滑可容忍少量丢失）
+// 事件通道拥塞丢弃的帧样本数（仅计数，EMA 平滑可容忍少量丢失）
             let mut dropped_frames: u64 = 0;
 
-            // 注册 RingBuf fd（只注册一次，不会变）。fd 与 attach 无关（探针
-            // attach/detach 前后 fd 不变），无条件注册最简单——未注册仅丢失
-            // 事件驱动唤醒，poll 超时兜底仍可处理帧（代价是无谓的 500ms 轮询）。
+// 注册 RingBuf fd（只一次）。fd 与 attach 无关（attach/detach 前后不变），无条件注册最简单——
+// 未注册仅丢事件驱动唤醒，poll 超时兜底仍可处理帧（代价是无谓的 500ms 轮询）。
             let fd = manager.ring_fd;
             let mut source = SourceFd(&fd);
             if let Err(e) =
                 poll.registry()
                     .register(&mut source, token, Interest::READABLE)
             {
-                // 注册失败仅丢失事件驱动唤醒，poll 超时兜底仍可处理帧
                 warn!(
                     "{}",
                     t_with_args(
@@ -538,23 +511,15 @@ pub async fn start_fps_loop(
             }
 
             loop {
-                // [gate]
-                // FAS 激活门控（反偷跑核心）
-                // fas_signal 未激活：不做任何 PID 消费/帧投喂；若上一会话的
-                // uprobe 仍挂着，先 detach 回到零开销待机，再**阻塞等待激活
-                // 信号**（事件驱动，稳态 0 次周期唤醒——改造前是 500ms 轮询）。
-                // 唤醒后不在此处补挂、直接回到循环顶部：那里的 `!has_active_probe()`
-                // 分支会从 watch 直接借当前前台 PID（桥接任务只转发 PID **变化**，
-                // 而 FAS 应用可能在激活前就已在前台、没有后续变化事件，必须读
-                // 当前值，否则首个会话永远挂不上探针）。
-                //
-                // 为什么等的是「信号」而不是「前台 PID」：FAS 会在 PID 未变的
-                // 情况下被重新激活（息屏释放后回到前台、15s 冷却期结束时调度
-                // 线程自行 activate），只等 PID 会漏唤醒——FAS 激活后收不到帧。
-                // 等待载体见 `crate::monitor::FasSignal`（含丢唤醒竞态推理）。
+// [gate]
+// FAS 激活门控（反偷跑核心）：未激活不消费 PID/不投喂帧；旧会话 uprobe 仍挂着则先 detach 回零开销待机，
+// 再阻塞等激活信号（事件驱动，稳态 0 周期唤醒，改造前是 500ms 轮询）。唤醒后不在此补挂、回循环顶部，
+// 由 `!has_active_probe()` 分支从 watch 直接借当前前台 PID——桥接任务只转发 PID **变化**，FAS 应用可能
+// 激活前就在前台、无后续变化事件，不读当前值则首个会话永远挂不上。等的是「信号」而非「前台 PID」：
+// FAS 会在 PID 未变时重新激活（息屏回前台/15s 冷却结束），只等 PID 会漏唤醒；
+// 等待载体见 `crate::monitor::FasSignal`（含丢唤醒竞态推理）。
                 if !fas_signal.is_active() {
                     if manager.has_active_probe() {
-                        // 纯 detach：摘除探针 + 复位状态（has_active_probe → false）
                         let _ = manager.switch_pid(0);
                     }
                     fas_signal.wait_until_active();
@@ -569,26 +534,22 @@ pub async fn start_fps_loop(
                     }
                 }
 
-                // [pid-switch] 
-                // PID 变化（tokio 订阅任务桥接的共享前台 PID 广播）
-                // 这里**不走退避门控**：新 PID 是新信息（上一个进程挂载失败不代表
-                // 这一个也失败），值得立刻重试一次；失败照常计入退避。
+// [pid-switch]
+// PID 变化（tokio 订阅任务桥接的广播）：不走退避门控——新 PID 是新信息，值得立刻重试；失败照常计入退避。
                 while let Ok(new_pid) = pid_rx.try_recv() {
-                    // 无需重新注册 Poll——RingBuf fd 不变
                     if let Err(e) = manager.switch_pid(new_pid) {
                         manager.report_attach_failure(&e);
                     }
                 }
 
-                // [poll] 
-                // 轮询
+// [poll]
                 let timeout = if manager.has_active_probe() {
                     Some(Duration::from_millis(100))
                 } else {
                     Some(manager.idle_poll_timeout())
                 };
 
-                // mio poll error 只意味着被信号打断，sleep 后重试即可
+// mio poll 出错只意味着被信号打断，sleep 后重试即可
                 if poll.poll(&mut events, timeout).is_err() {
                     std::thread::sleep(Duration::from_millis(10));
                     continue;
@@ -596,15 +557,9 @@ pub async fn start_fps_loop(
 
                 manager.poll_frames();
 
-                // 全量投喂本窗口新产生的帧间隔。此前每 100ms 只发送
-                // latest_frametime() 一条：60fps 下 6 帧丢 5 帧，所有以
-                // 「帧数」为单位的控制常数（upgrade/downgrade_confirm、
-                // jank_cooldown、steady_decay 阈值、freq_hold_frames 等）的
-                // 实际时间尺度被拉长 6 倍，PID/防抖/jank 响应全面钝化，
-                // 表现为平均帧下降且 1% Low 崩塌；且无新帧时会把同一条
-                // 陈旧 delta 反复投喂——静态 UI/暂停场景一条 heavy 帧被
-                // 重复计入 ~10 次即可在 1s 内累积出假 loading（perf 被钳
-                // 0.60~0.70），表现为纯 UI 界面卡顿。改为只投喂真实新帧。
+// 全量投喂本窗口真实新帧间隔。此前每 100ms 只发 latest_frametime() 一条：60fps 下 6 帧丢 5 帧，所有以
+// 「帧数」为单位的控制常数实际时间尺度被拉长 6 倍，PID/防抖/jank 响应全面钝化（平均帧降、1% Low 崩塌）；
+// 且无新帧时同一条陈旧 delta 反复投喂，静态 UI 一条 heavy 帧重复计入即可累积出假 loading（perf 被钳 0.60~0.70）。
                 let new_deltas = manager.take_pending();
                 for delta_ns in new_deltas {
                     frame_counter += 1;
@@ -624,8 +579,7 @@ pub async fn start_fps_loop(
                         frame_delta_ns: delta_ns,
                     }) {
                         Ok(()) => {}
-                        // 通道拥塞：丢弃本帧样本。绝不能阻塞发送——fps_probe 阻塞
-                        // 会让 eBPF ring buffer 被新事件覆盖，丢失更多帧
+// 通道拥塞：丢弃本帧样本。绝不能阻塞发送——fps_probe 阻塞会让 eBPF ring buffer 被新事件覆盖，丢更多帧
                         Err(TrySendError::Full(_)) => {
                             dropped_frames = dropped_frames.saturating_add(1);
                             if dropped_frames % 300 == 1 {

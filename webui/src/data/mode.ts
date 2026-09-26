@@ -1,19 +1,13 @@
 // mode.ts: [catalog] [derive]
 import { DOWN_WORD } from '@/data/down'
-// 模式派生。事实来源（src/monitor/app_detect.rs::determine_mode）：
-//   fas（白名单命中且应用配置可解析）→ 特调白名单 fallback → app_modes → global_mode。
-// 只有 reduce/default/boost/vector 在 daemon 里注册为 CLG 档（config.rs::get_mode）；
-// 特调模式名由 special_tuned.yaml 的 modes 定义（akmode / playback / daily …）；
-// determine_mode 不做注册校验，因此 current_mode.chr 可能出现未注册的字面值 → 归为 unknown。
+// 模式派生。事实来源 src/monitor/app_detect.rs::determine_mode：fas（白名单命中且应用配置可解析）→ 特调白名单 fallback → app_modes → global_mode。
+// 只有 reduce/default/boost/vector 在 daemon 注册为 CLG 档；特调模式名由 special_tuned.yaml 定义；未注册字面值归为 unknown。
 
 // [catalog]
 /**
- * 模式家族（2026-09-17 重构；2026-09-18 家族位定稿）：
- * - CLG：reduce/default/boost（兜底档，current_mode 直接是档名）
- * - stardust：scenemode（独立息屏轴，不作为 current_mode 档位出现；家族位照常
- *   注册——不管实际运行中看不看得到，展示体系里都占位）
- * - down：DOWN 停摆（独立家族，不是 stardust）
- * - rhine：vector/contingency/babel/frozen（仅实验室，rhine.chr 驱动 global_mode 覆盖）
+ * 模式家族（ModeKind）：
+ * - clg：reduce/default/boost（current_mode 直接是档名）；stardust：scenemode（独立息屏轴，不作 current_mode 档位，家族位照常注册占位）
+ * - down：DOWN 停摆（独立家族，不是 stardust）；lab：vector/contingency/babel/frozen（rhine.chr 驱动 global_mode 覆盖）
  */
 export type ModeKind = 'clg' | 'fas' | 'special' | 'lab' | 'down' | 'stardust' | 'unknown'
 /** 语义信号（UI 映射到 --ak-signal-*，不用裸色值） */
@@ -31,57 +25,43 @@ export interface ModeInfo {
 
 const CLG_CATALOG: Record<string, {
   signal: ModeSignal; labelKey: string;
-  // descKey: string
 }> = {
   reduce: {
     signal: 'success', labelKey: 'mode.reduce',
-    // descKey: 'mode.reduce.desc'
   },
   default: {
     signal: 'info', labelKey: 'mode.default',
-    // descKey: 'mode.default.desc'
   },
   boost: {
     signal: 'action', labelKey: 'mode.boost',
-    // descKey: 'mode.boost.desc'
   }
 }
 
-/**
- * rhine 家族（仅实验室）：vector/contingency/babel。vector 虽保留在 CLG_MODE_IDS
- * 的展示列表里（档位概念沿用），但运行时它走 fast_lock 硬锁、不读 CLG 参数，
- * 语义归 rhine 家族，故从 CLG_CATALOG 移到这里。
- */
+/** rhine 家族（仅实验室）：vector 运行时走 fast_lock 硬锁、不读 CLG 参数，语义归 rhine，故从 CLG_CATALOG 移到这里。 */
 const LAB_CATALOG: Record<string, {
   signal: ModeSignal; labelKey: string
   // descKey 停用（2026-09-18：mode.*.desc 已全部注释，UI 对空描述跳过渲染）
 }> = {
   vector: {
     signal: 'danger', labelKey: 'mode.vector',
-    // descKey: 'mode.vector.desc'
   },
   contingency: {
     signal: 'danger', labelKey: 'mode.contingency',
-    // descKey: 'mode.contingency.desc'
   },
   babel: {
     signal: 'accent', labelKey: 'mode.babel',
-    // descKey: 'mode.babel.desc'
   },
-  // frozen（待春归）：与 vector 反向——锁硬件最低频、停亲和/迁移/诊断日志。
-  // 语义是「最冷/最低功耗」，不是危险档，故 signal 用中性 info 而非 danger。
+  // frozen（待春归）：语义是「最冷/最低功耗」而非危险档，signal 用中性 info 而非 danger
   frozen: {
     signal: 'info', labelKey: 'mode.frozen',
-    // descKey: 'mode.frozen.desc'
   }
 }
 
 // [derive]
 /**
- * 由 current_mode 值与特调模式集合派生展示信息。
- * `specialModes` 来自 special_tuned.yaml 的 modes 并集——注意该文件只导出精确条目，
- * 正则条目对应的特调模式在 UI 侧不可知，因此这里只能覆盖「已配置」的部分。
- * descKey 一律返回空串：mode.*.desc 已全部注释（2026-09-18），UI 对空描述跳过渲染。
+ * 由 current_mode 值与特调模式集合派生展示信息。specialModes 来自 special_tuned.yaml 的 modes 并集——
+ * 该文件只导出精确条目，正则条目对应的特调模式 UI 不可知，只能覆盖「已配置」部分。
+ * descKey 一律返回空串（mode.*.desc 已全部注释，UI 对空描述跳过渲染）。
  */
 export function describeMode(id: string, specialModes?: ReadonlySet<string>): ModeInfo {
   const mode = id.trim()
@@ -94,8 +74,7 @@ export function describeMode(id: string, specialModes?: ReadonlySet<string>): Mo
       descKey: ''
     }
   }
-  // DOWN 停摆（2026-09-16）：不是调度档位，是「调度不工作」本身——判据在 down.chr
-  // （见 data/down.ts），同时会被写进 current_mode.chr。显示名就是 id，不分语言
+  // DOWN 停摆：不是调度档位，是「调度不工作」本身；判据在 down.chr（见 data/down.ts），显示名就是 id 不分语言
   if (mode === DOWN_WORD) {
     return {
       id: mode,
@@ -105,8 +84,7 @@ export function describeMode(id: string, specialModes?: ReadonlySet<string>): Mo
       descKey: ''
     }
   }
-  // scenemode（独立息屏轴）：daemon 不写这个值，但家族位照常注册——
-  // 不管实际运行中看不看得到，展示体系里都占位（kind stardust）
+  // scenemode：daemon 不写这个值，但家族位照常注册占位（kind stardust）
   if (mode === 'scenemode') {
     return {
       id: mode,
@@ -127,7 +105,6 @@ export function describeMode(id: string, specialModes?: ReadonlySet<string>): Mo
   }
   const clg = CLG_CATALOG[mode]
   if (clg) {
-    // CLG 档当前不带描述（descKey 在 CLG_CATALOG 中刻意注释）：空串让 UI 跳过描述行
     return { id: mode, kind: 'clg', signal: clg.signal, labelKey: clg.labelKey, descKey: '' }
   }
   const lab = LAB_CATALOG[mode]

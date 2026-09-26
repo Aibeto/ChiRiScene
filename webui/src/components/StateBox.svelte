@@ -1,6 +1,5 @@
 <script lang="ts">
-  // StateBox.svelte: [states]
-  // 空 / 缺失 / 失败 / 加载四种占位：状态用文字 + 信号条表达，不依赖颜色单独区分。
+  // StateBox.svelte: [states] 空/缺失/失败/加载四种占位：状态用文字 + 信号条表达，不依赖颜色单独区分。
   import type { Snippet } from 'svelte'
 
   let {
@@ -16,8 +15,7 @@
   }>()
 </script>
 
-<!-- 视觉底座来自 ak-ui 的 ak-notice 原语（信号条 + 切角 + 层级排版）；
-     深色适配在 app.css 的 ak-adapt 段，本组件只管结构 -->
+<!-- 底座来自 ak-ui ak-notice 原语（信号条 + 切角 + 层级排版）；深色适配在 app.css [ak-adapt]，本组件只管结构 -->
 <div
   class="state ak-notice"
   class:ak-notice--danger={kind === 'error'}

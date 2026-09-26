@@ -1,11 +1,9 @@
 // daemon.ts: [liveness] [watchdog] [stop] [recover]
-// 守护进程存活判据与生命周期操作。硬规则（见计划文档与项目记忆）：
-// - 存活判据 = 心跳文件 LiveTime.chr（daemon 每 15s 写一次本地时间 MM:SS）：
-//   与本机时间比对，超过容差（20s）判「已停止」。此前用 flock 探测 daemon.lock，
-//   依赖 toybox 是否带 flock applet，缺失时只能显示「无法判定」；
-// - daemon.lock 仍由 daemon 自己持有（单实例锁，模块根、不随 logs/ 归档）：WebUI
-//   不再探测、也绝不删除——flock 是 inode 级，删除会让新实例在旧 inode 之外加锁成功；
-// - 关闭调度必须先杀看门狗再杀主进程，否则看门狗 3s 后会把 daemon 拉回来。
+// 守护进程存活判据与生命周期操作。硬规则：
+// - 存活判据 = 心跳文件 LiveTime.chr（daemon 每 15s 写一次本地时间 MM:SS），与本机
+//   时间比对超容差（20s）判「已停止」；旧 flock 探测已弃用——daemon.lock 由 daemon
+//   自持，WebUI 不探测也绝不删除（flock 是 inode 级，删除会让新实例在旧 inode 外加锁）；
+// - 关闭调度必须先杀看门狗再杀主进程，否则看门狗会把 daemon 拉回来。
 import { absOf, shQuote } from './paths'
 import { exists, readText } from './read'
 import {
@@ -33,11 +31,9 @@ export type DaemonState =
 const LIVE_TIME_READ_BYTES = 64
 
 /**
- * [liveness] 存活纯判定：从心跳文件原文出发，不发 exec（不发任何 IO）。
- * loadOverview 的批量读路径与 probeLiveness 共用，保证两路口径一致：
- * - raw null（文件缺失）→ stopped（没有任何实例在写心跳）
- * - 内容非法 → unknown + 错误详情（读到了但不可用：界面报错，不谎报「已停止」）
- * - 其余按心跳新鲜度二分（running / stopped）
+ * [liveness] 存活纯判定：从心跳原文出发、不发任何 IO，loadOverview 批量读与
+ * probeLiveness 共用此口径：raw null（文件缺失）→ stopped；内容非法 → unknown +
+ * 错误详情（读到了但不可用，不谎报「已停止」）；其余按心跳新鲜度二分。
  */
 export function judgeLiveness(raw: string | null): {
   state: DaemonState
@@ -56,9 +52,8 @@ export function judgeLiveness(raw: string | null): {
 }
 
 /**
- * 探测存活：读心跳文件并与本机时间比对（判定复用 judgeLiveness）。
- * 秒级轮询已改走 readMany 批量读（state.svelte.ts loadOverview），此独立入口
- * 保留给单次探测的调用方（如停止调度后的复核），行为与旧实现完全一致。
+ * 探测存活：读心跳文件并与本机时间比对（判定复用 judgeLiveness）。秒级轮询已走
+ * readMany 批量读，此独立入口保留给单次探测调用方（如停止调度后的复核）。
  */
 export async function probeLiveness(): Promise<ReadResult<DaemonState>> {
   if (!isLive()) return absent<DaemonState>('unsupported-env')
@@ -72,9 +67,8 @@ export async function probeLiveness(): Promise<ReadResult<DaemonState>> {
 
 // [watchdog]
 /**
- * 看门狗 PID（契约保留 API：关闭调度在 shell 内联读取，此函数供后续界面展示/诊断用）。
- * 注意两种写入格式并存：sh 看门狗写 `"<pid>\n"`，
- * daemon 自愈（ensure_watchdog_pid_file）写 `"<pid>"` 无换行 → 必须 trim。
+ * 看门狗 PID（契约保留 API：关闭调度在 shell 内联读取，此函数供界面展示/诊断用）。
+ * 两种写入格式并存（sh 看门狗带换行、daemon 自愈不带）→ 读取必须 trim。
  */
 export async function readWatchdogPid(): Promise<ReadResult<number>> {
   const r = await readText(absOf('watchdogPid'), 'not-created', 256)
@@ -87,8 +81,8 @@ export async function readWatchdogPid(): Promise<ReadResult<number>> {
 // [stop]
 /**
  * 关闭调度：先按 pidfile 杀看门狗 → 再杀 chiri → 删 pidfile → 撤销常驻通知。
- * 注意副作用（由界面负责提示）：daemon 是被信号杀死、没有还原逻辑，
- * fast 模式的锁频会残留到卸载脚本执行；恢复只能点模块 Action 或重启设备。
+ * 副作用（由界面负责提示）：daemon 被信号杀死、没有还原逻辑，fast 模式锁频会残留，
+ * 恢复只能点模块 Action 或重启设备。
  */
 export async function stopScheduler(): Promise<ReadResult<true>> {
   if (!isLive()) return absent<true>('unsupported-env')
@@ -98,8 +92,7 @@ export async function stopScheduler(): Promise<ReadResult<true>> {
     `case "$p" in ''|0|*[!0-9]*) ;; *) kill "$p" 2>/dev/null ;; esac; ` +
     `killall -9 chiri 2>/dev/null || pkill -9 chiri 2>/dev/null; ` +
     `rm -f ${pidFile}; ` +
-    // daemon 被 -9 杀死、没有清理时机：常驻通知由这里撤销，否则会留着过期的
-    // 状态（旧模式/旧功耗）停在通知栏。失败静默（部分 ROM 无 -d 旗标）
+    // daemon 被 -9 杀死无清理时机，常驻通知由这里撤销（失败静默，部分 ROM 无 -d 旗标）
     `cmd notification post -d ${NOTIFY_TAG} >/dev/null 2>&1; ` +
     `sleep 1; echo done`
   try {

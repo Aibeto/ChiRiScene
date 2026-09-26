@@ -42,7 +42,7 @@ def run_stage(name, func):
         rc, lines = func()
         ok = rc == 0
         return ok, lines, None if ok else f"退出码 {rc}", time.time() - t0
-    except Exception as e:  # 单阶段失败不拖垮整条链
+    except Exception as e:
         return False, [], f"{type(e).__name__}: {e}", time.time() - t0
 
 
@@ -109,9 +109,8 @@ def main(argv=None):
         print("[!] extract 失败且无法定位输出目录，后续阶段中止")
         return 1
 
-    # ── 2. analyze：文件名带连字符，只能走 subprocess（其 stdout 纯 ASCII 表）。
-    #    该脚本只 glob 传入目录**本级**（非递归），而解压结果是
-    #    `x_devimp_<ts>/` 子目录，故按 devimp 批次逐个跑，输出合并进 analyze.txt ──
+    # ── 2. analyze：文件名带连字符，只能走 subprocess（其 stdout 为纯 ASCII 表）；
+    #    该脚本只 glob 传入目录本级（非递归），而解压结果在 x_devimp_<ts>/ 子目录，故按 devimp 批次逐个跑 ──
     if "analyze" in want:
         def _analyze():
             script = os.path.join(dc.repo_root(), "scripts", "devimp-analyze.py")
@@ -147,7 +146,6 @@ def main(argv=None):
         report.append("")
         headline += lines[:1]
 
-    # ── 3. main ──
     if "main" in want:
         import dvmain
         def _main():
@@ -167,7 +165,6 @@ def main(argv=None):
         report.append("")
         headline += lines[:2]
 
-    # ── 4. aff ──
     if "aff" in want:
         import dvaff
         def _aff():
@@ -187,7 +184,6 @@ def main(argv=None):
         report.append("")
         headline += lines[1:][:2]
 
-    # ── 5. status ──
     if "status" in want:
         import dvstatus
         def _status():

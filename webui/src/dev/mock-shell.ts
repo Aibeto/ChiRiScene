@@ -1,10 +1,7 @@
 // mock-shell.ts: [scenario] [fs] [seed] [exec] [install]
-// 无 KernelSU 环境（浏览器 dev / 自动化走查）下的设备替身：
-// 用构建期嵌入的仓库配置 + 生成的假日志构成一个内存文件系统，并按契约层实际发出的
-// 命令形态回放。URL 参数可切换设备形态，便于走查空态/错误态：
-//   ?soc=chiri        设备是否 ChiRi 专属机型（影响白名单与 status.csv 是否存在）
-//   ?state=normal|empty|error   正常 / 守护进程从未启动 / 读取真实失败
-//   ?daemon=running|stopped     存活探测结果（影响“关闭调度”演示）
+// 无 KernelSU 环境（浏览器 dev / 自动化走查）下的设备替身：用构建期嵌入的仓库配置 + 生成的假日志
+// 构成内存文件系统，并按契约层实际发出的命令形态回放。URL 参数切换设备形态，便于走查空态/错误态：
+//   ?soc=chiri（ChiRi 专属，影响白名单与 status.csv） ?state=normal|empty|error（正常/从未启动/读取失败） ?daemon=running|stopped（存活探测）
 import embedded from 'virtual:chiri-config'
 import { load as loadYaml } from 'js-yaml'
 import { setShell, type ExecResult, type ShellRunner } from '@/kernel/shell'
@@ -130,9 +127,7 @@ function fakeStatusCsv(): string {
         (200 + i * 3).toString(),
         (5 + (i % 9)).toString(),
         (900 + i * 2).toString(),
-        // fps 预留列：仅 fas 模式有实测值，其余为 '-'
         modes[idx] === 'fas' ? (58 + (i % 5) * 0.6).toFixed(1) : '-',
-        // screen_prop：debug.tracing.screen_state 原始值（缺测占位 '-'）
         i % 7 === 0 ? '1' : '0'
       ].join(',')
     )
@@ -140,8 +135,7 @@ function fakeStatusCsv(): string {
   return rows.join('\n') + '\n'
 }
 
-/** aff_ 线程流样例（2026-09-22 拆分）：3 行 @A 动作帧（含一条失败观测 e3）+ 一帧 @S
- *  快照（帧头 ntop/nfg 计数与随后 p/t 行数严格一致）。帧格式见 agentsdocs/02-convention.md。 */
+/** aff_ 线程流样例：3 行 @A 动作帧（含失败观测 e3）+ 一帧 @S 快照（帧头 ntop/nfg 计数与随后 p/t 行数严格一致），帧格式见 agentsdocs/02-convention.md。 */
 function fakeAffLog(): string {
   return [
     '# ts-column=local format_now',
@@ -183,8 +177,7 @@ function fasWhitelistExport(): string {
   }
 }
 
-/** 心跳内容：daemonRunning 取当前 MM:SS，?daemon=stopped 取 8 分钟前（远超 20s 容差）。
- *  按**读取时刻**生成（见 handle 的 TAIL 分支）——静态播种会在预览打开 20s 后自然过期。 */
+/** 心跳内容按**读取时刻**生成（见 handle 的 TAIL 分支）：daemonRunning 取当前 MM:SS，stopped 取 8 分钟前（远超 20s 容差）；静态播种会在预览打开 20s 后自然过期。 */
 function liveTimeText(): string {
   const beat = new Date(Date.now() - (daemonRunning ? 0 : 8 * 60_000))
   const pad = (n: number) => String(n).padStart(2, '0')
@@ -208,8 +201,7 @@ function seed(): void {
   if (isChiri) {
     put('special_tuned.yaml', specialTunedExport())
     put('fas_whitelist.yaml', fasWhitelistExport())
-    // 实验室状态：正常形态是只有注释（语义为空 = 未启用），点「启用」后会被写成模式 key。
-    // 放在 empty 分支之前，`?state=empty` 时该文件缺失，正好覆盖「文件不存在 = 未启用」。
+    // 正常形态只有注释（= 未启用），点「启用」后写成模式 key；放在 empty 分支前，?state=empty 时文件缺失，覆盖「文件不存在 = 未启用」
     put('rhine.chr', '# rhine.chr: 实验室状态。没启用时只有注释，启用了就写入模式名。\n')
   }
 
@@ -218,8 +210,7 @@ function seed(): void {
   put('current_mode.chr', 'default')
   // 心跳只为「文件存在」播种，内容在读取时动态生成（见 liveTimeText）
   put('LiveTime.chr', '')
-  // 看门狗 pid 只在 daemon 运行时存在：?daemon=stopped 模拟「已停止」，
-  // stopScheduler 会删掉它，这里不播种（否则存活态与 pid 文件互相矛盾）
+  // 看门狗 pid 只在 daemon 运行时存在：?daemon=stopped 不播种（stopScheduler 会删它，否则存活态与 pid 文件互相矛盾）
   if (daemonRunning) put('logs/watchdog.pid', '12345\n')
   put('logs/daemon.log', fakeDaemonLog())
   if (isChiri) put('logs/status.csv', fakeStatusCsv())
@@ -260,14 +251,12 @@ const TAIL_CMD = /^tail -c (\d+) (.+)$/
 const LS_CMD = /^ls -1 (.+)$/
 const WRITE_CMD = /^printf '%s' (\S+) \| base64 -d > (.+) && mv -f (.+) (.+) \|\| \{ rm -f (.+); exit 1; \}$/
 const KILL_CMD = /killall -9 chiri/
-// 导出历史日志：启动命令与轮询探测。mock 直接回「gzip 回退产物已生成」，
-// 免得在无设备预览里要等满轮询超时
+// 导出历史日志：启动命令与轮询探测。mock 直接回「gzip 回退产物已生成」，预览里免等轮询超时
 const EXPORT_START_CMD = /^nohup sh -c /
 const EXPORT_POLL_CMD = /\/sdcard\/Download\/logd_\d{4}-\d{6}\.tar\.gz/
 
 function handle(cmd: string): ExecResult | null {
   if (EXPORT_START_CMD.test(cmd)) return ok('started\n')
-  // 回放探测命令：直接给「gzip 回退产物已生成」+ 一份进度行，预览里不必等超时
   if (EXPORT_POLL_CMD.test(cmd)) return ok('s:gz\nb:2097152\nd:1\nt:1\n')
 
   const exists = EXISTS_CMD.exec(cmd)
@@ -284,7 +273,6 @@ function handle(cmd: string): ExecResult | null {
   if (tail) {
     const limit = Number(tail[1])
     const path = unquote(tail[2])
-    // 心跳按读取时刻生成：让预览里的「运行中/已停止」随时间自然成立
     if (path.endsWith('/LiveTime.chr')) return ok(liveTimeText())
     const content = files.get(path)
     if (content === undefined) return missing()

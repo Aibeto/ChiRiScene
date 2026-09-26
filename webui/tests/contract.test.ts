@@ -148,7 +148,7 @@ describe('meta.yaml 校验（复刻守护进程口径）', () => {
         current_divisor: 1000
       })
     ).toEqual([])
-    // 开关写成字符串、校准值写成字符串 → 各报一条（daemon 侧同样判非法）
+    // 开关/校准值写成字符串 → 各报一条（daemon 同判非法）
     expect(validateMeta({ ...valid, current_double: 'true' }).length).toBe(1)
     expect(validateMeta({ ...valid, current_divisor: '1000' }).length).toBe(1)
     // 旧键 unit_divisor 仍被接收（daemon 侧等价于电压校准）

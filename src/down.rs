@@ -1,18 +1,10 @@
 //! down.rs: [consts] [state] [flag] [watch]
 //!
-//! DOWN 模式（调度停摆）：模块根 `down.chr` 写着保留字 `down` 时，调度关停**全部**
-//! 调度功能，只留下采集与日志——eBPF、status.csv、daemon.log、devimp 照常，
-//! 记录的就是「ChiRi 不工作时」的设备调度情况，便于和接管时做对比。
-//!
-//! 与 `rhine.chr` 同款：对外暴露、可手改、内容即状态（缺失或只有注释 = 正常调度）。
-//! 因为文件在磁盘上，**重启设备后仍保持停摆**，只能改文件解除。
-//!
-//! 判据只认 `down.chr`；`current_mode.chr` 里的 `down` 是它的对外投影（给外部工具看
-//! 当前是不是停摆）。调度线程在停摆期间不覆盖那个文件，是为了让投影保持 `down`
-//! （覆盖只会写回真实模式、让外部工具误判为「已恢复」；不影响停摆判定本身）。
-//!
-//! 释放/恢复动作放在调度循环里（而不是这里），因为 governor 对象是那个线程独占的，
-//! 这里只提供「当前该不该停摆」这一个事实。
+//! DOWN 模式（调度停摆）：模块根 `down.chr` 写着保留字 `down` 时，调度关停**全部**调度功能，
+//! 只留采集与日志（eBPF、status.csv、daemon.log、devimp 照常），便于与接管时对比。
+//! 与 `rhine.chr` 同款：对外暴露、可手改、内容即状态；文件在磁盘上，**重启后仍保持停摆**、只能改文件解除。
+//! 判据只认 `down.chr`；`current_mode.chr` 的 `down` 是对外投影——停摆期调度线程不覆盖它，免得外部工具误判「已恢复」。
+//! 释放/恢复动作在调度循环里（governor 为该线程独占），这里只提供「当前该不该停摆」这一事实。
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -38,12 +30,10 @@ pub const DOWN_DEFAULT_CHR: &str = include_str!("../module/down.chr");
 const WATCH_RETRY_BACKOFF: Duration = Duration::from_secs(2);
 
 // [state]
-/// 解析 `down.chr` 并顺带兜底：文件缺失就地补建模板。
-/// 写了保留字 `down`（忽略大小写、允许成对引号）= 停摆；空文件/只有注释/其它内容 = 正常。
+/// 解析 `down.chr`：写了保留字 `down`（忽略大小写、允许成对引号）= 停摆；空/注释/其它 = 正常；缺失就地补建模板。
 fn read_down(root: &Path) -> bool {
     let path = root.join(DOWN_CHR);
     let Ok(text) = fs::read_to_string(&path) else {
-        // 缺失/不可读：补建模板，让用户看得到该文件与写法（与 rhine.chr 同款）。
         // 读不到按「不停摆」处理——绝不因为一个状态文件异常就让调度自己关掉。
         let _ = common::write_file_no_panic(&path, DOWN_DEFAULT_CHR.as_bytes());
         return false;
@@ -83,8 +73,7 @@ pub fn watch_loop(root: PathBuf) {
     let mut watcher: Option<utils::DirWatcher> = None;
     loop {
         if watcher.is_none() {
-            // 比默认多一个 DELETE：这个文件的**删除**同样表示解除停摆，而默认掩码只认
-            // CLOSE_WRITE / MOVED_TO，删掉时不会醒（配置与实验室那两条链路没这需求）
+            // 比默认多一个 DELETE：这个文件的**删除**同样表示解除停摆，默认掩码只认 CLOSE_WRITE / MOVED_TO、删掉不会醒
             match utils::DirWatcher::new_with_mask(
                 &root,
                 WatchMask::CLOSE_WRITE | WatchMask::MOVED_TO | WatchMask::DELETE,

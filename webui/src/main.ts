@@ -11,9 +11,7 @@ if (!hasKsu()) {
   installMockShell()
 }
 
-// [ksu-chrome]
-// WebView 外层镶边：KernelSU 提供 enableEdgeToEdge / fullScreen（老版本可能缺失，
-// wrapper 内部已做能力探测，调用失败不影响渲染）。
+// [ksu-chrome] WebView 外层镶边：enableEdgeToEdge / fullScreen 老版本可能缺失，wrapper 内已做能力探测，调用失败不影响渲染。
 enableEdgeToEdge(true)
 fullScreen(false)
 

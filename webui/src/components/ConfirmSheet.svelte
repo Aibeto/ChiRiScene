@@ -1,7 +1,6 @@
 <script lang="ts">
   // ConfirmSheet.svelte: [dialog]
-  // 破坏性操作确认：原生 <dialog> 提供焦点陷阱、Esc 关闭与无障碍语义，
-  // 视觉用语义 token 绘制（切角面板 + 状态信号）。
+  // 破坏性操作确认：原生 <dialog> 提供焦点陷阱、Esc 关闭与无障碍语义；视觉用语义 token（切角面板 + 状态信号）。
   let {
     open = false,
     title,
@@ -40,15 +39,14 @@
   }
 </script>
 
-<!-- 骨架/皮肤直接复用官方 .ak-dialog（深色弹层 + 左侧信号条 + 切角，适配见 app.css）；
-     danger 时把官方 --ak-dialog-signal 换成危险信号 -->
+<!-- 骨架/皮肤复用官方 .ak-dialog（适配见 app.css [ak-adapt]）；danger 时把 --ak-dialog-signal 换成危险信号 -->
 <dialog
   bind:this={dialogEl}
   class="ak-dialog"
   style={danger ? '--ak-dialog-signal: var(--ak-signal-danger)' : undefined}
   onclick={onBackdrop}
   oncancel={event => {
-    // busy 期间 Esc 不允许关闭：操作仍在进行，关掉会让界面与实际状态脱节
+    // busy 期间 Esc 不关闭：操作进行中，关闭会让界面与实际状态脱节
     if (busy) event.preventDefault()
   }}
   onclose={() => {
@@ -83,9 +81,8 @@
 </dialog>
 
 <style>
-  /* 弹层骨架/皮肤全部来自官方 .ak-dialog（深色适配在 app.css [ak-adapt]），
-     这里只保留项目特有的「注意事项」竖条。竖条跟随弹层信号色（CONFIRM 暖黄 /
-     DANGER 危险红）——固定暖色会在危险弹层里多出第三种颜色，红条红字之间夹一条黄线 */
+  /* 弹层骨架/皮肤来自官方 .ak-dialog（深色适配在 app.css [ak-adapt]），这里只保留项目特有的「注意事项」竖条；
+     竖条跟随弹层信号色（CONFIRM 暖黄 / DANGER 危险红），固定暖色会在危险弹层多出第三种颜色 */
   .note {
     margin-top: var(--ak-space-3);
     padding-left: var(--ak-space-3);

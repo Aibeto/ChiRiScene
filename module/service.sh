@@ -1,8 +1,6 @@
 #!/system/bin/sh
 # service.sh: [boot-wait] [paths] [cleanup] [lab-reset] [permissions] [watchdog-start]
-#
-# chiri 模块启动脚本 (service.sh)
-#
+# chiri 模块启动脚本
 
 # [boot-wait] 
 # 等待系统启动完成
@@ -36,14 +34,10 @@ mkdir -p "$LOG_DIR"
 #   echo "$(date): Joyose service disabled and data cleared." >> "$LOG_FILE"
 # fi
 
-# [cleanup] 
-# 清理旧进程（含旧看门狗）：重新执行本脚本（模块热更新/管理器重载）时
-#    若只 killall chiri，旧看门狗仍存活并在 3s 后把 daemon 再拉起——与新看门狗
-#    形成双 daemon 实例，devimp/status/daemon 日志各写两份。先按 pid 文件终止
-#    旧看门狗再清 daemon。
+# [cleanup]
+# 清理旧进程（含旧看门狗）：重跑本脚本（热更新/管理器重载）时若只 killall chiri，旧看门狗 3s 后又把 daemon 拉起，形成双 daemon、日志双写；先按 pid 文件终止旧看门狗再清 daemon。
 if [ -f "$LOG_DIR/watchdog.pid" ]; then
-  # 空文件/读取失败/内容损坏时不执行 kill：kill "" 无意义，kill 0 会向
-  # 整个进程组发信号（可能终止本脚本），非纯数字内容一律跳过
+  # 空/读取失败/内容损坏的 pid 一律跳过：kill "" 无意义，kill 0 会向整个进程组发信号（可能终止本脚本）
   pid=$(cat "$LOG_DIR/watchdog.pid" 2>/dev/null)
   case "$pid" in
     ''|0|*[!0-9]*) ;;
@@ -53,11 +47,9 @@ if [ -f "$LOG_DIR/watchdog.pid" ]; then
 fi
 killall -9 chiri > /dev/null 2>&1
 
-# [lab-reset] 
-# 实验室（rhine）状态不跨重启：开机先清掉 rhine.chr，重启后实验室即为关闭。
-# 只删 rhine.chr，不碰 rhine-back.chr —— 「上次启用过实验室」的唯一信号就是残留的
-# 快照文件，daemon 启动时读到它会按它把改动还原回去，还原完自己删除。
-# action.sh（手动重启调度）刻意不删：实验室状态在设备重启前一直保留。
+# [lab-reset]
+# 开机只删 rhine.chr，实验室状态不跨重启；rhine-back.chr 是「上次启用过实验室」的唯一信号（daemon 读到即还原并自删），勿删。
+# action.sh（手动重启）刻意不删：实验室状态保持到设备重启。
 rm -f "$MODDIR/rhine.chr"
 
 # [permissions] 
@@ -75,13 +67,9 @@ fi
 #   echo "$(date): disable_boost.sh not found" >> "$LOG_FILE"
 # fi
 
-# [watchdog-start] 
-# 启动 chiri 看门狗（崩溃自动重启，卸载时退出）
-# 看门狗记录自身 PID 到 logs/watchdog.pid，供 WebUI「关闭调度」定位并终止。
-# 退出条件：存在卸载标记 .uninstalling（卸载中）或主进程二进制被删除（卸载完成）。
-# 崩溃/异常退出不满足退出条件，3 秒后自动拉起。
-# 注意：旧写法 "$1" || exit 0 在 chiri 崩溃（返回非 0）时会直接让看门狗退出、无法自愈，已修正。
-# 使用 setsid 而非 nohup，确保进程完全脱离父进程组，防止关闭界面导致服务终止。
+# [watchdog-start]
+# 看门狗：daemon 崩溃自动重启，存在 .uninstalling 或二进制被删时退出；PID 写入 logs/watchdog.pid 供 WebUI「关闭调度」终止。
+# 用 setsid 完全脱离父进程组（旧写法 "$1" || exit 0 会在 daemon 崩溃返回非 0 时让看门狗一起退出、无法自愈，已弃用）。
 
 # 检测 setsid 可用性，优先使用 BusyBox 的 setsid
 SETSID_CMD=""
@@ -115,11 +103,8 @@ WATCHDOG_CMD="sh -c '
   exit 0
 ' sh \"$LOG_DIR/watchdog.pid\" \"$DAEMON_PATH\" \"$MODDIR/.uninstalling\" > /dev/null 2>&1"
 
-# 启动看门狗。两个分支都必须「后台化 + 脱离父进程组」：
-# - setsid 直接前台执行会阻塞本脚本（看门狗 while 循环在 daemon 存活期间
-#   永不退出——service.sh 会一直挂到 daemon 退出才返回，magiskd 启动会话
-#   被拖死），必须 & 放后台；
-# - nohup 分支同样 & 放后台（setsid 不可用时 nohup + & 已足够被 init 收养）。
+# 两个分支都必须后台化并脱离父进程组：setsid 前台执行会阻塞本脚本（看门狗 while 在 daemon 存活期间永不退出，magiskd 启动会话被拖死），必须 &；
+# nohup 分支同样 & 后台（setsid 不可用时 nohup + & 已足够被 init 收养）。
 if [ -n "$SETSID_CMD" ]; then
   $SETSID_CMD sh -c "$WATCHDOG_CMD" &
 else

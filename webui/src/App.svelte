@@ -7,6 +7,7 @@
   import AppsView from '@/views/AppsView.svelte'
   import BatteryView from '@/views/BatteryView.svelte'
   import ConfigView from '@/views/ConfigView.svelte'
+  import AdvancedView from '@/views/AdvancedView.svelte'
   import LabView from '@/views/LabView.svelte'
   import LogsView from '@/views/LogsView.svelte'
   import OverviewView from '@/views/OverviewView.svelte'
@@ -79,6 +80,8 @@
       <LogsView />
     {:else if router.view === 'battery'}
       <BatteryView />
+    {:else if router.view === 'advanced'}
+      <AdvancedView />
     {:else}
       <LabView />
     {/if}

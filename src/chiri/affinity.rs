@@ -1,39 +1,21 @@
 //! affinity.rs: [consts] [cpuset_io] [reserve_core] [sys_probe] [manager] [rebalance] [fg_promote]
 
-/// CPU 亲和与线程迁移控制器（ChiRi 专属，按核心粒度放置，低开销版）。
+/// CPU 亲和与线程迁移控制器（按核心粒度放置，低开销版）。
 ///
-/// 分层：
-/// - cgroup 层：boost 类模式（boost/vector/特调）下收窄 top-app/foreground cpuset
-///   到大核+超大核、后台分组压小核；可选 uclamp.min/max；normal/doze 恢复快照。
-/// - 线程层：
-///   * 前台（fg_pid 由 app_detect 提供）：关键线程（主线程/RenderThread 等）
-///     核组绑定——boost 下 top-app/foreground cpuset 已收窄为 prime∪big，内核
-///     在组内自调度，cpuset 不可用时写一次组掩码兜底；普通线程单核钉定，
-///     优先 big、钉满溢出 prime。
-///   * 后台忙线程动态 promote 到 big（避免全压小核时的能效灾难），回落 demote。
-///   * 单核过载重钉带两道闸：分数滞回（OVERLOAD_MARGIN）+ 反跳回冷却
-///     （RETURN_COOLDOWN）。此前只有时间防抖，重负载线程会以 8s 节拍在
-///     prime↔big 或两颗大核间乒乓，每次迁移 cache/TLB 全冷，表现为周期性卡顿。
+/// cgroup 层：boost 类模式下收窄 top-app/foreground cpuset 到 big∪prime、后台组压
+/// 小核，可选 uclamp.min/max；normal/doze 恢复快照。线程层：前台关键线程组绑定
+/// （cpuset 不可用时写一次组掩码兜底）、普通线程单核钉定（优先 big、满溢 prime）、
+/// 后台忙线程 promote 到 big 防能效灾难、demote 回落；过载重钉带分数滞回
+/// （OVERLOAD_MARGIN）+ 反跳回冷却（RETURN_COOLDOWN）双闸防 8s 节拍乒乓。
 ///
-/// 开销控制（相对逐线程每轮全读 stat 约省 >50% 文件 I/O）：
-/// - 前台：每轮 1 次 read_dir 前台 task 目录；仅**新增**线程读 1 次 stat 判定
-///   关键/建档；存量线程的 home 合法性只用缓存的逐核 util 与在线位图判断，
-///   不再逐线程 open stat。已消失线程在下一轮 read_dir 后即清理（释放钉核计数）。
-/// - 后台候选：每 BG_LIST_EVERY_ROUNDS(2) 轮读一次三个后台 cpuset 的 tasks，
-///   候选按游标分片，每轮只深扫 BG_SCAN_WINDOW(64) 个；对已建档未 promote 的
-///   候选复用状态做窗口 util（首窗为 0），**两窗防抖**（上次采样忙且本次仍忙，
-///   期间采到低负载即清除标记）即 promote——不依赖两次采样间隔，分片稀疏
-///   采样下仍有效；已 promote 线程数量少，每 2 轮复查 demote。
-/// - 在线核位图缓存每 4 轮刷新（热插拔不频繁）。
-/// - 稳态（前台线程集不变、后台空闲）单轮 ≈ 1 read_dir + 0~64 stat + 低频辅助读。
+/// 开销控制（较逐线程每轮全读 stat 省 >50% I/O）：前台每轮 1 次 read_dir、仅新增
+/// 线程读 stat；后台候选每 2 轮列 tasks、游标分片每轮深扫 BG_SCAN_WINDOW(64) 个，
+/// 两窗防抖后 promote，promoted 每 2 轮复查 demote；在线位图每 4 轮刷新；稳态单轮
+/// ≈ 1 read_dir + 0~64 stat。
 ///
-/// 选核：score = 逐核 util(最近 SystemLoadUpdate) + 本核钉线程数×0.2，取核池 ∩
-/// 在线核中的最低分核（离线核 util 恒 0，钉到离线核会冻结，必须排除）。
-/// 关键线程不走 score 选核——组绑定交给内核调度；score 只服务单核钉定的
-/// 普通线程与后台 promoted 线程。
-///
-/// 黑名单：affinity_blacklist.yaml 编译嵌入 + 空 cmdline/`/` 开头内置兜底；
-/// 线程 comm 命中不迁移；后台 promote 前读一次进程 cmdline 校验并缓存。
+/// 选核 score = 逐核 util + 钉线程数×0.2，取核池 ∩ 在线核最低分核（离线核必须排除，
+/// 钉上会冻结）；关键线程组绑定不走 score。黑名单：affinity_blacklist.yaml 编译嵌入
+/// + 空 cmdline/`/` 开头内置兜底；comm 命中不迁移，promote 前读一次 cmdline 校验并缓存。
 use crate::chiri::config::AffinityConfig;
 use crate::utils::{FastReader, SysPathExist};
 use log::{debug, info};
@@ -51,9 +33,8 @@ const KIND_BOOST: u8 = 1;
 const KIND_NORMAL: u8 = 2;
 
 /// 线程被绑到性能核组（big∪prime）的原因；None = 未绑定。
-/// 用单一枚举替代原先 `group_pinned + busy_bound` 两个必须手工同步的布尔量——
-/// 两布尔量要求所有绑定/释放路径同时改一对方可保持一致，漏改一处会让线程停在
-/// 「已标记忙但未绑定」的矛盾态而静默失效
+/// 单一枚举替代原先 group_pinned+busy_bound 两布尔量：后者要求所有绑定/释放路径
+/// 手工同步，漏改会让线程停在「已标记忙但未绑定」的矛盾态而静默失效。
 #[derive(Clone, Copy, PartialEq)]
 enum GroupBind {
     /// 未绑定（全核掩码）
@@ -67,14 +48,12 @@ enum GroupBind {
 const GROUP_TOP_APP: &str = "top-app";
 const GROUP_FOREGROUND: &str = "foreground";
 const BACKGROUND_GROUPS: [&str; 3] = ["background", "system-background", "restricted"];
-/// 后台降权组（cpu.uclamp.max 钳制）：**刻意不含 system-background**——它是系统
-/// 后台（媒体/音频等服务，画中画、后台播放等可感知场景），降权可能伤到"看着能
-/// 感知"的体验；只压纯应用后台与受限组
+/// 后台降权组（cpu.uclamp.max 钳制）：刻意不含 system-background——系统后台承载
+/// 媒体/后台播放等可感知场景，只压纯应用后台与受限组
 const BG_DEMOTE_GROUPS: [&str; 2] = ["background", "restricted"];
 
-/// 后台组 `cpu.uclamp.max` 的「值未变不写」守卫状态：**纯原子量**，不在 apply
-/// 周期路径上取锁（口径同 `logger::diag_active` 的「高频只读原子量」）。
-/// 编码：0 = 尚未写入（首启必写）；1..=101 = 数值 pct+1；`BG_UCLAMP_MAX_CODE` = `max`。
+/// 后台组 cpu.uclamp.max 的「值未变不写」守卫状态：纯原子量，不进 apply 周期锁路径。
+/// 编码：0 = 未写入（首启必写）；1..=101 = pct+1；BG_UCLAMP_MAX_CODE = max。
 static BG_UCLAMP_CODE: AtomicU64 = AtomicU64::new(0);
 /// 上次**实际**写入时刻（相对 `BG_UCLAMP_EPOCH` 的毫秒；`Instant` 不能进原子量）
 static BG_UCLAMP_AT_MS: AtomicU64 = AtomicU64::new(0);
@@ -84,14 +63,11 @@ static BG_UCLAMP_EPOCH: OnceLock<Instant> = OnceLock::new();
 /// `max` 的守卫编码（数值 pct 最大 100 → 编码最大 101，无冲突）
 const BG_UCLAMP_MAX_CODE: u64 = u64::MAX;
 
-/// 值未变时的强制重写间隔：ChiRi 默认是全局唯一调度程序，cgroup 节点被改写属
-/// 异常态（残留旧模块/手动调试/内核异常），只靠「值变了才写」等于永久放弃纠偏；
-/// 60s 一次再断言是异常兜底（不是常态对抗），又把稳态写入
-/// 从 ~1 次/s 降到 1 次/60s（实测 bg_apply 2450 次/42min 全是同值重写）。
+/// 值未变时的强制重写间隔：ChiRi 是全局唯一调度程序，cgroup 被改写属异常态，60s
+/// 再断言兜底纠偏（非常态对抗），稳态写入从 ~1 次/s 降到 1 次/60s
 const BG_UCLAMP_REASSERT: Duration = Duration::from_secs(60);
 
-/// 值字符串 → 守卫编码；解析失败返回 0（= 「未知，必须写」，退化为改造前行为）。
-/// 只服务本文件两个调用点（`{pct}.00` 与 `max`），不做通用浮点解析。
+/// 值字符串 → 守卫编码；解析失败返回 0（= 必须写，退化为改造前行为）。仅服务本文件两个调用点。
 fn bg_uclamp_code(val: &str) -> u64 {
     if val == "max" {
         return BG_UCLAMP_MAX_CODE;
@@ -103,14 +79,9 @@ fn bg_uclamp_code(val: &str) -> u64 {
         .unwrap_or(0)
 }
 
-/// 写后台组的 `cpu.uclamp.max`：**候选组逐个写、不去预判存在性**——Android 的
-/// restricted 组由 init 按需创建（部分机型没有，或运行期才出现），写入失败本身
-/// 就是「该组不可用」的权威证据；预判会让日志与真实情况脱节，也把失败吞掉。
-/// 日志口径见 `utils::write_nodes`：单组失败 debug、全组失败 warn（一次）。
-/// 每节点补一条 @A uclamp 帧（write_nodes 只回成功列表，失败无 errno 记 e0）。
-///
-/// 本函数是真实内核写入（不是诊断日志），守卫逻辑与 dev_record 开关无关：
-/// 值未变且距上次实写不足 `BG_UCLAMP_REASSERT` 时整段跳过——不改内核、不打帧。
+/// 写后台组 cpu.uclamp.max：候选组逐个写、不预判存在性（restricted 由 init 按需创建，
+/// 写入失败即「该组不可用」的权威证据）；日志口径见 utils::write_nodes，每节点补 @A uclamp 帧。
+/// 真实内核写入，守卫与 dev_record 开关无关：值未变且距上次实写 < BG_UCLAMP_REASSERT 整段跳过。
 fn write_bg_uclamp_max(val: &str, reason: &str) {
     let code = bg_uclamp_code(val);
     let now = Instant::now();
@@ -129,8 +100,7 @@ fn write_bg_uclamp_max(val: &str, reason: &str) {
         .map(|g| (format!("/dev/cpuctl/{g}/cpu.uclamp.max"), val.to_string()))
         .collect();
     let written = crate::utils::write_nodes(&items, "bg-uclamp-max");
-    // 状态在写之后更新；写失败也更新——同值下一周期即跳过，60s 兜底会再断言
-    // 一次，而失败组本身在下方 @A 帧 result=e0 里可见，观测不受影响
+    // 状态在写之后更新；写失败也更新：同值下周期即跳过，60s 兜底再断言，失败组在 @A 帧 e0 可见
     BG_UCLAMP_CODE.store(code, Ordering::Relaxed);
     BG_UCLAMP_AT_MS.store(now_ms, Ordering::Relaxed);
     // 打点与写入同门控：跳过写入时也不产生帧，否则同值重写仍会把 aff 文件刷满
@@ -153,54 +123,34 @@ const BG_LIST_EVERY_ROUNDS: u64 = 2;
 const PROMOTED_REVIEW_EVERY_ROUNDS: u64 = 2;
 const ONLINE_EVERY_ROUNDS: u64 = 4;
 
-/// 线程迁移最小间隔（promote/demote 流程）：过于频繁的迁移带来 cache
-/// 冷却与调度抖动，负载窗口本身已做两窗/3 连防抖，这里只挡边界抖动
+/// 线程迁移最小间隔：负载窗口已做两窗/3 连防抖，这里只挡边界抖动
 const MIN_MIGRATE_INTERVAL: Duration = Duration::from_secs(4);
-/// 重钉分数滞回：目标核 score 需比 home 核低至少该值才值得迁移。
-/// 没有滞回时，0.70 阈值边缘的 util 快照噪声就能驱动无收益搬动——
-/// 两个核互相「看起来略好一点」正是两核乒乓的直接来源
+/// 重钉分数滞回：目标核 score 须比 home 核低至少该值；无滞回时 util 噪声驱动两核乒乓
 const OVERLOAD_MARGIN: f32 = 0.15;
-/// 反跳回冷却：迁离某核后该时长内禁止迁回，打破 A→B→A 振荡。
-/// 乒乓周期与 REPIN_DEBOUNCE 同拍（8s），取两倍时长足以错开节奏
+/// 反跳回冷却：迁离某核后该时长内禁止迁回，打破 A→B→A 振荡（乒乓周期 8s，取两倍错开节奏）
 const RETURN_COOLDOWN: Duration = Duration::from_secs(16);
-/// 过载重钉防抖：重钉打断线程本地性（cache/TLB 冷却）比 promote 更明显，
-/// 拉长间隔减少迁移次数；首次分配分散到位后应极少触发
+/// 过载重钉防抖：重钉打断 cache/TLB 本地性比 promote 更明显，拉长间隔减少迁移
 const REPIN_DEBOUNCE: Duration = Duration::from_secs(8);
-/// 核心过载阈值：钉定线程所在核心 util 超过该值时重钉到低占用核。
-/// 动机：单核持续高占用会把 schedutil 顶进高频区、能效变差，把忙线程
-/// 分散到低占用核压制峰值频率（前台与 bg promoted 线程共用同一阈值）。
+/// 核心过载阈值：钉定核 util 超此值重钉到低占用核，分散负载压制峰值频率（前台/promoted 共用）
 const CORE_OVERLOAD_UTIL: f32 = 0.70;
-/// 已钉线程对核心 score 的保守负载基准：util 快照滞后（线程刚钉上、核心
-/// util 尚未反映其负载）时仍能把后续线程推向其他核，避免多线程挤同核
-/// 时间片轮转造成卡顿；权重过弱会让第二个重线程挤入"看似空闲"的核
+/// 已钉线程对 score 的保守负载基准：util 快照滞后时仍能把后续线程推向其他核，避免挤同核
 const PINNED_WEIGHT: f32 = 0.4;
-/// 单核钉定数量上限：普通线程钉核的目的是「分散」而非「圈养」。达到上限
-/// 说明 4 个性能核已被钉满，继续钉只会让后续线程在同核上排队——8475
-/// 终末地实测：~180 个前台线程 / 4 性能核、单核 30+ 钉定，psi_cpu some
-/// 平均 28%（帧线程被辅助线程排队拖住，GPU 等帧提交）。达到上限后的
-/// 线程不再单核钉定，留在 boost cpuset（top-app/foreground = big∪prime）
-/// 内由 EAS 自调度
+/// 单核钉定上限：钉核目的是「分散」非「圈养」，钉满继续钉只会在同核排队；达上限的线程
+/// 留 boost cpuset（big∪prime）内 EAS 自调度
 const MAX_PINS_PER_CORE: u32 = 3;
-/// overload_hold 打点冷却：滞回不满足时同一过载线程每轮（2s）都会重复
-/// 评估，不节流时终末地一局刷 1.1 万+ 行（约占 devimp 日志 41%）。每 tid
-/// 半分钟一条足以观测「长期滞留」，同时消除高频日志 IO
+/// overload_hold 打点冷却：滞回不满足时同一过载线程每轮都重复评估，每 tid 半分钟一条足以观测长期滞留
 const HOLD_LOG_COOLDOWN: Duration = Duration::from_secs(30);
 const PROMOTE_UTIL_PCT: f32 = 25.0;
 const LITTLE_HIGH_WATER: f32 = 0.70;
 /// default 模式关键线程组绑定的解除水位（迟滞下沿，防乒乓）
 const KEY_BIND_RELEASE_WATER: f32 = 0.50;
-/// default 小核高水位时，非关键前台线程「忙」判定阈值（%）：窗口 util 连续
-/// 两窗达此值即抬到 big∪prime。8550 实测 little 常有一颗核被单个非关键前台
-/// 线程打满（util 0.70~0.95）而 big 平均有 3+ 核空闲、prime 近空转——仅绑关键
-/// 线程不足以解除小核饱和
+/// default 小核高水位时非关键前台线程「忙」阈值（%）：连续两窗达此值即抬 big∪prime；
+/// 仅绑关键线程不足以解除小核饱和
 const FG_BUSY_UTIL_PCT: f32 = 30.0;
-/// 压力窗口内每轮最多采样 util 的非关键前台线程数（游标轮转）：限制新增文件
-/// IO——前台线程可达数十，逐轮全量读 stat 会退化回「逐线程每轮读 stat」的高开销
+/// 压力窗口内每轮最多采样 util 的非关键前台线程数（游标轮转），限制新增文件 IO
 const FG_SCAN_WINDOW: usize = 32;
-/// normal_busy 的释放水位（%）：绑定后 util 持续低于此值才回落全核。
-/// 与绑定水位 FG_BUSY_UTIL_PCT 构成滞回，避免阈值边缘反复绑/放；若沿用
-/// DEMOTE_UTIL_PCT(5%) 作释放水位，5~30% 的中等负载线程会长期滞留在性能核，
-/// little 高水位持续期间能耗反而上升（与调优目标相悖）
+/// normal_busy 释放水位（%）：与绑定水位构成滞回防反复绑/放；沿用 DEMOTE_UTIL_PCT(5%)
+/// 会让 5~30% 中等负载线程长期滞留性能核、能耗反升
 const FG_BUSY_RELEASE_UTIL_PCT: f32 = 15.0;
 const LITTLE_PROMOTE_UTIL_PCT: f32 = 10.0;
 const BIG_HIGH_WATER: f32 = 0.90;
@@ -245,16 +195,14 @@ fn read_cpuset_cpus(group: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// 批量写 cpuset 组的 cpus（键 = 组名）：组是「同类多节点」（不同机型/框架暴露
-/// 的组不同）。日志口径见 `utils::write_nodes`——单组失败 debug、**全部**组失败才 warn。
-/// 每次批量写补一条 @A cpuset_cpus 汇总帧（dst=键列表、value=组数，不逐组落明细）。
+/// 批量写 cpuset 组 cpus（键 = 组名，组是「同类多节点」）：单组失败 debug、全组失败
+/// 才 warn（口径见 utils::write_nodes）；每次批量写补一条 @A cpuset_cpus 汇总帧
 fn write_cpuset_cpus_items(items: &[(String, String)]) {
     let nodes: Vec<(String, String)> = items
         .iter()
         .map(|(group, value)| (format!("/dev/cpuset/{group}/cpus"), value.clone()))
         .collect();
-    // 独立的告警键（cpuset-cpus vs cpuset-restore）：两者是不同的操作，共用一键会让
-    // 「一边写成功」清掉「另一边全失败」的记录 → 2s 热路径反复报同一条 warn
+    // 独立告警键：cpuset-cpus 与 cpuset-restore 是不同操作，共用一键会互相清掉失败记录、热路径反复报 warn
     let written = crate::utils::write_nodes(&nodes, "cpuset-cpus");
     if !items.is_empty() && crate::logger::diag_active() {
         let keys: Vec<&str> = items.iter().map(|(g, _)| g.as_str()).collect();
@@ -273,9 +221,8 @@ fn write_cpuset_cpus_items(items: &[(String, String)]) {
     }
 }
 
-/// 批量写 cpuset（键 = **完整节点路径**）：快照回写用（快照记的就是路径）。
-/// 单点失败 debug、全部失败 warn——恢复期最怕「全都没写回去」还毫无痕迹。
-/// 每次批量写补一条 @A cpuset_cpus 汇总帧（同 write_cpuset_cpus_items 口径）。
+/// 批量写 cpuset（键 = 完整节点路径，快照回写用）：单点失败 debug、全部失败 warn
+/// （恢复期最怕全都没写回去）；补一条 @A cpuset_cpus 汇总帧（同上口径）
 fn write_cpuset_paths_items(items: &[(String, String)]) {
     let written = crate::utils::write_nodes(items, "cpuset-restore");
     if !items.is_empty() && crate::logger::diag_active() {
@@ -305,16 +252,10 @@ fn read_cpuset_tasks(group: &str) -> Vec<i32> {
         .collect()
 }
 
-// 专用核独占（scenemode）：把一颗小核完全留给调度服务
-//
-// 仅 sched_setaffinity 自钉是不排他的——其他进程仍可被调度到该核。
-// 真正独占 = 把该核从全部业务 cpuset 组（top-app/foreground/background/
-// system-background/restricted）的 cpus 中移除：组内任务从此无法落到该核，
-// 新进程继承父组掩码同样被排除。调度服务自身线程则移入 cpuset 根组（根组
-// 含全部在线核，sched_setaffinity 的钉定不会被组掩码二次过滤）。
-// 覆盖范围说明：Android 应用/框架任务全部落在上述业务组内，根组仅 init/
-// magiskd 等常驻守护进程（空闲驻留，无周期性负载）——排除是实践意义上的
-// 完全独占。
+// 专用核独占（scenemode）：sched_setaffinity 自钉不排他，真独占 = 把该核从全部业务
+// cpuset 组的 cpus 中移除（新进程继承父组掩码同样被排除）；调度服务自身线程移入根组
+// （含全部在线核，钉定不被组掩码二次过滤）。应用/框架任务全在业务组内，根组仅 init
+// 等空闲守护进程，此为实践意义上的完全独占。
 
 // [reserve_core]
 /// scenemode 期间被独占核排除的业务 cpuset 组（与 apply 的组口径一致）
@@ -344,10 +285,8 @@ fn parse_cpu_list(s: &str) -> Vec<usize> {
     out
 }
 
-/// 把 `core` 从全部业务 cpuset 组的 cpus 中移除（其他进程不可再调度到该核）。
-/// 被修改组的 (组名, 原始 cpus) 追加进 `snapshot`（已在快照中的组不重复记录，
-/// 防止框架重写 top-app 后的中间值覆盖真实原始值）；周期重入用于纠偏——
-/// 框架 CpusetManager 可能把保留核加回 top-app，每 2s 重写一次。
+/// 把 core 从全部业务 cpuset 组 cpus 移除；被改组 (组名, 原始 cpus) 记入 snapshot（不
+/// 重复记录，防框架重写后的中间值覆盖真实原值）；周期重入纠偏（框架会加回，每 2s 重写）
 pub(crate) fn exclude_core_from_cpusets(core: usize, snapshot: &mut Vec<(String, String)>) {
     let mut writes: Vec<(String, String)> = Vec::new();
     for group in RESERVED_EXCLUDE_GROUPS {
@@ -378,8 +317,7 @@ pub(crate) fn restore_excluded_cpusets(snapshot: Vec<(String, String)>) {
 }
 
 // [lab_groups]
-/// 实验室静态分组（contingency/babel）：组级写 cpus 并把原值记入快照（每组只记
-/// 一次，防止框架重写后的中间值覆盖真实原始值）。组不存在或写失败则跳过。
+/// 实验室静态分组：组级写 cpus 并把原值记入快照（每组只记一次防中间值覆盖），组缺失/写失败跳过
 fn set_groups_cpus_tracked(groups: &[&str], value: &str, snapshot: &mut Vec<(String, String)>) {
     let mut writes: Vec<(String, String)> = Vec::new();
     for group in groups {
@@ -447,9 +385,8 @@ fn self_cpuset_group() -> Option<String> {
     None
 }
 
-/// cpuset 组的 tasks 节点路径。`group_path` 来自 /proc/self/cgroup（内核
-/// 输出带前导斜杠，如 "/top-app"，根组为 "/"），但两侧都裁掉斜杠再显式
-/// 拼接，对有无前导斜杠的两种内核约定都生成正确路径。
+/// cpuset 组 tasks 节点路径：group_path 来自 /proc/self/cgroup（可能带前导斜杠），
+/// 两侧都裁掉斜杠再拼接，兼容两种内核约定
 fn cpuset_tasks_path(group_path: &str) -> String {
     let p = group_path.trim_matches('/');
     if p.is_empty() {
@@ -471,9 +408,8 @@ fn self_tids() -> Vec<i32> {
     out
 }
 
-/// 把守护进程自身全部线程移入 cpuset 根组（根组含全部在线核，专用核钉定
-/// 才不会被原组掩码二次过滤）。返回原组相对路径供退出恢复；None = 无法
-/// 读取原组（此时不移动，独占退化为「尽力而为」）。
+/// 把守护进程自身全部线程移入 cpuset 根组（专用核钉定不被原组掩码二次过滤）；
+/// 返回原组相对路径供退出恢复，None = 读不到原组（不移动，独占退化为尽力而为）
 pub(crate) fn move_self_to_cpuset_root() -> Option<String> {
     let orig = self_cpuset_group()?;
     let mut last: std::io::Result<()> = Ok(());
@@ -510,7 +446,6 @@ pub(crate) fn move_self_to_cpuset_group(group_path: &str) {
     let mut n = 0u32;
     for tid in self_tids() {
         let r = std::fs::write(&tasks, tid.to_string());
-        // 首个失败 errno 为准（后续成功不覆盖失败），与 cleanup_thread 汇总口径一致
         if last.is_ok() {
             last = r;
         }
@@ -532,14 +467,9 @@ pub(crate) fn move_self_to_cpuset_group(group_path: &str) {
     }
 }
 
-/// 设置单个线程的 CPU 亲和掩码。
-/// 用 zeroed 的 `cpu_set_t` 分配：保证对齐与布局合法（`vec![0u8]` 起始地址对齐仅 1，
-/// 强转 `*const cpu_set_t` 是未对齐指针，依赖 libc 包装器不解引用的运气，不可靠）。
-/// 经 `libc::CPU_SET` 置位（bionic 64 位下 cpu_set_t = [u64; 16]，支持 1024 CPU）；
-/// CPU_SET 内部数组索引无越界检查，超出容量直接跳过（与原字节掩码防护等价）。
-/// 成功返回 `Ok(())`；线程已退出（ESRCH）等失败返回 `Err`（errno 在失败当刻取得，
-/// 供调用方格式化 `@A result=e{errno}`，失败后的 return/重试语义由调用方保持原样）。
-/// 供 core_ctl 的 scenemode 专用核自钉复用。
+/// 设置单线程 CPU 亲和掩码：zeroed cpu_set_t 保证对齐/布局合法（vec![0u8] 起始对齐
+/// 仅 1 不可靠），libc::CPU_SET 置位（bionic 64 位 = [u64;16] 支持 1024 CPU，越界跳过）；
+/// errno 在失败当刻取得供 @A 帧格式化。供 core_ctl scenemode 专用核自钉复用。
 pub(crate) fn set_tid_affinity(tid: i32, cpu_ids: &[usize]) -> std::io::Result<()> {
     let mut mask: libc::cpu_set_t = unsafe { std::mem::zeroed() };
     let max_cpu = std::mem::size_of::<libc::cpu_set_t>() * 8;
@@ -548,8 +478,7 @@ pub(crate) fn set_tid_affinity(tid: i32, cpu_ids: &[usize]) -> std::io::Result<(
             unsafe { libc::CPU_SET(c, &mut mask) };
         }
     }
-    // AppOptR 式短路：当前掩码与期望一致时跳过 sched_setaffinity，重复钉定
-    // 变为一次无副作用的读（周期 rebalance 与 core_ctl 复用点都会高频命中）
+    // AppOptR 式短路：掩码一致时跳过 sched_setaffinity（周期路径高频命中）
     if let Some(curr) = read_tid_mask(tid) {
         let mut want: Vec<usize> = cpu_ids.iter().copied().filter(|&c| c < max_cpu).collect();
         want.sort_unstable();
@@ -567,11 +496,9 @@ pub(crate) fn set_tid_affinity(tid: i32, cpu_ids: &[usize]) -> std::io::Result<(
     }
 }
 
-/// 读单线程当前 CPU 亲和掩码（sched_getaffinity），返回置位核号（升序）；
-/// 线程已退出（ESRCH）等失败返回 None。快照取数与 set_tid_affinity 短路共用。
+/// 读单线程当前亲和掩码（sched_getaffinity）返回置位核号升序，失败（ESRCH 等）返回 None；快照与短路共用
 pub fn read_tid_mask(tid: i32) -> Option<Vec<usize>> {
-    // SAFETY: curr 为 zeroed 的合法 cpu_set_t，sched_getaffinity 仅写入该缓冲；
-    // 再按字节位展开为核号，不依赖 cpu_set_t 内部字段布局
+    // SAFETY: curr 为 zeroed 合法 cpu_set_t，sched_getaffinity 仅写入该缓冲；按字节位展开为核号，不依赖内部布局
     unsafe {
         let mut curr: libc::cpu_set_t = std::mem::zeroed();
         if libc::sched_getaffinity(tid, std::mem::size_of::<libc::cpu_set_t>(), &mut curr) != 0 {
@@ -630,12 +557,8 @@ fn read_cmdline(pid: i32) -> String {
         .to_string()
 }
 
-/// 读线程归属进程 PID（`/proc/<tid>/status` 的 `Tgid:` 行）。
-/// 目的：后台候选线程建档时把归属记全——@S 的 t 行 `pid=0` 表示「归属未知」，
-/// 实测 54% 的 t 行落在这个值上，根因就是后台候选 insert 时一律写 0。
-/// 只在**首见建档**时读一次（分片扫描下每轮新增 ≤ `BG_SCAN_WINDOW` 个），
-/// 不进周期路径；读不到（线程已退出/节点不可读）返回 None，调用方保持 0，
-/// 不臆造别的哨兵值（0 的既有语义就是「归属未知」）。
+/// 读线程归属进程 PID（/proc/<tid>/status 的 Tgid 行），仅后台候选首见建档时读一次
+/// （不进周期路径）。@S t 行 pid=0 既有语义即「归属未知」，读不到保持 0、不臆造哨兵值。
 fn read_tgid(tid: i32) -> Option<i32> {
     let text = std::fs::read_to_string(format!("/proc/{tid}/status")).ok()?;
     text.lines()
@@ -681,10 +604,8 @@ fn online_bitmap(max_cpu: usize) -> Vec<bool> {
     }
 }
 
-/// 单线程 stat 采样（快照取数复用）
-/// 写内核节点并保留与 utils::try_write_file 等价的失败日志（节点缺失 debug、
-/// 其它 warn）；差别仅在返回真实 io 结果，供 @A 帧格式化 errno——诊断关闭时
-/// 失败可观测性不降级（@A 有 diag_active 闸门，日志没有）。
+/// 写内核节点并保留与 utils::try_write_file 等价的失败日志（节点缺失 debug、其余
+/// warn）；差别仅在返回真实 io 结果供 @A 帧格式化 errno（@A 有 diag_active 闸门，日志没有）
 fn logged_write(path: &str, val: &str) -> std::io::Result<()> {
     let res = std::fs::write(path, val);
     if let Err(e) = &res {
@@ -700,24 +621,20 @@ fn logged_write(path: &str, val: &str) -> std::io::Result<()> {
 pub struct ThreadSample {
     pub comm: String,
     pub ticks: u64,
-    /// 当前所在核（stat 第 39 字段 processor，`)` 后第 36 段 0 基）；读不到 -1。
-    /// 与 comm/ticks 同一次 stat 读取顺带解析，避免调用方为核号二次读 /proc
+    /// 当前所在核（stat 的 processor 字段，`)` 后第 36 段 0 基）；读不到 -1，与 comm/ticks 同次读取顺带解析
     pub processor: i32,
 }
 
+/// 单线程 stat 采样（快照取数复用）。
 pub fn sample_one_tid(tid: i32) -> Option<ThreadSample> {
     let text = std::fs::read_to_string(format!("/proc/{tid}/stat")).ok()?;
-    // comm 以首 '(' 与末 ')' 定界（comm 自身可含 '(' / 空格，故闭侧用 rfind）。
-    // 2026-09-23 修：原先 `text[1..close]` 从下标 1 切起，把「tid 尾部+` (`」
-    // 混进 comm（如 tid 12345 得到 "2345 (RenderThread"），KEY_THREAD_COMMS /
-    // 亲和黑名单的全等匹配因此恒不命中（is_key_thread / is_affinity_blacklisted
-    // 形同虚设）、@A/@S 帧 comm 字段失真
+    // comm 以首 '(' 与末 ')' 定界：comm 自身可含 '(' / 空格，闭侧必须 rfind，
+    // 从下标 1 切会把 tid 尾部混进 comm，白名单/黑名单全等匹配恒不命中
     let open = text.find('(')?;
     let close = text.rfind(')')?;
     let rest = &text[close + 1..];
-    // 单次遍历同时取 utime / stime（`)` 之后的第 11 / 12 个字段，0 基）、
-    // processor（第 36 段，0 基）与字段总数：
-    // 原先 collect 成 Vec<&str> 只为取这几个下标，每个 tid 白付一次 Vec 分配与整段收集
+    // 单次遍历同时取 utime/stime（`)` 后第 11/12 字段 0 基）、processor（第 36 段）
+    // 与字段总数，避免 collect 成 Vec 的整段分配
     let mut utime: Option<u64> = None;
     let mut stime: Option<u64> = None;
     let mut processor: Option<i32> = None;
@@ -749,14 +666,10 @@ fn clk_tck() -> f32 {
 
 /// 线程放置状态
 struct ThreadState {
-    /// 归属进程 PID：前台条目 = 建档时的 `fg_pid`；后台候选建档时经
-    /// `read_tgid` 尽力解析（@S t 行归属），拿不到保持 0
-    /// —— 0 的既有语义即「归属未知」，勿改成别的哨兵值
+    /// 归属 PID：前台 = 建档时 fg_pid；后台候选 read_tgid 尽力解析（@S t 行归属），0 = 未知（勿改哨兵）
     pid: i32,
-    /// 是否前台归属条目（唯一权威判据）：true = 由前台 `fg_pid` 建档，之后只在
-    /// 前台扫描「收养」时转 true。为什么单独存一个 bool 而不看 `pid > 0`：
-    /// `pid` 现在也承载后台候选的真实 tgid，若仍拿「pid>0」当「前台线程」哨兵，
-    /// 后台候选会被 departed 清理与后台 promote 过滤误当成前台条目处理
+    /// 是否前台归属条目（唯一权威判据，勿用 pid>0 代判）：pid 也承载后台真实 tgid，
+    /// 看 pid>0 会把后台候选误当前台条目处理；true 仅由前台建档与「收养」转换
     is_fg: bool,
     /// 线程名（首见 stat 采样缓存，devimp place 行复用，避免重复读 stat）
     comm: String,
@@ -766,9 +679,7 @@ struct ThreadState {
     home: i16,
     /// 已 promote（后台，含 cpuset 组迁移）
     promoted: bool,
-    /// 来源 cpuset 组（demote/清理迁回）。
-    /// 取值只来自 BACKGROUND_GROUPS / GROUP_FOREGROUND 常量，故存 `'static` 借用，
-    /// 免去每个后台线程建档时的 String 分配
+    /// 来源 cpuset 组（demote/清理迁回）；取值只来自常量故存 'static 借用，免建档 String 分配
     orig_group: &'static str,
     /// 是否迁移过 cpuset 组
     moved_group: bool,
@@ -791,17 +702,14 @@ struct ThreadState {
     prev_home_at: Instant,
     /// 上次 overload_hold 打点时刻（HOLD_LOG_COOLDOWN 节流）
     last_hold_log: Instant,
-    /// 升核目标掩码与该线程允许核交集为空（32 位任务钉到无 AArch32 的核等）：
-    /// 内核恒拒绝（EINVAL），置位后跳过该线程的升核采样与尝试；线程退出随表清理。
+    /// 升核掩码与线程允许核交集为空（32 位任务钉无 AArch32 核等）：内核恒拒 EINVAL，
+    /// 置位后跳过该线程升核尝试；线程退出随表清理
     pin_incapable: bool,
 }
 
-/// 「持续忙」两窗判定（前台 normal_busy 与后台 promote 共用）：
-/// - util >= busy_pct：记忙窗，返回上次采样是否也忙（连续两窗为真）；
-/// - util < release_pct：清忙标记，返回 false；
-/// - 两者之间（滞回带）：保持上次忙标记，返回其值。
-/// 不依赖采样间隔——分片下同一线程两次被采到可能相隔很久，故不按时间窗判定。
-/// 只维护 `last_busy`，`low_streak` 等其余状态由调用方按各自语义处理。
+/// 「持续忙」两窗判定（前台 normal_busy 与后台 promote 共用）：util≥busy_pct 记忙窗并
+/// 返回是否连续两窗忙；util<release_pct 清忙标记，滞回带保持上次值。不依赖采样间隔
+/// （分片下同线程两次被采到可能相隔很久）；只维护 last_busy，其余状态由调用方处理。
 fn busy_window_update(
     st: &mut ThreadState,
     util: f32,
@@ -838,28 +746,20 @@ pub struct AffinityManager {
     last_fg_pid: i32,
     last_boost: bool,
     self_pid: u32,
-    /// 前台进程 cmdline 缓存（每轮 rebalance 刷新一次，aff/place 行共用，
-    /// 避免每次钉核重读 /proc/<pid>/cmdline）
+    /// 前台进程 cmdline 缓存（每轮 rebalance 刷新，aff/place 行共用）
     fg_cmdline: String,
-    /// default（非 boost）little 高水位的迟滞锁存：>HIGH_WATER 激活、
-    /// <RELEASE_WATER 解除，防阈值边缘绑定/恢复乒乓
+    /// default little 高水位迟滞锁存：>HIGH_WATER 激活、<RELEASE_WATER 解除，防乒乓
     key_bind_active: bool,
-    /// 非关键前台线程升核（normal_busy）采样的轮转游标：压力窗口内每轮只扫
-    /// FG_SCAN_WINDOW 个，避免逐轮全量读 stat
+    /// normal_busy 采样轮转游标：压力窗口内每轮只扫 FG_SCAN_WINDOW 个
     fg_cursor: usize,
-    /// boost 期 top-app uclamp.max 放开（写 100）前的值快照（None = 未接管）。
-    /// FAS 激活与特调（akmode）激活共用：boost 进入时按机型写入的 85 在真机
-    /// waltgov 路径下主要走 effective_cpu_util 限频钳制（rq max 聚合——同核有
-    /// 高 clamp 任务即失效）；真机选核由 WALT FEEC 接管，85 不进入能量模型。
-    /// FAS/特调都希望 prime 承接负载，且 akmode 用 schedutil 动态上限、
-    /// 85 对调频只有负效应，故激活期写 100，退出时还原
+    /// boost 期 top-app uclamp.max 放开（写 100）前的值快照（None = 未接管）：机型值
+    /// 85 真机走 waltgov 限频钳制不进能量模型，对 FAS/akmode 只有负效应，故激活写 100
     boost_uclamp_prev: Option<String>,
     /// 实验室静态分组（contingency/babel）：当前模式（None = 未启用）
     lab_static_mode: Option<String>,
     /// 静态分组改动过的 (组名, 原 cpus) 快照，退出时恢复
     lab_group_snapshot: Vec<(String, String)>,
-    /// [fast_reader] top-app uclamp.min/max 的 keep-open 读取器（路径构造期缓存），
-    /// 接管快照读取免每次 open/close（cgroup 节点常驻，符合稳定节点口径）
+    /// [fast_reader] top-app uclamp.min/max keep-open 读取器（构造期缓存路径），快照读取免每次 open/close
     uclamp_reader: FastReader,
     uclamp_max_reader: FastReader,
 }
@@ -927,17 +827,11 @@ impl AffinityManager {
         );
     }
 
-    /// 应用布局（cgroup 收窄/uclamp）并按需再平衡线程。
-    ///
-    /// `boost_uclamp_override` 是 top-app uclamp.max 的归属开关（三态）：
-    /// - `Some(true)`：本调用负责「放开为 100」（特调 akmode 走此路，见调用点）；
-    /// - `Some(false)`：本调用负责还原，保证离开特调后不残留 100；
-    /// - `None`：本调用不干预（fas 走此路——FAS 激活/去激活由 fas_affinity_hook
-    ///   在各自的时机显式调用 `set_boost_uclamp_override`，`apply` 每 2s 的周期调用
-    ///   与它时序未必对齐，故显式让出管理权，避免把 85/100 写错顺序）。
-    ///
-    /// 所有权协议（改这块前务必遵守）：boost 进入由 `apply_uclamp_max` 写机型值（85），
-    /// 需要 prime 放置的场景再抬到 100；释放统一走 boost 退出链的 `restore_uclamp_max`。
+    /// 应用布局（cgroup 收窄/uclamp）并按需再平衡线程。`boost_uclamp_override` 三态：
+    /// Some(true)=本调用放开为 100（特调 akmode）；Some(false)=负责还原不残留 100；
+    /// None=不干预（fas 由 fas_affinity_hook 显式管理，与 2s 周期时序未必对齐）。
+    /// 所有权协议：boost 进入由 apply_uclamp_max 写机型值 85，需 prime 放置再抬 100；
+    /// 释放统一走 boost 退出链 restore_uclamp_max。
     pub fn apply(
         &mut self,
         screen_on: bool,
@@ -995,10 +889,8 @@ impl AffinityManager {
             if old_kind != KIND_NORMAL {
                 self.pin_background(&little_list);
             }
-            // 线程面小核降权（预置骨架，默认关闭）：前台组掩码剔除 little——
-            // A510 能效差且 DT 能耗模型低估其真实能耗，EAS 会把 64 位前台线程
-            // 吸进 little；cpuset 收窄后 32 位任务的允许核交集由内核兜底（big
-            // 内 A710 仍在掩码内）。每 2s 纠偏一次（框架可能把核加回）。
+            // 线程面小核降权（预置骨架，默认关闭）：前台组掩码剔除 little（A510 能效差、
+            // EAS 会把 64 位前台线程吸进 little），每 2s 纠偏一次。
             // TODO: 待内核信息（32 位核位图 / A710 核位）针对化后决定开启与掩码。
             if cfg.normal_fg_exclude_little && self.sys.cpuset_top_app_exist {
                 self.ensure_snapshot();
@@ -1021,13 +913,10 @@ impl AffinityManager {
             self.applied_kind = KIND_NORMAL;
         }
 
-        // 后台降权：boost/normal 两态都持续写（"始终压低后台、给 UI/视频让路"），
-        // 幂等；释放/关闭总闸由 release() 还原为内核默认
+        // 后台降权：两态都持续写（始终压低后台、给 UI/视频让路），幂等；释放/总闸由 release() 还原
         self.apply_bg_uclamp_max(cfg);
 
-        // boost 类模式的 top-app uclamp.max 放开：特调（akmode）传 Some(true)
-        // 让重线程可被 EAS 放到 prime；fas 传 None（由 fas_affinity_hook 管理）；
-        // 其余模式传 Some(false) 保证不使用时不残留 100
+        // top-app uclamp.max 放开归属：特调 Some(true)、fas None（hook 管理）、其余 Some(false) 防残留 100
         if let Some(want) = boost_uclamp_override {
             self.set_boost_uclamp_override(boost && want);
         }
@@ -1070,19 +959,15 @@ impl AffinityManager {
             })
     }
 
-    /// 核心打分（与 pick_core 同口径）：util + 钉核数×权重。
-    /// 过载重钉的滞回校验用它对比 home 核与候选核
+    /// 核心打分（与 pick_core 同口径）：util + 钉核数×权重；过载重钉的滞回校验用
     fn core_score(&self, core: usize) -> f32 {
         self.core_utils.get(core).copied().unwrap_or(0.0)
             + self.pinned_of(core) as f32 * PINNED_WEIGHT
     }
 
-    /// 主池优先选核（普通线程专用）：main（big 池）内存在未钉核心时只在
-    /// main 内选；main 全部已钉才把 overflow（prime 池）中未钉核并入候选
-    /// 按 score 竞争——大核挤满后负载自然溢出到超大核。关键线程已改核组
-    /// 绑定，不再走本函数的单核选择。
-    /// 选核结果受 MAX_PINS_PER_CORE 上限约束：全池钉满后返回 None，
-    /// 调用方不钉定（线程留在 boost cpuset 内 EAS 自调度）。
+    /// 主池优先选核（普通线程专用）：main 有未钉核只在 main 选，main 全钉才并入
+    /// overflow 未钉核按 score 竞争（大核满溢 prime）；达 MAX_PINS_PER_CORE 返回 None
+    /// 不钉定（线程留 boost cpuset 内 EAS 自调度）。关键线程不走本函数。
     fn pick_core_pref(&self, main: &[usize], overflow: &[usize]) -> Option<usize> {
         let core = if main.iter().any(|&c| self.pinned_of(c) == 0) {
             self.pick_core(main)
@@ -1113,9 +998,8 @@ impl AffinityManager {
         }
     }
 
-    /// 钉线程到单核。`pkg` 由调用方传入（前台为缓存的 fg_cmdline，后台为 "-"），
-    /// 避免每次钉核都重读 /proc cmdline。成败均落 @A 帧；失败保持原语义直接
-    /// return（不置状态，下次重试）。
+    /// 钉线程到单核。`pkg` 由调用方传入（前台为缓存 fg_cmdline，后台 "-"）避免重读 cmdline。
+    /// 成败均落 @A 帧；失败保持原语义直接 return（不置状态，下次重试）。
     fn pin_core(
         &mut self,
         tid: i32,
@@ -1158,11 +1042,8 @@ impl AffinityManager {
         }
     }
 
-    /// 解除单核钉定：恢复全核掩码。`pkg` 由调用方传入（当前前台线程传缓存
-    /// fg_cmdline；cleanup/demote 场景 pid 可能已不属于当前前台，传 "-" 以免
-    /// 日志错误归属）。状态更新只在掩码恢复成功、或线程已消亡（ESRCH，无从
-    /// 重试）时进行——写失败保留 home/钉核计数，内核掩码与状态表不分叉，
-    /// 后续 rebalance 的 `home >= 0` 分支 / cleanup 路径会重试恢复。
+    /// 解除单核钉定（恢复全核掩码）。pkg 同 pin_core（cleanup/demote 场景传 "-" 防日志
+    /// 错误归属）。仅在写成功或 ESRCH（无从重试）时清状态；失败保留 home/钉核计数待重试。
     fn unpin_core(&mut self, tid: i32, prev_home: i16, pid: i32, pkg: &str) -> std::io::Result<()> {
         let ranges = crate::common::chiri_core_ranges();
         let all: Vec<usize> = (0..ranges.prime.end.max(ranges.big.end)).collect();
@@ -1196,16 +1077,14 @@ impl AffinityManager {
         res
     }
 
-    /// 迁移线程到指定 cpuset 组（写 /dev/cpuset/&lt;组&gt;/tasks）。
-    /// 直接 std::fs::write 捕获 io 结果——底层 try_write_file 恒返 Ok 会把
-    /// errno 吞掉，无法给 @A 帧供 result；写入行为与原先一致。
+    /// 迁移线程到指定 cpuset 组：直接 std::fs::write 捕获 io 结果（底层 try_write_file
+    /// 恒返 Ok 会吞 errno，无法供 @A 帧 result）；写入行为与原先一致。
     fn move_tid_group(&self, tid: i32, group: &str) -> std::io::Result<()> {
         logged_write(&format!("/dev/cpuset/{group}/tasks"), &tid.to_string())
     }
 
-    /// 关键线程组掩码兜底的还原：恢复全核掩码并清 group_bind。
-    /// 不触碰单核钉定计数（组绑定从未占用）。线程未做组绑定时为无操作。
-    /// 失败保持原语义：不置 group_bind（下次重试），仅补 @A 帧。
+    /// 关键线程组掩码兜底还原：恢复全核掩码并清 group_bind，不触碰单核钉定计数；
+    /// 失败不置 group_bind（下次重试）仅补 @A 帧。未做组绑定时为无操作。
     fn restore_group_mask(&mut self, tid: i32, pid: i32, pkg: &str) -> std::io::Result<()> {
         let pinned = self
             .threads
@@ -1237,18 +1116,15 @@ impl AffinityManager {
         }
         if res.is_ok() {
             if let Some(st) = self.threads.get_mut(&tid) {
-                // Key/Busy 统一归位；单枚举保证不会出现「绑定位与忙标记不一致」
                 st.group_bind = GroupBind::None;
             }
         }
         res
     }
 
-    /// 清理线程（单条）：迁回原组 + 恢复全核 + 移除状态。返回
-    /// `(首个失败 errno, 是否「无副作用条目」)`——后者交 `cleanup_threads`
-    /// 汇总，见该函数。恢复写失败且线程仍在（非 ESRCH）时**保留状态条目**
-    /// ——掩码/组还在被管态，清条目 = 状态表与内核永久分叉；保留后
-    /// departed/gone/stale 清理路径会再次触发本函数重试。
+    /// 清理线程（单条）：迁回原组 + 恢复全核 + 移除状态，返回 (首个失败 errno, 是否
+    /// 「无副作用条目」) 交 cleanup_threads 汇总。恢复写失败且线程仍在（非 ESRCH）时
+    /// 保留状态条目待 departed/gone/stale 路径重试，防状态表与内核永久分叉。
     fn cleanup_thread(&mut self, tid: i32, reason: &str) -> (Option<i32>, bool) {
         let (moved, orig, home, pid, group_bind) = match self.threads.get(&tid) {
             Some(st) => (
@@ -1260,12 +1136,8 @@ impl AffinityManager {
             ),
             None => return (None, false),
         };
-        // 「无副作用条目」判据：从未迁组、未钉核、未组绑定——该条目自建档起没对
-        // 内核写过任何东西，清理时下面两个恢复调用也都是空转（home<0 且
-        // group_bind=None 时 unpin/restore_group_mask 无写入），逐条 bind_release
-        // 帧纯属噪声。实测被清理的 7233 个 tid 里只有 291 个（4%）真被
-        // pin/move_group/restore 动过，其余 96% 都是这一类（fg 扫描见即建档 +
-        // THREAD_STALE 30s 过期），占 @A 帧绝大多数
+        // 「无副作用条目」= 从未迁组/未钉核/未组绑定，自建档起未对内核写过任何东西，
+        // 逐条 bind_release 帧纯属噪声
         let noop = !moved && home < 0 && group_bind == GroupBind::None;
         let mut err: Option<i32> = None;
         // 任一恢复写失败且非 ESRCH → 保留条目待重试
@@ -1301,8 +1173,7 @@ impl AffinityManager {
             err = err.or(Some(e.raw_os_error().unwrap_or(0)));
             retain |= e.raw_os_error() != Some(libc::ESRCH);
         }
-        // 逐条 bind_release 帧只留给真正动过的条目（pid/comm/errno 有信息量，不可
-        // 合并）；无副作用条目由 cleanup_threads 汇总成一条 bulk 帧
+        // 逐条 bind_release 帧只留给真正动过的条目；无副作用条目由 cleanup_threads 汇总成一条 bulk 帧
         if crate::logger::diag_active() && !noop {
             let comm = self.thread_comm(tid);
             let result = match err {
@@ -1327,13 +1198,8 @@ impl AffinityManager {
         (err, noop)
     }
 
-    /// 批量清理（同一场景的多个 tid）：逐条走 `cleanup_thread`，把其中的
-    /// **无副作用条目**汇成一条 bind_release 帧（`dst=bulk`、`value=条数`、
-    /// `reason=<场景>_bulk`，pid/tid 填 0 = 无单条归属）。动机与量化：stale
-    /// 路径实测 33798 条/42min（≈13 条/s，占 @A 帧 67%），其中 96% 只被建档；
-    /// 合并后每次扫描至多一条，清理帧量从 ~17 条/s 降到「有真动作时才有」，
-    /// 这些条目的帧格式化与落盘（含 devimp 记账）也随之消失。
-    /// 返回首个失败 errno（retain/ESRCH 语义全在 cleanup_thread 内部，不受影响）。
+    /// 批量清理：逐条走 cleanup_thread，把无副作用条目汇成一条 bind_release bulk 帧
+    ///（dst=bulk、value=条数、pid/tid=0）。返回首个失败 errno（retain/ESRCH 语义全在 cleanup_thread 内部）。
     fn cleanup_threads(&mut self, tids: &[i32], reason: &str) -> Option<i32> {
         let mut err: Option<i32> = None;
         let mut noop = 0u32;
@@ -1377,25 +1243,18 @@ impl AffinityManager {
         let mut perf_pool: Vec<usize> = ranges.big.clone().collect();
         perf_pool.extend(ranges.prime.clone());
 
-        // 在线核位图刷新：周期兜底 + CPU hotplug uevent 到达时立即刷新
-        // （`cpuN/online` 变更由 netlink uevent 置脏标记；机型不广播 cpu uevent 时
-        // 周期兜底仍然生效，行为与改造前一致）
-        // 每轮都消费脏标记（放在条件外，避免 `||` 短路把标记留到下一轮多刷一次）
+        // 在线核位图刷新：hotplug uevent 置脏标记时立即刷新 + 周期兜底；每轮都消费脏
+        // 标记（放条件外，避免 || 短路把标记留到下一轮多刷一次）
         let hotplug_dirty =
             crate::monitor::CPU_HOTPLUG_DIRTY.swap(false, std::sync::atomic::Ordering::Relaxed);
         if t % ONLINE_EVERY_ROUNDS == 0 || self.online.len() != max_cpu || hotplug_dirty {
             self.online = online_bitmap(max_cpu);
         }
 
-        // —— 快速切换：立即解除上一个前台应用的线程钉定 ——
-        // 同模式切换（无 ModeChange 事件）只靠 2s 周期发现；若等 30s 失联清理，
-        // 旧前台应用已转后台但线程仍持有大核单核掩码——Android 会把上一个应用
-        // 短暂留在 top-app/foreground cpuset，掩码与大核相交则继续生效：
-        // 8550 只有一颗 prime，新前台关键线程会被选到同核互踩；连续快速切换
-        // 还会让 core_pinned 计数漂移累积。按前台归属立即清理（is_fg 且
-        // ≠ 当前前台 = 旧前台线程；后台条目 is_fg=false 不受影响，含已 promote 的
-        // —— 它们的 pid 现在也可能非 0，故判据不能再看 pid>0）。
-        // 幂等：稳态下该过滤器为空集，仅遍历小状态表，零文件 IO。
+        // —— 快速切换：立即解除上一个前台应用的钉定 ——
+        // 同模式切换只靠 2s 周期发现，等 30s 失联清理期间旧前台线程仍持大核掩码
+        //（新前台关键线程与之同核互踩、core_pinned 计数漂移累积）。判据 is_fg 且
+        // ≠ 当前前台（后台条目 pid 现在也可能非 0，不能看 pid>0）；稳态为空集零文件 IO。
         let departed: Vec<i32> = self
             .threads
             .iter()
@@ -1413,13 +1272,10 @@ impl AffinityManager {
                 !fg_cmdline.is_empty() && !crate::common::is_affinity_blacklisted(&fg_cmdline);
             let pin_fg = fg_ok && boost && screen_on;
 
-            // default（非 boost）轻量前台保护：little 高水位时把关键线程
-            // （主线程/RenderThread 等白名单）组绑定到性能核 big∪prime。
-            // 8550 default 实测：后台压小核 + EAS 把前台任务也堆在小核，
-            // little p50=88~99% 排队而 prime p50=0% 空转、大核半闲——现有
-            // 后台 promote 只救后台组线程，前台关键线程无人救援。迟滞：
-            // >HIGH_WATER 激活、<RELEASE_WATER 解除；boost/息屏强制解除
-            // （boost 有完整布局接管，息屏无前台交互无绑定意义）
+            // default（非 boost）轻量前台保护：little 高水位时把关键线程（主线程/
+            // RenderThread 等白名单）组绑定到 big∪prime——后台 promote 救不了前台关键
+            // 线程（little 饱和排队而 prime 空转）。迟滞：>HIGH_WATER 激活、
+            // <RELEASE_WATER 解除；boost/息屏强制解除（boost 有完整接管、息屏无绑定意义）
             let little_max = ranges
                 .little
                 .by_ref()
@@ -1472,9 +1328,9 @@ impl AffinityManager {
                                 last_hold_log: now - HOLD_LOG_COOLDOWN,
                                 pin_incapable: false,
                             });
-                            // 归属变化（前台换 PID 后复用 tid，或后台候选被前台扫描
-                            // 收养）视作新线程：`!is_fg` 覆盖后者——后台候选虽有真实
-                            // tgid，身份仍是后台，收养后必须按前台身份重新采样
+                            // 归属变化（前台换 PID 后复用 tid，或后台候选被前台收养）
+                            // 视作新线程：`!is_fg` 覆盖后者——后台候选身份仍是后台，
+                            // 收养后必须按前台身份重新采样
                             if !st.is_fg || st.pid != fg_pid {
                                 st.is_fg = true;
                                 st.pid = fg_pid;
@@ -1485,9 +1341,8 @@ impl AffinityManager {
                                 st.group_bind = GroupBind::None;
                                 st.prev_home = -1;
                                 st.last_move = now - MIN_MIGRATE_INTERVAL;
-                                // ticks 基准一并作废：否则下方「fresh 或 last_ticks==0
-                                // 才重采样」不成立，is_key 沿用旧身份（后台建档恒为
-                                // false），该线程转前台后会误走普通单核路径
+                                // ticks 基准一并作废：否则「fresh 或 last_ticks==0 才重采样」不成立，
+                                // is_key 沿用旧后台身份（恒 false）会误走普通单核路径
                                 st.last_ticks = 0;
                                 st.last_busy = None;
                                 st.low_streak = 0;
@@ -1503,8 +1358,7 @@ impl AffinityManager {
                                 }
                             }
                             let (home, is_key, group_bind) = (st.home, st.is_key, st.group_bind);
-                            // 非关键前台线程的升核候选：未绑定的，或已因「忙」绑定的
-                            // （后者需复查以便空闲时释放）
+                            // 升核候选：未绑定，或已因「忙」绑定（后者需复查以便空闲释放）
                             if key_pressure
                                 && !is_key
                                 && home < 0
@@ -1514,17 +1368,12 @@ impl AffinityManager {
                             }
                             if pin_fg {
                                 if is_key {
-                                    // 关键线程核组绑定（AppOptR 式）：不钉单核。
-                                    // boost 下 top-app/foreground cpuset 已收窄为
-                                    // prime∪big，内核在组内自调度——重负载主线程
-                                    // 不会被过载重钉挤到单颗大核，也不存在
-                                    // prime↔big 迁移。cpuset 不可用时写一次组掩码
-                                    // 兜底（getaffinity 短路去重，不占钉核计数）
+                                    // 关键线程核组绑定（AppOptR 式）：不钉单核，boost 下
+                                    // cpuset 已收窄 prime∪big 组内自调度；cpuset 不可用时
+                                    // 写一次组掩码兜底（短路去重，不占钉核计数）
                                     if group_bind == GroupBind::None
                                         && !self.sys.cpuset_top_app_exist
                                     {
-                                        // set_tid_affinity 形参是切片，直接借用 perf_pool，
-                                        // 不再为每次调用复制一份 Vec
                                         let res = set_tid_affinity(tid, &perf_pool);
                                         if crate::logger::diag_active() {
                                             let comm = self.thread_comm(tid);
@@ -1547,8 +1396,7 @@ impl AffinityManager {
                                         }
                                     }
                                 } else {
-                                    // 合法范围 = 全部性能核（含溢出落点：普通线程
-                                    // 可溢出 prime），避免溢出核被误判非法
+                                    // 合法范围 = 全部性能核（含溢出落点 prime），避免溢出核被误判非法
                                     let core_ok = home >= 0
                                         && (home as usize) < max_cpu
                                         && self.online.get(home as usize).copied().unwrap_or(false)
@@ -1568,14 +1416,10 @@ impl AffinityManager {
                                             .unwrap_or(0.0)
                                             > CORE_OVERLOAD_UTIL
                                     {
-                                        // home 核过载（util > 70%）：重钉到低占用核
-                                        // 分散负载压制峰值频率。候选 = 全性能池
-                                        // （big∪prime）最低分核——旧口径「big 存在未钉
-                                        // 核只看 big + 目标核 util≤70% 硬门槛」在大核
-                                        // 普遍过载时必然落空（8475 实测大核 86-90% 排队、
-                                        // prime 却空转 45%），改为双滞回：分数差
-                                        // ≥ OVERLOAD_MARGIN 且目标负载严格更低；
-                                        // 反跳回冷却（刚迁离的核禁回）继续防乒乓
+                                        // home 核过载：重钉到全性能池（big∪prime）最低分核分
+                                        // 散负载——旧口径只看 big，大核普遍过载时空闲 prime 永远
+                                        // 进不了候选；双滞回：分数差 ≥ OVERLOAD_MARGIN 且目标
+                                        // 严格更低 + 反跳回冷却禁回
                                         if let Some(core) = self.pick_core(&perf_pool) {
                                             let (left_home, left_at) = self
                                                 .threads
@@ -1605,8 +1449,7 @@ impl AffinityManager {
                                                     "home_overload",
                                                 );
                                             } else if core != home as usize {
-                                                // cand==home（全员饱和无更优核）不打点，
-                                                // 防止每轮对每个过载线程重复刷 hold 行；
+                                                // cand==home（全员饱和无更优核）不打点防每轮刷 hold 行；
                                                 // 其余 hold 按 HOLD_LOG_COOLDOWN 节流
                                                 if let Some(st) = self.threads.get_mut(&tid) {
                                                     if now.duration_since(st.last_hold_log)
@@ -1634,23 +1477,16 @@ impl AffinityManager {
                             } else if home >= 0 {
                                 let _ = self.unpin_core(tid, home, fg_pid, &pkg);
                             } else if group_bind != GroupBind::None {
-                                // 组掩码兜底恢复（Key / Busy 同款）：boost 退出，或
-                                // default 压力解除/息屏（key_pressure 活跃时保持绑定）。
-                                // 压力**活跃期** Busy 绑定的空闲回落仍走下方采样块的
-                                // 滞回（避免边界乒乓）；但压力一旦解除，
-                                // promote_busy_foreground 整段不再被调用，那时必须在这里
-                                // 兜住，否则这些线程会带着 big∪prime 收窄掩码滞留
-                                //（实测 95min 会话末帧仍有 1115 条 pin=1/home=-1 未释放，
-                                // 非 boost 段全程压在性能核）。
+                                // 组掩码兜底恢复（Key/Busy 同款）：压力解除或 boost 退出时
+                                // promote_busy_foreground 不再被调用，必须在此兜住，否则线程
+                                // 带 big∪prime 收窄掩码滞留性能核；压力活跃期的 Busy 空闲
+                                // 回落仍走下方采样块滞回
                                 if !key_pressure {
                                     let _ = self.restore_group_mask(tid, fg_pid, &pkg);
                                 }
                             } else if key_pressure && is_key {
-                                // little 高水位的 default 模式：关键线程组绑定
-                                // 到 big∪prime（与 boost 的 fg_group 同款机制、
-                                // 不同触发条件）。不钉单核、不占钉核计数，
-                                // EAS 在性能核组内继续自调度省电摆放
-                                // （形参是切片，直接借用，不再每次复制 Vec）
+                                // little 高水位的 default：关键线程组绑定 big∪prime（同 boost
+                                // fg_group 机制、不同触发条件）；不钉单核不占钉核计数，EAS 组内自调度
                                 let res = set_tid_affinity(tid, &perf_pool);
                                 if crate::logger::diag_active() {
                                     let comm = self.thread_comm(tid);
@@ -1673,8 +1509,7 @@ impl AffinityManager {
                                 }
                             }
                         }
-                        // 已消失线程：立即清理释放钉核计数（is_fg 判据：pid 可能
-                        // 与前台进程相同但归属后台组，不能混进前台树的 seen 判定）
+                        // 已消失线程立即清理释放钉核计数（is_fg 判据：pid 可能与前台相同但归属后台组）
                         let gone: Vec<i32> = self
                             .threads
                             .iter()
@@ -1683,9 +1518,7 @@ impl AffinityManager {
                             .collect();
                         self.cleanup_threads(&gone, "gone");
 
-                        // —— default 小核高水位：非关键前台线程升核（限量采样） ——
-                        // 对应 8550 实测「单颗小核被一个非关键前台线程打满、big 3+ 核
-                        // 空闲、prime 近空转」——只绑关键线程不足以解除小核饱和
+                        // —— default 小核高水位：非关键前台线程升核（限量采样）——
                         if key_pressure && !scan_pool.is_empty() {
                             self.promote_busy_foreground(&scan_pool, &perf_pool, fg_pid, now);
                         }
@@ -1718,8 +1551,7 @@ impl AffinityManager {
                 for tid in promoted {
                     if let Some(s) = sample_one_tid(tid) {
                         let util = self.window_util(tid, s.ticks, now, clk).unwrap_or(0.0);
-                        // tid 来自上方 threads.iter() 收集、循环内无删除，正常
-                        // 不可达；调度核心路径防御性跳过（不 panic、不中止整轮）
+                        // tid 来自上方收集且循环内无删除，正常不可达；防御性跳过不中止整轮
                         let low = match self.threads.get_mut(&tid) {
                             Some(st) => {
                                 if util < DEMOTE_UTIL_PCT {
@@ -1734,10 +1566,8 @@ impl AffinityManager {
                         if low >= DEMOTE_STREAK {
                             self.demote(tid);
                         } else if util >= DEMOTE_UTIL_PCT {
-                            // 线程仍忙且所在核心过载（util > 70%）：换到低占用
-                            // big 核分散负载、压制峰值频率。promoted 线程虽被移入
-                            // top-app 组但不属于前台——保持 big 池与迁移防抖，不
-                            // 走前台路径（前台=fg_pid 的线程，与顶层 cpuset 组区分）
+                            // 线程仍忙且所在核过载：换低占用 big 核分散负载。promoted 线程
+                            // 虽在 top-app 组但不属前台——保持 big 池与迁移防抖，不走前台路径
                             let (home, last_move) = match self.threads.get(&tid) {
                                 Some(st) => (st.home, st.last_move),
                                 None => continue,
@@ -1747,11 +1577,7 @@ impl AffinityManager {
                                 && self.core_utils.get(home as usize).copied().unwrap_or(0.0)
                                     > CORE_OVERLOAD_UTIL
                             {
-                                // 与前台同口径：候选 = 全性能池（big∪prime）最低分
-                                // 核 + 双滞回（分数差 ≥ OVERLOAD_MARGIN 且目标负载
-                                // 严格更低）+ 反跳回冷却。旧「big 池内选核 + 目标核
-                                // util≤70% 硬门槛」在大核普遍过载时只会原地静止，
-                                // 空闲的 prime 永远进不了候选
+                                // 与前台同口径：全性能池最低分核 + 双滞回 + 反跳回冷却
                                 if let Some(core) = self.pick_core(&perf_pool) {
                                     let (left_home, left_at) = match self.threads.get(&tid) {
                                         Some(st) => (st.prev_home, st.prev_home_at),
@@ -1773,8 +1599,7 @@ impl AffinityManager {
                                     {
                                         self.pin_core(tid, core, home, 0, "-", "bg_overload");
                                     } else if core != home as usize {
-                                        // cand==home 不打点（同前台口径）；
-                                        // 其余 hold 按 HOLD_LOG_COOLDOWN 节流
+                                        // cand==home 不打点（同前台口径）；hold 按 HOLD_LOG_COOLDOWN 节流
                                         if let Some(st) = self.threads.get_mut(&tid) {
                                             if now.duration_since(st.last_hold_log)
                                                 >= HOLD_LOG_COOLDOWN
@@ -1800,8 +1625,6 @@ impl AffinityManager {
 
             // 候选刷新（低频）+ 分片深扫
             if t % BG_LIST_EVERY_ROUNDS == 0 || self.bg_cursor == 0 {
-                // group 直接借用 BACKGROUND_GROUPS 的常量字面量（'static），
-                // 不再为每个后台 tid 复制一份 String
                 let mut bg: Vec<(i32, &'static str)> = Vec::new();
                 for group in BACKGROUND_GROUPS {
                     let exist = match group {
@@ -1817,8 +1640,7 @@ impl AffinityManager {
                         }
                     }
                 }
-                // bg 为空只跳过候选扫描：不得 return——否则会跳过 rebalance 尾部的
-                // 失联清理（promoted 线程将滞留大核无法 demote）与 devimp 输出
+                // bg 为空只跳过候选扫描，不得 return——否则跳过尾部失联清理（promoted 滞留大核）与 devimp 输出
                 if !bg.is_empty() {
                     let little_max = ranges
                         .little
@@ -1830,9 +1652,7 @@ impl AffinityManager {
                         .by_ref()
                         .filter_map(|c| self.core_utils.get(c).copied())
                         .fold(0.0_f32, f32::max);
-                    // PowerBase 开启时线程亲和积极性减半：promote 阈值翻倍——
-                    // 更不容易把后台线程抬到大核（少了迁移动作与随之而来的开销），
-                    // 与该模式「只做最低限度干预」的取向一致。
+                    // PowerBase 开启时积极性减半：promote 阈值翻倍减少迁移动作，与「最低限度干预」取向一致
                     let (promote_base, little_promote) = if crate::common::powerbase_enabled() {
                         (PROMOTE_UTIL_PCT * 2.0, LITTLE_PROMOTE_UTIL_PCT * 2.0)
                     } else {
@@ -1871,8 +1691,7 @@ impl AffinityManager {
                             self.bg_checked.insert(*tid);
                         }
                         let busy = match self.threads.get_mut(tid) {
-                            // 首见：建档并记基准，本轮无 util 不判 promote。
-                            // pid 尽力补全（@S t 行归属）；is_fg=false 标明后台身份
+                            // 首见：建档并记基准，本轮无 util 不判 promote；pid 尽力补全（@S t 行归属）
                             None => {
                                 self.threads.insert(
                                     *tid,
@@ -1911,10 +1730,8 @@ impl AffinityManager {
                                         .min(100.0);
                                 st.last_ticks = s.ticks;
                                 st.last_sample = now;
-                                // 两窗防抖（不依赖采样间隔——分片下同线程两次被采到可能
-                                // 相隔很久）：本次忙且上次采样忙 → promote；期间采到低负载
-                                // 则清除忙标记，防止瞬时忙/抖动被 promote。
-                                // 与前台 normal_busy 共用同一判定（阈值各自传入）
+                                // 两窗防抖：本次忙且上次忙才 promote，期间采到低负载即清忙
+                                // 标记防瞬时忙被 promote；不依赖采样间隔，与前台 normal_busy 共用判定
                                 let sustained_busy = busy_window_update(
                                     st,
                                     util,
@@ -1947,15 +1764,13 @@ impl AffinityManager {
                                 );
                             }
                             if let Some(st) = self.threads.get_mut(tid) {
-                                // 写入失败不置位（没真正迁入 top-app 组就无需迁回）——
-                                // 全仓唯一一处观测化顺带的语义修正（2026-09-22 审查记档，
-                                // 原 try_write_file 恒 Ok 时该项恒为 true）
+                                // 写失败不置位（未真正迁入 top-app 就无需迁回）；原 try_write_file
+                                // 恒 Ok 时该项恒 true，为观测化顺带的语义修正
                                 st.moved_group = move_res.is_ok();
                                 st.promoted = true;
                             }
-                            // 选核与前台普通线程同口径：big 有未钉核只看 big，
-                            // big 钉满才溢出 prime——游戏场景 big 是关键线程主场，
-                            // 后台忙线程不应挤占；但全钉满时进 prime 好过排队
+                            // 选核与前台普通线程同口径：big 有未钉核只看 big，big 钉满才溢出
+                            // prime——big 是关键线程主场，全钉满时进 prime 好过排队
                             if let Some(core) = self.pick_core_pref(&big_pool, &prime_pool) {
                                 self.pin_core(*tid, core, -1, 0, "-", "bg_busy");
                             }
@@ -1989,11 +1804,9 @@ impl AffinityManager {
         self.cleanup_threads(&stale, "stale");
     }
 
-    /// default 小核高水位下的非关键前台线程升核（normal_busy）。
-    /// 仅在压力窗口内调用（窗口外零采样、零写入）；每轮最多采样 FG_SCAN_WINDOW 个
-    /// （游标轮转）以限制新增文件 IO。判定复用共享的 `busy_window_update`（两窗防抖），
-    /// 绑定后 util 跌到 FG_BUSY_RELEASE_UTIL_PCT 以下连续 DEMOTE_STREAK 轮才回落全核——
-    /// 与绑定水位构成滞回，避免中等负载线程长期滞留在性能核抬高功耗。
+    /// default 小核高水位下的非关键前台线程升核（normal_busy），仅压力窗口内调用（窗口外
+    /// 零采样零写入）；每轮最多采样 FG_SCAN_WINDOW 个（游标轮转）限制文件 IO。判定复用
+    /// busy_window_update 两窗防抖；绑定后 util 跌破释放水位连续 DEMOTE_STREAK 轮才回落（滞回）。
     // [fg_promote]
     fn promote_busy_foreground(
         &mut self,
@@ -2035,8 +1848,7 @@ impl AffinityManager {
                 None => continue,
             };
             if sustained && !bound {
-                // 抬到性能核组（不钉单核，组内交给 EAS 自调度）
-                // perf_pool 本就是切片参数，直接传递（原 to_vec 是多余复制）
+                // 抬到性能核组（不钉单核，组内交给 EAS 自调度）；perf_pool 本就是切片参数
                 let res = set_tid_affinity(tid, perf_pool);
                 if crate::logger::diag_active() {
                     let comm = self.thread_comm(tid);
@@ -2104,8 +1916,7 @@ impl AffinityManager {
                     "demote",
                 );
             }
-            // 写成功才清 moved_group：失败时组未迁回，标记保留供下次 demote 重试
-            // （无条件清除会让状态表与内核 cpuset 归属分叉）
+            // 写成功才清 moved_group：失败时组未迁回，保留标记供下次重试，防状态表与内核分叉
             if res.is_ok() {
                 if let Some(st) = self.threads.get_mut(&tid) {
                     st.moved_group = false;
@@ -2127,8 +1938,7 @@ impl AffinityManager {
     /// 各业务组 cpus。已在同模式时仅重写（框架写回的周期纠偏），快照不重复记录。
     pub fn lab_static_apply(&mut self, mode: &str) {
         if self.lab_static_mode.as_deref() != Some(mode) {
-            // 先恢复此前接管的收窄（top-app cpus/uclamp/线程绑定回到系统值），
-            // lab 快照记录的才是真实原值
+            // 先恢复此前接管的收窄（top-app cpus/uclamp/线程绑定回系统值），lab 快照记的才是真实原值
             self.release();
             self.lab_group_snapshot.clear();
             self.lab_static_mode = Some(mode.to_string());
@@ -2289,8 +2099,7 @@ impl AffinityManager {
                 "apply_max",
             );
         }
-        // 回读验证保持原判定口径（原 try_write_file 恒 Ok、验证块恒进，
-        // 改造后不以写入返回值决定是否验证）
+        // 回读验证保持原判定口径：不以写入返回值决定是否验证
         {
             let applied = std::fs::read_to_string(UCLAMP_MAX_PATH)
                 .ok()
@@ -2317,10 +2126,8 @@ impl AffinityManager {
         }
     }
 
-    /// 后台组 uclamp.max 降权（每次 apply 调用，幂等）：把 background/restricted
-    /// 的 util 需求钳低——EAS 放置与 schedutil 频率随之回落、优先落小核，给 UI/视频
-    /// 让路；**不禁止使用大核**（空闲时仍可被 EAS 调度上去）。单组缺失记 debug、
-    /// 全组缺失记 warn（见 write_bg_uclamp_max / utils::write_nodes）。
+    /// 后台组 uclamp.max 降权（每次 apply 调用，幂等）：钳低 background/restricted 的
+    /// util 需求，EAS 放置与 schedutil 频率随之回落优先小核（不禁止用大核）；日志口径见 write_bg_uclamp_max。
     fn apply_bg_uclamp_max(&self, cfg: &AffinityConfig) {
         let pct = cfg.background_uclamp_max_pct;
         if pct == 0 {
@@ -2356,24 +2163,18 @@ impl AffinityManager {
     }
 
     /// boost 期放开 top-app uclamp.max 为 100（fas_affinity_hook 与特调激活路径调用）。
-    /// boost 进入时 apply_uclamp_max 已按机型配置写入（8475/8550=85），
-    /// 该钳制在真机 waltgov 路径下主要走 effective_cpu_util 限频（rq max 聚合，
-    /// 同核有高 clamp 任务即失效）；真机选核由 WALT FEEC 接管，85 不进入
-    /// 能量模型、不影响放置。激活期 min=max 锁频（FAS）或 schedutil 动态上限
-    /// （akmode）都不需要 85 的限频钳制，故激活期写 100。首次激活快照当前值，
-    /// 去激活还原。
-    /// 时序保证：激活调用点均在 boost 进入（写 85）之后；去激活时若 boost
-    /// 已退出则跳过写入（restore_uclamp_max 链已归位到 boost 前原值，
-    /// 避免把 boost 配置值泄漏到 normal）。息屏释放路径不调本方法（无
-    /// hook(false)），由 boost 退出链兜底还原，重新激活时快照仍有效。
+    /// 机型值 85 在真机 waltgov 路径走 effective_cpu_util 限频钳制、不进能量模型，
+    /// 激活期（min=max 锁频或 schedutil 动态上限）不需要它，故写 100、去激活还原。
+    /// 时序：激活点均在 boost 进入写 85 之后；去激活时若 boost 已退出则跳过写入
+    /// （restore_uclamp_max 链已归位，防配置值泄漏 normal）；息屏释放不调本方法，
+    /// 由 boost 退出链兜底还原，重新激活时快照仍有效。
     pub fn set_boost_uclamp_override(&mut self, active: bool) {
         if active {
             if self.uclamp_max_support == UclampSupport::Unsupported {
                 return;
             }
             if self.uclamp_max_support == UclampSupport::Unknown {
-                // 常规时序下 boost 进入已探测支持性；此处兜底同口径
-                // （< 5.3 无 uclamp / 节点缺失 → 永久跳过，8998 内核 4.4 走此路径）
+                // 常规时序下 boost 进入已探测支持性；此处兜底同口径（<5.3 / 节点缺失 → 永久跳过）
                 let ver_ok =
                     kernel_version().map_or(false, |(a, b, _)| a > 5 || (a == 5 && b >= 3));
                 if !ver_ok || !std::path::Path::new(UCLAMP_MAX_PATH).exists() {
@@ -2387,9 +2188,7 @@ impl AffinityManager {
                     .ok()
                     .map(|s| s.trim().to_string());
             }
-            // 每轮重写（非幂等短路）：与 mode file/fast_lock 的周期重写同口径，
-            // 兼作防篡改的异常兜底再断言（默认无竞争者，节点被改写属异常态）——
-            // 特调期间每 2s 收敛回 100
+            // 每轮重写（非幂等短路）：与 mode file/fast_lock 周期重写同口径，兼作防篡改兜底再断言——特调期间每 2s 收敛回 100
             let res = logged_write(UCLAMP_MAX_PATH, "100.00");
             if crate::logger::diag_active() {
                 crate::logger::aff_action(
@@ -2424,9 +2223,8 @@ impl AffinityManager {
         }
     }
 
-    /// 是否持有接管（cpuset 收窄 / 线程迁移 / uclamp 任一已应用）。
-    /// release 前先查此标志，避免周期路径（如 scenemode 2s 块）对已释放的
-    /// 管理器重复调用 release——每次都会无条件回写后台组 uclamp.max 并打点。
+    /// 是否持有接管（cpuset 收窄 / 线程迁移 / uclamp 任一已应用）。release 前先查此标志，
+    /// 避免周期路径对已释放管理器重复 release（每次都无条件回写后台组 uclamp.max 并打点）。
     pub fn is_active(&self) -> bool {
         self.applied_kind != KIND_NONE || self.lab_static_mode.is_some()
     }
@@ -2435,10 +2233,9 @@ impl AffinityManager {
         self.release_impl("release");
     }
 
-    /// 释放（bind_release 汇总帧的 reason 按场景区分：常规收尾 "release"、
-    /// 总闸关闭 "disabled"）。各恢复动作的帧由 write_cpuset_paths_items /
-    /// restore_* / cleanup_thread 自行落，这里补一条 act=bind_release 汇总帧
-    /// （result = 各线程恢复写入的首个失败 errno，全成功 ok）。
+    /// 释放（reason 按场景区分：常规收尾 "release"、总闸关闭 "disabled"）。各恢复动作的
+    /// 帧由 write_cpuset_paths_items / restore_* / cleanup_thread 自落，这里补一条
+    /// act=bind_release 汇总帧（result = 各线程恢复写入的首个失败 errno，全成功 ok）。
     fn release_impl(&mut self, reason: &str) {
         let tids: Vec<i32> = self.threads.keys().copied().collect();
         let err = self.cleanup_threads(&tids, reason);
@@ -2463,8 +2260,7 @@ impl AffinityManager {
         info!("{}", t("affinity-released"));
     }
 
-    /// 快照取数：导出线程状态表 (tid, pid, home, pinned)。
-    /// pid 未知（后台候选建档时 read_tgid 也拿不到）仍填 0——0 即「归属未知」。
+    /// 快照取数：导出线程状态表 (tid, pid, home, pinned)；pid 未知仍填 0（= 归属未知），
     /// pinned = 单核钉定或性能核组绑定。
     pub fn thread_diag(&self) -> Vec<(i32, i32, i16, bool)> {
         self.threads
@@ -2480,10 +2276,8 @@ impl AffinityManager {
             .collect()
     }
 
-    /// 快照取数：被管线程所属 pid 集合（去重排序）。口径保持改造前一致——
-    /// 只收**前台归属**条目（is_fg）：后台候选虽然现在也带真实 tgid，但它们不是
-    /// @S 的「被管进程」口径（p 行会随之多出若干无关进程 + 每进程一次
-    /// getaffinity，与本次「减量」目标相悖）。
+    /// 快照取数：被管线程所属 pid 集合（去重排序）。只收前台归属（is_fg）条目——
+    /// 后台候选虽带真实 tgid，但不是 @S 的「被管进程」口径。
     pub fn managed_pids(&self) -> Vec<i32> {
         let mut pids: Vec<i32> = self
             .threads

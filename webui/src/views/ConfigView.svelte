@@ -1,7 +1,6 @@
 <script lang="ts">
   // ConfigView.svelte: [header] [fields] [commit]
-  // meta.yaml 的可写字段见 contract/meta.ts::WRITABLE_FIELDS；每次写入都会触发守护进程全量热重载，
-  // 因此改动先落草稿、由「保存」一次性提交（单次读-改-写）。
+  // meta.yaml 可写字段见 contract/meta.ts::WRITABLE_FIELDS；写入触发守护进程全量热重载，故先落草稿、由「保存」一次性提交（单次读-改-写）。
   import { onMount } from 'svelte'
   import Panel from '@/components/Panel.svelte'
   import StateBox from '@/components/StateBox.svelte'
@@ -41,7 +40,7 @@
   /** 实验室接管的开关：置灰不可切换（守护进程正按实验室定义写它，手改也会被写回去） */
   const takeover = $derived(new Set(app.labTakeover))
 
-  /** 被接管时在提示里点名原因——只看到「灰了」却不知道为什么，最容易被当成 bug */
+  /** 被接管时在提示里点名原因，避免只看到置灰却被当成 bug */
   function hint(field: WritableField, base: string): string {
     if (!takeover.has(field)) return base
     const mode = app.labMode ? t(`lab.mode.${app.labMode}`) : ''
@@ -49,15 +48,11 @@
   }
 
   onMount(() => {
-    // 顺序不能颠倒：isChiri 由 loadOverview 得出，冷启动直接落在本页时它还是 false，
-    // 先判就会漏掉 loadLab —— 实验室接管的开关不会置灰，用户改完还会被守护进程写回去
+    // 顺序不能颠倒：isChiri 由 loadOverview 得出，先判会漏掉 loadLab，被接管的开关不会置灰
     void (async () => {
       if (!app.ready) await app.loadOverview()
-      // 实验室入口要显示当前有没有启用，进配置页时顺手读一次
       if (app.isChiri) await app.loadLab()
     })()
-    // DOWN 停摆开关（高级设置）显示的是 down.chr 的实际内容
-    void app.loadDown()
   })
 </script>
 
@@ -200,49 +195,12 @@
     </div>
   </Panel>
 
-  <!-- 高级设置：直接写调度进程的状态文件，不经过 meta.yaml 草稿/保存那套。
-       ak-form-stack 强制一行一个控件——ak-choice 是 inline-grid，不套栅格会挤成一行多个 -->
-  <Panel signal="action" title={t('config.advanced')} desc={t('config.advanced.hint')}>
-    <div class="ak-form-stack">
-      <ToggleField
-        label={t('config.down')}
-        hint={t('config.down.hint')}
-        checked={app.downActive}
-        disabled={app.downPending}
-        onchange={next => app.setDown(next)}
-      />
-      {#if app.downError}
-        <p class="u-note u-danger u-mt-2">{app.downError}</p>
-      {/if}
-      <!-- PowerBase：以放电功耗替换 CLG 调频（只换实现，模式名与外部接口不变）。
-           直写 meta.yaml 的 powerbase_enabled，热重载即时生效 -->
-      <ToggleField
-        label={t('config.powerbase')}
-        hint={t('config.powerbase.hint')}
-        checked={app.powerbaseEnabled}
-        onchange={next => app.setPowerbase(next)}
-      />
-      <!-- 息屏判定值：debug.tracing.screen_state 等于该值视为息屏（默认 1，安装时按实测校正）。
-           开启 = 属性 1 视为息屏；关闭 = 属性 0 视为息屏。直写 meta.yaml，热重载即时生效 -->
-      <ToggleField
-        label={t('config.screenoff')}
-        hint={t('config.screenoff.hint')}
-        checked={app.screenOffValue === 1}
-        disabled={app.screenOffPending}
-        onchange={next => app.setScreenOffValue(next ? 1 : 0)}
-      />
-      {#if app.screenOffError}
-        <p class="u-note u-danger u-mt-2">{app.screenOffError}</p>
-      {/if}
-      <!-- 功耗口径与电池读数（电流/电压/功率）的设置都在「电池读数」二级页 -->
-    </div>
-  </Panel>
-
   {#if app.isChiri}
     <!-- 电池读数：二级页面入口（电流/电压/功率的来源、双电芯、单位换算、功耗口径）。
         ChiRi 专属：遥测线程只在 ChiRi SoC 上启动，非 ChiRi 上这些开关没有消费方 -->
     <Panel title={t('battery.title')} desc={t('battery.entry.hint')}>
       <div class="entry__row">
+        <!-- 电池读数二级页入口（ChiRi 专属：遥测线程只在 ChiRi SoC 启动，非 ChiRi 上开关无消费方） -->
         <button
           type="button"
           class="ak-button btn btn--ghost entry__open"
@@ -253,6 +211,21 @@
       </div>
     </Panel>
   {/if}
+
+  <!-- 高级设置：二级页面入口（DOWN / PowerBase / 息屏判定值），与电池读数同一套二级页逻辑。
+       直写调度进程的状态文件与 meta.yaml，不经过草稿/保存那套 -->
+  <Panel signal="action" title={t('config.advanced')} desc={t('config.advanced.hint')}>
+    <div class="entry__row">
+      <!-- 高级设置二级页入口：直写调度进程状态文件与 meta.yaml，不经过草稿/保存 -->
+      <button
+        type="button"
+        class="ak-button btn btn--ghost entry__open"
+        onclick={() => go('advanced')}
+      >
+        {t('config.advanced.open')}
+      </button>
+    </div>
+  </Panel>
 
   {#if app.isChiri}
     <!-- 实验室：二级页面入口。只显示「有没有启用」这一个事实，具体在实验室页里管 -->
@@ -287,7 +260,6 @@
     justify-content: flex-end;
   }
 
-  /* 入口状态文字默认走 .u-note 的次要色，启用时换危险色 */
   .entry__state[data-on='yes'] {
     color: var(--ak-signal-danger);
   }

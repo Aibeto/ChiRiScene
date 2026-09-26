@@ -1,10 +1,6 @@
 // daemon-log.ts: [types] [parse]
-// logs/daemon.log 行格式（src/logger.rs 的 LineEncoder，[init] 块）：
-//   [2026-09-13 12:00:00] [INFO] [chiri] 消息
-// 时间是**设备本地时间**；级别取自 log crate 的 LevelFilter；模块是 Rust 模块路径
-// 且已剥掉 crate 名前缀（`chiri::chiri::config` → `chiri::config`，包名与子模块
-// 同名产生的重复段，daemon 侧编码时裁剪）。多行消息（含换行）会以不带前缀的
-// 续行出现，解析时并入上一条。
+// logs/daemon.log 行格式（src/logger.rs LineEncoder，[init] 块）：[时间] [级别] [模块] 消息。
+// 时间是设备本地时间；模块已剥 crate 前缀；多行消息以不带前缀的续行出现，解析时并入上一条。
 
 // [types]
 export type LogLevelName = 'OFF' | 'ERROR' | 'WARN' | 'INFO' | 'DEBUG' | 'TRACE' | 'OTHER'
@@ -20,10 +16,7 @@ export interface LogLine {
 
 const LINE_RE = /^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]\s*\[([A-Za-z]+)\]\s*\[([^\]]*)\]\s?([\s\S]*)$/
 
-/**
- * 显示用时间戳：隐藏年份（窗口通常只覆盖几天，年份是冗余信息）。
- * 解析正则保持完整格式不动，这里只裁剪展示层。
- */
+/** 显示用时间戳：隐藏年份（窗口通常只覆盖几天）；解析正则保持完整格式，只裁剪展示层。 */
 function hideYear(time: string): string {
   const m = /^\d{4}-(\d{2}-\d{2} \d{2}:\d{2}:\d{2})/.exec(time)
   return m ? m[1] : time
@@ -49,16 +42,11 @@ function normalizeLevel(raw: string): LogLevelName {
 export const LOG_MAX_LINES = 2000
 
 /**
- * 解析日志文本为结构化行。窗口从行中间开始时，首行往往残缺——
- * 若首行不匹配格式则直接丢弃（它无法对应任何完整事件）。
- * 返回数组保持文件顺序（旧 → 新）。
- *
- * [logs] continuation：增量解析的「上一条」锚点（无参调用方零影响）。有值时
- * 视为解析已开始（started=true），chunk 首部不带前缀的续行（daemon 多行
- * message）会**原地并入该条目的 message** 而不是被丢弃；返回数组首元素就是
- * continuation 本体，调用方拼接新行时需自行把它从结果里去掉。
- */
-export function parseDaemonLog(
+ * 解析日志文本为结构化行，按文件顺序（旧 → 新）返回。窗口从行中间开始时首行往往残缺，不匹配格式则丢弃。
+ * [logs] continuation：增量解析的「上一条」锚点（无参调用方零影响）。有值时视为解析已开始，chunk 首部
+ * 不带前缀的续行会原地并入该条目；返回数组首元素就是 continuation 本体，调用方拼接新行时需自行去掉。
+  */
+ export function parseDaemonLog(
   text: string,
   maxLines = LOG_MAX_LINES,
   continuation: LogLine | null = null
@@ -79,7 +67,8 @@ export function parseDaemonLog(
       })
       continue
     }
-    if (!started) continue // 窗口开头被截断的残行
+    // 窗口开头被截断的残行，丢弃
+    if (!started) continue
     if (!line.trim()) continue
     const last = out[out.length - 1]
     if (last) last.message += `\n${line}`

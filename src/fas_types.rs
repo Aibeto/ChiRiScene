@@ -4,21 +4,15 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 // [pid]
-// PID 系数 (60fps 基准值，运行时根据 target_fps 动态缩放)
-//
-// kp: 比例增益 — 按 target_fps/60 线性缩放
-// ki: 积分增益 — 按 sqrt(target_fps/60) 缩放（防高刷积分饱和）
-// kd: 微分增益 — 按 (target_fps/60)^0.3 缩放（高刷噪声大）
+// PID 系数（60fps 基准，运行时按 target_fps 缩放）：kp 按 target_fps/60 线性、
+// ki 按 sqrt(target_fps/60)（防高刷积分饱和）、kd 按 (target_fps/60)^0.3（高刷噪声大）
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PidCoefficients {
-    /// 比例增益基准 (60fps)，高刷时自动放大
     #[serde(default = "default_kp")]
     pub kp: f32,
-    /// 积分增益基准 (60fps)，高刷时缓增
     #[serde(default = "default_ki")]
     pub ki: f32,
-    /// 微分增益基准 (60fps)，高刷时微增
     #[serde(default = "default_kd")]
     pub kd: f32,
 }
@@ -42,7 +36,6 @@ impl Default for PidCoefficients {
 }
 
 // [cluster]
-// Cluster 配置
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ClusterProfile {
@@ -77,28 +70,17 @@ pub fn default_cluster_profiles() -> Vec<ClusterProfile> {
 }
 
 // [per_app]
-// Per-App 配置
 
-/// 每个游戏的配置档案
-///
-/// 只需要指定 target_fps 数组，
-/// 运行时根据实际帧率动态匹配最近的档位。
-///
+/// 每个游戏的配置档案：只需指定 target_fps 数组，运行时按实际帧率匹配最近档位。
 /// YAML 示例:
 /// ```yaml
 /// per_app_profiles:
-///   "com.miHoYo.GenshinImpact":
-///     target_fps: [30, 60]
-///     fps_margin: 4.0
-///
-///   "com.tencent.tmgp.sgame":
-///     target_fps: [60, 90, 120]
-///     fps_margin: 3.0
+///   "com.miHoYo.GenshinImpact": { target_fps: [30, 60], fps_margin: 4.0 }
+///   "com.tencent.tmgp.sgame": { target_fps: [60, 90, 120], fps_margin: 3.0 }
 /// ```
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct PerAppProfile {
-    /// 该游戏会渲染到的目标帧率数组，运行时动态匹配
-    /// 例如 [30, 60] 表示游戏可能以 30fps 或 60fps 渲染
+    /// 目标帧率数组（如 [30, 60] 表示可能以 30 或 60fps 渲染），运行时动态匹配最近档位
     #[serde(default)]
     pub target_fps: Option<Vec<f32>>,
 
@@ -108,7 +90,6 @@ pub struct PerAppProfile {
 }
 
 // [rules]
-// FAS Rules 配置
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct FasRulesConfig {
@@ -175,8 +156,7 @@ pub struct FasRulesConfig {
     #[serde(default = "d_sd_min")]
     pub steady_decay_min_step: f32,
 
-    /// 失去白名单前台后的延迟退出秒数：期间切回白名单应用无缝续期，
-    /// 超时才真正退出（恢复频率与调速器）。缺省 15。
+    /// 失去白名单前台后的延迟退出秒数：期间切回白名单应用无缝续期，超时才真正退出（缺省 15）
     #[serde(default = "d_fas_exit_delay")]
     pub deactivate_delay_secs: u32,
 
@@ -195,15 +175,9 @@ pub struct FasRulesConfig {
     #[serde(default = "d_switch_perf")]
     pub app_switch_resume_perf: f32,
 
-    /// 防篡改强制重写间隔（**秒**，最小 1）：语义是「最多每 N 秒把当前锁频值无条件重写一遍」，
-    /// 把被改写/压制的 scaling_min_freq / scaling_max_freq 收敛回目标——ChiRi 默认是全局
-    /// 唯一调度程序，节点被改写属异常态（残留旧模块/手动调试/内核 thermal、QoS 收窄），
-    /// 本机制是兜底收敛，不是与常驻竞争者的常态对抗。
-    ///
-    /// 历史口径修正：早期实现按「帧」计数（`freq_force_counter % interval == 0`，
-    /// `apply_freqs` 每帧末被调用），120fps 下 30 帧 ≈ 0.25s（4 次/s）、144fps ≈ 0.21s（4.8 次/s），
-    /// 重写（含 umount2 与每 cluster 两次写频）频率随刷新率线性放大。
-    /// 现改为时间基准，配置项名与数值含义不变（默认 30），仅单位由「帧」修正为「秒」。
+    /// 防篡改强制重写间隔（**秒**，最小 1，默认 30）：最多每 N 秒把当前锁频值无条件重写一遍，
+    /// 把被改写/压制的 scaling_min_freq / scaling_max_freq 收敛回目标（兜底收敛，非与常驻竞争者常态对抗）。
+    /// 历史口径：旧实现按帧计数（120fps 下 30 帧 ≈ 0.25s，4 次/s），现改为时间基准，数值含义不变。
     #[serde(default = "d_force_int")]
     pub freq_force_reapply_interval: u32,
     #[serde(default = "d_max_frame")]
@@ -228,8 +202,7 @@ pub struct FasRulesConfig {
     #[serde(default = "d_temp_perf")]
     pub core_temp_throttle_perf: f32,
 
-    /// 接管期间写入 `/proc/sys/kernel/sched_migration_cost_ns`（None = 不动），
-    /// 退出按快照恢复
+    /// 接管期间写入 /proc/sys/kernel/sched_migration_cost_ns（None = 不动），退出按快照恢复
     #[serde(default)]
     pub migration_cost_ns: Option<u64>,
 
@@ -337,7 +310,7 @@ fn d_switch_ms() -> f32 {
 fn d_switch_perf() -> f32 {
     0.60
 }
-/// 防篡改强制重写间隔默认 30 —— 单位为秒（见字段说明；旧实现单位是帧，30 帧 ≈ 0.25s@120fps）
+/// 防篡改强制重写间隔默认 30 —— 单位为秒（旧实现按帧计数，见字段说明）
 fn d_force_int() -> u32 {
     30
 }
@@ -347,8 +320,7 @@ fn d_max_frame() -> f32 {
 fn d_cold_ms() -> u64 {
     3500
 }
-/// 写频后校验间隔（秒）：更快发现锁频值被压到目标以下（内核 thermal cap / QoS 收窄等）。
-/// 仅在写频事件后触发一次读数，非周期轮询，调小无长期开销
+/// 写频后校验间隔（秒）：更快发现锁频值被压低（内核 thermal cap / QoS 收窄）；仅写频后触发一次，非周期轮询
 fn d_verify_interval() -> u32 {
     1
 }
@@ -363,11 +335,8 @@ fn d_util_cap_divisor() -> f32 {
 }
 
 impl FasRulesConfig {
-    /// 校验并规范化配置：
-    /// - 非有限值（NaN/±Inf）回退默认，防止污染 PID 控制链
-    /// - perf_floor/ceil/init/cold_boot 交叉约束，保证 f32::clamp 永不 panic
-    /// - steady_decay 步长 min<=max
-    /// - fps_gears 过滤非法值（0/负/NaN），空时回退默认档位
+    /// 校验并规范化配置：非有限值（NaN/±Inf）回退默认，防止污染 PID 控制链；
+    /// perf/步长交叉约束保证 clamp 永不 panic；fps_gears 过滤非法值，空时回退默认档位
     pub fn normalize(&mut self) {
         if !self.perf_floor.is_finite() {
             self.perf_floor = d_perf_floor();
@@ -409,7 +378,6 @@ impl FasRulesConfig {
             self.pid.kd = default_kd();
         }
 
-        // fps_gears 过滤非法值，空时回退默认档位
         self.fps_gears.retain(|&g| g.is_finite() && g > 0.0);
         if self.fps_gears.is_empty() {
             self.fps_gears = default_fps_gears();
@@ -468,8 +436,7 @@ impl FasRulesConfig {
             .app_switch_resume_perf
             .clamp(self.perf_floor, self.perf_ceil);
 
-        // steady_decay 步长约束：min <= max*0.6（decay_scale 最坏 0.6），
-        // 否则 frame_pipeline 的 clamp 边界可能反转导致 panic
+        // steady_decay 步长约束：min <= max*0.6（decay_scale 最坏 0.6），否则 clamp 边界反转 panic
         self.steady_decay_max_step = self.steady_decay_max_step.max(0.0);
         self.steady_decay_min_step = self.steady_decay_min_step.max(0.0);
         if self.steady_decay_min_step > self.steady_decay_max_step * 0.6 {
@@ -477,11 +444,8 @@ impl FasRulesConfig {
         }
         // 延迟退出：1s 下限防抖，10 分钟上限防呆（配得再大也不该常驻接管）
         self.deactivate_delay_secs = self.deactivate_delay_secs.clamp(1, 600);
-        // 防篡改强制重写间隔：最小 1 秒。
-        // 旧实现用 `freq_force_counter % interval`，interval = 0 时是除零 panic，
-        // 调度线程一 panic 就被看门狗反复重启（整个 FAS 停摆）；
-        // 改成时间基准后 0 虽不再 panic，但会让「已到期」判定恒真（每帧都强制重写），
-        // 所以同样必须钳到 ≥ 1
+        // 防篡改强制重写间隔最小 1：旧实现 interval=0 是除零 panic（看门狗反复重启，FAS 停摆）；
+        // 时间基准后 0 会令「已到期」判定恒真（每帧强制重写），同样必须钳到 ≥ 1
         self.freq_force_reapply_interval = self.freq_force_reapply_interval.max(1);
     }
 

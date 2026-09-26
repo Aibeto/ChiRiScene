@@ -22,14 +22,14 @@ import re
 import sys
 
 # [schema]
-# ── 列定义**抄自 scripts/devimp-analyze.py（该文件是列口径唯一真源，勿在此处另立一套）** ──
+# ── 列定义抄自 scripts/devimp-analyze.py（列口径唯一真源，勿另立一套）──
 C48 = ("ts,type,mode,screen_on,pid,package,tid,comm,cluster,core,from_core,to_core,util_pct,max_util,"
        "over_cores,under_cores,cur_perf,tgt_perf,cur_freq_khz,max_freq_khz,decision,deb_up,deb_down,"
        "reason,pinned,thermal_cap_pct,touch,psi_cpu,psi_io,psi_mem,gpu_busy,batt_v,batt_i,batt_p,"
        "wakeups,migrations,freq_trans,batt_temp,cpu_temp,clg_active,cpu_cur_khz,cpu_max_khz,cpu_min_khz,"
        "cpu_governor,gpu_cur_khz,gpu_max_khz,gpu_min_khz,gpu_governor").split(",")
 C44 = [c for c in C48 if c not in ("from_core", "to_core", "util_pct", "pinned")]
-# 40 列旧版（Canary92 之前，如 8550e/Canary88）：= 48 列去掉尾部 8 列（cpu_cur_khz…gpu_governor）
+# 40 列旧版（Canary92 之前）= 48 列去掉尾部 8 列（cpu_cur_khz…gpu_governor）
 C40 = C48[:40]
 
 

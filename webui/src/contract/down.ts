@@ -1,7 +1,6 @@
 // down.ts: [read] [write]
-// DOWN 停摆契约（down.chr）。文件对外暴露、支持手改，读写的唯一权威是它本身。
-// 与 lab 同款：文件不存在 = 正常调度（不是错误，守护进程会补建模板）；
-// 解除停摆写空内容而不是删文件——「文件在但为空」对用户排查更清楚。
+// DOWN 停摆契约（down.chr）：文件对外暴露、支持手改，读写的唯一权威是它本身。
+// 与 lab 同款：文件不存在 = 正常调度（daemon 会补建模板）；解除停摆写空内容而非删文件。
 import { absOf, shQuote } from './paths'
 import { isLive, run } from '@/kernel/shell'
 import { absent, failed, ok, shellError, type ReadResult } from './errors'
@@ -24,14 +23,13 @@ export async function readDown(): Promise<ReadResult<DownSnapshot>> {
   const path = absOf('down')
   const text = await readText(path, 'not-created', DOWN_READ_BYTES)
   if (text.kind === 'failed') return text
-  // 缺失按「未停摆」处理：守护进程启动时会补建，这里报缺失只会误导
   return ok({ path, active: parseDown(text.kind === 'ok' ? text.value : '') })
 }
 
 // [write]
 /**
- * 写停摆状态：`active` true 写保留字 down、false 写空内容。
- * 与配置页同款——先落同目录临时文件再原子替换，避免守护进程读到半截内容。
+ * 写停摆状态：`active` true 写保留字 down、false 写空内容；先落同目录临时文件再
+ * 原子替换（与配置页同款），避免守护进程读到半截内容。
  */
 export async function writeDown(active: boolean): Promise<ReadResult<DownSnapshot>> {
   if (!isLive()) return absent<DownSnapshot>('unsupported-env')

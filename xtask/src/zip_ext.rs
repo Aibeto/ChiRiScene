@@ -14,7 +14,7 @@ use zip::{
 
 // [zip-create] 
 
-/// Creates a zip archive that contains the files and directories from the specified directory, uses the specified compression level.
+/// 将指定目录下的全部文件与子目录打包为 zip 归档（压缩选项由回调指定）
 pub fn zip_create_from_directory_with_options<F, T>(
     archive_file: &PathBuf,
     directory: &Path,

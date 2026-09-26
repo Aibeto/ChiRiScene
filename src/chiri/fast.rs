@@ -1,10 +1,8 @@
 //! fast.rs: [types] [init] [release_tick]
 
-/// 极速模式（fast）专属锁频器：与 CLG 完全独立，不读 yaml 调频参数。
-/// 接管时把所有 cluster 的 scaling_min_freq / scaling_max_freq 都锁到硬件最高频
-/// （min=max=hw_max，schedutil 无调频空间），release 时恢复系统原始状态。
-/// 每 5 秒重写一次频率兜底收敛：ChiRi 默认是全局唯一调度程序，锁频值被改写属
-/// 异常态（残留旧模块/手动调试/内核异常），周期重写是兜底，不是常态对抗。
+/// 极速模式（fast）专属锁频器：与 CLG 完全独立、不读 yaml 调频参数。接管时把所有 cluster 的
+/// scaling_min_freq / scaling_max_freq 一起锁到目标频率（vector=硬件最高、frozen=硬件最低，min=max 时 schedutil 无调频空间），release 恢复系统原状。
+/// 每 5 秒重写一次频率兜底收敛：默认无竞争者，锁频值被改写属异常态（残留旧模块/手动调试/内核异常），周期重写是兜底不是常态对抗。
 use crate::utils::FastWriter;
 use log::{debug, info, warn};
 use std::fs;
@@ -36,7 +34,6 @@ struct LockedPolicy {
     current_freq: u32,
 }
 
-/// 极速模式锁频器
 pub struct FastLock {
     policies: Vec<LockedPolicy>,
     snapshots: Vec<PolicySnapshot>,
@@ -59,13 +56,9 @@ impl FastLock {
     }
 
     // [init]
-    /// 接管全部 cpufreq policy：读取可用频率、快照原始状态、写 schedutil，
-    /// 再把 min 与 max 一起锁到目标频率。
-    ///
-    /// `lock_min = true` 锁**硬件最低频**（frozen：最低功耗、最冷，代价是完全没有性能），
-    /// `false` 锁硬件最高频（vector：极速档）。两者的差别只在目标值与写序：
-    /// 升频必须「先抬 max 再抬 min」（给 min 上升的空间），降频必须「先压 min 再压 max」
-    /// （否则会出现 min > max 的非法中间态被内核拒绝）。
+    /// 接管全部 cpufreq policy：读可用频率、快照原始状态、写 schedutil，再把 min 与 max 一起锁到目标频率。
+    /// lock_min=true 锁**硬件最低频**（frozen：最低功耗、最冷，完全没有性能），false 锁硬件最高频（vector：极速档）。
+    /// 差别只在目标值与写序：升频先抬 max 再抬 min，降频先压 min 再压 max（否则出现 min > max 非法中间态被内核拒绝）。
     pub fn init(&mut self, lock_min: bool) {
         self.release();
 
@@ -96,8 +89,7 @@ impl FastLock {
                 .filter_map(|s| s.parse().ok())
                 .collect();
             if freqs.is_empty() {
-                // scaling_available_frequencies 读不到/空表：按 policy 首核映射核心组，
-                // 回退 soc.yaml [freq_khz] 兜底（只补表，不改取档/floor 对齐逻辑）
+                // scaling_available_frequencies 读不到/空表：按 policy 首核映射核心组，回退 soc.yaml [freq_khz] 兜底（只补表，不改取档/floor 对齐逻辑）
                 match crate::common::soc_freq_fallback_for_policy(pid) {
                     Some(f) => freqs = f,
                     None => continue,
@@ -106,7 +98,6 @@ impl FastLock {
             freqs.sort_unstable();
             freqs.dedup();
 
-            // 合并 boost 频率
             if !policy.boost_frequencies.is_empty() {
                 freqs.extend(&policy.boost_frequencies);
                 freqs.sort_unstable();
@@ -117,7 +108,6 @@ impl FastLock {
             let hw_min = *freqs.first().unwrap();
             let target = if lock_min { hw_min } else { hw_max };
 
-            // 快照原始状态（release 时恢复）
             let governor = fs::read_to_string(&gov_path)
                 .ok()
                 .map(|s| s.trim().to_string())
@@ -137,7 +127,6 @@ impl FastLock {
                 hw_max,
             });
 
-            // 写 schedutil governor（CLG 与 fast 统一）
             let _ = crate::utils::try_write_file(&gov_path, "schedutil");
 
             let max_writer = FastWriter::new(format!(
@@ -170,8 +159,7 @@ impl FastLock {
                 min_writer,
                 current_freq: 0,
             };
-            // 首次锁频：升频「先 max 后 min」、降频「先 min 后 max」，都是为了保证
-            // 写的过程中不出现 min > max（内核会直接拒绝）
+// 首次锁频：升频「先 max 后 min」、降频「先 min 后 max」，保证写的过程不出现 min > max（内核会直接拒绝）
             let ok = if lock_min {
                 locked.min_writer.write_value_force(target)
                     && locked.max_writer.write_value_force(target)
@@ -214,11 +202,8 @@ impl FastLock {
         self.active = false;
     }
 
-    /// 每 5 秒重写一次 target（vector=hw_max、frozen=hw_min），兜底收敛被异常
-    /// 改写的节点（默认无竞争者，改写属异常态——残留旧模块/手动调试/内核异常）。
-    /// 由 scheduler_ipc 在事件循环中调用。
-    /// 返回距下次重写的剩余时间（非激活状态返回 None），供事件循环
-    /// 计算动态阻塞超时（sleep 到最近 deadline，空闲不空转）。
+    /// 每 5 秒重写一次 target（vector=hw_max、frozen=hw_min），兜底收敛被异常改写的节点；由 scheduler_ipc 在事件循环中调用。
+    /// 返回距下次重写的剩余时间（非激活返回 None），供事件循环计算动态阻塞超时（sleep 到最近 deadline，空闲不空转）。
     pub fn tick(&mut self) -> Option<std::time::Duration> {
         if !self.active {
             return None;
@@ -230,8 +215,7 @@ impl FastLock {
         self.last_write = std::time::Instant::now();
 
         for p in &mut self.policies {
-            // 直接写 target，不走 current_freq 去重——tick 本身就是"重写"。
-            // 2026-09-22 修：原误写 hw_max，frozen（锁最低频）每 5s 会被拉回最高频
+// 直接写 target，不走 current_freq 去重——tick 本身就是「重写」
             let ok = p.max_writer.write_value_force(p.target)
                 && p.min_writer.write_value_force(p.target);
             if ok {
@@ -251,8 +235,7 @@ impl FastLock {
         Some(REWRITE_INTERVAL)
     }
 
-    /// 将单个 policy 恢复为接管前的原始状态。
-    /// 返回是否全部写入成功；失败时返回 false，调用方保留快照以便重试。
+/// 将单个 policy 恢复为接管前的原始状态。返回是否全部写入成功；失败时调用方保留快照以便重试
     fn restore_policy(r: &PolicySnapshot) -> bool {
         let gov_path = format!(
             "/sys/devices/system/cpu/cpufreq/policy{}/scaling_governor",
@@ -268,8 +251,7 @@ impl FastLock {
         );
 
         let mut all_ok = true;
-        // 恢复写序保证任意中间状态满足 min <= max：
-        // 1) governor；2) max 先放宽到 hw_max；3) min；4) max
+// 恢复写序保证任意中间状态满足 min <= max：1) governor；2) max 先放宽到 hw_max；3) min；4) max
         if let Some(gov) = &r.governor {
             if crate::utils::write_to_file(&gov_path, gov.as_bytes()).is_err() {
                 all_ok = false;

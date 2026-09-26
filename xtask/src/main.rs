@@ -37,7 +37,6 @@ enum Commands {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    // 初始化 xshell
     let sh = Shell::new()?;
 
     match cli.command {
@@ -50,7 +49,6 @@ fn main() -> Result<()> {
 // [version-helpers] 
 
 fn cal_git_code(sh: &Shell) -> Result<usize> {
-    // xshell 极大地简化了获取命令 stdout 的过程
     let output = cmd!(sh, "git rev-list --count HEAD").read()?;
     Ok(output.trim().parse::<usize>()?)
 }
@@ -59,8 +57,7 @@ fn get_time() -> String {
     chrono::Local::now().format("%H%M").to_string()
 }
 
-/// 从 module/module.prop 读取 name 与 version，作为产物命名依据。
-/// module.prop 为 KEY=VALUE 格式（Magisk/KernelSU 模块规范）。
+/// 从 module/module.prop（KEY=VALUE，Magisk/KernelSU 模块规范）读取 name 与 version，作为产物命名依据
 fn read_module_prop() -> Result<(String, String)> {
     let content = fs::read_to_string("module/module.prop")?;
     let mut name = String::new();
@@ -87,8 +84,7 @@ fn read_module_prop() -> Result<(String, String)> {
 fn build(sh: &Shell, no_pack: bool) -> Result<()> {
     let temp_dir = temp_dir();
 
-    // 产物命名以 module.prop 为准（name-version-提交数-时分）；日期已去掉，
-    // 同日多次构建仍可区分，跨天唯一性由版本号与 Git 提交数保证
+    // 产物命名以 module.prop 为准（name-version-提交数-时分）；无日期，同日多次构建靠时分区分、跨天靠版本号+提交数保证唯一
     let (module_name, module_version) = read_module_prop()?;
     let base_name = format!(
         "{}-{}-{}-{}",
@@ -98,17 +94,13 @@ fn build(sh: &Shell, no_pack: bool) -> Result<()> {
         get_time()
     );
 
-    // 1. 清理并重建临时目录
     let _ = fs::remove_dir_all(&temp_dir);
     fs::create_dir_all(&temp_dir)?;
 
-    // 2. 编译 WebUI
     build_webui(sh)?;
 
-    // 3. 编译 Rust 核心
     build_core(sh)?;
 
-    // 4. 拷贝 module 目录内容
     let module_dir = Path::new("module").to_path_buf();
     dir::copy(
         &module_dir,
@@ -120,9 +112,8 @@ fn build(sh: &Shell, no_pack: bool) -> Result<()> {
         fs::remove_file(temp_dir.join(".gitignore"))?;
     }
 
-    // 4.5 从模块包移除仅二进制使用的配置：运行时只读嵌入内容，磁盘上无任何读取方，
-    //     取消对外暴露以缩小可篡改面（feature.yaml 为不可修改调优段，同理不落盘）。
-    //     meta.yaml / rules.yaml / 特调与 FAS 导出文件有 WebUI 读取方，保留。
+    // 从模块包移除仅二进制使用的配置：运行时只读嵌入内容，磁盘上无任何读取方，
+    // 取消对外暴露以缩小可篡改面；meta.yaml / rules.yaml / 特调与 FAS 导出文件有 WebUI 读取方，保留
     const BIN_ONLY: [&str; 5] = [
         "config/feature.yaml",
         "config/normal/tuned_profiles.yaml",
@@ -136,7 +127,6 @@ fn build(sh: &Shell, no_pack: bool) -> Result<()> {
     }
     // normal/fas/ 目录（每应用 FAS 调优）整体只进二进制
     let _ = fs::remove_dir_all(temp_dir.join("config/normal/fas"));
-    // 各处理器子目录的 feature.yaml
     if let Ok(rd) = fs::read_dir(temp_dir.join("config")) {
         for e in rd.flatten() {
             if e.path().is_dir() {
@@ -145,7 +135,6 @@ fn build(sh: &Shell, no_pack: bool) -> Result<()> {
         }
     }
 
-    // 5. 组装 bin 目录
     let bin_path = temp_dir.join("core").join("bin");
     fs::create_dir_all(&bin_path)?;
 
@@ -162,13 +151,11 @@ fn build(sh: &Shell, no_pack: bool) -> Result<()> {
         &dir::CopyOptions::new().overwrite(true).content_only(true),
     )?;
 
-    // 6. 产物输出
     let output_dir = Path::new("output");
-    fs::create_dir_all(output_dir)?; // 确保 output 目录存在
+    fs::create_dir_all(output_dir)?;
 
     if no_pack {
-        // 不打包：把组装好的模块目录移出临时目录，交 CI/GitHub 代为打包，
-        // 目录名即为 GitHub artifact 名（下载时自动生成同名 .zip）。
+        // 不打包：组装好的模块目录移出临时目录交 CI/GitHub 打包，目录名即 artifact 名（下载时自动生成同名 .zip）
         let final_dir = output_dir.join(&base_name);
         let _ = fs::remove_dir_all(&final_dir);
         fs::rename(&temp_dir, &final_dir)?;

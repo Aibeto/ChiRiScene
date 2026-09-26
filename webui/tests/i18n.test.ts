@@ -1,6 +1,5 @@
 // i18n.test.ts: [parity] [static] [dynamic]
-// 文案防回归：中英键集合一致，源码用到的键都有定义（t() 找不到键会直接显示键名，
-// 这类问题在界面上很容易被忽略）。
+// 文案防回归：中英键集合一致，源码用键都有定义（t() 缺键直接显示键名，界面易忽略）。
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -25,9 +24,8 @@ describe('文案完整性', () => {
 
   it('源码里静态使用的键都有定义', () => {
     const used = new Set<string>()
-    // 只匹配独立的 t('key')：排除 put( / get( / split( 这类以 t 结尾的函数名。
-    // 先剔掉 HTML/行注释——被注释掉的调用不是「使用」（2026-09-17 起注释里
-    // 会保留被隐藏键的原文留痕）。
+    // 只匹配独立的 t('key')：排除 put(/get(/split( 等以 t 结尾的函数名。
+    // 先剔掉 HTML/行注释——被注释掉的调用不算「使用」（注释里会留被隐藏键的原文）。
     const pattern = /(?:^|[^\w$])t\(\s*'([^']+)'/g
     for (const file of walk(SRC)) {
       const text = readFileSync(file, 'utf8')
@@ -58,7 +56,7 @@ describe('文案完整性', () => {
       'special',
       'unknown'
     ]) {
-      // 模式名全量存在；desc 已全部注释（2026-09-18，卡片只显「家族 + 模式」）
+    // 模式名全量存在；desc 已全部注释（卡片只显「家族 + 模式」）
       expect(`mode.${mode}` in zh).toBe(true)
     }
     for (const family of ['clg', 'special', 'lab', 'down', 'stardust', 'fas', 'unknown']) {

@@ -49,15 +49,18 @@ def classify(result):
 
 def scan(fn):
     """流式扫一个 aff_ 文件，返回统计字典（不建逐帧对象图）。"""
-    acts = collections.Counter()          # (act, reason, result)
-    act_ok = collections.Counter()        # reason -> ok
-    act_tot = collections.Counter()       # reason -> total
-    bulk = collections.Counter()          # reason(_bulk) -> Σvalue
-    bulk_frames = collections.Counter()   # reason(_bulk) -> 帧数
-    bulk_by_act = collections.Counter()   # act -> 帧数（bulk 帧）
-    state = {}                            # tid -> (pin, home, comm)
+    # 计数容器：acts=(act,reason,result) 计数；act_ok/act_tot=reason→ok/总数；
+    # bulk/bulk_frames=bulk 帧（reason 以 _bulk 结尾）的 Σvalue/帧数；bulk_by_act=act→帧数（bulk 帧）；
+    # state=tid→(pin,home,comm)；traj=(frame,ts,bound) 绑定轨迹采样
+    acts = collections.Counter()
+    act_ok = collections.Counter()
+    act_tot = collections.Counter()
+    bulk = collections.Counter()
+    bulk_frames = collections.Counter()
+    bulk_by_act = collections.Counter()
+    state = {}
     frames = 0
-    traj = []                             # (frame, ts, bound)
+    traj = []
     monotonic = True
     prev_bound = None
     peak = 0
@@ -90,7 +93,7 @@ def scan(fn):
                         first_bound_frame = frames
                     if frames % 200 == 0 or frames <= 3:
                         traj.append((frames, ts, bound))
-                else:  # @A
+                else:
                     m = A_LINE.match(ln.rstrip("\n"))
                     if not m:
                         continue

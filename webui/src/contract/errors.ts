@@ -1,7 +1,6 @@
 // errors.ts: [types] [constructors] [helpers]
 // 读取三分类：把「正常读到的空值」「契约允许的缺失」「真实失败」分开表达。
-// 契约要求（见 .workbuddy/docs/webui-refactor-plan.md）：第三种必须在界面上报错，
-// 不允许像旧实现那样一律吞成空值。
+// 契约要求：第三种必须在界面上报错，不允许像旧实现那样一律吞成空值。
 
 export type ReadResult<T> =
   | { kind: 'ok'; value: T }

@@ -1,15 +1,10 @@
 // lab.ts: [read] [write]
-// 实验室（rhine.chr）契约。这个文件对外暴露、支持手改，读写的唯一权威是它本身，
-// 界面不缓存也不推测守护进程有没有套用成功。
-//
-// 三条与 meta.yaml 不同、容易被写错的地方：
-//  1. 文件不存在 = 合法未启用，不是「不适用」也不是失败。守护进程启动时会补建它。
-//  2. 写入只需一个模式 key（或空、或保留字 off），没有「多字段一起提交」的语义，
-//     因此不做草稿。
-//  3. 关闭实验室要写空内容而不是删文件——「文件在但为空」和「文件被删」对界面
-//     是同一件事，但对用户排查来说前者更清楚。
-//  4. 锁定期间关闭会被守护进程挡回，要真的关掉得写保留字 off（强制关闭）：
-//     写空内容 ≠ 强制关闭，这是两个不同的请求。
+// 实验室（rhine.chr）契约：文件对外暴露、支持手改，读写的唯一权威是它本身，
+// 界面不缓存也不推测守护进程有没有套用成功。与 meta.yaml 不同、易写错之处：
+//  1. 文件不存在 = 合法未启用（daemon 启动时补建），不是「不适用」也不是失败；
+//  2. 写入只需一个模式 key（或空、或保留字 off），没有多字段提交语义，不做草稿；
+//  3. 关闭写空内容而非删文件——对界面等价，但「文件在但为空」更利于排查；锁定期间
+//     关闭会被 daemon 挡回，写空 ≠ 强制关闭（off），是两个不同的请求。
 import { absOf, shQuote } from './paths'
 import { isLive, run } from '@/kernel/shell'
 import { absent, failed, ok, shellError, type ReadResult } from './errors'
@@ -57,17 +52,15 @@ export async function readLab(): Promise<ReadResult<LabSnapshot>> {
     exists(absOf('rhineBack'))
   ])
   if (text.kind === 'failed') return text
-  // 缺失按未启用处理：守护进程启动时就会补建，这里报「缺失」只会误导
   const raw = text.kind === 'ok' ? text.value : ''
   return ok({ path, state: parseLabState(raw), lock, hasBackup })
 }
 
 // [write]
 /**
- * 写入实验室状态：`mode` 为 null = 关闭（写空内容）、为保留字 `off` = 强制关闭
- * （见 data/lab.ts::LAB_FORCE_OFF）、否则是模式 key。
- * 与配置页同款写法——先落同目录临时文件再原子替换，避免守护进程读到半截内容；
- * 临时文件后缀 `.webui.tmp` 与配置页保持一致。
+ * 写实验室状态：`mode` 为 null = 关闭（写空内容）、为保留字 `off` = 强制关闭
+ * （见 data/lab.ts::LAB_FORCE_OFF）、否则是模式 key。先落同目录临时文件再原子替换
+ * （与配置页同款，后缀同为 `.webui.tmp`），避免守护进程读到半截内容。
  */
 export async function writeLabMode(mode: LabWriteTarget): Promise<ReadResult<LabSnapshot>> {
   if (!isLive()) return absent<LabSnapshot>('unsupported-env')

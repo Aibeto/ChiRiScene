@@ -1,6 +1,5 @@
 //! tuned.rs: [restore] [governor] [init_release] [load_freq]
-//! 特调执行器（TunedGovernor）：akmode / playback / daily 等模式共用同一套连续控制，
-//! 参数组按模式名从 Config.tuned_profiles 分派，差异只在参数。
+//! 特调执行器（TunedGovernor）：akmode / playback / daily 等模式共用同一套连续控制，参数组按模式名从 Config.tuned_profiles 分派，差异只在参数。
 
 use crate::chiri::config::SpecialTunedConfig;
 use crate::utils::FastWriter;
@@ -17,25 +16,20 @@ use crate::fluent_args;
 use crate::i18n::t_with_args;
 
 // [restore]
-/// 单个 policy 的 governor/min/max 快照：akmode 接管时保存，release 时恢复。
+/// 单个 policy 的 governor/min/max 快照：接管时保存，release 时恢复；字段读取失败为 None，恢复时跳过该字段。
 struct PolicyRestore {
     policy_id: i32,
-    /// 接管前的 scaling_governor；读取失败为 None，恢复时跳过
     governor: Option<String>,
-    /// 接管前的 scaling_min_freq（kHz）；读取失败为 None，恢复时跳过
     min_freq: Option<u32>,
-    /// 接管前的 scaling_max_freq（kHz）；读取失败为 None，恢复时跳过
     max_freq: Option<u32>,
 }
 
 /// 单个 policy 的运行时状态：无档位连续 max 控制。
 struct ClusterState {
-    /// 核心组名：little / big / prime
     core_name: &'static str,
     /// 内核可用频率（kHz，升序去重），目标上限在该表中就近取档
     available_freqs: Vec<u32>,
     max_writer: FastWriter,
-    /// 当前设定的 max（kHz）
     current_max: u32,
     /// 降频保持计时起点（目标首次低于当前上限的时刻）；None = 无待执行降频
     down_since: Option<Instant>,
@@ -44,8 +38,7 @@ struct ClusterState {
     /// 用于决策的负载 EMA（util_smoothing < 1 时启用；-1 = 未初始化）
     ema_util: f32,
     // [dwell] 写频滞回状态（Phase 2，与 CLG 同口径）
-    /// 上次**实际写频**成功时刻：dwell 以它计时；None = 接管初写后尚未写过
-    /// （接管初写不启动时钟，首次受控写频立即生效）
+/// 上次**实际写频**成功时刻：dwell 以它计时；None = 接管初写后尚未写过（初写不启动时钟，首次受控写频立即生效）
     last_write_at: Option<Instant>,
     /// 上次实际写频方向：升 = 1、降 = -1、未写过 = 0（翻摆判定基准）
     last_write_dir: i8,
@@ -53,9 +46,7 @@ struct ClusterState {
     last_failed: bool,
 }
 
-/// 按 affected_cpus 的 CPU ID 判定核心组，区间随命中 SoC 变化
-/// （8550：0-2 little / 3-6 big / 7 prime；8450：0-3 / 4-6 / 7；8998：0-3 / 4-7 / 无 prime）。
-/// 由 common::chiri_core_ranges() 统一提供区间，新增 SoC 只需在那里追加。
+/// 按 affected_cpus 首个 CPU ID 判定核心组，区间随命中 SoC 变化；由 common::chiri_core_ranges() 统一提供，新增 SoC 只需在那里追加
 fn core_name_for(affected: &[usize]) -> Option<&'static str> {
     let first = affected.iter().copied().min()?;
     let r = crate::common::chiri_core_ranges();
@@ -70,28 +61,23 @@ fn core_name_for(affected: &[usize]) -> Option<&'static str> {
     }
 }
 
-/// 明日方舟特调（akmode）控制器：独立于 CLG 的动态限频调度，**无档位**。
-/// 每个负载 tick 按核心组实时负载直接计算 scaling_max_freq 目标上限：
-///   target_ratio = clamp(组内最大核心占用率 × headroom, perf_floor, 1.0)
-///   target_max   = 频率表中 ≤ ratio × 硬件最高的最大档位（floor 对齐）
-/// 升频立即执行（响应性优先），降频须目标偏离超过 hysteresis 且持续
-/// down_hold_ms 才执行（防负载抖动来回改写）。
-/// 替代原四档 core-count 阈值方案——后者在「少数线程高占用」负载（如明日方舟
-/// 资源校验：一两个线程吃满单核、组内其余核心空闲）下升频条件凑不齐、降频
-/// 条件持续满足，max 单边下探到最低频，校验速度严重劣化。
+    /// 明日方舟特调（akmode）控制器：独立于 CLG 的动态限频调度，**无档位**。
+    /// 每个负载 tick 按核心组实时负载直接计算 scaling_max_freq 目标上限：
+    ///   target_ratio = clamp(组内最大核心占用率 × headroom, perf_floor, 1.0)
+    ///   target_max   = 频率表中 ≤ ratio × 硬件最高的最大档位（floor 对齐）
+    /// 升频立即执行（响应性优先）；降频须偏离超 hysteresis（绝对死区 = hw_max × hysteresis）且持续 down_hold_ms。
+    /// 替代原四档 core-count 阈值方案：后者在「少数线程高占用」负载下升频凑不齐、降频持续满足，max 单边下探到最低频。
 // [governor]
 pub struct TunedGovernor {
     cfg: SpecialTunedConfig,
-    /// 当前接管的特调模式名（akmode / playback / daily …）：日志用，
-    /// release 后保留（deactivated 日志要报是哪个模式退出）
+/// 当前接管的特调模式名（akmode / playback / daily …）：日志用；release 后保留（deactivated 日志要报是哪个模式退出）
     mode: String,
     /// 特调激活共享标志：Monitor 层（cpu_monitor）据此切换采样间隔（特调 40ms / 其余 120ms）
     ak_active: Arc<AtomicBool>,
     clusters: Vec<ClusterState>,
     /// 各 policy 的 governor/min/max 快照，release 时恢复
     restore: Vec<PolicyRestore>,
-    /// 接管前 `sched_migration_cost_ns` 的原值（全局节点，只快照一次）：
-    /// 仅当配置了 `migration_cost_ns` 且写成功时才非 None，release 时写回
+/// 接管前 sched_migration_cost_ns 原值（全局节点，只快照一次）：仅配置了 migration_cost_ns 且写成功才非 None，release 时写回
     migration_cost_restore: Option<String>,
     active: bool,
     /// 调试日志计数，每 25 tick 打一次摘要
@@ -116,19 +102,14 @@ impl TunedGovernor {
         self.active
     }
 
-    /// 接管全部 cpufreq policy：
-    /// 1. 先 release 清掉上一次状态；
-    /// 2. 逐个 policy 读可用频率与 affected_cpus，按 CPU ID 判定核心组；
-    /// 3. 快照 governor/min/max；写 schedutil、min 压到硬件最低；
-    /// 4. 初始 max = 硬件最高（接管瞬间多为场景切换，先给满上限，由负载控制自然回落）。
-    ///
-    /// 返回 true 表示成功接管，false 表示无可用 cluster（配置错误或硬件不支持）。
+    /// 接管全部 cpufreq policy：1) 先 release 清上次状态；2) 逐 policy 读可用频率与 affected_cpus 判定核心组；
+    /// 3) 快照 governor/min/max，写 schedutil、min 压硬件最低（与 CLG 同构，只调 max）；4) 初始 max = 硬件最高（接管瞬间多为场景切换，先给满上限由负载回落）。
+    /// 返回 true = 成功接管；false = 无可用 cluster（配置错误或硬件不支持）。
     // [init_release]
     pub fn init_policies(&mut self, mode: &str, cfg: &SpecialTunedConfig) -> bool {
         self.release();
         self.cfg = cfg.clone();
         self.cfg.normalize();
-        // 模式名只用于日志可读性（同一套机制被多个模式共用，日志必须能区分）
         self.mode = mode.to_string();
 
         let policies = crate::chiri::get_cpu_policies();
@@ -157,8 +138,7 @@ impl TunedGovernor {
                 .filter_map(|s| s.parse().ok())
                 .collect();
             if freqs.is_empty() {
-                // scaling_available_frequencies 读不到/空表：按 policy 首核映射核心组，
-                // 回退 soc.yaml [freq_khz] 兜底（只补表，不改取档/floor 对齐逻辑）
+                // scaling_available_frequencies 读不到/空表：按 policy 首核映射核心组，回退 soc.yaml [freq_khz] 兜底（只补表，不改取档/floor 对齐逻辑）
                 match crate::common::soc_freq_fallback_for_policy(pid) {
                     Some(f) => freqs = f,
                     None => continue,
@@ -230,7 +210,6 @@ impl TunedGovernor {
             let min_hw = freqs[0];
             let _ = crate::utils::try_write_file(&min_path, min_hw.to_string());
 
-            // 初始 max = 硬件最高：冷启动给足余量，稳态后 1-2 个 tick 收到实际需求
             let current_max = *freqs.last().unwrap();
             let _ = max_writer.write_value_force(current_max);
 
@@ -249,7 +228,6 @@ impl TunedGovernor {
             });
         }
 
-        // 稳态负载下按需调高迁移成本（可选：未配置则该节点完全不动）
         self.apply_migration_cost();
 
         self.active = !self.clusters.is_empty();
@@ -265,7 +243,6 @@ impl TunedGovernor {
                     &fluent_args!("mode" => self.mode.clone())
                 )
             );
-            // 特调激活通知 Monitor 层切换到 40ms 快速采样
             self.ak_active.store(true, Ordering::Relaxed);
         } else {
             warn!(
@@ -291,17 +268,14 @@ impl TunedGovernor {
             );
         }
         self.active = false;
-        // 恢复原 governor/min/max（快照读取失败的字段跳过）
         self.restore.retain(|r| !Self::restore_policy(r));
         self.restore_migration_cost();
         self.clusters.clear();
-        // 特调退出通知 Monitor 层恢复常规采样
         self.ak_active.store(false, Ordering::Relaxed);
         self.log_counter = 0;
     }
 
-    /// 恢复单个 policy 的原 governor/min/max，返回是否全部写成功（失败保留快照下次重试）。
-    /// 写序：先恢复 max 再恢复 min（min 不高于恢复后的 max），避免中间态 min > max。
+/// 恢复单个 policy 的原 governor/min/max，返回是否全部写成功（失败保留快照下次重试）；写序先 max 后 min，避免中间态 min > max
     fn restore_policy(r: &PolicyRestore) -> bool {
         let gov_path = format!(
             "/sys/devices/system/cpu/cpufreq/policy{}/scaling_governor",
@@ -335,10 +309,7 @@ impl TunedGovernor {
         all_ok
     }
 
-    /// 接管期间按需调高 `sched_migration_cost_ns`：稳态负载（视频播放）下该值偏小
-    /// 会让调度器频繁跨核搬迁（8550 实测 ≈557 次/s），调高可省下搬迁开销与 cache
-    /// 失效。原值进 `migration_cost_restore`，release 时写回；写失败就当没配——
-    /// 这是锦上添花项，不该影响接管本身。
+/// 接管期间按需调高 sched_migration_cost_ns：稳态负载下原值偏小会频繁跨核搬迁（省搬迁开销与 cache 失效）；原值进 migration_cost_restore，release 写回；写失败当未配置，不影响接管
     fn apply_migration_cost(&mut self) {
         let Some(want) = self.cfg.migration_cost_ns.filter(|v| *v > 0) else {
             return;
@@ -372,10 +343,8 @@ impl TunedGovernor {
         );
     }
 
-    /// 频率表中找「≤ ratio × 硬件最高」的最大档位（floor 对齐）。
-    /// 写的是 scaling_max（上限），落点不得高于计算目标——ceil 会比决策多给一档
-    /// 频率，且目标落在两档之间时内核本就把 max 向下 clamp，先对齐再写才能
-    /// 账实一致、同值不落盘的去重才有效。
+    /// 频率表中找「≤ ratio × 硬件最高」的最大档位（floor 对齐）：写的是 scaling_max 上限，落点不得高于计算目标
+    /// （ceil 会比决策多给一档；目标落两档之间时内核本就把 max 向下 clamp，先对齐再写账实一致、同值去重才有效）
     fn freq_for_ratio(freqs: &[u32], ratio: f32) -> u32 {
         let hw_max = *freqs.last().unwrap_or(&0);
         let want = (hw_max as f32 * ratio) as u32;
@@ -387,10 +356,8 @@ impl TunedGovernor {
             .unwrap_or_else(|| *freqs.first().unwrap_or(&0))
     }
 
-    // [dwell] 受控写频（与 CLG write_freq 同口径）：死区由调用方 hysteresis 保证
-    // （|target−current| 超死区才调用），这里做「最小驻留内方向翻摆延迟」与写失败
-    // 防篡改补写豁免；接管初写/恢复不走本函数。返回是否写入成功（成功才前移
-    // current_max 并记录实际写频；失败/被延迟由下一 tick 补写当前 target）。
+    // [dwell] 受控写频（与 CLG write_freq 同口径）：死区由调用方 hysteresis 保证（|target−current| 超死区才调用），
+    // 这里做最小驻留内方向翻摆延迟与写失败防篡改补写豁免；接管初写/恢复不走本函数。返回是否写成功：成功才前移 current_max，失败/被延迟由下一 tick 补写 target。
     fn gated_write(c: &mut ClusterState, target: u32, dwell_ms: u64) -> bool {
         let dir: i8 = if target > c.current_max { 1 } else { -1 };
         if !c.last_failed && c.last_write_dir != 0 && dir != c.last_write_dir {
@@ -414,11 +381,9 @@ impl TunedGovernor {
     }
 
     /// 无档位动态限频入口，每个 SystemLoadUpdate（特调 40ms）触发一次。
-    /// 每个核心组独立决策（decision 语义与 CLG 对齐）：
-    ///   up        目标 > 当前 max + hysteresis，立即上调；
-    ///   down_wait 目标 < 当前 max − hysteresis，保持计时中（down_hold_ms）；
-    ///   down      保持期满，上限收到目标档位；
-    ///   hold      目标在死区内（或保持期内目标回升，取消等待）。
+    /// 每个核心组独立决策（语义与 CLG 对齐）：up = 目标 > 当前 max + hysteresis，立即上调；
+    /// down_wait = 目标 < 当前 max − hysteresis，保持计时中（down_hold_ms）；down = 期满把上限收到目标档位；
+    /// hold = 目标在死区内（或保持期内目标回升，取消等待）。
     pub fn on_load_update(&mut self, core_utils: &[f32]) {
         if !self.active {
             return;
@@ -426,15 +391,10 @@ impl TunedGovernor {
 
         let ranges = crate::common::chiri_core_ranges();
         let now = Instant::now();
-        // 借用配置，不克隆：SpecialTunedConfig 的唯一堆字段是 per_cluster
-        // （HashMap<String, _>，键为核心组名），每 tick（特调 40ms = 25 tick/s）
-        // 克隆一次就要连带复制整张表。gated_write 是关联函数（只借
-        // &mut ClusterState）不借 &mut self，与 &self.cfg 的不可变借用不冲突。
+        // 借用配置不克隆：SpecialTunedConfig 唯一堆字段是 per_cluster（HashMap，键为组名），每 tick 克隆要复制整张表；gated_write 是关联函数不借 &mut self，与 &self.cfg 不冲突
         let cfg = &self.cfg;
 
-        // main_ tick 行数据（每核心组一行）：cluster / util / decision / cur_max / hw_max。
-        // **只在开发记录开启时收集**（硬口径：dev_record 关闭时 devimp 路径零开销、
-        // 零分配、零写入）：关闭时这里是空 Vec，连 format! 都不发生。
+        // main_ tick 行数据（每核心组一行：cluster / util / decision / cur_max / hw_max），只在开发记录开启时收集（关闭时零开销、零分配、零写入）
         let diag = crate::logger::diag_active();
         let mut main_rows: Vec<(&'static str, String, &'static str, u32, u32)> = Vec::new();
 
@@ -446,21 +406,14 @@ impl TunedGovernor {
             } else {
                 &ranges.prime
             };
-            // 该核心组的有效参数（per_cluster 覆盖后的最终值）：三簇负载形态不同
-            // （视频实测 little 过载 / big 合理 / prime 空转），必须按组取
+            // 该核心组的有效参数（per_cluster 覆盖后的最终值）：三簇负载形态不同，必须按组取
             let p = cfg.for_cluster(c.core_name);
             let group_util = range
                 .clone()
                 .filter_map(|cpu| core_utils.get(cpu).copied())
                 .fold(0.0_f32, f32::max);
-            // 负载平滑（EMA，util_smoothing=1.0 关闭）：抖动的瞬时 util 尖峰会
-            // 把「升频立即执行」的上限反复推高、降频又被 hold 拖住，上限均值
-            // 反而高于带平滑的 CLG（2026-09-17 8550 日志回放证实）。视频/轻载
-            // 这类「噪声型抖动」负载用平滑滤尖峰；游戏（默认 1.0）保持原始值，
-            // 瞬时升频是响应性的一部分。
-            // 时间常数（α=0.35）≈ 采样间隔 × (1-α)/α：实机 40ms tick ≈ 75ms
-            // （跟得上真实负载、滤掉单 tick 尖峰）；日志回放是 160ms 采样
-            // （≈300ms）——回放给出的收紧幅度因此偏乐观，实机效果待日志验证。
+            // 负载平滑（EMA，util_smoothing=1.0 关闭）：噪声型抖动负载（视频/轻载）滤瞬时尖峰，避免上限均值高于带平滑的 CLG；
+            // 游戏默认 1.0 保持原始 util（瞬时升频是响应性的一部分）。时间常数（α=0.35）≈ 采样间隔 × (1-α)/α，40ms tick ≈ 75ms
             let util = if p.util_smoothing >= 0.999 || c.ema_util < 0.0 {
                 group_util
             } else {
@@ -476,21 +429,14 @@ impl TunedGovernor {
 
             let decision;
             if target_max > c.current_max + hyst_freq {
-                // 升频：立即执行（响应性优先），并取消进行中的降频等待。
-                // 写成功才前移状态：失败时下一 tick target 仍超死区 → up 重试
-                //（与 CLG「写失败下次 tick 自动重试」语义对齐）
+                // 升频：立即执行（响应性优先）并取消进行中的降频等待；写成功才前移状态，失败时下一 tick target 仍超死区 → up 重试（与 CLG 对齐）
                 // [dwell] 经写频滞回（同 CLG）：翻摆延迟、写失败补写豁免
                 Self::gated_write(c, target_max, cfg.write_dwell_ms);
                 c.down_since = None;
                 decision = "up";
             } else if target_max < c.current_max.saturating_sub(hyst_freq) {
-                // 降频：目标须持续 down_hold_ms 才执行。
-                // 计时重置只在目标**明显回升**（> down_target + hyst）时发生：抖动负载下
-                // target 在相邻档位小幅跳动不应重置计时——原「档位不等即重置」在
-                // 2026-09-17 的 8550 日志回放中被证实会让上限卡在高位降不下来
-                // （160ms 平滑 util 下都几乎降不动，真实原始 util 更糟），
-                // 连续控制退化成「只升不降」。目标继续下探时只更新 down_target
-                // （等待更深的降频，执行时用最新档），不重置计时。
+                // 降频：目标须持续 down_hold_ms；计时重置只在目标明显回升（> down_target + hyst）时发生——相邻档位小幅跳动不重置，
+                // 否则上限卡在高位降不下来（连续控制退化成只升不降）；目标继续下探只更新 down_target（执行用最新档），不重置计时
                 match c.down_since {
                     None => {
                         c.down_since = Some(now);
@@ -505,8 +451,7 @@ impl TunedGovernor {
                     Some(since) => {
                         c.down_target = target_max;
                         if now.duration_since(since).as_millis() as u64 >= p.down_hold_ms {
-                            // 写成功才前移状态并结束等待：失败/被 dwell 延迟保留计时起点，
-                            // 下一 tick（elapsed 仍满）立即重试
+                            // 写成功才前移状态并结束等待：失败/被 dwell 延迟保留计时起点，下一 tick（elapsed 仍满）立即重试
                             // [dwell] 经写频滞回（同 CLG）：翻摆延迟、写失败补写豁免
                             if Self::gated_write(c, target_max, cfg.write_dwell_ms) {
                                 c.down_since = None;
@@ -537,12 +482,8 @@ impl TunedGovernor {
             }
         }
 
-        // main_ tick 行（开发记录开启时才有 IO）：
-        // cur_freq_khz 列写当前动态 max（kHz），max_freq_khz 列写硬件最高（kHz），
-        // 与旧版一致；over/under 列无档位阈值语义，恒 0。
-        // **util 列写决策用的负载**：util_smoothing < 1 时为 EMA 平滑后的值
-        // （见上方 util 计算处的注释）——2026-09-17 起语义变化，离线回放该列时
-        // 不能再当原始 util 二次平滑。
+        // main_ tick 行（开发记录开启时才有 IO）：cur_freq_khz 写当前动态 max、max_freq_khz 写硬件最高（kHz），over/under 无档位语义恒 0；
+        // util 列写决策用负载（util_smoothing < 1 时为 EMA 后的值），离线回放该列时不能当原始 util 二次平滑
         if diag {
             for (name, util, decision, cur_max, hw_max) in &main_rows {
                 crate::logger::main_tick(
@@ -564,10 +505,8 @@ impl TunedGovernor {
         }
 
         self.log_counter += 1;
-        // debug 心跳（独立于开发诊断，日志通道随时可用）：每 25 tick 汇总各簇
-        // util/max，供诊断关闭时观测负载直拉行为。
-        // 汇总改从 clusters 现算（ema_util / current_max 就是本 tick 决策所用的值）：
-        // dev_record 关闭时 main_rows 是空表，不能再当数据源。
+        // debug 心跳（独立于开发诊断，日志通道随时可用）：每 25 tick 汇总各簇 util/max，供诊断关闭时观测
+        // 汇总从 clusters 现算（ema_util / current_max 就是本 tick 决策所用值）：dev_record 关闭时 main_rows 是空表，不能当数据源
         if self.log_counter % 25 == 0 && log::log_enabled!(log::Level::Debug) {
             let summary = self
                 .clusters

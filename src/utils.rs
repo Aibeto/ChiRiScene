@@ -17,7 +17,7 @@ use crate::fluent_args;
 use crate::i18n::t_with_args;
 
 // [io]
-/// 向文件写入内容，并处理可能的错误
+/// 写文件：已存在则先置 0o664 可写，写完置 0o444 只读
 pub fn write_to_file<P: AsRef<Path>, C: AsRef<[u8]>>(path: P, content: C) -> Result<()> {
     let path = path.as_ref();
 
@@ -33,12 +33,10 @@ pub fn write_to_file<P: AsRef<Path>, C: AsRef<[u8]>>(path: P, content: C) -> Res
     Ok(())
 }
 
-// 尝试写入内容 (不抛出错误，只记录告警)
+// 写文件，失败仅记日志不抛错
 pub fn try_write_file<P: AsRef<Path>, C: AsRef<[u8]>>(path: P, content: C) -> Result<()> {
     if let Err(e) = write_to_file(path.as_ref(), content) {
-        // ENOENT = 节点/目录不存在（这个内核或机型没有该调优节点），不是写入失败：
-        // 降到 debug，避免周期性 apply 每轮刷一条 warn（实例：
-        // /dev/cpuctl/restricted/cpu.uclamp.max 在部分机型不存在）
+// ENOENT = 机型/内核没有该调优节点，非写入失败：降 debug，避免周期 apply 每轮刷 warn
         let not_found = e
             .downcast_ref::<std::io::Error>()
             .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound);
@@ -52,25 +50,14 @@ pub fn try_write_file<P: AsRef<Path>, C: AsRef<[u8]>>(path: P, content: C) -> Re
 }
 
 // [nodes]
-/// 「多节点写入」的失效告警去重表：`what` 进入「全部节点不可用」态时记一条，
-/// 任一节点写成功即移除（重新武装）——1~2s 热路径每轮打 warn 会刷屏。
+/// 多节点写入的失效告警去重表：`what` 进入「全部节点不可用」态记一条，任一节点写成功即移除（重新武装），防 1~2s 热路径刷屏
 static NODE_FAIL_WARNED: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
 
-/// 多节点写入：同一功能写到多个候选/同类节点（不同机型可用节点不同——cgroup 组、
-/// cpufreq policy、`/sys/block` 设备、跨厂商候选节点等）。
-///
-/// 日志口径（用户要求，2026-09-18）：
-/// - 单个节点失败 → `debug`：机型/内核没有该节点是常态，不是故障；
-/// - **全部**节点失败 → `warn`：该功能在这些节点上整体不可用，每个 `what` 只在
-///   进入失效态时打一条（写成功即复位，见 [`NODE_FAIL_WARNED`]）；
-/// - 非「节点缺失」类错误（权限 / IO）就地 `warn` 一条，不等全失败才报。
-///
-/// 返回成功写入的节点路径（空 = 全部失败；调用方需要「用了哪个候选」时可直接用）。
-/// **刻意不做存在性预判**：写入失败本身就是「该节点不可用」的权威证据，预判既会与
-/// 真实情况脱节，也会把本该留痕的失败吞掉。
-/// 路径/值都按 `AsRef<str>` 泛型接收：`Vec<(String, String)>`（路径运行时拼接，
-/// 必须持有 String）与 `&[(&str, &str)]`（路径是字面量，无需构造 String）都能直接传，
-/// 因此调用方不必为适配签名额外建一层中间 Vec。
+/// 多节点写入：同一功能写到多个候选节点（不同机型可用节点不同——cgroup 组、cpufreq policy、
+/// `/sys/block` 设备等）。日志口径：单节点失败 → debug（机型无该节点是常态）；全部节点失败 →
+/// warn，每个 `what` 仅进入失效态时一条（写成功即复位，见 [`NODE_FAIL_WARNED`]）；非「节点缺失」
+/// 类错误（权限/IO）就地 warn。返回成功写入的节点路径（空 = 全部失败）。
+/// 刻意不做存在性预判：写入失败才是「节点不可用」的权威证据。路径/值按 `AsRef<str>` 接收，String/&str 元组皆可直传。
 pub fn write_nodes<P: AsRef<str>, V: AsRef<str>>(
     items: &[(P, V)],
     what: &'static str,
@@ -131,20 +118,10 @@ pub fn enable_perm<P: AsRef<Path>>(path: P) -> Result<()> {
     Ok(())
 }
 
-/// 目录内**单个文件**的变更监听（配置热重载用）。
-///
-/// 两条硬约束（2026-09-16 修复「WebUI 改 meta 后热重载不生效」，详见下方注释）：
-/// 1. **跨重载复用同一个 inotify 实例**。此前每轮 `Inotify::init() → add_watch →
-///    read_events_blocking → 返回即 drop`，两轮之间没有任何 watch 在册，这期间
-///    到达的事件被内核直接丢弃。WebUI 保存是「先写同名 .webui.tmp 再 mv 覆盖」，
-///    产生 CLOSE_WRITE(tmp) 与 MOVED_TO(meta.yaml) 两条事件：监听器被前者唤醒、
-///    读到的是**覆盖前**的旧内容（INFO），而真正的 MOVED_TO 恰好落在重载窗口内
-///    被丢掉 —— 表现就是「日志显示重载成功，但级别仍是旧值」。
-/// 2. **按文件名过滤**。目录级 watch 会收到目录内所有文件的事件，不过滤就会在
-///    tmp 落盘那一刻提前重载；过滤后只在目标文件被 CLOSE_WRITE/MOVED_TO 时返回。
-///
-/// 命中后额外做 100ms 静默 + 清空积压（与 app_detect::watch_config_file 同口径）：
-/// 连续多次写入只触发一次重载，且读到的一定是最终内容。
+/// 目录内单个文件的变更监听（配置热重载用）。两条硬约束：
+/// 1. 跨重载复用同一 inotify 实例：每轮 init→drop 间隙无 watch 在册，其间事件被内核丢弃
+///    （WebUI 保存是 tmp 写入 + mv 覆盖，真 MOVED_TO 恰落间隙即丢——表现为日志显示重载成功但级别仍旧值）；
+/// 2. 按文件名过滤：目录级 watch 会收到目录内所有文件事件，不过滤会在 tmp 落盘时提前重载。
 pub struct DirWatcher {
     inotify: Inotify,
     buffer: [u8; 1024],
@@ -156,14 +133,12 @@ const WATCH_SETTLE: Duration = Duration::from_millis(100);
 impl DirWatcher {
     /// 监听 `dir` 目录（不递归）。目录不存在/无权限时返回 Err，由调用方退避重试。
     pub fn new(dir: &Path) -> Result<Self> {
-        // CLOSE_WRITE 覆盖直接写入；MOVED_TO 覆盖原子替换（WebUI 用临时文件 + mv
-        // 保存配置时是 rename 而非写打开，只有 MOVED_TO 能感知）
+// CLOSE_WRITE 覆盖直接写入；MOVED_TO 覆盖原子替换（WebUI 用临时文件 + mv 保存，只有 MOVED_TO 能感知）
         Self::new_with_mask(dir, WatchMask::CLOSE_WRITE | WatchMask::MOVED_TO)
     }
 
-    /// 自定义事件掩码。**只有「删掉文件也算一次状态变更」时才需要更多事件**：
-    /// 配置与实验室那两条链路不需要（文件被删会被自愈补建，仍走 CLOSE_WRITE），
-    /// 多给它反而会因误删触发一轮重载。
+/// 自定义事件掩码。仅当「删掉文件也算状态变更」时才需要更多事件：配置/实验室链路文件被删会自愈补建
+/// （仍走 CLOSE_WRITE），多给掩码反而会因误删触发重载。
     pub fn new_with_mask(dir: &Path, mask: WatchMask) -> Result<Self> {
         let inotify = Inotify::init()?;
         inotify.watches().add(dir, mask)?;
@@ -187,8 +162,7 @@ impl DirWatcher {
                 break;
             }
         }
-        // 静默窗口 + 清空积压：连续写入合并为一次重载（inotify fd 为非阻塞，
-        // 无事件时 read_events 返回 WouldBlock，循环随之结束）
+// 静默窗口 + 清空积压：连续写入合并为一次重载（fd 非阻塞，无事件时 WouldBlock 结束循环）
         thread::sleep(WATCH_SETTLE);
         while let Ok(events) = self.inotify.read_events(&mut self.buffer) {
             if events.peekable().peek().is_none() {
@@ -215,21 +189,10 @@ pub fn read_file_content(path: &str) -> Result<String> {
 }
 
 // [temp_probe]
-/// CPU 温度 zone type 匹配名单的内置默认：高通（soc_max / cpuss）与 MTK
-/// （mtktscpu / cpu-1- / cpu-0-0-usr）混合。per-SoC 外挂：feature.yaml
-/// `Thermal.cpu_temp_zone_types` 可覆盖（默认所有 SoC 都不写这份名单，
-/// 即用内置默认，行为不变）。
-///
-/// 名单语义（依据内核分析报告 `.archive/.cursor/docs/kernel-analysis/04-thermal.md`）：
-/// - `soc_max` = virtual-sensor 聚合温区（多传感器取 max，可能含 GPU/CDSP
-///   等非 CPU 传感器），作 cpu_temp 偏保守、**非纯 CPU 温度**；
-/// - `cpuss` = cluster 级 tsens 单传感器（真机回退命名 cpuss0-3），soc_max
-///   缺失时按子串匹配命中。匹配按名单序分层扫描（外层名单项、内层 zones，
-///   见 find_cpu_temp_path），soc_max 优先。
-///
-/// 同源约束：此函数是唯一来源，chiri/config.rs 的
-/// `ThermalGuardConfig.cpu_temp_zone_types` serde default 直接引用本函数，
-/// 两处名单天然一致，改名单只改这里。
+/// CPU 温度 zone type 内置默认名单（高通 soc_max/cpuss + MTK mtktscpu/cpu-1-/cpu-0-0-usr）。
+/// feature.yaml `Thermal.cpu_temp_zone_types` 可覆盖（缺省一律用内置名单）。soc_max = virtual-sensor
+/// 聚合温区（多传感器取 max，可能含非 CPU 传感器，作 cpu_temp 偏保守）；cpuss = cluster 级 tsens
+/// 单传感器，soc_max 缺失时按子串回退命中。唯一来源：chiri/config.rs 的 ThermalGuardConfig serde default 直接引用。
 pub(crate) fn default_cpu_temp_zone_types() -> Vec<String> {
     ["soc_max", "cpuss", "mtktscpu", "cpu-1-", "cpu-0-0-usr"]
         .iter()
@@ -237,15 +200,12 @@ pub(crate) fn default_cpu_temp_zone_types() -> Vec<String> {
         .collect()
 }
 
-/// 运行时生效的 zone type 名单（chiri Config::load 从 Thermal 配置同步；
-/// 配置加载前/加载失败用内置默认，与历史行为一致。名单来自编译期嵌入的
-/// feature.yaml，进程内恒定，set 仅首次生效、热重载重复调用无副作用）。
+/// 运行时生效的 zone 名单（Config::load 从 Thermal 配置同步；加载前/失败用内置默认）。名单来自
+/// 编译期嵌入的 feature.yaml，进程内恒定，set 仅首次生效、热重载重复调用无副作用。
 static CPU_TEMP_ZONE_TYPES: OnceLock<Vec<String>> = OnceLock::new();
 
-/// Config::load 同步热保护配置里的 zone 名单（utils 无法直接访问 chiri Config，
-/// 走「加载时 set + 静态缓存」范式）。OnceLock 首胜语义在此是有意的：
-/// 名单来自编译期嵌入的 feature.yaml，进程内恒定，热重载重复 set 被静默忽略。
-/// 若未来名单改为磁盘可调，须换成 RwLock/Mutex 存量真可重设。
+/// utils 无法直接访问 chiri Config，走「加载时 set + 静态缓存」范式；OnceLock 首胜即上面的进程内恒定语义。
+/// 若未来名单改为磁盘可调，须换 RwLock/Mutex 存量真可重设。
 pub fn set_cpu_temp_zone_types(types: Vec<String>) {
     let _ = CPU_TEMP_ZONE_TYPES.set(types);
 }
@@ -266,10 +226,7 @@ pub fn find_cpu_temp_path() -> Result<String> {
         return Err(anyhow::anyhow!("Thermal directory not found"));
     }
 
-    // [名单序] 分层扫描保证名单序优先：外层遍历名单项（soc_max 优先）、内层
-    // 遍历 zones，第一个命中项胜出——此前按 zone 下标遍历 + any(contains)
-    // 命中即取，cpuss 类 zone 下标更小时会反向命中，与「soc_max 缺失才回退
-    // cpuss」语义相反。zones 数量小（<30），名单项 × zones 双循环无性能顾虑
+// [名单序] 外层遍历名单项、内层 zones，首个命中项胜出，保证 soc_max 优先于 cpuss 回退（zones 少，双循环无性能顾虑）
     for item in cpu_temp_zone_types() {
         for entry in fs::read_dir(thermal_dir)? {
             let entry = entry?;
@@ -282,12 +239,9 @@ pub fn find_cpu_temp_path() -> Result<String> {
                     continue;
                 }
                 let type_path = path.join("type");
-                // 修复 E0532 模式匹配错误: 直接使用 if let Ok(...)
                 if let Ok(type_content) =
                     read_file_content(type_path.to_str().unwrap_or_default())
                 {
-                    // 名单来自 Thermal.cpu_temp_zone_types（Config::load 同步，
-                    // 默认 = 内置高通/MTK 混合名单）；分层扫描保证名单序优先
                     if type_content.contains(item.as_str()) {
                         let temp_path = path.join("temp");
                         if temp_path.exists() {
@@ -301,9 +255,8 @@ pub fn find_cpu_temp_path() -> Result<String> {
     Err(anyhow::anyhow!("Valid CPU thermal zone not found"))
 }
 
-/// 电池温度节点路径。**原始刻度的单位因内核/厂商而异，不可硬编码换算**，
-/// 读取一律先经 `battery_temp_scale()` 预识别（见下）。
-/// None = 节点不存在（依赖它的功能自动失效，不影响其余功能）
+/// 电池温度节点路径。原始刻度因内核/厂商而异不可硬编码换算，读取前先经 `battery_temp_scale()` 预识别。
+/// None = 节点不存在（依赖它的功能自动失效，不影响其余功能）。
 pub fn find_battery_temp_path() -> Option<&'static str> {
     const BATT_TEMP: &str = "/sys/class/power_supply/battery/temp";
     std::path::Path::new(BATT_TEMP)
@@ -312,14 +265,8 @@ pub fn find_battery_temp_path() -> Option<&'static str> {
 }
 
 // 电池温度刻度预识别
-//
-// `/sys/class/power_supply/battery/temp` 的单位在不同内核/厂商上不一致：
-// 内核 power_supply 标准是 0.1°C（raw 400 = 40.0°C），部分平台报毫摄氏度
-// （raw 40000 = 40.0°C），少数厂商直接报 °C（raw 40 = 40.0°C）。硬编码除数
-// 会带来 10×/100× 偏差：8550 的 0.1°C 节点曾被误按毫摄氏度除 1000，实测
-// 恒读 0.4°C（真实约 20~50°C），电池软/硬限（41/45°C）永不触发、主参考
-// 彻底失效。故改为运行时预识别一次并缓存，CLG 热保护与 FAS 温度护栏共用
-// 同一结论，避免两处口径漂移。
+// `/sys/class/power_supply/battery/temp` 的单位因内核/厂商而异（0.1°C / 毫摄氏度 / 直读 °C 三种），
+// 硬编码除数会有 10×/100× 偏差，故运行时预识别一次并缓存，热保护与温度护栏共用同一结论，避免口径漂移。
 
 // [batt_temp]
 /// 电池温度节点的原始刻度
@@ -353,16 +300,12 @@ impl BatteryTempScale {
     }
 }
 
-/// 合理电池温度窗口（°C）：用于在多种单位解释里挑出唯一合理者。
-/// 下界取 5、上界取 80：直读 °C 的内核常给出 5..80，若下界取 0，tenths 解释
-/// （raw/10）会把直读值 40 误判成 4.0°C 从而失去区分度；上界放宽到 80 是为了
-/// 让偶发高温读数仍能参与定档（真正离谱的值由热保护 `TempFilter` 的物理范围门兜底）。
-/// 该窗口下 tenths 与 milli 的解释不会互相碰撞（tenths raw 50..800 ↔ milli raw 5万..8万）
+/// 合理电池温度窗口（°C）：在多种单位解释里挑唯一合理者。下界 5（取 0 会令 tenths 解释失去区分度）、
+/// 上界 80（容纳偶发高温，离谱值由热保护 TempFilter 物理范围门兜底）；窗口下 tenths 与 milli 解释不互相碰撞。
 const BATT_TEMP_PLAUSIBLE_MIN_C: f64 = 5.0;
 const BATT_TEMP_PLAUSIBLE_MAX_C: f64 = 80.0;
 
-/// 预识别结果缓存：仅在探测得出确定结论时写入；节点未就绪/读数异常时留空，
-/// 下次调用自动重试（避免把开机早期的 0/占位值固化下来）
+/// 预识别结果缓存：仅在探测得出确定结论时写入，未就绪/读数异常留空待下次重试（避免固化开机早期占位值）
 static BATTERY_TEMP_SCALE: OnceLock<BatteryTempScale> = OnceLock::new();
 
 /// 读一次电池温度原始值（不换算）
@@ -374,11 +317,8 @@ pub fn read_battery_temp_raw() -> Option<f64> {
         .ok()
 }
 
-/// 预识别电池温度刻度：读一次原始值，按「唯一落进合理温度窗口」的解释定档；
-/// 多个解释同时合理时按内核标准优先（tenths > milli > Celsius）。
-/// 读数为 0（未初始化）或节点缺失返回 None（调用方下次重试）；
-/// 非 0 但三种解释都不合理（传感器异常/极端低温）时回退内核标准 tenths——
-/// 更离谱的值由热保护 `TempFilter` 的物理范围门丢弃，不会污染控制链。
+/// 预识别刻度：读一次原始值，按「唯一落进合理窗口」定档，多个解释同时合理时按内核标准优先
+/// （tenths > milli > Celsius）；读数 0/节点缺失返回 None，均不合理时回退 tenths（离谱值由 TempFilter 兜底）。
 pub fn detect_battery_temp_scale() -> Option<BatteryTempScale> {
     let raw = read_battery_temp_raw()?;
     if raw == 0.0 {
@@ -491,9 +431,8 @@ impl FastWriter {
             path: path_ref.to_path_buf(),
             unmounted: false,
         };
-        // 惰性卸载：仅当直接打开失败（挂载写保护 / 权限封装等异常态）时才尝试 umount 重开，
-        // 避免对正常设备上每个节点无条件 detach（可能拆掉合法挂载）。写入被拒（EACCES/EROFS）
-        // 时也会走一次卸载重试（见 do_write）。
+// 惰性卸载：仅当直接打开失败（挂载写保护/权限封装等异常态）时 umount 重开，避免对正常节点无条件
+// detach（可能拆掉合法挂载）。写被拒（EACCES/EROFS）时也会走一次卸载重试（见 do_write）。
         if w.file.is_none() {
             w.unmount_and_reopen();
         }
@@ -569,9 +508,8 @@ impl FastWriter {
             Ok(()) => true,
             Err(e) => {
                 match e.raw_os_error() {
-                    // EINVAL(22): 内核拒绝该频率 (热限频 / 范围收窄)
-                    // EBUSY(16): sysfs 节点短暂被占用
-                    // 两者均为预期内的瞬态错误，降级为 debug 并且不缓存，下次 tick 自动重试
+// EINVAL(22): 内核拒绝该频率（热限频/范围收窄）；EBUSY(16): 节点短暂被占用。
+// 均为预期内瞬态错误：降级 debug 且不缓存，下次 tick 自动重试
                     Some(libc::EINVAL) | Some(libc::EBUSY) => {
                         log::debug!("write freq {} to {:?} skipped: {}", value, self.path, e);
                     }
@@ -597,7 +535,7 @@ impl FastWriter {
                         );
                     }
                 }
-                // 写入失败不更新 last_value，保证下次 tick 会重试
+// 写入失败返回 false，不更新任何缓存值，下次 tick 由调用方重试
                 false
             }
         }
@@ -626,9 +564,7 @@ impl FastWriter {
 // [fast_reader]
 // FastReader — keep-open + 可复用 buf 的稳定节点读取器（镜像 FastWriter 做法）
 
-/// 最近一次读取的三态：调用点需要区分「节点缺失」与「读失败」时查 [`FastReader::state`]。
-/// 「正常空值」（读到但内容为空）不在此列——`read_raw` 以 `Some("")` 表达，
-/// 与 `fs::read_to_string` 的 Ok("") 一一对应
+/// 最近一次读取的三态：需区分「节点缺失」与「读失败」时查 [`FastReader::state`]；「正常空值」以 Some("") 表达（对应 fs::read_to_string 的 Ok("")）
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ReadState {
     /// 读取成功（内容可能为空串）
@@ -639,14 +575,9 @@ pub enum ReadState {
     Failed,
 }
 
-/// 稳定 sysfs/procfs 节点的 keep-open 读取器：fd 常驻 + seek(0) 重读入可复用 buf，
-/// 消除每 tick 的路径分配 / String 分配 / open-close。**只收常驻节点**（cpufreq
-/// policy 的 scaling_*、uclamp、cpuN/online 等）；per-pid `/proc/<pid>/*` 一律不用
-/// （进程退出节点即失效），保持每次 open。
-///
-/// 读取三态（与 `fs::read_to_string` 链逐字节对齐）：`None` = 读失败/节点缺失，
-/// `Some("")` = 正常空值；需区分缺失与失败时读后查 [`Self::state`]。读错误/EOF
-/// 异常丢弃 fd 并重开重试一次，仍失败则丢弃 fd、下次调用自动重开。
+/// 稳定 sysfs/procfs 节点的 keep-open 读取器：fd 常驻 + seek(0) 重读入可复用 buf，消除每 tick 分配
+/// 与 open-close。只收常驻节点；per-pid `/proc/<pid>/*` 随进程退出失效，保持每次 open。读取三态与
+/// `fs::read_to_string` 链对齐（None = 读失败/缺失、Some("") = 正常空值）；读错误/EOF 重开重试一次。
 pub struct FastReader {
     file: Option<File>,
     /// 读入复用 buf：每次 seek(0) 后从头覆盖写入，跨调用不重新分配
@@ -668,13 +599,13 @@ impl FastReader {
         r
     }
 
-    /// 节点路径（构造期缓存的原字符串）
     pub fn path(&self) -> &Path {
         &self.path
     }
 
     /// 最近一次读取的三态结果（read_raw/read_u32 返回 None 时区分缺失与失败）
-    #[allow(dead_code)] // 接口面：本轮落点未全部需要三态区分，保留查询能力
+    // 接口面：本轮落点未全部需要三态区分，保留查询能力
+    #[allow(dead_code)]
     pub fn state(&self) -> ReadState {
         self.state
     }
@@ -714,9 +645,8 @@ impl FastReader {
         Ok(())
     }
 
-    /// 原文读取（内容比较型调用点用，不归一化）：`Some(&str)` = 读到内容（空内容为
-    /// `Some("")`），`None` = 读失败/节点缺失。与 `fs::read_to_string(..).ok()` 同口径
-    /// （非法 UTF-8 计读失败）；返回值借用内部 buf，下次 read_* 即失效。
+    /// 原文读取（内容比较型调用点用，不归一化）：`Some(&str)` = 读到内容（空为 `Some("")`）、
+    /// `None` = 读失败/缺失，与 `fs::read_to_string(..).ok()` 同口径（非法 UTF-8 计失败）；借用内部 buf，下次 read_* 即失效。
     pub fn read_raw(&mut self) -> Option<&str> {
         // 构造期未就绪的节点在这里惰性补打开
         if self.file.is_none() && !self.reopen() {
@@ -724,8 +654,7 @@ impl FastReader {
         }
         let mut res = self.read_into_buf();
         if res.is_err() {
-            // 读错误/EOF 异常：丢弃 fd、重开后重试一次（umount/热插拔/节点重建后
-            // 旧 fd 会持续报错）
+            // 读错误/EOF 异常：丢弃 fd 重开重试一次（umount/热插拔/节点重建后旧 fd 会持续报错）
             self.file = None;
             if !self.reopen() {
                 return None;
@@ -739,7 +668,6 @@ impl FastReader {
                     Some(s)
                 }
                 Err(_) => {
-                    // 与 read_to_string 同口径：非法 UTF-8 计读失败
                     self.state = ReadState::Failed;
                     self.file = None;
                     None
@@ -753,10 +681,10 @@ impl FastReader {
         }
     }
 
-    /// 读 u32（trim + parse，不经 String 分配）：`None` = 读失败/节点缺失/内容非 u32，
-    /// 与 `read_to_string(..)?.trim().parse().ok()` 链逐字节等价（parse 失败时
-    /// `state()` 仍为 Ok，可与读失败区分）。
-    #[allow(dead_code)] // 接口面：本轮落点无整型读，后续 tick 读侧接入时启用
+    /// 读 u32（trim + parse，不经 String 分配）：`None` = 读失败/节点缺失/内容非 u32，与
+    /// `read_to_string(..)?.trim().parse().ok()` 等价（parse 失败时 `state()` 仍为 Ok，可与读失败区分）。
+    // 接口面：本轮落点无整型读，后续 tick 读侧接入时启用
+    #[allow(dead_code)]
     pub fn read_u32(&mut self) -> Option<u32> {
         self.read_raw().and_then(|s| s.trim().parse().ok())
     }
@@ -769,15 +697,13 @@ pub fn default_true() -> bool {
     true
 }
 
-/// Serde 默认值辅助函数：耗电读数满量程（W）。meta.yaml 的 power_max_w 默认 12，
-/// 缺省/非法时也用这个值（WebUI 状态页仪表盘据此换算进度）
+/// Serde 默认值辅助函数：耗电读数满量程（W）。meta.yaml 的 power_max_w 缺省/非法时用此值（WebUI 仪表盘据此换算进度）
 pub fn default_power_max_w() -> f32 {
     12.0
 }
 
-/// 电池读数单位校准默认值（**标准 Android ABI 口径：µV / µA**）：节点原始值 ÷ 该值 = V / A。
-/// 全链口径：**divisor 除完就是 V / A，batt_power_w 按安培 × 伏特得瓦**，读取层不做换算。
-/// OPlus 私有节点（bcc_parms）报 mV / mA，需填 1000——安装脚本检测到该节点时会自动写入。
+/// 电池读数单位校准默认值（标准 Android ABI：µV / µA）：节点原始值 ÷ 该值 = V / A，读取层不做换算，
+/// batt_power_w 按安培 × 伏特得瓦。OPlus 私有节点（bcc_parms）报 mV / mA 需填 1000，安装脚本检测到时自动写入。
 pub const DEFAULT_UNIT_DIVISOR: f32 = 1_000_000.0;
 
 /// Serde 默认值辅助函数：单位校准除数（meta.yaml 的 `unit_divisor` 缺省即 [`DEFAULT_UNIT_DIVISOR`]）

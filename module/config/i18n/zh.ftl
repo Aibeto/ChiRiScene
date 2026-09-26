@@ -102,7 +102,7 @@ scheduler-channel-closed = [Scheduler] 通道已关闭！线程退出
 scheduler-ipc-panic = [Scheduler] IPC 线程发生 panic，正在释放 CPU 控制权。
 scheduler-ipc-restart = [Scheduler] 已清理到安全态并重启调度循环（第 { $count } 次）。
 scheduler-ipc-restart-giveup = [Scheduler] 连续 { $count } 次 panic，放弃重启调度循环。
-scheduler-doze-enable = [Scheduler] 息屏: 启用深度睡眠模式 (限制 CPU 最高性能)。
+scheduler-doze-enable = [Scheduler] 息屏: 计时器启动。
 scheduler-doze-special-keep = [Scheduler] 息屏: 特调模式保持接管，不切换 CLG doze。
 scheduler-doze-restore = [Scheduler] 亮屏: 恢复之前的性能限制。
 scheduler-clg-init = [Scheduler] CPU 负载调频器: 在启动时初始化 (模式={ $mode })
@@ -175,7 +175,7 @@ clg-config-reloaded = [CLG] 配置已热重载 | 升频={ $up } 降频={ $down }
 clg-perf-clamped = [CLG] 配置 perf_floor > perf_ceil ({ $floor } > { $ceil })，已将 perf_floor 限制为 perf_ceil
 clg-restore = [CLG] P{ $pid } 已恢复 | governor={ $governor } min={ $min } kHz max={ $max } kHz
 clg-tick-log = [CLG] P{ $pid } 利用率={ $util }% perf={ $perf } 频率={ $freq }kHz boost={ $boost }kHz
-clg-writer-invalid = [CLG] P{ $pid } sysfs 写入器无效 (max_valid: { $max_valid }, min_valid: { $min_valid })，已跳过。
+clg-writer-invalid = [CLG] P{ $pid } sysfs 写入器无效 (max_valid: { $max_valid }, min_valid: { $min_valid })，已跳过
 clg-freq-set = [CLG] P{ $pid } 频率调整: { $old_khz }MHz -> { $new_khz }MHz
 clg-freq-write-failed-cached = [CLG] P{ $pid } 频率写入失败，保持缓存值 { $cached_khz }MHz (目标 { $target_khz }MHz)
 clg-watchdog-release = [CLG] 看门狗: 已 { $secs } 秒未收到负载事件，eBPF 负载源疑似失效，已释放 CPU 控制权恢复系统默认调频

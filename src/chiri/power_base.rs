@@ -1,17 +1,12 @@
 //! power_base.rs: [types] [init] [tick] [release]
 //!
 //! PowerBase（Stardust 家族）：以**放电功耗**为指标的调频器，用来替换 CLG。
-//!
-//! 与 CLG 的根本区别：CLG 只看「利用率够不够」，PowerBase 看「功耗超没超目标」——
-//!   - 功耗**低于** feature 里的 `target_power_w`：升频放宽（`up_headroom_below`）；
-//!   - 功耗**达到/超过**目标：守住不再升频，除非确实压不住——满占用核心占比达到
-//!     `overload_cores_pct` 且持续 `overload_hold_ms`；
-//!   - 降频**恒激进**（`down_scale` 直接砍目标），与当前功耗无关；
-//!   - 触摸窗口内允许短暂突破功率上限（`touch_break_ms`）。
-//!
+//! 与 CLG 的根本区别：CLG 只看「利用率够不够」，PowerBase 看「功耗超没超目标」（feature 的 target_power_w）——
+//!   功耗低于目标：升频放宽（up_headroom_below）；达到/超过：守住不再升频，除非满占用核心占比达
+//!   overload_cores_pct 且持续 overload_hold_ms；降频恒激进（down_scale 直接砍目标，与当前功耗无关）；
+//!   触摸窗口内允许短暂突破功率上限（touch_break_ms）。
 //! **只替换 CLG**：FAS / 场景特调 / DOWN 停摆 / 实验室的启停判据一律不受影响。
-//! 结构照 `fast.rs`（独立接管、快照/释放、5s 防篡改重写兜底收敛），但不锁死频率，
-//! 而是按上面的规则动态算出每个 policy 的目标频率。
+//! 结构照 fast.rs（独立接管、快照/释放、5s 防篡改重写兜底收敛），但不锁死频率，按上述规则动态算每 policy 目标频率。
 
 use crate::chiri::config::PowerBaseConfig;
 use crate::utils::FastWriter;
@@ -24,11 +19,9 @@ use crate::i18n::{t, t_with_args};
 
 /// 防篡改重写间隔（与 fast.rs 同口径；默认无竞争者，重写是异常兜底收敛）
 const REWRITE_INTERVAL: Duration = Duration::from_secs(5);
-/// 性能比死区：目标与当前的差小于它就认为「已经到位」，不写频率
-/// （利用率反馈滞后时的抖动会被它挡掉，同时把 sysfs 写入从每 tick 降到只在真正变化时）
+/// 性能比死区：目标与当前的差小于它就认为「已经到位」不写频率（挡住利用率反馈滞后的抖动，sysfs 写入降到只在真正变化时）
 const PERF_DEADBAND: f32 = 0.05;
-/// 单次降频的最大幅度（性能比）：`down_scale` 再激进也不越过它，
-/// 避免一步砍半导致下一 tick util 反弹成振荡
+/// 单次降频的最大幅度（性能比）：down_scale 再激进也不越过它，避免一步砍半导致下一 tick util 反弹成振荡
 const MAX_DOWN_STEP: f32 = 0.25;
 
 // [types]
@@ -42,25 +35,19 @@ struct PolicySnapshot {
 
 /// 单个 policy 的运行状态
 struct BasePolicy {
-    /// 该 policy 覆盖的 CPU（用于取利用率）
     cpus: Vec<usize>,
     hw_min: u32,
     hw_max: u32,
     /// 可用频率表（升序），目标频率就近取档
     freqs: Vec<u32>,
-    /// 当前目标性能比（0..1）
     perf: f32,
     max_writer: FastWriter,
     min_writer: FastWriter,
 }
 
 impl BasePolicy {
-    /// 性能比 → 频率档位（硬件最低 + 跨度 × 比例，取 ≤ 目标的最大档，floor 对齐）。
-    /// PowerBase 的 perf 是功耗预算内允许的上限，落点不得高于它——ceil 会突破
-    /// 预算，且目标落在两档之间时内核本就把 max 向下 clamp，先对齐再写才能
-    /// 账实一致、同值不落盘的去重才有效。
-    /// 挂在 policy 上而不是 PowerBase 上：tick 里要在 `&mut self.policies` 的循环内
-    /// 调用它，取 &self 会与那个可变借用冲突。
+    /// 性能比 → 频率档位（硬件最低 + 跨度 × 比例，取 ≤ 目标的最大档，floor 对齐）：perf 是功耗预算内允许的上限，落点不得高于它
+    /// （ceil 会突破预算；目标落两档之间时内核本就把 max 向下 clamp）。挂在 policy 上：tick 在 &mut self.policies 循环内调用，取 &self 会借用冲突。
     fn freq_for(&self, perf: f32) -> u32 {
         let want = self.hw_min as f32 + (self.hw_max - self.hw_min) as f32 * perf.clamp(0.0, 1.0);
         let want = want as u32;
@@ -112,14 +99,9 @@ impl PowerBase {
     }
 
     // [init]
-    /// 接管全部 cpufreq policy：读可用频率、快照原状态、写 schedutil，
-    /// 并**立刻把 min=max=硬件最高频**（内部 `perf` 同步为 1.0）。
-    ///
-    /// **为什么接管就必须写一次**：内部 `perf` 与硬件实际状态必须一致，否则首个降频
-    /// tick 会按「升频写序」先写 max（低于接管前的 min）→ 内核以 min>max 拒绝 →
-    /// 写入失败 → `perf` 不前移 → 下个 tick 重试同样失败，**永久卡住**（表现为
-    /// PowerBase 完全不生效且无任何报错）。取硬件最高频起手：接管瞬间系统往往有负载，
-    /// 先给足余量避免掉帧，紧随的 tick 会按功耗规则迅速压下来（降频本就激进）。
+    /// 接管全部 cpufreq policy：读可用频率、快照原状态、写 schedutil，并**立刻把 min=max=硬件最高频**（内部 perf 同步为 1.0）。
+    /// 必须接管即写一次：否则 perf 与硬件实际状态不一致，首个降频 tick 按升频写序先写 max → 内核以 min>max 拒绝 → 写入失败
+    /// perf 不前移 → 下个 tick 重试同样失败，**永久卡住**。取硬件最高起手：接管瞬间多有负载，先给足余量防掉帧，紧随 tick 按功耗规则迅速压下。
     pub fn init(&mut self, cfg: &PowerBaseConfig) {
         self.release();
         self.cfg = cfg.clone();
@@ -153,8 +135,7 @@ impl PowerBase {
                 .filter_map(|s| s.parse().ok())
                 .collect();
             if freqs.is_empty() {
-                // scaling_available_frequencies 读不到/空表：按 policy 首核映射核心组，
-                // 回退 soc.yaml [freq_khz] 兜底（只补表，不改取档/floor 对齐逻辑）
+                // scaling_available_frequencies 读不到/空表：按 policy 首核映射核心组，回退 soc.yaml [freq_khz] 兜底（只补表，不改取档/floor 对齐逻辑）
                 match crate::common::soc_freq_fallback_for_policy(pid) {
                     Some(f) => freqs = f,
                     None => continue,
@@ -208,9 +189,8 @@ impl PowerBase {
                 ranges.prime.clone().collect()
             };
 
-            // 起手锁硬件最高频（写序：先 max 后 min，保证不出现 min > max）。
-            // 写成功才把 perf 记为 1.0；失败保持 0.0，下一 tick 会按「升频写序」重试，
-            // 不会落进上面注释里那个「降频却先写 max」的死局。
+            // 起手锁硬件最高频（写序先 max 后 min，保证不出现 min > max）；写成功才把 perf 记为 1.0，
+            // 失败保持 0.0，下一 tick 按「升频写序」重试，不会落进上面说的「降频却先写 max」死局。
             let mut perf = 0.0_f32;
             if max_writer.write_value_force(hw_max) && min_writer.write_value_force(hw_max) {
                 perf = 1.0;
@@ -235,12 +215,8 @@ impl PowerBase {
     }
 
     // [tick]
-    /// 每个负载 tick 调用一次。
-    ///
-    /// - `core_utils`：各 CPU 利用率（0..1）
-    /// - `power_w`：当前功耗（W）；**None 表示未在放电或没有读数** —— 此时不做功耗限制
-    /// - `touch_active`：触摸窗口内，允许短暂突破功率上限
-    ///
+    /// 每个负载 tick 调用一次。core_utils：各 CPU 利用率（0..1）；power_w：当前功耗（W），
+    /// **None = 未在放电或没有读数**——此时不做功耗限制；touch_active：触摸窗口内，允许短暂突破功率上限。
     /// 返回距下次防篡改重写的剩余时间（非激活返回 None）。
     pub fn on_load_update(
         &mut self,
@@ -253,8 +229,7 @@ impl PowerBase {
         }
         let now = Instant::now();
 
-        // ── 功耗闸门 ──
-        // 放电才有意义：充电时功耗口径与电池功率不是一回事，不该压性能。
+        // ── 功耗闸门（放电才有意义：充电时功耗口径与电池功率不是一回事，不该压性能）──
         let capped = power_w.is_some_and(|p| p >= self.cfg.target_power_w) && !touch_active;
         let overload_ok = if capped {
             self.overload_reached(core_utils, now)
@@ -274,16 +249,13 @@ impl PowerBase {
 
             let mut target = util;
             if !capped {
-                // 功耗低于目标（或不在放电）：按宽松度放大
                 target *= self.cfg.up_headroom_below;
             } else if !overload_ok {
                 // 功耗已达标且没到过载门槛：只允许保持或下降
                 target = target.min(p.perf);
             }
 
-            // 降频恒激进：目标低于当前时再砍一刀（不看功耗），但**限制单次降幅**——
-            // 一步砍半会在下一个 tick 因频率骤降把 util 顶回去（利用率反馈滞后），
-            // 形成「砍半 → util 反弹 → 升回 → 再砍」的振荡，平均功耗反而更高。
+            // 降频恒激进：目标低于当前再砍一刀（不看功耗），但限制单次降幅——一步砍半会因频率骤降把 util 顶回去（反馈滞后），形成振荡
             if target < p.perf {
                 let stepped = target * self.cfg.down_scale;
                 target = stepped.max(p.perf - MAX_DOWN_STEP);

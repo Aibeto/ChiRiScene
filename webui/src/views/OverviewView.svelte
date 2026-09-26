@@ -9,23 +9,26 @@
 
   let confirmOpen = $state(false);
 
-  // 存活判据是心跳文件（LiveTime.chr）新鲜度，细节文案由状态本身决定；
-  // 读取/内容异常时用 daemonError 覆盖（比通用 detail 更有排查价值）
+  // 存活判据是心跳文件（LiveTime.chr）新鲜度；读取/内容异常时用 daemonError 覆盖 detail（比通用 detail 更有排查价值）
   const daemonDetail = $derived(
     app.daemonError || t(`daemon.${app.daemonState}.detail`),
   );
-  // 调度未运行（daemonState=stopped）时不把 current_mode.chr 的陈旧值当「当前模式」
-  // 展示：文件里的旧值不代表现在，卡片只陈述「调度未运行」（家族/模式名/id 都不显示）。
-  // 尚无记录（文件缺失）同口径显示「尚未产生模式记录」，与实验室页一致。
+  // 调度未运行时不把 current_mode.chr 的陈旧值当「当前模式」，卡片只陈述「调度未运行」；文件缺失同口径显示「尚未产生模式记录」
   const modeIdle = $derived(app.daemonState === "stopped");
+  // PowerBase 接管 CLG 时只换「谁在调频」：家族/模式名显示 Stardust / PowerBase，原始 id 保留展示。
+  // daemon 只在亮屏 + CLG 档生效（见 mod.rs 兜底纠正块），这里以 kind==='clg' 近似，实验室 vector 不受影响
+  const pbTakesClg = $derived(
+    !modeIdle && !app.modeMissing && app.powerbaseEnabled && app.modeInfo.kind === "clg",
+  );
   const modeName = $derived(
     modeIdle ? t("mode.unknown.stopped")
     : app.modeMissing ? t("mode.unknown.missing")
+    : pbTakesClg ? t("mode.powerbase")
     : t(app.modeInfo.labelKey),
   );
   // 模式家族（CLG/特调/实验室/停摆/FAS），与详细模式分开显示；未运行/无记录时不显示
   const familyLabel = $derived(
-    modeIdle || app.modeMissing ? "" : t(`mode.family.${app.modeInfo.kind}`),
+    modeIdle || app.modeMissing ? "" : pbTakesClg ? t("mode.family.stardust") : t(`mode.family.${app.modeInfo.kind}`),
   );
   const modeId = $derived(
     modeIdle || app.modeMissing ? "—" : app.modeInfo.id || "—",
@@ -61,7 +64,6 @@
     return Math.min(100, Math.max(0, (w / app.powerMaxWatt) * 100));
   });
 
-  // 当前功耗（status.csv 末行）对满量程的百分比，同口径夹在 0~100
   const nowPercent = $derived.by(() => {
     const w = app.powerNowWatt;
     if (w === null) return 0;
@@ -76,9 +78,8 @@
 
   onMount(() => {
     void app.loadOverview();
-    // [poll] 每秒自刷新数据（不重载页面）；loadOverview 有在飞共享，轮询不会堆积。
-    // WebView 切后台后 interval 仍会被浏览器节流但不为零，这里主动跳过 hidden 期
-    // 的 tick 省电；恢复可见时立即补一次，避免后台期间的数据空窗
+    // [poll] 每秒自刷新（loadOverview 有在飞共享，轮询不堆积）；跳过 hidden 期 tick 省电，
+    // 恢复可见时立即补一次，避免后台数据空窗
     const timer = setInterval(() => {
       if (document.hidden) return;
       void app.loadOverview();
@@ -158,7 +159,7 @@
               <span class="ak-progress__fill"></span>
             </div>
           </div>
-          <!-- 百分比同时出数字：条看起来空时能判断是「读数为 0/缺失」还是「条没画出来」 -->
+          <!-- 数字与条并列：条看着空时能区分「读数为 0/缺失」与「条没画出来」 -->
           <span class="ak-progress__value u-mono"
             >{Math.round(powerPercent)}%</span
           >

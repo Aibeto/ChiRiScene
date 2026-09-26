@@ -32,7 +32,6 @@ describe('LiveTime.chr 解析', () => {
 describe('心跳新鲜度', () => {
   it('年龄按 1 小时取模（跨小时边界）', () => {
     expect(liveTimeAgeSeconds(100, 130)).toBe(30)
-    // 59:40 写、00:10 读 → 30s
     expect(liveTimeAgeSeconds(59 * 60 + 40, 10)).toBe(30)
     // 本机时间早于文件时间 → 取模后落到 (1800, 3600) 的过期区间
     expect(liveTimeAgeSeconds(10, 59 * 60 + 40)).toBe(3570)

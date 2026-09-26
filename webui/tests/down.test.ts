@@ -1,6 +1,5 @@
 // down.test.ts: [parse] [write]
-// DOWN 停摆状态的解析口径必须与守护进程 src/down.rs::read_down 对齐，
-// 所以重点覆盖「两边容易分歧」的形态：注释、引号、大小写、其它写法。
+// 解析口径与守护进程 src/down.rs::read_down 对齐，重点覆盖两边易分歧的形态（注释/引号/大小写）。
 import { describe, expect, it } from 'vitest'
 import { DOWN_WORD, downFileContent, parseDown } from '@/data/down'
 
@@ -29,7 +28,7 @@ describe('down.chr 解析', () => {
     expect(parseDown('fastmode')).toBe(false)
     expect(parseDown('downdown')).toBe(false)
     expect(parseDown('down disabled')).toBe(false)
-    // 引号内侧的空白：daemon 剥引号后用 trim_matches、不再 trim 内侧，这里也必须判否
+  // daemon 剥引号后不 trim 内侧，这里须同样判否
     expect(parseDown('" down "')).toBe(false)
   })
 })

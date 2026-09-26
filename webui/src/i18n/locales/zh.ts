@@ -10,7 +10,7 @@ export default {
   'nav.logs': '日志',
   'nav.main': '主导航',
 
-  // 2026-09-17 注释：手动刷新按钮已移除（状态/日志页改为每秒自刷新）
+  // 注释掉的键：手动刷新按钮已移除（状态/日志页改为每秒自刷新）
   // 'action.refresh': '刷新',
   'action.toBottom': '回到底部',
   'action.cancel': '取消',
@@ -93,7 +93,7 @@ export default {
   'config.loglevel': '日志等级',
   'config.writable': '可修改项',
   'config.devRecord': '开发记录',
-  // 2026-09-17 注释：开发记录副标题按需求隐藏
+  // 开发记录副标题按需求隐藏
   // 'config.devRecord.hint': '通常保持默认值，不需要修改',
   'config.fasEnabled': 'FAS 帧感知调度',
   'config.fasEnabled.hint': '帧时间间隔感知调度',
@@ -132,6 +132,9 @@ export default {
   'config.labTakenOver': '实验室（{mode}）接管中，先关闭实验室才能改',
   'config.advanced': '高级设置',
   'config.advanced.hint': '请在开发者指导下操作',
+  'config.advanced.metaInvalid': 'meta.yaml 校验不通过，写入已禁用',
+  'config.advanced.open': '打开',
+  'config.advanced.back': '返回配置',
   'config.down': 'DOWN',
   'config.down.hint': '除非开发者要求否则不应启用',
   'config.down.on': 'DOWN 已启用',
@@ -159,9 +162,9 @@ export default {
   'lab.notice.reboot': '建议在开发者指导下使用',
   'config.powerbase': 'ChiRi PB',
   'config.powerbase.hint': '随我来吧对错是伪命题',
-  'config.screenoff': '息屏判定值 1',
-  'config.screenoff.hint': '系统属性 debug.tracing.screen_state 等于 1 视为息屏；关闭改为 0（安装时按实测自动校正）',
-  'config.screenoff.zero': '息屏判定值已改为 0',
+  'config.screenoff': '息屏值',
+  'config.screenoff.hint': '设置息屏判定值',
+  'config.screenoff.saved': '息屏判定值已保存',
 
   'lab.notice.effects': '关闭实验室需要重启',
   'lab.notice.manual': '如遇特殊情况，可直接修改 rhine.chr 文件',
@@ -227,7 +230,7 @@ export default {
   'logs.source': '数据源',
   'logs.source.daemon': '守护进程日志',
   'logs.source.status': '状态快照',
-  // 2026-09-17 注释：日志面板副标题按需求隐藏
+  // 日志面板副标题按需求隐藏
   // 'logs.window': '仅显示最近一段（每次读取固定字节窗口，不加载整个文件）',
   'logs.archive': '历史日志已打包进 logd/，可从归档包中查看',
   'logs.devimp': '诊断日志',
@@ -248,17 +251,14 @@ export default {
   'logs.charge.full': '充满',
   'logs.charge.not_charging': '未充电',
 
-  // CLG 四档：显示名与 id 同名、不分语言（用户要求 2026-09-16）；
-  // desc 已全部注释（2026-09-18 用户要求——卡片只显「家族 + 模式」，不再展示描述）
+  // CLG 四档：显示名与 id 同名、不分语言；desc 全部注释（卡片只显「家族 + 模式」，不再展示描述）
   'mode.reduce': 'reduce',
-  // 2026-09-17 注释：当前模式卡片改显「家族 + 详细模式」，三档描述暂不展示
   // 'mode.reduce.desc': '限制上限，优先续航',
   'mode.default': 'default',
   // 'mode.default.desc': '日常使用',
   'mode.boost': 'boost',
   // 'mode.boost.desc': '放开上限',
   'mode.vector': 'vector',
-  // 2026-09-18 注释：mode.*.desc 全部注释（卡片只显「家族 + 模式」，不再展示描述）
   // 'mode.vector.desc': '全核最高频，最激进的核心与线程分配',
   'mode.contingency': 'contingency',
   // 'mode.contingency.desc': 'CPU+GPU 全核最高频、performance 调速器、停线程迁移',
@@ -269,6 +269,8 @@ export default {
   'mode.down': 'down',
   // 'mode.down.desc': '调度停摆，只保留采集与日志',
   'mode.scenemode': '息屏场景',
+  // PowerBase（Stardust 家族）：接管 CLG 档调频；current_mode 仍是 CLG 档名，状态卡以本键替换模式名
+  'mode.powerbase': 'PowerBase',
   // 'mode.scenemode.desc': '屏幕熄灭超时后进入的低功耗场景（独立息屏轴，不产生模式值）',
   'mode.fas': 'FAS',
   // 'mode.fas.desc': '帧率感知调度',

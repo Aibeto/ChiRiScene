@@ -15,10 +15,8 @@ fn default_global_mode() -> String {
     "default".to_string()
 }
 
-/// app_modes 缺失或为 null 时按空表处理：WebUI 旧版本会把空 app_modes 写成
-/// "app_modes: null"，而 serde_yaml 无法把 null 反序列化为 HashMap
-/// （#[serde(default)] 只对缺失字段生效），会导致 rules.yaml 解析失败并告警。
-/// 这里显式兼容 null，保证守护进程读取/热重载不出错。
+/// app_modes 缺失或为 null 时按空表处理：WebUI 旧版本会把空 app_modes 写成 "app_modes: null"，
+/// 而 serde_yaml 无法把 null 反序列化为 HashMap（#[serde(default)] 只对缺失字段生效），显式兼容保证解析不失败。
 fn deserialize_app_modes<'de, D>(deserializer: D) -> Result<HashMap<String, String>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -30,11 +28,8 @@ where
         Null,
     }
     Ok(match MapOrNull::deserialize(deserializer)? {
-        // **预处理**：规则键允许写带子进程后缀的进程名（`com.xx:push`），加载时统一
-        // 归一到主包名（`com.xx`）——子进程本质上还是那个包，调度以包为单位，
-        // 归一后前台名（同样在 `set_current_package` 归一）与规则键口径一致，
-        // 查表就是原本的精确匹配。冲突（两个键归一到同一主包名）后者保留并告警，
-        // 避免静默丢规则。
+        // **预处理**：规则键允许写子进程名（com.xx:push），加载时归一到主包名——与前台名
+        // （set_current_package 同样归一）口径一致，查表即精确匹配；冲突时后者保留并告警，不静默丢规则。
         MapOrNull::Map(m) => {
             let mut out: HashMap<String, String> = HashMap::with_capacity(m.len());
             for (k, v) in m {
@@ -72,13 +67,9 @@ where
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct RulesConfig {
-    // 注意：以下字段缺省时必须以 null/省略 安全反序列化。
-    // 若不加 #[serde(default)]，用户精简 rules.yaml（删除任一字段）会导致
-    // serde 报 missing field，read_config 回退 Default（dynamic_enabled=false）
-    // 进而 dynamic 模式失效、CLG 无法按规则启动。
-    // 缺省值需与模块随附 rules.yaml 模板保持一致：
-    //   dynamic_enabled 缺省 true、global_mode 缺省 "default"，
-    // 否则删除字段后仍会进入空模式导致 CLG 不接管 CPU。
+    // 字段缺省时必须以 null/省略安全反序列化：若无 #[serde(default)]，用户精简 rules.yaml（删任一
+    // 字段）会报 missing field，read_config 回退 Default（dynamic_enabled=false）导致 dynamic 失效、
+    // CLG 不接管。缺省值需与随附 rules.yaml 模板一致：dynamic_enabled 缺省 true、global_mode 缺省 "default"。
     #[serde(default = "crate::utils::default_true")]
     pub dynamic_enabled: bool,
     #[serde(default = "default_global_mode")]

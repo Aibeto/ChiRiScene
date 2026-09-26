@@ -163,21 +163,12 @@ impl FasController {
     }
 
     // [apply]
-    // 频率应用 — CPU 负载感知
-    //
-    // 利用 core_utils 判断 cluster 负载，低负载 cluster 用 relaxed 模式
+    // 频率应用 — CPU 负载感知：利用 fg_util EMA 软封顶 perf，防 200ms 采样滞后造成断崖
 
     pub fn apply_freqs(&mut self) {
-        // 防篡改强制重写的节拍（异常兜底收敛，默认无竞争者）—— 时间基准，非帧计数
-        //
-        // 早期实现：`freq_force_counter += 1; force = counter % interval == 0`。
-        // 但 apply_freqs 在 update_frame 末尾被调用（每帧一次，见 frame_pipeline.rs 的
-        // `self.apply_freqs()`），计数器单位是**帧**而不是时间：120fps 下 30 帧 ≈ 0.25s
-        // （4 次/s）、144fps 下 30 帧 ≈ 0.21s（4.8 次/s），节拍随刷新率线性放大，
-        // 高刷机上强制重写被放大到每秒数十次（每次都伴随 umount2 + 每 cluster 两次写频）。
-        // 改为时间基准后语义为「最多每 freq_force_reapply_interval 秒强制重写一次」，
-        // 配置项名与数值都不变，只是把单位由「帧」修正为「秒」，与刷新率彻底解耦。
-        // 注意 normalize() 已把该值钳到 ≥ 1，避免 0 导致判定恒真
+        // 防篡改强制重写节拍：时间基准（早期按帧计数，节拍随刷新率线性放大，120fps 下
+        // 30 帧 ≈0.25s），语义为「最多每 freq_force_reapply_interval 秒强制重写一次」，
+        // 配置项名与数值不变，仅单位由帧修正为秒。normalize() 已把该值钳到 ≥ 1，避免 0 导致判定恒真
         let force = self.freq_force_timer.elapsed()
             >= Duration::from_secs(self.cfg.freq_force_reapply_interval as u64);
         if force {
@@ -197,14 +188,13 @@ impl FasController {
             let divisor = self.cfg.util_cap_divisor.max(0.1);
             let util_cap = (self.ema_fg_util / divisor).clamp(0.40, 1.0);
             if effective_perf > util_cap {
-                // 降低激进程度：0.92/0.08 替代原来的 0.80/0.20
+                // 平滑系数 0.92/0.08，降低封顶激进度防断崖
                 effective_perf = effective_perf * 0.92 + util_cap * 0.08;
             }
         }
 
         let ratio = effective_perf;
 
-        // 计算各 policy 的目标频率
         for policy in &mut self.policies {
             if policy.freq_hold_frames > 0 && !force {
                 policy.freq_hold_frames = policy.freq_hold_frames.saturating_sub(1);
@@ -213,9 +203,8 @@ impl FasController {
             policy.freq_hold_frames = policy.freq_hold_frames.saturating_sub(1);
 
             let w = policy.cluster_profile.capacity_weight.max(0.1);
-            // 原始 ratio.powf(w) 对大核 (w=2.3) 惩罚过重：
-            // perf=0.50 时超大核只给 0.50^2.3 ≈ 20% 频率，导致高刷游戏跑不上去。
-            // 改为 sqrt(w) 指数 + 线性混合，大幅缓解大核频率被压制。
+            // 原始 ratio.powf(w) 对大核（w=2.3）惩罚过重：perf=0.50 时超大核仅 ≈20% 频率，
+            // 高刷游戏跑不上去；改为 sqrt(w) 指数 + 线性混合，缓解大核频率被压制
             let pow_adj = ratio.powf(w.sqrt());
             let linear_adj = ratio;
             let blend = (w - 1.0).clamp(0.0, 1.5) / 1.5;
@@ -232,8 +221,6 @@ impl FasController {
                     continue;
                 }
 
-                // 根据 cluster 实际负载选择写入策略
-                // 如果该 cluster 对应的核心利用率低于 30%，用 relaxed 模式节电
                 policy.apply_freq_locked(target_freq);
             } else if force {
                 policy.force_reapply();
@@ -260,16 +247,14 @@ impl FasController {
         }
         self.fps_margin = fas_rules.fps_margin;
 
-        // 跨厂商候选节点（高通 perfmgr / MTK mtk_fpsgo）：逐条尝试写，单点失败 debug、
-        // 全部失败 warn（见 utils::write_nodes）——此前直接 write_to_file 把错误丢掉了
-        // 路径是字面量，直接用 `(&str, &str)` 切片，省掉逐个 `to_string()` 与 Vec 分配
+        // 跨厂商候选节点（高通 perfmgr / MTK mtk_fpsgo）：逐条尝试写，
+        // 单点失败 debug、全部失败 warn（见 utils::write_nodes）
         let perfmgr_items: [(&str, &str); 2] = [
             ("/sys/module/perfmgr/parameters/perfmgr_enable", "0"),
             ("/sys/module/mtk_fpsgo/parameters/perfmgr_enable", "0"),
         ];
         let _ = crate::utils::write_nodes(&perfmgr_items, "perfmgr-disable");
 
-        // [修改项] 动态拉取 CPU policy 列表
         let clusters = crate::scheduler::get_cpu_policies();
 
         let auto_w = if fas_rules.auto_capacity_weight {
@@ -290,8 +275,7 @@ impl FasController {
 
         for (idx, policy) in clusters.iter().enumerate() {
             let pid = policy.id;
-            // 先快照接管前 governor 再改写 performance：退出（reset_all_freqs）
-            // 时按快照恢复，防止 performance 泄漏到后续 CLG/akmode/系统调频
+            // 先快照 governor 再改写 performance，退出时按快照恢复，防止泄漏到 CLG/akmode/系统调频
             let orig_governor = fs::read_to_string(format!(
                 "/sys/devices/system/cpu/cpufreq/policy{}/scaling_governor",
                 pid
@@ -316,8 +300,7 @@ impl FasController {
             .filter_map(|s| s.parse().ok())
             .collect();
             if freqs.is_empty() {
-                // scaling_available_frequencies 读不到/空表：按 policy 首核映射核心组，
-                // 回退 soc.yaml [freq_khz] 兜底（只补表，不改取档/floor 对齐逻辑）
+                // 读不到/空表时按 policy 首核映射核心组，回退 soc.yaml [freq_khz] 兜底（只补表）
                 match crate::common::soc_freq_fallback_for_policy(pid) {
                     Some(f) => freqs = f,
                     None => continue,

@@ -38,13 +38,8 @@ impl PidController {
         }
     }
 
-    /// 根据 target_fps 动态缩放 PID 系数
-    ///
-    /// 核心思想:
-    /// 高刷下帧间隔 budget 更短 (144fps → 6.9ms vs 60fps → 16.7ms)，
-    /// 同样 1ms 的帧时间偏差在高刷下"严重程度"更高，
-    /// 因此 P/I/D 三个通道的增益都需要随 target_fps 缩放，
-    /// 但缩放系数不同：P 最激进，D 最保守 (高刷噪声大)。
+    /// 根据 target_fps 动态缩放 PID 系数：高刷 budget 更短（144fps→6.9ms vs 60fps→16.7ms），
+    /// 同样 1ms 偏差更严重，P/I/D 增益需随 target_fps 缩放且程度不同：P 最激进，D 最保守（高刷噪声大）。
     pub(super) fn adapt_to_target_fps(&mut self, target_fps: f32) {
         // 防御非法 target_fps（0/负/NaN/Inf），避免 PID 系数与积分限幅被污染
         if !target_fps.is_finite() || target_fps <= 0.0 {
@@ -71,11 +66,8 @@ impl PidController {
             .clamp(-self.integral_limit, self.integral_limit);
     }
 
-    /// 带利用率感知的 PID 计算
-    ///
-    /// 当前台线程 CPU 利用率很低时，说明瓶颈不在 CPU（可能是 GPU bound
-    /// 或 IO bound），此时 PID 拉频不会改善帧率，反而白给功耗。
-    /// 通过 util_gain 衰减 P 项增益，避免无效拉频。
+    /// 带利用率感知的 PID 计算：fg_util 低说明瓶颈不在 CPU（GPU/IO bound），拉频不改善帧率
+    /// 反而白给功耗，通过 util_gain 衰减 P 项增益。
     pub(super) fn compute(&mut self, error: f32, inst_error: f32, norm: f32, fg_util: f32) -> f32 {
         let safe_norm = norm.clamp(0.5, 2.5);
 
@@ -89,20 +81,17 @@ impl PidController {
         self.integral = self.integral.clamp(-dyn_limit, dyn_limit);
 
         let raw_deriv = (error - self.prev_error) / safe_norm;
-        // 动态低通滤波：高刷下帧间微小抖动（调度噪声）在微秒级被放大，
-        // 固定 0.7/0.3 滤波器在 144fps 下无法有效抑制。
-        // alpha 随 target_fps 升高而降低：60fps=0.30, 120fps=0.21, 144fps=0.19
-        // 使 D 项在高刷下更加平滑，避免输出高频震荡。
+        // D 项动态低通滤波：alpha 随 target_fps 升高而降低（60fps=0.30、120fps=0.21、144fps=0.19），
+        // 固定 0.7/0.3 滤波器在高刷下抑不住调度噪声、输出高频震荡
         let d_alpha = (0.30 * (60.0 / self.adapted_fps.max(1.0)).sqrt()).clamp(0.10, 0.30);
         self.filtered_deriv = self.filtered_deriv * (1.0 - d_alpha) + raw_deriv * d_alpha;
         self.prev_error = error;
 
-        // 利用率感知增益调制
-        // fg_util < 0.30 → GPU/IO bound，PID 增频无效，衰减 P 项
-        // fg_util ∈ [0.30, 1.0] → CPU bound，正常增益
-        // fg_util 无数据 (≤ 0.01) → 刚启动还没采样到，不衰减
+        // 利用率感知增益：fg_util < 0.30 → GPU/IO bound 衰减 P 项；[0.30, 1.0] → CPU bound 正常；
+        // ≤ 0.01（刚启动未采样）不衰减
         let util_gain = if fg_util > 0.01 && fg_util < 0.30 {
-            0.3 + fg_util * 2.3 // 0.3 ~ 0.99
+            // 映射到 0.3 ~ 0.99
+            0.3 + fg_util * 2.3
         } else {
             1.0
         };
@@ -129,7 +118,8 @@ impl PidController {
         self.base_kd = kd;
         // 重新按当前 adapted_fps 缩放
         let fps = self.adapted_fps;
-        self.adapted_fps = 0.0; // 强制刷新
+        // 置 0 强制刷新
+        self.adapted_fps = 0.0;
         self.adapt_to_target_fps(fps);
         self.reset();
     }

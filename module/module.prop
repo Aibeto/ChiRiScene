@@ -1,7 +1,7 @@
 id=chiri
-name=ChiRi Canary
-version=Alpha07-04
-versionCode=10704
+name=ChiRi Vector
+version=A07-C05
+versionCode=10705
 author=Aibeto
-description=小心的滑
+description=ChiRi Schedule 千漓调度 (Canary)\n#1 Vector Refactor
 updateJson=https://raw.githubusercontent.com/Aibeto/ChiRi/main/updateInformation/update.json

@@ -29,7 +29,7 @@ C48 = ("ts,type,mode,screen_on,pid,package,tid,comm,cluster,core,from_core,to_co
        "wakeups,migrations,freq_trans,batt_temp,cpu_temp,clg_active,cpu_cur_khz,cpu_max_khz,cpu_min_khz,"
        "cpu_governor,gpu_cur_khz,gpu_max_khz,gpu_min_khz,gpu_governor").split(",")
 C44 = [c for c in C48 if c not in ("from_core", "to_core", "util_pct", "pinned")]
-# 40 列旧版（Canary92 之前，如 8550e/Canary88）：= 48 列去掉尾部 8 列（cpu_cur_khz…gpu_governor）
+# 40 列旧版（Canary92 之前）= 48 列去掉尾部 8 列（cpu_cur_khz…gpu_governor）
 C40 = C48[:40]
 
 
@@ -58,7 +58,8 @@ def main():
     a = ap.parse_args()
 
     files = []
-    pats = ("devimp_*.log", "main_*.log")  # aff_ 是文本帧流，不参与聚合
+    # aff_ 是文本帧流，不参与聚合
+    pats = ("devimp_*.log", "main_*.log")
     for fn in sorted(sum((glob.glob(os.path.join(a.dir, p)) for p in pats), [])):
         m = re.search(r"_(\d{4}-\d{6})\.log$", os.path.basename(fn))
         if m and m.group(1) >= a.since:
@@ -66,12 +67,12 @@ def main():
     if not files:
         print("没有符合条件的 devimp 文件"); sys.exit(1)
 
-    # 定版第一件事：文件头 metadata（# module= / # soc= / # android=）。
-    # 同名 tar 里可能混版本/混机型——多值即报警，跨包对比前必须一致。
+    # 定版第一件事：读文件头 metadata（# module=/soc=/android=）；多值即报警（混版本/混机型，跨包对比前必须一致）
     metas = collections.defaultdict(set)
     for fn in files[:8]:
         with open(fn, encoding="utf-8", errors="replace") as fh:
-            for _ in range(6):  # 第 1 行是 CSV 表头，metadata 是紧随其后的 # 行
+            # 第 1 行是 CSV 表头，metadata 是紧随其后的 # 行
+            for _ in range(6):
                 ln = fh.readline()
                 m = re.match(r"#\s*(module|soc|android)\s*=\s*(.+)", ln.strip())
                 if m:
@@ -154,8 +155,7 @@ def main():
                 tick[key][cl + "_cap"].append(c / mx * 100)
             tick[key][cl + "_u"].append(num(p[I["max_util"]]))
         elif t == "tgtop":
-            # 48 列：7=comm、12=占用率；44 列：comm 仍为 7、占用率列见 SKILL.md（tgtop 字段位置
-            # 不随 schema 名称表变化，两版一致取 7 / 12）
+            # tgtop 列号不随 schema 变：两版均取 7=comm、12=占用率
             top[key][p[7] if len(p) > 7 else "?"] += num(p[12]) or 0.0
             topn[key] += 1
 
@@ -173,8 +173,7 @@ def main():
         def cc(cl):
             caps, us = tk.get(cl + "_cap", []), tk.get(cl + "_u", [])
             if not caps:
-                # FAS 段（以及任何无 tick 的段）没有决策数据：必须显示 '-'，
-                # 否则 0.0 会被误读成「上限被压到 0」
+                # 无 tick 的段（如 FAS）必须显示 '-'，否则 0.0 会被误读成「上限被压到 0」
                 return "    -/    - u   -"
             return (f"{avg(caps):5.1f}/{pct(caps, .95):5.1f} "
                     f"u{avg(us):.2f}")

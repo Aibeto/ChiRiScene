@@ -25,7 +25,7 @@ import sys
 
 MAGIC_FRAME = 0x184D2204
 MAGIC_LEGACY = 0x184C2102
-MAGIC_SKIP_BASE = 0x184D2A50  # 0x184D2A50..0x184D2A5F
+MAGIC_SKIP_BASE = 0x184D2A50
 MINMATCH = 4
 
 
@@ -67,7 +67,7 @@ def decompress_block(src, out, floor=0):
         out += src[i:i + lit]
         i += lit
         if i >= n:
-            break  # 最后一段只有字面量
+            break
         if i + 2 > n:
             raise ValueError("lz4: 匹配 offset 越界")
         offset = src[i] | (src[i + 1] << 8)
@@ -105,7 +105,7 @@ def _one_frame(buf, i, n, out):
     i += 2
     if ((flg >> 6) & 0x3) != 1:
         raise ValueError(f"lz4: 帧版本 {((flg >> 6) & 0x3)} 不支持")
-    indep = bool(flg & 0x20)        # B.Indep：True = 块内自足；False = 块间可回引
+    indep = bool(flg & 0x20)
     block_cksum = bool(flg & 0x10)
     has_size = bool(flg & 0x08)
     content_cksum = bool(flg & 0x04)
@@ -114,19 +114,19 @@ def _one_frame(buf, i, n, out):
     if has_size:
         if i + 8 > n:
             raise ValueError("lz4: 内容大小字段越界")
-        content_size = _u64(buf, i)   # lz4 CLI 输入为文件时默认会写，用于收尾校验
+        content_size = _u64(buf, i)
         i += 8
     if has_dict:
-        i += 4                      # dict id：只跳过
-    i += 1                          # HC（header checksum）：只跳过
-    frame_start = len(out)          # 依赖块的回引下界
+        i += 4
+    i += 1
+    frame_start = len(out)
     while True:
         if i + 4 > n:
             raise ValueError("lz4: 块长度字段越界（文件被截断）")
         raw = _u32(buf, i)
         i += 4
         if raw == 0:
-            break                   # EndMark
+            break
         uncompressed = bool(raw & 0x80000000)
         bsize = raw & 0x7FFFFFFF
         if i + bsize > n:
@@ -208,7 +208,7 @@ def decompress_bytes(buf):
             import lz4.frame
             return lz4.frame.decompress(bytes(buf))
         except Exception:
-            pass  # 模块不认的边角情形交给自研解码器
+            pass
     return bytes(decompress_frame(bytearray(buf)))
 
 
@@ -269,18 +269,18 @@ def _frame(blocks, indep=True, raw_blocks=(), block_cksum=False, content_cksum=F
     for b in blocks:
         body += len(b).to_bytes(4, "little") + b
         if block_cksum:
-            body += (0).to_bytes(4, "little")   # 占位：本解码器只跳过不校验
+            body += (0).to_bytes(4, "little")
     for b in raw_blocks:
         body += (len(b) | 0x80000000).to_bytes(4, "little") + b
         if block_cksum:
             body += (0).to_bytes(4, "little")
-    body += (0).to_bytes(4, "little")     # EndMark
+    body += (0).to_bytes(4, "little")
     if content_cksum:
         body += (0).to_bytes(4, "little")
-    head = bytes((flg, 0x40))                 # FLG, BD
+    head = bytes((flg, 0x40))
     if content_size is not None:
         head += content_size.to_bytes(8, "little")
-    head += b"\x00"                           # HC 占位（不校验）
+    head += b"\x00"
     return MAGIC_FRAME.to_bytes(4, "little") + head + bytes(body)
 
 

@@ -6,10 +6,8 @@ import { defineConfig, type Plugin } from 'vite'
 import { svelte } from '@sveltejs/vite-plugin-svelte'
 
 // [embedded-config]
-// 构建期把仓库内的配置 yaml 整体嵌入（虚拟模块 virtual:chiri-config）：
-// 目录级收录，新增/删除 yaml 无需改代码；dev 与 build 都读仓库磁盘内容。
-// 注意：嵌入值是**仓库默认值**而非设备权威值——meta.yaml 是用户可修改文件，
-// 真实设备路径一律走 contract 层读盘（见 src/dev/mock-shell.ts 说明）。
+// 构建期把仓库内配置 yaml 整体嵌入（虚拟模块 virtual:chiri-config）：目录级收录，增删 yaml 无需改代码，dev/build 都读仓库磁盘内容。
+// 注意：嵌入值是仓库默认值而非设备权威值——meta.yaml 是用户可修改文件，真实设备路径一律走 contract 层读盘（见 src/dev/mock-shell.ts）。
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url))
 const EMBED_DIRS = ['module/config', 'src/chiri']
 const EMBED_FILES = ['module/rules.yaml', 'module/module.prop']

@@ -62,35 +62,21 @@ fn try_handle_frame(_ctx: ProbeContext) -> Result<u32, u32> {
 // [cpu-probe]
 // CPU Probe — tracepoint on sched/sched_switch
 
-// sched_switch 参数布局 (offset → field)
-//  0: pad            u64
-//  8: prev_comm     [u8; 16]
-// 24: prev_pid       i32
-// 28: prev_prio      i32
-// 32: prev_state     i64
-// 40: next_comm     [u8; 16]
-// 56: next_pid       i32
-// 60: next_prio      i32
+// sched_switch 参数布局（offset → field）：24 = prev_pid、56 = next_pid
+// （完整布局含 pad/prev_comm/prev_prio/prev_state/next_comm 等，写死偏移需对照内核 tracepoint 格式）
 const OFF_PREV_PID: usize = 24;
 const OFF_NEXT_PID: usize = 56;
 
-/// 每核心运行时状态：原先是五个独立 PerCpuArray（last_time / idle / busy /
-/// cur_tid / cur_tgid），合并后一次查找即可读写全部字段，把每次 sched_switch
-/// 的 map 查找从 5 次降到 1 次。
-/// 布局必须与用户态 `src/monitor/cpu_monitor.rs` 的同名结构逐字段一致：
-/// `#[repr(C)]`、u64 在前 u32 在后 → 32 字节、无 padding。两侧必须同批发布。
+/// 每核心运行时状态（合并原 5 个独立 PerCpuArray，sched_switch 的 map 查找 5 次 → 1 次）。
+/// 布局硬契约：必须与用户态 src/monitor/cpu_monitor.rs 同名结构逐字段一致——#[repr(C)]、
+/// u64×3 在前（last_time/idle/busy，单位 ns）、u32×2 在后（cur_tid/cur_tgid），恰 32 字节无 padding；两侧必须同批发布。
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct CoreState {
-    /// 上次切换时间戳 (ns)
     pub last_time: u64,
-    /// 累计 Idle 时间 (ns)
     pub idle: u64,
-    /// 累计 Busy 时间 (ns)
     pub busy: u64,
-    /// 当前运行的 TID
     pub cur_tid: u32,
-    /// 当前运行任务的 TGID
     pub cur_tgid: u32,
 }
 
@@ -105,10 +91,9 @@ static THREAD_RUN_TIME: HashMap<u32, u64> = HashMap::with_max_entries(32768, 0);
 #[map]
 static TGID_RUN_TIME: HashMap<u32, u64> = HashMap::with_max_entries(1024, 0);
 
-/// 线程级记账开关（0 = 关，非 0 = 开）：由用户态写，置位条件与
-/// cpu_monitor 的 FAS_FG_UTIL_ENABLED 相同（ChiRi SoC 且 FAS 配置可用）。
-/// 关闭时 sched_switch 不再做 THREAD_RUN_TIME 的 hash 查找/插入——该 map
-/// 只被用户态「TGID 主路径失败」时的降级路径消费。
+/// 线程级记账开关（0 = 关，非 0 = 开）：由用户态写，置位条件与 cpu_monitor 的
+/// FAS_FG_UTIL_ENABLED 相同（ChiRi SoC 且 FAS 配置可用）。关闭时 sched_switch 跳过
+/// THREAD_RUN_TIME 的 hash 查找/插入——该 map 只被用户态「TGID 主路径失败」降级路径消费。
 #[map]
 static THREAD_ACCT: Array<u32> = Array::with_max_entries(1, 0);
 
@@ -172,7 +157,6 @@ fn try_handle_sched_switch(ctx: &TracePointContext) -> Result<u32, i64> {
     let pid_tgid = bpf_get_current_pid_tgid();
     let next_tgid = (pid_tgid >> 32) as u32;
 
-    // 单次查找拿到本核全部状态（原先是 5 个独立 PerCpuArray 各查一次）
     let state_ptr = match CORE_STATE.get_ptr_mut(ZERO_KEY) {
         Some(p) => p,
         None => return Ok(0),
@@ -185,10 +169,8 @@ fn try_handle_sched_switch(ctx: &TracePointContext) -> Result<u32, i64> {
 
     if delta > 0 && delta < NS_10_SEC {
         if prev_tid == 0 {
-            // Idle 时间
             state.idle += delta;
         } else {
-            // Busy 时间
             state.busy += delta;
 
             // 线程级累计：按用户态开关执行（见 THREAD_ACCT 说明）
@@ -203,7 +185,6 @@ fn try_handle_sched_switch(ctx: &TracePointContext) -> Result<u32, i64> {
         }
     }
 
-    // ── 更新当前核心状态 ──
     state.last_time = now;
     state.cur_tid = next_tid as u32;
     state.cur_tgid = next_tgid;
@@ -224,8 +205,7 @@ fn add_to_hash(map: &HashMap<u32, u64>, key: u32, delta: u64) {
     }
 }
 
-/// 线程级记账开关是否打开（THREAD_ACCT 由用户态写：非 0 = 记账）。
-/// 关闭时 sched_switch 跳过 THREAD_RUN_TIME 的 hash 查找/插入。
+/// THREAD_ACCT 非 0 = 开（由用户态写）；关闭时 sched_switch 跳过 THREAD_RUN_TIME 的查找/插入
 fn thread_acct_enabled() -> bool {
     THREAD_ACCT.get(ZERO_KEY).is_some_and(|v| *v != 0)
 }

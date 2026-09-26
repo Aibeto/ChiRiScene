@@ -1,8 +1,6 @@
 <script lang="ts">
   // NumberField.svelte: [state] [input]
-  // 数值输入：与 ToggleField 同构（label + hint + 待提交标记）。提交时机是失焦/回车，
-  // 不是每敲一个字符——否则会按字符写一次 meta.yaml（每次写入都触发全量热重载）。
-  // 非法值不提交、也不回滚：保留原文让用户继续改，下方给红字。
+  // 数值输入：失焦/回车才提交（避免逐字符写 meta.yaml 触发全量热重载）；非法值不提交也不回滚，保留原文并给红字。
   import { t } from '@/i18n/index.svelte'
 
   let {
@@ -29,8 +27,7 @@
     onchange: (next: number) => void
   }>()
 
-  // 初值也由 effect 写入（在组件初始化里直接读 prop 会触发 svelte 的
-  // state_referenced_locally 告警）；外部值变化（写后回读、热重载）同样走它
+  // 初值/外部值变化都由 effect 写入（组件初始化里直接读 prop 会触发 svelte 的 state_referenced_locally 告警）
   let text = $state('')
   let focused = $state(false)
   let invalid = $state(false)
@@ -42,7 +39,7 @@
     }
   })
 
-  /** 输入了但还没提交（失焦/回车才提交）：界面上要看得见，别让改动静默丢掉 */
+  /** 输入了但还没提交：界面上要看得见，别让改动静默丢掉 */
   const dirty = $derived(text !== String(value))
 
   function commit(): void {
@@ -56,7 +53,7 @@
     if (n !== value) {
       onchange(n)
     } else {
-      // 值没变（例如把 1000 打成 1000.0）：把文本归一回去，别让「待提交」标记常亮
+      // 值没变（如把 1000 打成 1000.0）：把文本归一回去，别让「待提交」标记常亮
       text = String(value)
     }
   }

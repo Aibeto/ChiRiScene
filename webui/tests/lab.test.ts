@@ -1,6 +1,5 @@
 // lab.test.ts: [parse] [write]
-// 实验室状态解析与写入内容。解析口径必须与守护进程 src/rhine.rs::parse_state 对齐，
-// 所以这里重点覆盖「两边容易分歧」的形态：注释、引号、多行、未知 key。
+// 解析口径与守护进程 src/rhine.rs::parse_state 对齐，重点覆盖两边易分歧的形态（注释/引号/多行/未知 key）。
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -156,11 +155,8 @@ describe('实验室接管的 meta 开关', () => {
     expect(Object.keys(LAB_TAKEOVER).sort()).toEqual([...LAB_MODE_KEYS].sort())
   })
 
-  /**
-   * 读 daemon 的实验室模式定义（module/config/rhine-init.yaml），得到「模式 key → 影响项字段」。
-   * 只做够用的顶层解析：顶层 `key:` 开一个模式，其下缩进一级的 `field:` 是影响项，
-   * `key: {}`（预留条目）解析为空列表。
-   */
+  /** 读 daemon 的实验室模式定义（module/config/rhine-init.yaml）：模式 key → 影响项字段。
+   *  只做够用的顶层解析：顶层 `key:` 开模式，缩进一级 `field:` 为影响项，`key: {}` 为空列表。 */
   function readRhineInit(): Record<string, string[]> {
     const text = readFileSync(join(process.cwd(), '..', 'module/config/rhine-init.yaml'), 'utf8')
     const defs: Record<string, string[]> = {}
@@ -180,8 +176,7 @@ describe('实验室接管的 meta 开关', () => {
     return defs
   }
 
-  // 刚性断言（故意做成绊线）：直接读 daemon 的 rhine-init.yaml 比对，**不写死字面量**——
-  // 写死的话改了 yaml 也不会变红，「与 rhine-init.yaml 同步」就成了一句空话。
+  // 刚性断言（故意做绊线）：直接读 daemon 的 rhine-init.yaml 比对，不写死字面量（写死则改 yaml 也不变红）。
   // 只比 meta.yaml 里有的字段：global_mode / special_tuned 不是 meta 字段，界面管不着。
   it('接管表与 rhine-init.yaml 的影响项同步', () => {
     const defs = readRhineInit()
@@ -218,7 +213,7 @@ describe('与守护进程解析口径对齐', () => {
 })
 
 describe('可启用模式', () => {
-  // 2026-09-22：frozen（待春归）已实现（锁最低频 + 停亲和/迁移/日志），从预留转为可启用
+// frozen（待春归）已实现（锁最低频 + 停亲和/迁移/日志），从预留转为可启用
   it('vector/contingency/babel/frozen 都给启用入口', () => {
     expect(LAB_ENABLEABLE).toEqual(
       expect.arrayContaining(['vector', 'contingency', 'babel', 'frozen'])

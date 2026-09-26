@@ -134,14 +134,9 @@ impl FasController {
                             dampen: scale_frames(self.cfg.gear_dampen_frames, next),
                         };
                     }
-                // 低 perf 稳帧升档路径：
-                // 打破 "频率被压住 → 帧率上不去 → 升不了档" 的死锁。
-                // 当 perf_index 偏低时，说明当前档位下频率仍有不小余量，
-                // 游戏轻松跑满当前目标帧率且帧率稳定（stddev 低），
-                // 此时即使 recent30 没达到 next-10，也应给机会升档。
-                // 2026-09-23 按用户要求微调（"再激进一点点"）：余量门槛
-                // 0.35 → 0.40，让余量稍小的稳帧场景也吃到升档机会；仍低于
-                // 爆发路径的 0.45，层次保持。
+                // 低 perf 稳帧升档路径：打破「频率被压住 → 帧率上不去 → 升不了档」死锁——
+                // perf 低说明档位下频率有余量，游戏稳帧跑满当前目标（stddev 低），
+                // 即使 recent30 未达 next-10 也给升档机会；余量门槛 0.40，仍低于爆发路径的 0.45
                 } else if avg_fps >= tfps - 2.0
                     && self.perf_index < 0.40
                     && self.fps_window.count() >= 90
@@ -227,7 +222,7 @@ impl FasController {
                 } else if self.downgrade_boost_active && self.downgrade_boost_remaining > 0 {
                     self.downgrade_boost_remaining -= 1;
                     if self.downgrade_boost_remaining == 0 {
-                        // Gradual decay instead of instant cliff restore
+                        // 渐进衰减而非断崖恢复
                         let blended =
                             self.perf_index * 0.70 + self.downgrade_boost_perf_saved * 0.30;
                         self.perf_index = blended.max(self.downgrade_boost_perf_saved);

@@ -1,6 +1,5 @@
 // index.svelte.ts: [locale] [t]
-// 界面语言与守护进程的 meta.language 解耦：界面语言存浏览器本地，仅影响 UI 文案；
-// meta.language 只决定 daemon 自身日志/提示语言（在配置页单独设置）。
+// 界面语言与守护进程 meta.language 解耦：界面语言存浏览器本地、仅影响 UI 文案；meta.language 只决定 daemon 日志/提示语言（配置页设置）。
 import zh from './locales/zh'
 import en from './locales/en'
 
@@ -38,10 +37,7 @@ export function toggleLocale(): void {
 }
 
 // [t]
-/**
- * 取文案：缺失键回退到中文，再回退到键名本身（便于发现漏翻但不会让界面空白）。
- * 支持 `{name}` 形式的简单插值。
- */
+/** 取文案：缺失键回退中文、再回退键名本身（漏翻可发现但界面不空白）；支持 {name} 简单插值。 */
 export function t(key: string, params?: Record<string, string | number>): string {
   const dict = DICTS[i18n.locale] ?? DICTS.zh
   let text = dict[key] ?? DICTS.zh[key] ?? key

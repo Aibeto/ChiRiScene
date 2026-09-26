@@ -83,7 +83,6 @@ describe('status.csv 解析', () => {
     expect(r.battPower).toBeCloseTo(-1.95)
     // FAS 未启动：fps 预留列为 '-' → null
     expect(r.fps).toBeNull()
-    // screen_prop：属性原始值
     expect(r.screenProp).toBe('1')
   })
 

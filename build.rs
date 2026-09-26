@@ -23,9 +23,7 @@ fn bpf_linker_on_path() -> bool {
         .unwrap_or(false)
 }
 
-/// 确保 bpf-linker 可用：已存在则跳过，否则安装并严格检查结果。
-/// 之前版本用 `.status()?` 直接透传（只检查进程能否启动，不检查 exit code），
-/// install 静默失败后 yumi-ebpf 链接阶段才会暴露 "linker bpf-linker not found"。
+/// 确保 bpf-linker 可用：已存在则跳过，否则安装并严格校验 exit code（防 install 静默失败拖到链接阶段才暴露）
 fn ensure_bpf_linker(tools_dir: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let tools_bin = tools_dir.join("bin");
     let linker = tools_bin.join(bpf_linker_name());
@@ -40,9 +38,7 @@ fn ensure_bpf_linker(tools_dir: &Path) -> Result<PathBuf, Box<dyn std::error::Er
         return Ok(linker);
     }
 
-    // 3) Windows 本机：bpf-linker 源码编译依赖 os::unix API，无法在 Windows 构建；
-    //    且完整产物由云端 CI 生成（见 AGENTS.md），本地不承担 eBPF 构建，
-    //    直接提示跳过安装，避免每次都等待 install 失败拖慢本地静态检查。
+    // 3) Windows 本机：bpf-linker 源码编译依赖 os::unix API 无法构建；完整产物由云端 CI 生成，本地跳过安装
     if cfg!(windows) {
         return Err(
             "Windows 本机无现成 bpf-linker（源码编译依赖 os::unix，无法在 Windows 构建），跳过安装"
@@ -85,8 +81,7 @@ fn ensure_bpf_linker(tools_dir: &Path) -> Result<PathBuf, Box<dyn std::error::Er
 
 // [ebpf-build]
 
-/// 写入 eBPF 占位产物，使 include_bytes! 可解析（纯类型检查用，产物内容无效，
-/// CI/发布不触发该路径，行为不变）。返回 OUT_DIR 下的 ebpf_target 目录。
+/// 写 eBPF 占位产物使 include_bytes! 可解析（内容无效、纯类型检查用；CI/发布不走此路径），返回 OUT_DIR 下的 ebpf_target 目录
 fn write_ebpf_stub() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let out_dir = PathBuf::from(env::var("OUT_DIR")?);
     for profile in ["debug", "release"] {
@@ -102,8 +97,7 @@ fn write_ebpf_stub() -> Result<PathBuf, Box<dyn std::error::Error>> {
 
 /// 构建 yumi-ebpf BPF 程序，参照 frame-analyzer 的 build_ebpf()
 fn build_ebpf() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    // 本地开发快速检查：YUMI_SKIP_EBPF=1 时跳过 eBPF 编译，仅写入占位产物
-    // 使 include_bytes! 可解析（纯类型检查用，产物内容无效，CI/发布不设置该变量，行为不变）。
+// YUMI_SKIP_EBPF=1：跳过 eBPF 编译，仅写占位产物供 include_bytes! 解析（CI/发布不设置该变量，行为不变）
     if std::env::var_os("YUMI_SKIP_EBPF").is_some() {
         println!("cargo:warning=YUMI_SKIP_EBPF=1: skipping eBPF build (check-only stub)");
         return write_ebpf_stub();
@@ -115,16 +109,13 @@ fn build_ebpf() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let target_dir = out_dir.join("ebpf_target");
     let tools_dir = out_dir.join("ebpf_tools");
 
-    // 监控 ebpf crate 变化
     println!(
         "cargo:rerun-if-changed={}",
         ebpf_dir.join("Cargo.toml").display()
     );
     println!("cargo:rerun-if-changed={}", ebpf_dir.join("src").display());
 
-    // 1. 安装 bpf-linker（参照 frame-analyzer install_ebpf_linker），严格校验。
-    // Windows 本机无 bpf-linker 时跳过 eBPF 编译、回退占位产物，保证 IDE
-    // rust-analyzer 与本地 cargo check 不被阻塞（CI 在 Linux 上不受影响）。
+// 1. 安装 bpf-linker（严格校验）；Windows 本机无 bpf-linker 时回退占位产物，保证本地 rust-analyzer / cargo check 不阻塞（CI 不受影响）
     let linker_bin = match ensure_bpf_linker(&tools_dir) {
         Ok(l) => l,
         Err(e) if cfg!(windows) => {
@@ -135,7 +126,8 @@ fn build_ebpf() -> Result<PathBuf, Box<dyn std::error::Error>> {
     };
 
     // 2. 编译 BPF 程序（在 yumi-ebpf 目录中，避免 workspace 干扰）
-    #[allow(unused_mut)] // 仅 release 分支 push("--release")，debug 构建下无需可变
+    // 仅 release 分支 push("--release")，debug 构建下无需可变
+    #[allow(unused_mut)]
     let mut ebpf_args = vec![
         "--target",
         "bpfel-unknown-none",
@@ -154,10 +146,8 @@ fn build_ebpf() -> Result<PathBuf, Box<dyn std::error::Error>> {
         .current_dir(&ebpf_dir)
         .env_remove("RUSTUP_TOOLCHAIN")
         .env("PATH", add_path(linker_bin.parent().unwrap())?)
-        // 新版 bpf-linker 内嵌的 LLVM 已移除 -Oz 与 -Os，仅支持 -O0~O3；
-        // workspace 根 [profile.release] 的 opt-level="z" 会导致链接失败
-        // （报 'The optimization level "Oz" is no longer supported'）。
-        // eBPF 目标局部覆盖为 "2"（-O2，稳定且无 size 级别兼容问题）。
+        // 新版 bpf-linker 内嵌 LLVM 已移除 -Oz/-Os，仅支持 -O0~O3：workspace release 的
+        // opt-level="z" 会导致链接失败，eBPF 目标局部覆盖为 -O2
         .env("CARGO_PROFILE_RELEASE_OPT_LEVEL", "2")
         .status()?;
 
@@ -171,10 +161,11 @@ fn build_ebpf() -> Result<PathBuf, Box<dyn std::error::Error>> {
     #[cfg(not(debug_assertions))]
     let profile = "release";
 
+    // binary crate 保留原始包名中的连字符
     let built_obj = target_dir
         .join("bpfel-unknown-none")
         .join(profile)
-        .join("yumi-ebpf"); // binary crate 保留原始包名中的连字符
+        .join("yumi-ebpf");
 
     Ok(built_obj)
 }
@@ -185,8 +176,7 @@ fn add_path(add: &std::path::Path) -> Result<String, std::env::VarError> {
 }
 
 fn main() {
-    // module/config 目录整体构建期嵌入（include_dir!）：目录内新增/删除 yaml 需触发
-    // 本包重编译（已存在文件的改动由 rustc 的 include_bytes! 依赖跟踪覆盖，此处补目录级监听）。
+// module/config 目录整体 include_dir! 嵌入：目录内新增/删除 yaml 需触发本包重编译（已有文件改动由 rustc 依赖跟踪覆盖）
     println!("cargo:rerun-if-changed=module/config");
     assert_required_configs();
     match build_ebpf() {
@@ -203,11 +193,8 @@ fn main() {
 
 // [webui-embed]
 
-/// 生成 OUT_DIR/webui_assets.rs：webui/dist 全量资产清单（include_bytes!），
-/// 供 daemon 启动时把内嵌副本还原到模块 webroot/（防篡改，见 src/webui_asset.rs）。
-/// dist 缺失（纯 cargo check / 未跑 WebUI 构建）时生成空清单（EMBEDDED=false），
-/// 还原功能自动降级、编译照常通过；xtask 的构建顺序是「先 webui 后 core」，
-/// 打包产物始终带完整资产。
+/// 生成 OUT_DIR/webui_assets.rs：webui/dist 全量资产清单，daemon 启动时把内嵌副本还原到
+/// 模块 webroot/（防篡改，见 src/webui_asset.rs）；dist 缺失时 EMBEDDED=false 自动降级，xtask 先 webui 后 core
 fn write_webui_assets() {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let dist = manifest.join("webui").join("dist");
@@ -250,9 +237,7 @@ fn collect_webui_dist(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>)
     }
 }
 
-/// 必需配置文件缺失直接 panic（= 编译失败，快速暴露错误）：
-/// include_dir 嵌入内容是运行时唯一来源，缺文件不允许静默回退代码默认值。
-/// 另校验处理器子目录 meta.yaml / feature.yaml 必须成对出现（防止拆分文件只改一半）。
+/// 必需配置文件缺失直接 panic（include_dir 嵌入内容是运行时唯一来源，不允许静默回退默认值）；并校验处理器子目录 meta.yaml/feature.yaml 成对出现
 fn assert_required_configs() {
     let cfg_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("module/config");
     let required = [

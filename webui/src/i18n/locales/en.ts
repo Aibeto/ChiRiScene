@@ -10,7 +10,7 @@ export default {
   'nav.logs': 'Logs',
   'nav.main': 'Main navigation',
 
-  // 2026-09-17 commented out: manual refresh buttons removed
+  // commented out: manual refresh buttons removed
   // 'action.refresh': 'Refresh',
   'action.toBottom': 'Back to bottom',
   'action.cancel': 'Cancel',
@@ -96,7 +96,7 @@ export default {
   'config.loglevel': 'Log level',
   'config.writable': 'Editable',
   'config.devRecord': 'Dev record',
-  // 2026-09-17 commented out: dev record subtitle hidden per request
+  // commented out: dev record subtitle hidden per request
   // 'config.devRecord.hint': 'Keep default values normally, no modification required.',
   'config.fasEnabled': 'FAS frame-aware scheduling',
   'config.fasEnabled.hint': 'Frame-interval-aware scheduling',
@@ -135,6 +135,9 @@ export default {
   'config.labTakenOver': 'Taken over by the lab ({mode}); turn the lab off first',
   'config.advanced': 'Advanced settings',
   'config.advanced.hint': 'Operate under developer guidance',
+  'config.advanced.metaInvalid': 'meta.yaml failed validation, writes are disabled',
+  'config.advanced.open': 'Open',
+  'config.advanced.back': 'Back to config',
   'config.down': 'DOWN mode',
   'config.down.hint': 'Operate under developer guidance',
   'config.down.on': 'DOWN enabled',
@@ -163,9 +166,9 @@ export default {
   'lab.notice.reboot': 'Use under developer guidance',
   'config.powerbase': 'ChiRi PB',
   'config.powerbase.hint': 'Follow me — right or wrong is a false premise',
-  'config.screenoff': 'Screen-off value 1',
-  'config.screenoff.hint': 'System property debug.tracing.screen_state = 1 means screen off; turn off to use 0 (calibrated at install)',
-  'config.screenoff.zero': 'Screen-off value set to 0',
+  'config.screenoff': 'Screen-off value',
+  'config.screenoff.hint': 'Set the screen-off detection value',
+  'config.screenoff.saved': 'Screen-off value saved',
 
   'lab.notice.effects': 'Turning the lab off requires a reboot',
   'lab.notice.manual': 'In special cases you can edit rhine.chr directly',
@@ -231,7 +234,7 @@ export default {
   'logs.source': 'Source',
   'logs.source.daemon': 'Daemon log',
   'logs.source.status': 'Status snapshot',
-  // 2026-09-17 commented out: log panel subtitle hidden per request
+  // commented out: log panel subtitle hidden per request
   // 'logs.window': 'Showing the most recent window only (fixed byte window, never the whole file)',
   'logs.archive': 'History logs are packed into logd/; view them from the archives',
   'logs.devimp': 'Diagnostic logs',
@@ -253,18 +256,15 @@ export default {
   'logs.charge.full': 'Full',
   'logs.charge.not_charging': 'Not charging',
 
-  // CLG four gears: label equals the id, same in every locale (user request 2026-09-16);
-  // all mode.*.desc keys are commented out (2026-09-18 user request: the card shows
-  // family + mode only, descriptions are no longer displayed)
+  // CLG four gears: label equals the id, same in every locale;
+  // all mode.*.desc keys are commented out (card shows family + mode only, descriptions hidden)
   'mode.reduce': 'reduce',
-  // 2026-09-17 commented out: mode card now shows family + mode, descriptions hidden
   // 'mode.reduce.desc': 'Capped ceiling, battery first',
   'mode.default': 'default',
   // 'mode.default.desc': 'Everyday use',
   'mode.boost': 'boost',
   // 'mode.boost.desc': 'Raised ceiling',
   'mode.vector': 'vector',
-  // 2026-09-18: all mode.*.desc keys commented out (the card shows family + mode only)
   // 'mode.vector.desc': 'All cores at max frequency, most aggressive core/thread placement',
   'mode.contingency': 'contingency',
   // 'mode.contingency.desc': 'CPU+GPU all cores at max, performance governor, no thread affinity',
@@ -275,6 +275,9 @@ export default {
   'mode.down': 'down',
   // 'mode.down.desc': 'Scheduling halted; collection and logs only',
   'mode.scenemode': 'Screen-off scene',
+  // PowerBase (Stardust family): replaces the CLG governor when ChiRi PB is on;
+  // current_mode still holds the CLG slot name, the status card swaps the label
+  'mode.powerbase': 'PowerBase',
   // 'mode.scenemode.desc':
   //   'Low-power state entered after the screen-off timeout (separate screen axis; no mode value is produced)',
   'mode.fas': 'FAS',

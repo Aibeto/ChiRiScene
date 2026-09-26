@@ -1,18 +1,10 @@
 //! notify.rs: [content] [dispatch] [worker] [post]
-// 常驻状态通知（daemon → 系统通知栏）：通过 shell 工具 `cmd notification post` 投递，
-// 内容为调度状态快照：前台包名（标题）/ 模式 / 家族 / 子模式 / 温度 / 功耗。
-// 只有 daemon 能持续更新（WebUI 只在打开时存在），故由 1s 调度循环按周期调用；
-// **投递在 notify 自己的线程上串行执行**（容量 1 的通道，落后就丢本次）：`cmd` 是新建
-// 进程，快慢不可控，不能让调度循环等它——内容去重、失败冷却、进程创建都在该线程里。
-// 「关闭调度」时 daemon 是被信号杀死的（没有清理时机），由 WebUI 调用
-// `cmd notification post -d chiri-status` 取消。
-//
-// 内容口径（用户要求 2026-09-18）：
-// - 标题 = 当前前台进程/包名（取不到时用模块名兜底）；
-// - 正文**单行** = 模式 · 家族 · 子模式 · 温度 · 功耗，各参数**只出值、不带字段标签**
-//   （用户口径 2026-09-18），由 ` · ` 分隔；家族与子模式按信息量去重（同下）；
-// - 功耗随 meta.yaml `power_avg`（电池读数页里的开关）取参考值或平均值——**值本身就是该
-//   口径下的结果，通知只出数值、不标注是哪一种**（用户口径）。
+// 常驻状态通知（daemon → 系统通知栏）：用 `cmd notification post` 投递调度状态快照
+// （标题=前台包名；正文单行=模式 · 家族 · 子模式 · 温度 · 功耗，各参数只出值、不带字段标签）。
+// 只有 daemon 能持续更新（WebUI 打开才存在），由 1s 调度循环按周期调用；投递在 notify
+// 自己的线程上串行执行（容量 1 通道，落后丢本次）——`cmd` 是新建进程快慢不可控，
+// 不能阻塞调度循环，内容去重/失败冷却/进程创建都在该线程。
+// 「关闭调度」时 daemon 被信号杀死（无清理时机），由 WebUI 调 `cmd notification post -d chiri-status` 取消。
 
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -51,14 +43,12 @@ pub struct Snapshot<'a> {
     pub batt_temp: Option<f32>,
     /// CPU 温度（°C）
     pub cpu_temp: Option<f32>,
-    /// PowerAVG 当前留存值（W）。口径（参考/平均）由 meta.power_avg 决定，值本身就是
-    /// 该口径下的结果，通知不再标注是哪种
+    /// PowerAVG 当前留存值（W）；口径（参考/平均）由 meta.power_avg 决定，通知只出数值不标注
     pub power_w: Option<f32>,
 }
 
 // [content]
-/// 模式家族（与 WebUI `data/mode.ts` 的 ModeKind 对齐）。名字用拉丁字面量，与 zh locale
-/// 的 `mode.family.*` 保持一致，不另做本地化。
+/// 模式家族（与 WebUI data/mode.ts 的 ModeKind 对齐）；拉丁字面量与 zh locale 的 mode.family.* 一致，不另做本地化
 fn family(mode: &str) -> &'static str {
     match mode {
         "down" => "DOWN",
@@ -71,8 +61,7 @@ fn family(mode: &str) -> &'static str {
     }
 }
 
-/// 特调模式集合：编译期嵌入的 `special_tuned.yaml` 里 modes 的并集（首次调用构建一次）。
-/// 精确与正则条目同样贡献模式名——这里只取 modes，不涉及包名匹配。
+/// 特调模式集合：编译期嵌入的 special_tuned.yaml 中 modes 的并集（首次调用构建一次；只取 modes，不涉及包名匹配）
 fn is_special(mode: &str) -> bool {
     static SPECIALS: OnceLock<std::collections::HashSet<String>> = OnceLock::new();
     let set = SPECIALS.get_or_init(|| {
@@ -84,9 +73,7 @@ fn is_special(mode: &str) -> bool {
     set.contains(mode)
 }
 
-/// 模式展示名：CLG/实验室/FAS/down 以及**特调**都直接用 id 本身（特调类名「特调」
-/// 不含新模式信息，用户要求删掉——`akmode`、`playback` 这些 id 才是具体模式），
-/// 只有息屏场景与未注册值有本地化名。
+/// 模式展示名：CLG/实验室/FAS/down 及特调直接用 id 本身（id 才是具体模式），仅息屏场景与未注册值有本地化名
 fn mode_label(mode: &str) -> String {
     if mode == "scenemode" {
         return t("notify-mode-scenemode");
@@ -97,10 +84,7 @@ fn mode_label(mode: &str) -> String {
     mode.to_string()
 }
 
-/// 家族是否提供「模式展示名」之外的信息：clg / lab / stardust 的成员名（default /
-/// vector / 息屏场景）看不出所属家族，需要单列；special / unknown / fas / down 则是
-/// 「类名 = 家族」（特调与 Special、未知与 UNKNOWN 是同一个词），再列一遍等于重复
-/// —— 与 WebUI 模式卡片的 `FAMILY_KINDS` 同一口径。
+/// 家族是否提供「模式展示名」之外的信息：clg/lab/stardust 需单列，其余「类名=家族」重复（与 WebUI FAMILY_KINDS 同口径）
 fn family_adds_info(family: &str) -> bool {
     matches!(family, "CLG" | "RHINE" | "Stardust")
 }
@@ -115,16 +99,12 @@ fn fmt_power(v: Option<f32>) -> String {
     v.map(|x| format!("{x:.2}")).unwrap_or_else(|| "-".to_string())
 }
 
-/// 正文各参数之间的分隔符（单行展示，用户口径 2026-09-18）
+/// 正文各参数之间的分隔符（单行展示）
 const SEPARATOR: &str = " · ";
 
-/// 组装正文：**单行**列出各参数（模式 · 家族 · 子模式 · 温度 · 功耗），用 [`SEPARATOR`]
-/// 分隔——各参数只出值、不带「模式：」这类字段标签（用户口径），靠顺序与单位自解释；
-/// 折起时系统按需截断，展开（bigtext）看全。
-/// 去重（与 WebUI 模式卡片同口径）：
-/// - 「家族」只在它提供模式名之外的信息时出现（clg/lab/stardust；特调与 Special、
-///   未知与 UNKNOWN 是同一个词，同时出现等于重复两次）；
-/// - 「子模式」只在它与展示名不是同一个词时出现（CLG 与实验室档的展示名就是 id）。
+/// 组装正文：单行列出各参数（模式 · 家族 · 子模式 · 温度 · 功耗），用 [`SEPARATOR`] 分隔——
+/// 各参数只出值、不带字段标签，靠顺序与单位自解释；折起时系统按需截断，展开（bigtext）看全。
+/// 家族/子模式按信息量去重（与 WebUI 模式卡片同口径，见 [`family_adds_info`]）。
 fn body(snap: &Snapshot) -> String {
     let label = mode_label(snap.mode);
     let mut lines = vec![t_with_args(
@@ -158,9 +138,7 @@ fn body(snap: &Snapshot) -> String {
 }
 
 // [dispatch]
-/// 请求更新常驻通知：标题 = 前台包名（空则模块名兜底），正文见 [`body`]。
-/// 组装（纯格式化）留在调用线程，投递交给 [`worker`] 线程——调度循环不碰进程创建，
-/// 也不会被 `cmd` 的启动与等待拖住。
+/// 请求更新常驻通知：标题 = 前台包名（空则模块名兜底），正文见 [`body`]；组装留调用线程，投递交 [`worker`] 线程
 pub fn update(snap: &Snapshot) {
     let title = if snap.pkg.trim().is_empty() {
         t("notify-title-fallback")
@@ -173,10 +151,8 @@ pub fn update(snap: &Snapshot) {
     });
 }
 
-/// 请求撤销常驻通知（meta.yaml `notify: false` 时由调度循环调用；daemon 自己还活着，
-/// 有能力清理，不必等 WebUI 的 stopScheduler）。
-/// `force` = 无条件投一条 `-d`（用于启动首轮：可能残留上一次运行投递的通知）；
-/// 否则只在本次确实投递过时才动手（每轮调用都幂等、不反复起进程）。同样非阻塞。
+/// 请求撤销常驻通知（meta.yaml `notify: false` 时由调度循环调用；daemon 还活着，可自行清理）。
+/// `force` = 无条件投一条 `-d`（清上一次运行残留），否则仅在本次确实投递过时动手；非阻塞。
 pub fn cancel(force: bool) {
     send(Msg::Cancel { force });
 }
@@ -190,8 +166,7 @@ enum Msg {
 /// 投递线程发送端（懒启动，进程内一条）。与通知渠道常量 `CHANNEL` 是两回事
 static WORKER_TX: OnceLock<SyncSender<Msg>> = OnceLock::new();
 
-/// 取发送端，首次调用时起线程。线程起不来就只剩发送端（`try_send` 得到
-/// Disconnected）→ 退化成「不投递」，调度线程照旧跑。
+/// 取发送端，首次调用时起线程；线程起不来则 try_send 得 Disconnected，退化成「不投递」，调度线程照旧跑
 fn sender() -> &'static SyncSender<Msg> {
     WORKER_TX.get_or_init(|| {
         let (tx, rx) = sync_channel::<Msg>(1);
@@ -205,8 +180,7 @@ fn sender() -> &'static SyncSender<Msg> {
     })
 }
 
-/// 非阻塞投递：容量 1，投递线程还在忙上一条就丢本次（下个 5s 周期会再送）。
-/// 这里是调度线程的路径，**绝不能阻塞**——`cmd` 是新建进程，快慢不可控。
+/// 非阻塞投递：容量 1，投递线程忙则丢本次（下个 5s 周期再送）；调度线程路径绝不能阻塞
 fn send(msg: Msg) {
     match sender().try_send(msg) {
         Ok(()) => {}
@@ -218,7 +192,6 @@ fn send(msg: Msg) {
 }
 
 // [worker]
-/// 投递线程主体：串行处理消息——内容去重、失败冷却、进程创建全在调度线程之外
 fn worker(rx: Receiver<Msg>) {
     while let Ok(msg) = rx.recv() {
         match msg {
@@ -228,8 +201,7 @@ fn worker(rx: Receiver<Msg>) {
     }
 }
 
-/// 投递：内容与上次成功投递的完全一致时跳过（省一次进程创建）；上一次全军覆没后
-/// 60s 内不再尝试（这条通道多半整机不可用）
+/// 投递：内容与上次成功投递一致则跳过（省一次进程创建）；上次全部失败后 60s 内不再尝试（通道多半整机不可用）
 fn handle_post(title: &str, text: &str) {
     {
         let last = LAST_POSTED.lock().unwrap_or_else(|e| e.into_inner());
@@ -259,8 +231,7 @@ fn handle_post(title: &str, text: &str) {
     }
 }
 
-/// 撤销：`force` 无条件投一条 `-d`（启动首轮清上一次运行的残留），否则只在本次确实
-/// 投递过时才动手
+/// 撤销：force 无条件投一条 -d（启动首轮清上一次运行残留），否则仅在本次确实投递过时动手
 fn handle_cancel(force: bool) {
     {
         let mut last = LAST_POSTED.lock().unwrap_or_else(|e| e.into_inner());
@@ -282,9 +253,8 @@ fn handle_cancel(force: bool) {
     }
 }
 
-/// 按候选命令行顺序尝试投递（各 ROM 对 `cmd notification` 的旗标支持不同）：
-/// ① 渠道 + 常驻（`-c`/`-o`）→ ② 去渠道 → ③ 最简形式。
-/// 每条失败记 debug（属「候选节点」口径），**全部失败**才打一条 warn（本进程一次）。
+/// 按候选命令行顺序尝试投递（各 ROM 对 `cmd notification` 旗标支持不同）：
+/// ① 渠道+常驻（-c/-o）→ ② 去渠道 → ③ 最简形式；单条失败记 debug，全部失败才 warn（本进程一次）。
 fn post(title: &str, text: &str) -> bool {
     let attempts: [Vec<&str>; 3] = [
         vec![
@@ -294,8 +264,7 @@ fn post(title: &str, text: &str) -> bool {
         vec!["notification", "post", "-t", title, TAG, text],
     ];
     for args in attempts {
-        // 丢弃子进程输出：`cmd` 在旗标不支持时会把用法/错误文本打到 stderr，
-        // 默认继承会直接灌进 daemon.log（候选失败属预期路径，只需 debug 打点）
+        // 丢弃子进程输出：旗标不支持时 cmd 会把用法/错误文本打到 stderr，避免灌进 daemon.log
         let ok = Command::new(CMD)
             .args(&args)
             .stdout(Stdio::null())

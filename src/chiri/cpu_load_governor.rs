@@ -12,16 +12,10 @@ use std::time::{Duration, Instant};
 use crate::fluent_args;
 use crate::i18n::{t, t_with_args};
 
-// [thermal_clamp]
-// 热压制「重钳」开关（feature.yaml `Thermal.clamp_heavy`，serde default = true）
+// [thermal_clamp] 热压制「重钳」开关（feature.yaml `Thermal.clamp_heavy`，serde default = true）
 
-/// 是否在 cap 窗口内对**所有簇**恒钳写频目标：
-/// - true（默认）= 恒钳写侧，`current_perf` 照常平滑、不回写——窗口解除立即恢复全速；
-/// - false = 回退旧行为：`current_perf >= free_above` 的簇豁免、不钳制。
-///
-/// 进程级原子量，由 `Config::load` 在启动/热重载时一次性写入
-/// （与 fas_enabled/scenemode_enabled 同口径，见 `chiri/config.rs::Config::load`）；
-/// Worker 每次 flush 读一次，不新增任何周期任务或轮询。
+/// 是否在 cap 窗口内对**所有簇**恒钳写频目标：true（默认）= 恒钳写侧，current_perf 照常平滑、不回写（窗口解除即恢复全速）；false = 回退旧行为（current_perf >= free_above 的簇豁免、不钳制）。
+/// 进程级原子量，由 `Config::load` 启动/热重载时一次性写入；Worker 每次 flush 读一次，无额外轮询。
 static CLAMP_HEAVY: AtomicBool = AtomicBool::new(true);
 
 /// 由配置层同步 `Thermal.clamp_heavy`（`Config::load` 调用）。热重载即时生效。
@@ -29,11 +23,9 @@ pub fn set_clamp_heavy(v: bool) {
     CLAMP_HEAVY.store(v, Ordering::Relaxed);
 }
 
-// [cluster]
-// PolicyRestore — CLG 接管前的系统状态快照，release 时恢复
+// [cluster] PolicyRestore — CLG 接管前的系统状态快照，release 时恢复
 
 struct PolicyRestore {
-    /// cpufreq policy 编号
     policy_id: i32,
     /// 接管前的 scaling_governor；读取失败时为 None，恢复时跳过该字段，不写退化值
     governor: Option<String>,
@@ -48,7 +40,6 @@ struct PolicyRestore {
 // ClusterState — 单 cluster 运行时状态
 
 struct ClusterState {
-    /// cpufreq policy 编号
     policy_id: i32,
     /// 受该 policy 管理的 CPU id 列表（从 affected_cpus 解析）
     affected_cpus: Vec<usize>,
@@ -62,8 +53,7 @@ struct ClusterState {
     max_writer: FastWriter,
     /// 当前目标性能比 [0,1]，调频时换算成频率档位
     current_perf: f32,
-    /// 当前已写入的性能上限（scaling_max_freq，kHz）；0 表示尚未写入成功，下次 tick 自动重试。
-    /// 注意：这是上限而非实际频率，实际频率由 schedutil 在 [硬件最低, 上限] 内自主决定
+/// 已写入的 scaling_max_freq（kHz）；0 = 未写入成功、下次 tick 重试。注意是上限而非实际频率，实际由 schedutil 在 [硬件最低, 上限] 内自主决定
     current_freq: u32,
     /// 降频确认计数：连续满 down_rate_limit_ticks 才执行降频
     down_wait: u32,
@@ -74,8 +64,7 @@ struct ClusterState {
     /// 决策负载 EMA 状态（util_smoothing < 1 时启用；-1 = 未初始化），语义同 tuned
     ema_util: f32,
     // [dwell] 写频滞回状态（Phase 2）：最小驻留 + 死区 + 方向翻摆抑制
-    /// 上次**实际写频**成功时刻（含豁免写）：dwell 以它计时；None = 尚未写过
-    /// （接管初写不走 write_freq、不启动时钟，首次受控写频立即生效）
+/// 上次**实际写频**成功时刻（含豁免写），dwell 以它计时；None = 接管初写未启动时钟，首次受控写频立即生效
     last_write_at: Option<Instant>,
     /// 上次实际写频方向：升 = 1、降 = -1、未写过 = 0（翻摆判定基准）
     last_write_dir: i8,
@@ -86,10 +75,8 @@ struct ClusterState {
 }
 
 impl ClusterState {
-    /// 把目标性能比映射到可用频率表中 **≤ 目标** 的最大档（floor 对齐）。
-    /// 写的是 scaling_max（上限），落点不得高于计算目标——否则会比决策多给一档
-    /// 频率；且目标落在两档之间时内核本就把 max 向下 clamp，先对齐再写才能
-    /// 账实一致，同值不落盘的去重才有效。
+/// 目标性能比映射到频率表中 **≤ 目标** 的最大档（floor 对齐）：写的是 scaling_max 上限，落点不得高于计算目标；
+/// 目标落两档之间时内核本就把 max 向下 clamp——先对齐再写才能账实一致、同值不落盘去重有效。
     #[inline]
     fn find_floor_freq(&self, target_ratio: f32) -> u32 {
         let idx = self.cached_ratios.partition_point(|&r| r <= target_ratio);
@@ -100,34 +87,25 @@ impl ClusterState {
         }
     }
 
-    // [deadzone_hold] 死区频差（kHz）= write_deadzone × 硬件最高频。
-    // hold 判定与 write_freq 吞写 gate 共用此换算，两层不得各算各的。
+// [deadzone_hold] 死区频差（kHz）= write_deadzone × 硬件最高频；hold 判定与 write_freq 吞写 gate 共用此换算
     #[inline]
     fn deadzone_band(&self, deadzone_ratio: f32) -> f32 {
         let hw_max = *self.available_freqs.last().unwrap_or(&0) as f32;
         hw_max * deadzone_ratio
     }
 
-    /// 写 scaling_max_freq（性能上限）。
-    /// min 已在 init 时压到硬件最低，之后只调 max。
-    /// schedutil 在 [min, max] 里自己看着办——空闲时降到地板频，忙碌时贴近 max。
-    /// 这比锁频(min=max)好的地方：不用等 160ms tick 才降频，内核微秒级就降下来了，
-    /// 空转发热大幅减少。写 max 也不用管写序问题，因为 min 恒 <= max。
+/// 写 scaling_max_freq（性能上限）：min 已在 init 压到硬件最低，之后只调 max，无写序问题。
+/// schedutil 在 [min, max] 内自主调频，内核微秒级即可降频，空转发热少。
     fn write_freq(&mut self, freq: u32, dwell_ms: u64, deadzone_ratio: f32, exempt: bool) {
         if freq == self.current_freq {
-            // 目标已与缓存值一致：上次写失败的补写诉求消失，清标记防悬挂——
-            // 否则任意久之后的下一次真实写频会白豁免滞回一次
+// 目标与缓存一致：上次写失败的补写诉求已消失，清标记防下次真实写频白豁免滞回一次
             self.last_failed = false;
             return;
         }
-        // [dwell] 写频滞回（Phase 2）：死区内不写；距上次实际写频不足 dwell 且方向
-        // 翻摆时延迟写，到期后的下一次 flush 补写当前 target。豁免路径（触摸 floor
-        // 提频 / 极低负载立即降频 / 上次写失败的防篡改补写）直通；接管初写/恢复
-        // 不走本函数（写频时序与现状逐字节一致）。
+// [dwell] 写频滞回：死区内不写；距上次实际写频不足 dwell 且方向翻摆时延迟写，到期后下次 flush 补写当前 target。
+// 豁免路径（触摸 floor 提频 / 极低负载立即降频 / 防篡改补写）直通；接管初写/恢复不走本函数。
         if !exempt {
-            // [deadzone_hold] 死区 gate（双保险）：换算走 deadzone_band()，与
-            // on_load_update 的 hold 判定同源；flush 层目标与决策层落点不一致
-            // （热 clamp / 触摸 floor 后）时同样不写近距档。
+// [deadzone_hold] 死区 gate（双保险）：与 on_load_update hold 判定同源走 deadzone_band()；flush 层落点与决策层不一致（热 clamp / 触摸 floor 后）时同样不写近距档
             if (freq.abs_diff(self.current_freq) as f32) < self.deadzone_band(deadzone_ratio) {
                 return;
             }
@@ -188,16 +166,14 @@ impl ClusterState {
             .fold(0.0_f32, f32::max)
     }
 
-    /// 频率（kHz）→ [0,1] 性能比例，与 cached_ratios 同口径：(f - fmin)/(fmax - fmin)。
-    /// 降频时用来把 current_perf 同步到实际写入的档位，防止状态与写入脱节。
+/// 频率（kHz）→ [0,1] 性能比例（与 cached_ratios 同口径）；降频时把 current_perf 同步到实际写入档位
     fn ratio_of_freq(&self, freq: u32) -> f32 {
         let fmin = *self.available_freqs.first().unwrap_or(&0) as f32;
         let fmax = *self.available_freqs.last().unwrap_or(&0) as f32;
         ((freq as f32) - fmin) / (fmax - fmin).max(1.0)
     }
 
-    /// 将单个 policy 恢复为接管前的原始状态。
-    /// 返回是否全部写入成功：失败时返回 false，调用方保留快照以便重试。
+/// 将单个 policy 恢复为接管前状态；返回是否全部写入成功，失败时调用方保留快照以便重试。
     fn restore_policy(r: &PolicyRestore) -> bool {
         let gov_path = format!(
             "/sys/devices/system/cpu/cpufreq/policy{}/scaling_governor",
@@ -213,10 +189,7 @@ impl ClusterState {
         );
 
         let mut all_ok = true;
-        // 写序保证任意中间状态均满足 min <= max：
-        // 1) 恢复 governor（读取失败为 None 时跳过，保持现状）；
-        // 2) 上限先放宽到硬件最大值（恒 >= 当前下限）；
-        // 3) 恢复下限；4) 恢复上限。各步失败均记录，由调用方决定重试。
+// 写序保证任意中间态 min <= max：1) governor（None 跳过）2) 上限放宽到 hw_max 3) 恢复下限 4) 恢复上限；各步失败均记录，由调用方决定重试
         if let Some(gov) = &r.governor {
             if crate::utils::write_to_file(&gov_path, gov.as_bytes()).is_err() {
                 all_ok = false;
@@ -252,23 +225,18 @@ impl ClusterState {
     }
 }
 
-/// 触摸升频开关：false = `on_touch` 正常工作（升频窗口 + Worker 唤醒 + 打点），
-/// 各模式参数（ms/tiers）由 feature.yaml `touch_boost_enabled` 配置。
-/// 2026-09-18 曾按用户要求置 true 临时停用，2026-09-20 恢复启用。
+/// 触摸升频开关：false = `on_touch` 正常工作（升频窗口 + Worker 唤醒 + 打点），参数由 feature.yaml `touch_boost_enabled` 配置
 const TOUCH_BOOST_SUSPENDED: bool = false;
 
 // AtomicTouchState — 跨线程共享的触摸升频状态
 
-/// 跨线程共享的触摸升频状态，Worker 通过 `Arc<AtomicTouchState>` 读取当前窗口。
-/// f32 以 bit pattern 存入 AtomicU32（合法的原子操作，所有位组合都是合法 f32）。
-/// 使用 generation 计数器保证 set/get 一致性：Worker 读取时若 generation 不匹配
-/// 则视为写入中、返回 0.0（无升频），下次 tick 重试。
+/// 跨线程共享的触摸升频状态，Worker 通过 `Arc<AtomicTouchState>` 读取当前窗口；f32 以 bit pattern 存 AtomicU32。
+/// set_epoch_ms 充当 generation 标志保证 set/get 一致性：不匹配视为写入中，返回 0.0 下次 tick 重试。
 // [touch_state]
 struct AtomicTouchState {
     /// 触摸升频地板性能比（f32 的 bit pattern），0 表示无窗口
     floor_bits: AtomicU32,
-    /// 窗口截止时间（相对 Instant::now() 的毫秒偏移量，u32 可表示 ~49 天）
-    /// 比 epoch 秒+纳秒方案更紧凑且不易溢出
+/// 窗口持续时长（相对写入时刻的毫秒偏移，u32 可表示 ~49 天）
     duration_ms: AtomicU32,
     /// 写入时刻的毫秒级 epoch 时间戳（u32 截断，~49 天一轮回，足够触摸窗口判断）
     set_epoch_ms: AtomicU32,
@@ -283,14 +251,9 @@ impl AtomicTouchState {
         }
     }
 
-    /// 设置触摸升频窗口：floor 为大核性能下限，duration 为窗口持续时长。
-    /// 由 scheduler_ipc 线程调用。
+/// 设置触摸升频窗口：floor 为大核性能下限、duration 为窗口时长；由 scheduler_ipc 线程调用
     fn set(&self, floor: f32, duration: Duration) {
-        // 写入顺序：先 duration/floor，最后 set_epoch_ms（作为"就绪标志"）。
-        // Worker 读取时先读 set_epoch_ms，再读 duration/floor：
-        // 若 set_epoch_ms 在 Worker 读取期间被更新，Worker 可能读到旧 floor/duration
-        // 但会因 set_epoch_ms 变化而在下次 tick 重新读取，不会永久卡在错误状态。
-        // 最坏情况：一次 tick 的触摸升频用错 floor（下一 tick 立即修正），无害。
+// 写序：先 duration/floor，最后 set_epoch_ms（就绪标志）；Worker 先读 set_epoch_ms 再读其余，读取期间被更新最坏一次 tick 用错 floor、下 tick 修正，无害
         let epoch_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -302,8 +265,7 @@ impl AtomicTouchState {
         self.set_epoch_ms.store(epoch_ms, Ordering::Release);
     }
 
-    /// Worker 调用：窗口未过期时返回地板性能比，已过期或无窗口返回 0.0。
-    /// 读取顺序与 set 写入顺序相反，保证一致性。
+/// Worker 调用：窗口未过期返回地板性能比，过期/无窗口返回 0.0；读取顺序与 set 写入顺序相反
     fn get_floor(&self) -> f32 {
         // Acquire 保证读到 set_epoch_ms 时，对应的 floor/duration 已可见
         let set_ms = self.set_epoch_ms.load(Ordering::Acquire);
@@ -325,19 +287,16 @@ impl AtomicTouchState {
     }
 }
 
-// [worker]
-// CoreGroupWorker — 每个核心组独立线程的调度 Worker
+// [worker] CoreGroupWorker — 每个核心组独立线程的调度 Worker
 
 /// 负载通道发送端：逐核 util 以 Arc 共享（同一 tick 只分配一次，广播给全部 Worker）
 type LoadSender = mpsc::SyncSender<Arc<Vec<f32>>>;
 /// 负载通道接收端（与 [`LoadSender`] 配对）
 type LoadReceiver = mpsc::Receiver<Arc<Vec<f32>>>;
-/// Worker 派生成功后的返回：接管前状态快照 + (线程句柄, 负载发送端)。
-/// 抽成别名仅为压平类型嵌套深度（clippy::type_complexity）。
+/// Worker 派生成功后的返回（快照 + 线程句柄/负载发送端）；别名仅为压平类型嵌套深度（clippy::type_complexity）
 type WorkerSpawn = (PolicyRestore, (JoinHandle<()>, LoadSender));
 
-/// 单核心组的独立调度 Worker：在专属线程内持有 ClusterState，
-/// 接收负载数据自主做升降频决策 + 写频，与其他核心组完全并行。
+/// 单核心组独立调度 Worker：专属线程内持有 ClusterState，接收负载自主决策 + 写频，与其他核心组完全并行
 struct CoreGroupWorker {
     cluster: ClusterState,
     cfg: CpuLoadGovernorConfig,
@@ -346,12 +305,9 @@ struct CoreGroupWorker {
     load_rx: LoadReceiver,
     stop: Arc<AtomicBool>,
     touch: Arc<AtomicTouchState>,
-    /// 热保护性能上限（f32 bit pattern 存 AtomicU32，1.0 = 无压制）。
-    /// scheduler_ipc 线程定期采样电池/CPU 温度后写入，Worker 每次 flush 读取并 clamp
+/// 热保护性能上限（f32 bit pattern，1.0 = 无压制）；scheduler_ipc 采样电池/CPU 温度写入，Worker flush 读取并 clamp
     thermal_cap: Arc<AtomicU32>,
-    /// 压制豁免档（f32 bit pattern，0..1）：仅在 `Thermal.clamp_heavy=false`（重钳关闭）
-    /// 时生效——current_perf >= 该值时不钳制，保证任何温度下持续高负载都能到达硬件最高频。
-    /// clamp_heavy=true（默认）时本值被忽略（恒钳模式不使用豁免档）。
+/// 压制豁免档（0..1）：仅 clamp_heavy=false 时生效，current_perf >= 该值不钳制，保证任何温度下持续高负载都能到达硬件最高频
     thermal_free_above: Arc<AtomicU32>,
     /// 上次决策摘要（main_ tick 行用，on_load_update 填写）
     dev_decision: &'static str,
@@ -360,23 +316,14 @@ struct CoreGroupWorker {
     dev_tgt_perf: f32,
     dev_raw_util: f32,
     dev_prev_perf: f32,
-    /// 上次 flush 时热钳制是否「生效」（eff_perf 被 cap 压到 current_perf 之下）；
-    /// 仅用于 clamp_apply 证据事件的跃迁去重（值未变不写），不参与控制
+/// 上次 flush 热钳制是否生效；仅用于 clamp_apply 证据事件的跃迁去重，不参与控制
     dev_clamp_binds: bool,
 }
 
 impl CoreGroupWorker {
-    /// 在新线程中运行 Worker 事件循环：接收负载数据、做决策、写频。
-    /// 线程退出（stop 或 channel 断开）前恢复系统原始状态。
-    ///
-    /// 灵敏性说明：性能响应全部走**推送事件**，与下方超时无关——
-    /// - 负载决策：cpu_monitor 每 160ms（特调 40ms）send 负载包，recv_timeout
-    ///   立即返回 → on_load_update + flush，零延迟；
-    /// - 触摸升频：scheduler_ipc 广播空负载包，同样立即打断阻塞 → flush。
-    /// 超时分支只承担两件非性能任务：清理过期触摸窗口、重写当前频率防篡改
-    /// （默认无竞争者，节点被改写属异常态——残留旧模块/手动调试/内核异常，
-    /// 异常改写也是秒级动作，1s 粒度足够兜住）。空闲（无负载事件）
-    /// 时 Worker 从每秒 ~6 次空转降到 1 次。
+/// 在新线程中运行 Worker 事件循环：接收负载、决策、写频；线程退出（stop 或 channel 断开）前恢复系统原始状态。
+/// 性能响应全部走推送事件（负载包 / 触摸空包立即 flush）；超时分支只做两件非性能任务：清理过期触摸窗口、
+/// 重写当前频率防篡改（异常改写是秒级动作，1s 粒度足够兜住），空闲时空转从 ~6 次/s 降到 1 次。
     fn run(mut self) {
         let tick_interval = Duration::from_secs(1);
         let mut log_counter: u32 = 0;
@@ -388,16 +335,14 @@ impl CoreGroupWorker {
 
             match self.load_rx.recv_timeout(tick_interval) {
                 Ok(core_utils) => {
-                    // 空负载包 = 触摸唤醒信号（on_touch 广播）：只 flush 立即应用
-                    // 触摸升频，跳过决策——避免用空数据把 util 算成 0 扰动 up/down_wait
+// 空负载包 = 触摸唤醒信号：只 flush 应用触摸升频，跳过决策——避免空数据把 util 算成 0 扰动 up/down_wait
                     if !core_utils.is_empty() {
                         self.on_load_update(&core_utils);
                     }
                     self.flush(&core_utils, &mut log_counter);
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
-                    // tick 到期：仅做 flush（清理过期触摸窗口、重写当前频率）
-                    // 此处无新的 core_utils，传空切片（max_util 返回 0，不触发决策变更）
+// tick 到期：仅 flush（清理过期触摸窗口、重写频率防篡改）；无新数据传空切片，max_util=0 不触发决策变更
                     let empty: [f32; 0] = [];
                     self.flush(&empty, &mut log_counter);
                 }
@@ -409,10 +354,8 @@ impl CoreGroupWorker {
         ClusterState::restore_policy(&self.restore);
     }
 
-    /// 决策入口：每次 SystemLoadUpdate 触发，只计算目标性能比，不写 sysfs。
-    /// 同时记录 main_ tick 行所需摘要（over/under 计数、目标性能、决策标签）。
-    /// 决策标签四种：up / down_wait / down / hold。hold 表示降频落点与当前频点
-    /// 差在死区内（含相同，ceiling/floor 钳制稳态），不计 debounce、不写频。
+/// 决策入口：只计算目标性能比不写 sysfs，同时记录 main_ tick 行摘要（over/under、目标性能、决策标签）。
+/// 标签四种：up / down_wait / down / hold（hold = 降频落点与当前频点差在死区内，不计 debounce、不写频）。
     fn on_load_update(&mut self, core_utils: &[f32]) {
         let raw_util = self.cluster.max_util(core_utils);
         self.dev_raw_util = raw_util;
@@ -434,12 +377,8 @@ impl CoreGroupWorker {
         self.dev_over = over;
         self.dev_under = under;
 
-        // 负载平滑（EMA，util_smoothing=1.0 关闭；语义同 tuned::util_smoothing）：
-        // 抖动负载下 max_util 每 tick 大幅摆动（8550 QQ 实测 0.3~0.7 间跳），
-        // target_perf 跟着翻摆 → 决策方向反复翻转、scaling_max_freq 高频改写。
-        // 2026-09-22 日志回放：α=0.5 反转降约五成、写频降约三成（α=0.35 更强但
-        // 上限均值抬升更多）。max_util 列（main_）刻意写平滑前原始值，离线回放
-        // 可自行试验系数，不受二次平滑污染。
+// 负载平滑（EMA，util_smoothing=1.0 关闭，语义同 tuned）：抑制抖动负载下 max_util 大幅摆动导致的决策翻摆与 scaling_max_freq 高频改写。
+// main_ 的 max_util 列刻意写平滑前原始值，离线回放可自行试验系数。
         let smoothed = if self.cfg.util_smoothing >= 0.999 || self.cluster.ema_util < 0.0 {
             raw_util
         } else {
@@ -456,7 +395,8 @@ impl CoreGroupWorker {
         };
         self.cluster.last_util = smoothed;
 
-        // headroom 在 up_threshold 附近线性过渡，避免阶跃导致的振荡
+// 主旋钮契约：target_perf = clamp(util × headroom, perf_floor, perf_ceil)，与 up_threshold 无关（up 只管 headroom ramp 与升频速度）；
+// perf_ceil 默认 1.0（降功耗不封顶，除特调外）；headroom 在 up_threshold 附近线性过渡，避免阶跃振荡。
         let ramp_start = self.cfg.up_threshold - self.cfg.headroom_ramp;
         let headroom = if util >= self.cfg.up_threshold {
             self.cfg.headroom_factor
@@ -471,11 +411,8 @@ impl CoreGroupWorker {
         self.dev_tgt_perf = target_perf;
         let old_perf = self.cluster.current_perf;
 
-        // [perf_eps] 浮点停滞防护：current_perf 几何逼近 target_perf 时，有效步进
-        // 系数 α ≤ 0.5（滞回带内慢升分支）会在差 1 ulp 处增量舍入为 0、永远到不了
-        // target，严格 > 比较使该稳态永久落 up 分支（假 up + up_wait 无限累加）。
-        // 加 epsilon 让停滞态落入 else，由下方 [deadzone_hold] 死区 hold 正常收尾；
-        // 1e-6 远小于任何真实负载增量，正常升降路径不受影响。
+// [perf_eps] 浮点停滞防护：慢升分支 α≤0.5 在差 1 ulp 处增量舍入为 0，严格 > 比较使停滞态永久落 up 分支（假 up + up_wait 无限累加）；
+// 加 ε=1e-6 让停滞态落入死区 hold 正常收尾，ε 远小于真实负载增量。
         if target_perf > old_perf + 1e-6 {
             self.cluster.down_wait = 0;
             self.cluster.up_wait += 1;
@@ -487,8 +424,7 @@ impl CoreGroupWorker {
             }
             self.dev_decision = "up";
 
-            // 动态上限语义：抬高 ceiling 不强制频率跳变（schedutil 按实际需求在
-            // [硬件最低, ceiling] 内取频），无需读取实际频率做余量检查，直接平滑抬升
+// 动态上限：抬 ceiling 不强制频率跳变（schedutil 按实际需求在 [硬件最低, ceiling] 内取频），直接平滑抬升
             let is_high_load = util >= self.cfg.up_threshold;
             let is_significant_jump = target_perf > old_perf + self.cfg.up_jump_threshold;
 
@@ -504,17 +440,9 @@ impl CoreGroupWorker {
             }
         } else {
             self.cluster.up_wait = 0;
-            // 先算降频落点：落点与当前频点差在死区内（含同档，如 reduce
-            // little ceiling 0.60 卡住时 util=1.00、tgt 略低于 current 但落点同档
-            // OPP）则写频无效果——不计数、不写频，decision 标 hold。此前该稳态
-            // 每 tick 标 down 且 deb_down 无限增长，main_ 日志出现「满载却 decision=down」
-            // 的矛盾记录。真实降频路径（落点超死区）行为不变；flush 每 tick 经
-            // write_freq 值去重为 no-op（同值不落盘），防篡改仅在目标值变化时的
-            // 写入中顺带发生，稳态跳过决策写频无副作用。
+// 先算降频落点：与当前频点差在死区内（含同档 OPP）= 写频无效果，不计数不写频标 hold（否则稳态每 tick 假 down、deb_down 无限涨）；真实降频路径不变。util=0 不计升频、计入降频。
             let target_freq = self.cluster.find_floor_freq(target_perf);
-            // [deadzone_hold] hold 判定用死区比较（≤ 死区频差，含相等；
-            // write_deadzone=0 时退化为精确相等）：死区频差与 write_freq 吞写
-            // gate 共用 deadzone_band()，写不进 sysfs 的落点不累计 down_wait。
+// [deadzone_hold] hold 判定：≤ 死区频差（含相等；write_deadzone=0 退化为精确相等），与吞写 gate 同源，写不进 sysfs 的落点不累计 down_wait
             if (target_freq.abs_diff(self.cluster.current_freq) as f32)
                 <= self.cluster.deadzone_band(self.cfg.write_deadzone)
             {
@@ -529,9 +457,7 @@ impl CoreGroupWorker {
                     // [dwell] 极低负载立即降频 = 豁免路径：本次写频绕过滞回（flush 消费）
                     self.cluster.fast_down = util < self.cfg.down_fast_threshold;
                     self.dev_decision = "down";
-                    // 直接降上限（能效优先）：不做平滑渐变，一步到位写目标档。
-                    // 降 ceiling 只收窄 schedutil 可用区间，不会把实际频率抬上去，
-                    // 无需读取 scaling_cur_freq 做钳制
+// 直接降上限（能效优先），一步到位写目标档：降 ceiling 只收窄 schedutil 区间，不会抬高实际频率
                     self.cluster.current_perf = self.cluster.ratio_of_freq(target_freq);
                 } else {
                     self.dev_decision = "down_wait";
@@ -540,10 +466,8 @@ impl CoreGroupWorker {
         }
     }
 
-    /// 把 current_perf 转成实际频率并写 sysfs。每 tick 调一次。
-    /// 执行顺序：触摸升频检查 → 热保护 clamp → 性能区间 clamp → 写频。
-    /// 热保护在最后一步 clamp：低于豁免档才压，高于豁免档不管——
-    /// 持续高负载会平滑涨到豁免档以上，这时温度再高也不挡路（内核兜底）。
+/// 把 current_perf 转成实际频率写 sysfs，每 tick 一次：触摸升频检查 → 热保护 clamp → 性能区间 clamp → 写频。
+/// 热保护最后 clamp：低于豁免档才压，持续高负载平滑涨过豁免档后温度再高也不挡路（内核兜底）。
     fn flush(&mut self, core_utils: &[f32], log_counter: &mut u32) {
         // 触摸升频：Worker 自主检查共享的 AtomicTouchState
         let mut touch_active = false;
@@ -561,13 +485,8 @@ impl CoreGroupWorker {
             .cluster
             .current_perf
             .clamp(self.cfg.perf_floor, self.cfg.perf_ceil);
-        // 热压制（重钳）：cap 由 scheduler_ipc 按电池/CPU 温度写入。
-        // 只钳写频、不回写 current_perf：decision 状态照常向 target 平滑，
-        // 窗口解除立即恢复全速。回写 current_perf 才会让状态卡死在 cap
-        // （升频步长够不到上限时永远被压回）——重钳不碰状态，卡死根因不存在。
-        // clamp_heavy=true（默认）：cap 窗口内所有簇恒钳写频目标；
-        // clamp_heavy=false：回退旧行为，current_perf >= 豁免档 free_above 时不钳
-        // （保留到达最高频的能力，free_above 仅此分支生效）。
+// 热压制（重钳，只作用于 CLG、不含 tuned）：只钳写频、不回写 current_perf（回写才会卡死在 cap），窗口解除立即恢复全速。
+// clamp_heavy=true（默认）所有簇恒钳；false 时 current_perf >= 豁免档 free_above 不钳（豁免档需严格大于 soft_perf_cap，free_above 仅此分支生效）。
         let cap = f32::from_bits(self.thermal_cap.load(Ordering::Relaxed));
         let free_above = f32::from_bits(self.thermal_free_above.load(Ordering::Relaxed));
         let clamp_heavy = CLAMP_HEAVY.load(Ordering::Relaxed);
@@ -577,9 +496,7 @@ impl CoreGroupWorker {
             self.cluster.current_perf
         };
         let target_freq = self.cluster.find_floor_freq(eff_perf);
-        // [thermal_clamp] 行为级证据：钳制「生效/解除」跃迁时记一条 event（值未变不写，
-        // 无新增周期任务）。生效判据 = 本次写频目标被 cap 压到 current_perf 之下，
-        // 即 smax 落点应 <= cap 对应档位。diag 关闭时零分配。
+// [thermal_clamp] 钳制「生效/解除」跃迁记一条 event（值未变不写，零分配）；生效判据 = 写频目标被 cap 压到 current_perf 之下
         let clamp_binds = eff_perf < self.cluster.current_perf;
         if clamp_binds != self.dev_clamp_binds {
             self.dev_clamp_binds = clamp_binds;
@@ -599,10 +516,8 @@ impl CoreGroupWorker {
                 );
             }
         }
-        // [dwell] 豁免判定：触摸 floor 提频的升向写入 / 极低负载立即降频的降向写入
-        // （fast_down 消费制，只作用本次 flush）/ 上次写失败的防篡改补写。热保护
-        // clamp 刻意不豁免（温度毛刺不得绕过滞回直写频率），它是降频方向，经
-        // 降频快路径/非翻摆写入自然生效。
+// [dwell] 豁免判定：触摸 floor 提频升向写 / 极低负载立即降频（fast_down 消费制，只作用本次 flush）/ 防篡改补写。
+// 热 clamp 刻意不豁免（温度毛刺不得绕过滞回直写频率），经快路径/非翻摆写入自然生效。
         let fast_down = std::mem::take(&mut self.cluster.fast_down);
         let exempt = (touch_raised && target_freq > self.cluster.current_freq)
             || (fast_down && target_freq < self.cluster.current_freq)
@@ -638,8 +553,9 @@ impl CoreGroupWorker {
                 self.dev_under,
                 &format!("{:.2}", self.dev_prev_perf),
                 &format!("{:.2}", self.dev_tgt_perf),
-                &self.cluster.current_freq.to_string(), // cur_freq_khz 列：原始 kHz
-                &self.restore.hw_max.to_string(),       // max_freq_khz 列：原始 kHz
+                // main_ 列口径：cur_freq_khz / max_freq_khz 均为原始 kHz
+                &self.cluster.current_freq.to_string(),
+                &self.restore.hw_max.to_string(),
                 self.dev_decision,
                 self.cluster.up_wait,
                 self.cluster.down_wait,
@@ -648,8 +564,7 @@ impl CoreGroupWorker {
             );
         }
 
-        // 日志摘要：每 25 tick 输出一次本 cluster 的 util/perf/freq。
-        // format! 在宏外求值，用 log_enabled! 门控省掉 INFO 级别下的分配。
+// 日志摘要：每 25 tick 输出一次；format! 在宏外求值，log_enabled! 门控省掉 INFO 级别下的分配
         *log_counter += 1;
         if *log_counter % 25 == 0 && log::log_enabled!(log::Level::Debug) {
             debug!(
@@ -709,8 +624,7 @@ impl CoreGroupWorker {
             .filter_map(|s| s.parse().ok())
             .collect();
         if freqs.is_empty() {
-            // scaling_available_frequencies 读不到/空表：按 policy 首核映射核心组，
-            // 回退 soc.yaml [freq_khz] 兜底（只补表，不改取档/floor 对齐逻辑）
+// scaling_available_frequencies 读不到/空表：按 policy 首核映射核心组，回退 soc.yaml [freq_khz] 兜底（只补表，不改取档逻辑）
             match crate::common::soc_freq_fallback_for_policy(pid) {
                 Some(f) => freqs = f,
                 None => return None,
@@ -760,8 +674,7 @@ impl CoreGroupWorker {
             return None;
         }
 
-        // 记录系统原始状态（每个将被接管的 policy 单独记录），release 时恢复。
-        // 必须位于 governor 写入之前，保证 release 能还原所有被接管的 cluster。
+// 记录系统原始状态（每 policy 一份），必须位于 governor 写入之前，保证 release 能还原
         let governor = fs::read_to_string(&gov_path)
             .ok()
             .map(|s| s.trim().to_string())
@@ -783,8 +696,7 @@ impl CoreGroupWorker {
         // 写入 schedutil governor
         let _ = crate::utils::try_write_file(&gov_path, "schedutil");
 
-        // 动态上限接管：min 一次性压到硬件最低并保持（空闲时 schedutil 可降到地板频率），
-        // 之后仅由 write_freq 调整 max。先降 min 再定 max，保证中间态 min <= max。
+// 动态上限接管：min 一次性压到硬件最低并保持，之后仅 write_freq 调 max；先降 min 再定 max，中间态恒 min <= max
         let hw_min = *freqs.first().unwrap();
         if !min_writer.write_value_force(hw_min) {
             warn!(
@@ -889,8 +801,7 @@ impl CoreGroupWorker {
     }
 }
 
-// [worker_handle]
-// Worker 句柄（线程 + 负载通道发送端）
+// [worker_handle] Worker 句柄（线程 + 负载通道发送端）
 
 /// 每个 Worker 的控制句柄：持有负载通道发送端和线程 JoinHandle。
 struct WorkerHandle {
@@ -927,15 +838,13 @@ pub struct CpuLoadGovernor {
     stop: Arc<AtomicBool>,
     /// 触摸升频状态（跨线程共享，Worker 自主读取）
     touch: Arc<AtomicTouchState>,
-    /// 热保护性能上限（f32 bit pattern，1.0 = 无压制）。
-    /// scheduler_ipc 按电池/CPU 温度更新，Worker 每次 flush 读取；跨 init/reload 生命周期保持
+/// 热保护性能上限（f32 bit pattern，1.0 = 无压制）；scheduler_ipc 更新，Worker flush 读取，跨 init/reload 生命周期保持
     thermal_cap: Arc<AtomicU32>,
     /// 压制豁免档（f32 bit pattern）：仅 `clamp_heavy=false` 时生效，ceiling >= 豁免档不钳制
     thermal_free_above: Arc<AtomicU32>,
     /// 是否处于接管状态（至少一个 Worker 启动成功才为 true）
     active: bool,
-    /// 上一 tick 广播给 Worker 的负载缓冲。Worker 消费完即释放（不跨 tick 持有），
-    /// 引用计数归 1 时下一 tick 原地复用，省掉每 tick 一次 Vec 分配
+/// 上一 tick 广播给 Worker 的负载缓冲；引用计数归 1 时下一 tick 原地复用，省每 tick 一次 Vec 分配
     load_buf: Option<Arc<Vec<f32>>>,
 }
 
@@ -955,9 +864,8 @@ impl CpuLoadGovernor {
         }
     }
 
-    /// 下发热保护参数。scheduler_ipc 每 2s 调一次。
-    /// Worker flush 时读这两个原子量：clamp_heavy=true（默认）时所有簇恒压到 cap；
-    /// clamp_heavy=false 时仅 current_perf < 豁免档 free_above 才压，否则不管。
+/// 下发热保护参数（scheduler_ipc 每 2s 调一次）。clamp_heavy=true（默认）时所有簇恒压到 cap；
+/// false 时仅 current_perf < 豁免档 free_above 才压，否则不管。
     pub fn set_thermal_limits(&self, cap: f32, free_above: f32) {
         self.thermal_cap
             .store(cap.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
@@ -970,10 +878,8 @@ impl CpuLoadGovernor {
         self.active
     }
 
-    /// 接管所有 cpufreq policy：停旧 Worker → 快照原始状态 → 写 schedutil →
-    /// 判定某个 policy 属于哪个核心组：cpufreq 的 policy 名就是该簇首个 CPU id，
-    /// 配合 `chiri_core_ranges()` 即可定位，无需额外读 sysfs。落在未知区间时按
-    /// prime 兜底（与 tuned.rs 的判定顺序一致）。仅供 `per_cluster` 覆盖取参数用。
+/// 判定 policy 属于哪个核心组：policy 名即该簇首个 CPU id，配合 `chiri_core_ranges()` 定位，无需读 sysfs；
+/// 落在未知区间按 prime 兜底（与 tuned.rs 判定顺序一致）。仅供 per_cluster 覆盖取参数用。
     fn cluster_name_for_policy(policy_id: i32) -> &'static str {
         let r = crate::common::chiri_core_ranges();
         let id = policy_id.max(0) as usize;
@@ -1047,11 +953,8 @@ impl CpuLoadGovernor {
         self.active = false;
     }
 
-    /// 热切换配置：停止旧 Worker 并用新配置重新创建（与 init_policies 同路径，
-    /// 保证 current_perf 重置到新 perf_init 并立即写频）。
-    ///
-    /// 切换后频率从 perf_init 起步，避免息屏 doze/scenemode 期间 current_perf 掉到 ~0
-    /// 后亮屏恢复原模式时频率要从地板缓慢爬升数秒。
+/// 热切换配置：停旧 Worker 并用新配置重建（与 init_policies 同路径，current_perf 重置到新 perf_init 并立即写频），
+/// 避免息屏期间 current_perf 掉到 ~0 后亮屏恢复时频率从地板缓慢爬升数秒。
     pub fn reload_config(&mut self, gov_cfg: &CpuLoadGovernorConfig) {
         // 保存旧 Worker 的 policy 信息用于重建
         let policy_ids: Vec<i32> = self.workers.iter().map(|w| w.policy_id).collect();
@@ -1108,20 +1011,13 @@ impl CpuLoadGovernor {
         );
     }
 
-    /// 负载事件入口：将 core_utils 广播给所有 Worker（非阻塞，通道满则丢弃本 tick）。
-    /// Worker 线程内自主完成决策 + 写频。
-    ///
-    /// 本 tick 只做**一次** Vec 分配，各 Worker 共享同一个 Arc——此前逐 Worker
-    /// `to_vec()` 是每 tick × 每核心组各分配一次（40ms 特调下 25 tick/s × N 簇）。
-    /// Worker 侧只读该切片（决策输入 + devimp 摘要），不持有跨 tick 引用。
+/// 负载事件入口：core_utils 广播给所有 Worker（非阻塞，通道满丢弃本 tick），Worker 线程内自主决策 + 写频。
+/// 本 tick 只做一次 Vec 分配、各 Worker 共享同一 Arc；Worker 只读该切片，不持有跨 tick 引用。
     pub fn on_load_update(&mut self, core_utils: &[f32]) {
         if !self.active {
             return;
         }
-        // 复用上一 tick 的广播缓冲：take 出来试 `Arc::get_mut`，引用计数归 1
-        // （Worker 已消费完且通道无积压）时原地覆盖，省掉每 tick 一次 Vec 分配；
-        // 长度变化（CPU 热插拔）或仍有 Worker 持有时回退为新建——两种路径
-        // 下 Worker 收到的内容与长度都与原实现完全一致。
+// 复用上一 tick 的广播缓冲：引用计数归 1 且长度一致时原地覆盖，否则新建（两种路径内容与长度与原实现一致）
         let mut shared = match self.load_buf.take() {
             Some(arc) if arc.len() == core_utils.len() => arc,
             _ => Arc::new(core_utils.to_vec()),
@@ -1137,9 +1033,8 @@ impl CpuLoadGovernor {
         self.load_buf = Some(shared);
     }
 
-    /// 触摸事件驱动入口：收到触摸按下事件时更新共享触摸升频状态，
-    /// 并立即唤醒全部 Worker（广播空负载包，recv_timeout 即时返回触发 flush），
-    /// 大核 Worker 在本次 flush 中读取共享状态并提升性能下限，无需等待下一个 160ms tick。
+/// 触摸事件入口：更新共享触摸升频状态，并广播空负载包立即唤醒全部 Worker 触发 flush，
+/// 大核 Worker 本次 flush 即提升性能下限，无需等下一个 160ms tick。
     pub fn on_touch(&mut self) {
         if TOUCH_BOOST_SUSPENDED || !self.active || !self.cfg.touch_boost_enabled {
             return;
@@ -1147,9 +1042,7 @@ impl CpuLoadGovernor {
         let floor = self.compute_touch_boost_floor();
         self.touch
             .set(floor, Duration::from_millis(self.cfg.touch_boost_ms));
-        // 唤醒所有 Worker：空负载包仅触发 flush（大核 Worker 应用触摸升频地板，
-        // 小核 Worker 无地板、写频去重无副作用）。try_send 满时丢弃：通道里
-        // 排队的真实负载数据同样会唤醒 Worker 并应用触摸升频，不丢最终结果。
+// 空负载包仅触发 flush（大核应用触摸地板，小核写频去重无副作用）；try_send 满时丢弃——排队的真实负载同样会应用触摸升频，不丢结果
         for w in &self.workers {
             w.send_load(Arc::new(Vec::new()));
         }
@@ -1198,23 +1091,15 @@ impl CpuLoadGovernor {
         self.restores.clear();
     }
 
-    /// 计算触摸升频的大核性能下限：取各覆盖大核的 Worker 当前频率在可用频率表中
-    /// 向上移动 touch_boost_tiers 档后的性能比，取最大值（一个窗口期内保持不变）。
-    /// 注意：Worker 架构下 Worker 持有 ClusterState，此处无法直接读取当前频率。
-    /// 使用当前配置 perf_init 作为基线估算（触摸升频仅在一帧内的感知差异，实际
-    /// Worker flush 时会读取共享的 touch floor 并 clamp 到正确范围）。
+/// 计算触摸升频的大核性能下限：以 perf_init 为基线（Worker 架构下无法直读 current_freq，Worker 持有 ClusterState）
+/// 加 touch_boost_tiers 档估算，一个窗口期内保持不变；Worker flush 时会读取共享 floor 并 clamp 到正确范围。
     fn compute_touch_boost_floor(&self) -> f32 {
-        // Worker 架构下无法直接读 Worker 的 current_freq（Worker 持有 ClusterState），
-        // 用 perf_init 作为保守估算；Worker 在 flush 时会正确 clamp。
-        // 为精确计算，我们用 cfg.perf_init 作为基线，加上 touch_boost_tiers 档位偏移。
         let base = self
             .cfg
             .perf_init
             .clamp(self.cfg.perf_floor, self.cfg.perf_ceil);
-        // 向上抬 touch_boost_tiers 档：按频率表比例估算
-        // 频率表档位数量通常 15-25 个，tiers 一般 1-2 档
-        // 简单估算：base + tiers * 单档步进（约 1/总档位数）
-        let tier_step = 0.05; // 约 5% 性能比/档（保守估算）
+        // 向上抬 touch_boost_tiers 档：频率表通常 15-25 档，单档 ≈ 0.05 性能比（保守估算）
+        let tier_step = 0.05;
         (base + self.cfg.touch_boost_tiers as f32 * tier_step).min(self.cfg.perf_ceil)
     }
 }
