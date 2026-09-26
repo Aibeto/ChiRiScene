@@ -791,6 +791,9 @@ struct ThreadState {
     prev_home_at: Instant,
     /// 上次 overload_hold 打点时刻（HOLD_LOG_COOLDOWN 节流）
     last_hold_log: Instant,
+    /// 升核目标掩码与该线程允许核交集为空（32 位任务钉到无 AArch32 的核等）：
+    /// 内核恒拒绝（EINVAL），置位后跳过该线程的升核采样与尝试；线程退出随表清理。
+    pin_incapable: bool,
 }
 
 /// 「持续忙」两窗判定（前台 normal_busy 与后台 promote 共用）：
@@ -845,10 +848,11 @@ pub struct AffinityManager {
     /// FG_SCAN_WINDOW 个，避免逐轮全量读 stat
     fg_cursor: usize,
     /// boost 期 top-app uclamp.max 放开（写 100）前的值快照（None = 未接管）。
-    /// FAS 激活与特调（akmode）激活共用：boost 进入时按机型写入的 85 会压低
-    /// EAS 对 top-app 重线程的 capacity 视图（85%×1024≈870 恰在 big 容量内），
-    /// 抑制 prime 放置——FAS/特调都希望 prime 承接负载，且 akmode 用 schedutil
-    /// 动态上限、85 对调频只有负效应，故激活期写 100，退出时还原
+    /// FAS 激活与特调（akmode）激活共用：boost 进入时按机型写入的 85 在真机
+    /// waltgov 路径下主要走 effective_cpu_util 限频钳制（rq max 聚合——同核有
+    /// 高 clamp 任务即失效）；真机选核由 WALT FEEC 接管，85 不进入能量模型。
+    /// FAS/特调都希望 prime 承接负载，且 akmode 用 schedutil 动态上限、
+    /// 85 对调频只有负效应，故激活期写 100，退出时还原
     boost_uclamp_prev: Option<String>,
     /// 实验室静态分组（contingency/babel）：当前模式（None = 未启用）
     lab_static_mode: Option<String>,
@@ -990,6 +994,29 @@ impl AffinityManager {
             }
             if old_kind != KIND_NORMAL {
                 self.pin_background(&little_list);
+            }
+            // 线程面小核降权（预置骨架，默认关闭）：前台组掩码剔除 little——
+            // A510 能效差且 DT 能耗模型低估其真实能耗，EAS 会把 64 位前台线程
+            // 吸进 little；cpuset 收窄后 32 位任务的允许核交集由内核兜底（big
+            // 内 A710 仍在掩码内）。每 2s 纠偏一次（框架可能把核加回）。
+            // TODO: 待内核信息（32 位核位图 / A710 核位）针对化后决定开启与掩码。
+            if cfg.normal_fg_exclude_little && self.sys.cpuset_top_app_exist {
+                self.ensure_snapshot();
+                let target = big_plus_prime_list();
+                let mut writes: Vec<(String, String)> = Vec::new();
+                if let Some(cur) = read_cpuset_cpus(GROUP_TOP_APP) {
+                    if parse_cpu_list(&cur) != parse_cpu_list(&target) {
+                        writes.push((GROUP_TOP_APP.to_string(), target.clone()));
+                    }
+                }
+                if self.sys.cpuset_foreground_exist {
+                    if let Some(cur) = read_cpuset_cpus(GROUP_FOREGROUND) {
+                        if parse_cpu_list(&cur) != parse_cpu_list(&target) {
+                            writes.push((GROUP_FOREGROUND.to_string(), target));
+                        }
+                    }
+                }
+                write_cpuset_cpus_items(&writes);
             }
             self.applied_kind = KIND_NORMAL;
         }
@@ -1443,6 +1470,7 @@ impl AffinityManager {
                                 prev_home: -1,
                                 prev_home_at: now,
                                 last_hold_log: now - HOLD_LOG_COOLDOWN,
+                                pin_incapable: false,
                             });
                             // 归属变化（前台换 PID 后复用 tid，或后台候选被前台扫描
                             // 收养）视作新线程：`!is_fg` 覆盖后者——后台候选虽有真实
@@ -1867,6 +1895,7 @@ impl AffinityManager {
                                         prev_home: -1,
                                         prev_home_at: now,
                                         last_hold_log: now - HOLD_LOG_COOLDOWN,
+                                        pin_incapable: false,
                                     },
                                 );
                                 continue;
@@ -1980,6 +2009,9 @@ impl AffinityManager {
         let pkg = self.fg_cmdline.clone();
         for idx in self.fg_cursor..end {
             let tid = scan_pool[idx];
+            if self.threads.get(&tid).is_some_and(|st| st.pin_incapable) {
+                continue;
+            }
             let Some(s) = sample_one_tid(tid) else {
                 continue;
             };
@@ -2023,6 +2055,12 @@ impl AffinityManager {
                 if res.is_ok() {
                     if let Some(st) = self.threads.get_mut(&tid) {
                         st.group_bind = GroupBind::Busy;
+                    }
+                } else if let Some(libc::EINVAL) = res.as_ref().err().and_then(|e| e.raw_os_error()) {
+                    // 目标掩码与线程允许核交集为空（如 32 位任务钉到无 AArch32 的核）：
+                    // 内核不会放行，重试纯开销，标记后跳过后续尝试
+                    if let Some(st) = self.threads.get_mut(&tid) {
+                        st.pin_incapable = true;
                     }
                 }
             } else if bound && low >= DEMOTE_STREAK {
@@ -2319,10 +2357,11 @@ impl AffinityManager {
 
     /// boost 期放开 top-app uclamp.max 为 100（fas_affinity_hook 与特调激活路径调用）。
     /// boost 进入时 apply_uclamp_max 已按机型配置写入（8475/8550=85），
-    /// 该钳制压低 EAS 对 top-app 重线程的 capacity 视图（85%×1024≈870
-    /// 恰在 big 容量内），抑制 prime 放置——与 FAS/特调让 prime 承接负载的目标
-    /// 相悖；激活期 min=max 锁频（FAS）或 schedutil 动态上限（akmode）都不需要
-    /// 85 的钳制，仅剩放置负效应，故激活期写 100。首次激活快照当前值，去激活还原。
+    /// 该钳制在真机 waltgov 路径下主要走 effective_cpu_util 限频（rq max 聚合，
+    /// 同核有高 clamp 任务即失效）；真机选核由 WALT FEEC 接管，85 不进入
+    /// 能量模型、不影响放置。激活期 min=max 锁频（FAS）或 schedutil 动态上限
+    /// （akmode）都不需要 85 的限频钳制，故激活期写 100。首次激活快照当前值，
+    /// 去激活还原。
     /// 时序保证：激活调用点均在 boost 进入（写 85）之后；去激活时若 boost
     /// 已退出则跳过写入（restore_uclamp_max 链已归位到 boost 前原值，
     /// 避免把 boost 配置值泄漏到 normal）。息屏释放路径不调本方法（无

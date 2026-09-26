@@ -212,7 +212,6 @@ system-tweaks-restore = [Tweaks] DOWN halt: one-shot system tweaks restored ({ $
 system-tweaks-skipped-down = [Tweaks] one-shot system tweaks skipped during DOWN halt
 
 # --- FAS ---
-fas-freq-mismatch = [FAS] P{ $pid }: freq mismatch! expected { $min }-{ $max }, actual { $actual } -> emergency reapply
 fas-auto-capacity = [FAS] auto capacity weight:
 fas-auto-capacity-core = [FAS]   P{ $pid }: cap={ $cap } -> w={ $weight }
 fas-policy-init = [FAS] P{ $pid } { $min }-{ $max } MHz | w={ $weight }
@@ -231,6 +230,10 @@ fas-no-profile = [FAS] no per-app profile for '{ $pkg }', using global gears { $
 fas-pid-reloaded = [FAS] PID coefficients hot-reloaded: Kp={ $kp } Ki={ $ki } Kd={ $kd }
 fas-rules-reloaded = [FAS] rules hot-reloaded (margin={ $margin }, floor={ $floor }, ceil={ $ceil }, profiles={ $profiles })
 fas-policy-writer-invalid = [FAS] P{ $pid } policy writer invalid (max_valid: { $max_valid }, min_valid: { $min_valid }), skipping.
+fas-qos-clamp-enter = [FAS] P{ $pid } locked freq clamped by QoS (wrote { $wrote }kHz, read { $read }kHz, dcvsh_limit={ $dcvsh })
+fas-qos-clamp-exit = [FAS] P{ $pid } QoS clamp released after { $held }s (max restored to { $freq }kHz)
+fas-qos-clamp-long = [FAS] P{ $pid } QoS clamped for { $held }s (wrote { $wrote }kHz, read { $read }kHz), thermal may be pinned
+fas-freq-tamper = [FAS] P{ $pid } locked freq tampered (wrote { $wrote }kHz, read { $read }kHz) -> re-applying
 
 # --- FAS (whitelist / scheduler integration) ---
 main-fas-whitelist-exported = [Main] exported { $count } FAS whitelist entries to fas_whitelist.yaml
@@ -299,6 +302,11 @@ corectl-restore-pending = [CoreCtl] { $count } cores failed to come back online,
 corectl-self-pinned = [CoreCtl] scheduler service pinned to dedicated little core cpu{ $core }
 corectl-unavailable = [CoreCtl] no usable core_ctl node found, takeover skipped
 corectl-write-failed = [CoreCtl] core_ctl write failed: { $path }
+corectl-node-missing = [CoreCtl] core_ctl node missing/unreadable: { $path } (cluster falls back to per-core offline)
+corectl-vendor-override = [CoreCtl] core_ctl node overridden by vendor (non-zero read-back): { $path }; not fighting vendor, restored from snapshot on exit
+corectl-verify-failed = [CoreCtl] core_ctl node read-back failed (write issued, accounted as applied): { $path }
+corectl-scenemode-halt = [CoreCtl] scenemode prime cluster halted via core_ctl max_cpus
+clampev-node-missing = [Diag] clamp-evidence node unavailable: { $key } ({ $path })
 
 # --- Notify (ongoing status notification) ---
 # The daemon builds the text (src/notify.rs) and posts/updates it via `cmd notification post`

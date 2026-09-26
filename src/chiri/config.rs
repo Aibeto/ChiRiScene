@@ -910,6 +910,20 @@ pub struct ThermalGuardConfig {
     /// 设太小会在阈值附近反复触发/解除，频率抖动
     #[serde(default = "d_thermal_hysteresis")]
     pub hysteresis_c: f32,
+    /// CPU 温度 thermal zone type 匹配名单（对 /sys/class/thermal 的 zone type
+    /// 做 contains 匹配，见 utils::find_cpu_temp_path）。默认 = 内置混合名单
+    /// （高通 soc_max/cpuss + MTK mtktscpu/cpu-1-/cpu-0-0-usr），**所有 SoC 的
+    /// feature.yaml 都不必写、行为不变**；个别 SoC 需增删探测节点时用本字段覆盖
+    /// （per-SoC 外挂，不影响其它平台）。Config::load 时同步到 utils 静态缓存。
+    ///
+    /// 语义：`soc_max` 是真机 DTB 的 virtual-sensor 聚合温区（多传感器取 max，
+    /// 保守值、非纯 CPU 温度）；`cpuss*` 是 cluster 级 tsens 单传感器
+    /// （cpuss0-3），作 soc_max 缺失时的回退。匹配按名单序分层扫描（外层
+    /// 名单项、内层 zones，第一个命中项胜出，utils::find_cpu_temp_path），
+    /// 保证 soc_max 优先于 cpuss。依据内核分析
+    /// `.cursor/docs/kernel-analysis/04-thermal.md`。
+    #[serde(default = "crate::utils::default_cpu_temp_zone_types")]
+    pub cpu_temp_zone_types: Vec<String>,
 }
 
 // Thermal 缺省值：feature.yaml 省略该段时回退到此处
@@ -950,6 +964,7 @@ impl Default for ThermalGuardConfig {
             hard_perf_cap: d_thermal_hard_cap(),
             free_above: d_thermal_free_above(),
             hysteresis_c: d_thermal_hysteresis(),
+            cpu_temp_zone_types: crate::utils::default_cpu_temp_zone_types(),
         }
     }
 }
@@ -1044,6 +1059,13 @@ pub struct AffinityConfig {
     /// 等可感知场景），保守跳过；节点缺失/写入无效时静默跳过。
     #[serde(default = "d_aff_bg_uclamp_max")]
     pub background_uclamp_max_pct: u32,
+    /// normal（非 boost）模式下把 top-app/foreground 组掩码剔除 little：
+    /// A510 能效差且 DT 能耗模型低估其真实能耗，EAS 会把 64 位前台线程吸进
+    /// little；cpuset 收窄后 32 位任务的允许核交集由内核兜底（big 内 A710 仍在
+    /// 掩码内）。每 2s 周期纠偏（框架可能把核加回）。默认 false = 保持系统布局。
+    /// TODO: 待内核信息（32 位核位图 / A710 核位）针对化后决定开启。
+    #[serde(default)]
+    pub normal_fg_exclude_little: bool,
 }
 
 fn d_aff_uclamp_min() -> u32 {
@@ -1064,6 +1086,7 @@ impl Default for AffinityConfig {
             top_app_uclamp_max_pct: d_aff_uclamp_max(),
             pin_foreground_threads: true,
             background_uclamp_max_pct: d_aff_bg_uclamp_max(),
+            normal_fg_exclude_little: false,
         }
     }
 }
@@ -1316,6 +1339,9 @@ impl Config {
         config.merge_scenemode();
         config.meta.normalize();
         config.thermal.normalize();
+        // CPU 温度 zone 名单同步到探测层（utils [temp_probe]）。名单来自编译期嵌入
+        // 的 feature.yaml（进程内恒定），set 仅首次生效，热重载重复调用无副作用。
+        crate::utils::set_cpu_temp_zone_types(config.thermal.cpu_temp_zone_types.clone());
         config.affinity.normalize();
         // PowerBase 参数同样在加载处钳制（各段统一口径，别等 init 时才钳）
         config.powerbase.normalize();

@@ -59,7 +59,7 @@ todos:
 
 ## 核心交付物
 
-11 项按风险由低到高分批落地，每项单独一次 `cargo +nightly check -p chiri --target aarch64-linux-android` 通过后再进下一项；全部完成后报告 file 级改动清单，并按仓库约定同步 `docs/agents/` 与 `.codebuddy/memory/` 的相关口径。
+11 项按风险由低到高分批落地，每项单独一次 `cargo +nightly check -p chiri --target aarch64-linux-android` 通过后再进下一项；全部完成后报告 file 级改动清单，并按仓库约定同步 `agentsdocs/` 与 `.codebuddy/memory/` 的相关口径。
 
 ## 技术栈与改动面
 
@@ -123,7 +123,7 @@ yumi-ebpf/
 - **穷举调用点禁用 `head_limit`**（曾截断漏点）；改签名类（B1、A5、C2 的 Lazy 迁移）改前先全仓搜引用。
 - **K1/K2 盲区兜底**：本机 `cargo check` 覆盖不到 `yumi-ebpf`；提交前必须逐行对照「旧 map 语义 → 新 CoreState 字段」的一一对应关系，并在 CI 构建通过后才能认为前半段落地；真机侧用同一场景录制 status.csv 对比逐核 util 是否一致。
 - **数据面自查**：每项改完确认「不产生新的条件分支、不写新的 sysfs 值、不改变任何落盘文本」；A2 的闭包不得跨锁调用 `get_current_package`。
-- 提交前 `git status` 核对足迹，改动清单按文件级汇报；完成后同步 `docs/agents/`（若涉及架构/契约变更）与当日 memory 日志。
+- 提交前 `git status` 核对足迹，改动清单按文件级汇报；完成后同步 `agentsdocs/`（若涉及架构/契约变更）与当日 memory 日志。
 
 ## 将使用的扩展
 

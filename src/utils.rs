@@ -215,6 +215,48 @@ pub fn read_file_content(path: &str) -> Result<String> {
 }
 
 // [temp_probe]
+/// CPU 温度 zone type 匹配名单的内置默认：高通（soc_max / cpuss）与 MTK
+/// （mtktscpu / cpu-1- / cpu-0-0-usr）混合。per-SoC 外挂：feature.yaml
+/// `Thermal.cpu_temp_zone_types` 可覆盖（默认所有 SoC 都不写这份名单，
+/// 即用内置默认，行为不变）。
+///
+/// 名单语义（依据内核分析报告 `.cursor/docs/kernel-analysis/04-thermal.md`）：
+/// - `soc_max` = virtual-sensor 聚合温区（多传感器取 max，可能含 GPU/CDSP
+///   等非 CPU 传感器），作 cpu_temp 偏保守、**非纯 CPU 温度**；
+/// - `cpuss` = cluster 级 tsens 单传感器（真机回退命名 cpuss0-3），soc_max
+///   缺失时按子串匹配命中。匹配按名单序分层扫描（外层名单项、内层 zones，
+///   见 find_cpu_temp_path），soc_max 优先。
+///
+/// 同源约束：此函数是唯一来源，chiri/config.rs 的
+/// `ThermalGuardConfig.cpu_temp_zone_types` serde default 直接引用本函数，
+/// 两处名单天然一致，改名单只改这里。
+pub(crate) fn default_cpu_temp_zone_types() -> Vec<String> {
+    ["soc_max", "cpuss", "mtktscpu", "cpu-1-", "cpu-0-0-usr"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// 运行时生效的 zone type 名单（chiri Config::load 从 Thermal 配置同步；
+/// 配置加载前/加载失败用内置默认，与历史行为一致。名单来自编译期嵌入的
+/// feature.yaml，进程内恒定，set 仅首次生效、热重载重复调用无副作用）。
+static CPU_TEMP_ZONE_TYPES: OnceLock<Vec<String>> = OnceLock::new();
+
+/// Config::load 同步热保护配置里的 zone 名单（utils 无法直接访问 chiri Config，
+/// 走「加载时 set + 静态缓存」范式）。OnceLock 首胜语义在此是有意的：
+/// 名单来自编译期嵌入的 feature.yaml，进程内恒定，热重载重复 set 被静默忽略。
+/// 若未来名单改为磁盘可调，须换成 RwLock/Mutex 存量真可重设。
+pub fn set_cpu_temp_zone_types(types: Vec<String>) {
+    let _ = CPU_TEMP_ZONE_TYPES.set(types);
+}
+
+fn cpu_temp_zone_types() -> &'static [String] {
+    static DEFAULT: OnceLock<Vec<String>> = OnceLock::new();
+    CPU_TEMP_ZONE_TYPES
+        .get()
+        .unwrap_or_else(|| DEFAULT.get_or_init(default_cpu_temp_zone_types))
+}
+
 // 查找 CPU 温度传感器路径
 pub fn find_cpu_temp_path() -> Result<String> {
     let thermal_path = "/sys/class/thermal";
@@ -224,26 +266,32 @@ pub fn find_cpu_temp_path() -> Result<String> {
         return Err(anyhow::anyhow!("Thermal directory not found"));
     }
 
-    for entry in fs::read_dir(thermal_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
+    // [名单序] 分层扫描保证名单序优先：外层遍历名单项（soc_max 优先）、内层
+    // 遍历 zones，第一个命中项胜出——此前按 zone 下标遍历 + any(contains)
+    // 命中即取，cpuss 类 zone 下标更小时会反向命中，与「soc_max 缺失才回退
+    // cpuss」语义相反。zones 数量小（<30），名单项 × zones 双循环无性能顾虑
+    for item in cpu_temp_zone_types() {
+        for entry in fs::read_dir(thermal_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
             if let Some(dir_name) = path.file_name().and_then(|s| s.to_str()) {
-                if dir_name.starts_with("thermal_zone") {
-                    let type_path = path.join("type");
-                    // 修复 E0532 模式匹配错误: 直接使用 if let Ok(...)
-                    if let Ok(type_content) =
-                        read_file_content(type_path.to_str().unwrap_or_default())
-                    {
-                        if type_content.contains("soc_max")
-                            || type_content.contains("mtktscpu")
-                            || type_content.contains("cpu-1-")
-                            || type_content.contains("cpu-0-0-usr")
-                        {
-                            let temp_path = path.join("temp");
-                            if temp_path.exists() {
-                                return Ok(temp_path.to_str().unwrap().to_string());
-                            }
+                if !dir_name.starts_with("thermal_zone") {
+                    continue;
+                }
+                let type_path = path.join("type");
+                // 修复 E0532 模式匹配错误: 直接使用 if let Ok(...)
+                if let Ok(type_content) =
+                    read_file_content(type_path.to_str().unwrap_or_default())
+                {
+                    // 名单来自 Thermal.cpu_temp_zone_types（Config::load 同步，
+                    // 默认 = 内置高通/MTK 混合名单）；分层扫描保证名单序优先
+                    if type_content.contains(item.as_str()) {
+                        let temp_path = path.join("temp");
+                        if temp_path.exists() {
+                            return Ok(temp_path.to_str().unwrap().to_string());
                         }
                     }
                 }

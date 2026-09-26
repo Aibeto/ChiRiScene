@@ -7,7 +7,7 @@ alwaysApply: false
 # 事件驱动与值未变不写
 
 性能敏感路径一律推送事件；固定节拍里的幂等重写、空轮询、盲等待都是错的。
-原则全文见 `docs/agents/02-convention.md` 事件循环低开销条。
+原则全文见 `agentsdocs/02-convention.md` 事件循环低开销条。
 
 ## 硬规则
 
@@ -23,12 +23,12 @@ alwaysApply: false
 
 ## 今天的实例（2026-09-24，均为已落地改动）
 
-| [BAD] 旧行为 | [GOOD] 现行为 |
-|---|---|
-| `pid_watcher` 线程 500ms 轮询原子量广播前台 PID | `set_current_package` 生效点就地 `pid_tx.send`，稳态唤醒 2 次/s -> 0 |
-| fps 待机每 500ms 查 `AtomicBool` | `monitor::FasSignal`（Mutex 判谓词 + Condvar），只在 FAS 状态跃迁时唤醒 |
-| bg uclamp 每秒恒写同值（~1 次/s） | 同值不写、60s 强制再断言，`uclamp` 帧只在真写时产生 |
-| `current_mode.chr` 5s 无条件重写（5 syscall） | ModeFile 记账 + 磁盘内容比对，一致即 1 read 跳过 |
+| [BAD] 旧行为                                    | [GOOD] 现行为                                                           |
+| ----------------------------------------------- | ----------------------------------------------------------------------- |
+| `pid_watcher` 线程 500ms 轮询原子量广播前台 PID | `set_current_package` 生效点就地 `pid_tx.send`，稳态唤醒 2 次/s -> 0    |
+| fps 待机每 500ms 查 `AtomicBool`                | `monitor::FasSignal`（Mutex 判谓词 + Condvar），只在 FAS 状态跃迁时唤醒 |
+| bg uclamp 每秒恒写同值（~1 次/s）               | 同值不写、60s 强制再断言，`uclamp` 帧只在真写时产生                     |
+| `current_mode.chr` 5s 无条件重写（5 syscall）   | ModeFile 记账 + 磁盘内容比对，一致即 1 read 跳过                        |
 
 ```rust
 // [GOOD] store 与 notify 同锁（FasSignal::set 形态）

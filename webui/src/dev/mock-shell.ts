@@ -139,7 +139,7 @@ function fakeStatusCsv(): string {
 }
 
 /** aff_ 线程流样例（2026-09-22 拆分）：3 行 @A 动作帧（含一条失败观测 e3）+ 一帧 @S
- *  快照（帧头 ntop/nfg 计数与随后 p/t 行数严格一致）。帧格式见 docs/agents/02-convention.md。 */
+ *  快照（帧头 ntop/nfg 计数与随后 p/t 行数严格一致）。帧格式见 agentsdocs/02-convention.md。 */
 function fakeAffLog(): string {
   return [
     '# ts-column=local format_now',

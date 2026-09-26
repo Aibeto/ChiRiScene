@@ -52,7 +52,7 @@ isProject: false
 
 ### 批次 D（主线收口，不派子代理）
 
-- 按并行所有权规则：三批并行，交付时各自报告改动面与需同步的口径；`docs/agents/`、`.cursor/memory/MEMORY.md` 只由主线统一更新。
+- 按并行所有权规则：三批并行，交付时各自报告改动面与需同步的口径；`agentsdocs/`、`.cursor/memory/MEMORY.md` 只由主线统一更新。
 - 验证（终端 ≤3 次，一个 scratch 文件，收尾删除）：
   1. `npm run type-check` + `npm run test`（vitest 全量）+ `npm run build`，输出落盘一个 scratch 后 Read 尾部核对；
   2. `npm run dev` 浏览器走查四屏（mock-shell）确认刷新节奏与显示不变；

@@ -212,7 +212,6 @@ system-tweaks-restore = [Tweaks] DOWN 停摆：一次性系统调整已还原（
 system-tweaks-skipped-down = [Tweaks] DOWN 停摆期间跳过一次性系统调整下发
 
 # --- FAS ---
-fas-freq-mismatch = [FAS] P{ $pid }: 频率不匹配！预期 { $min }-{ $max }，实际 { $actual } -> 正在紧急重写
 fas-auto-capacity = [FAS] 自动计算算力权重:
 fas-auto-capacity-core = [FAS]   P{ $pid }: 算力={ $cap } -> 权重={ $weight }
 fas-policy-init = [FAS] P{ $pid } { $min }-{ $max } MHz | 权重={ $weight }
@@ -231,6 +230,10 @@ fas-no-profile = [FAS] 未找到 '{ $pkg }' 的专属配置，使用全局档位
 fas-pid-reloaded = [FAS] PID 系数热重载: Kp={ $kp } Ki={ $ki } Kd={ $kd }
 fas-rules-reloaded = [FAS] 规则已热重载 (冗余={ $margin }, 地板={ $floor }, 天花板={ $ceil }, 配置数={ $profiles })
 fas-policy-writer-invalid = [FAS] P{ $pid } 策略写入器无效 (max_valid: { $max_valid }, min_valid: { $min_valid })，已跳过。
+fas-qos-clamp-enter = [FAS] P{ $pid } 锁频被 QoS 钳制（写 { $wrote }kHz，读回 { $read }kHz，dcvsh_limit={ $dcvsh }）
+fas-qos-clamp-exit = [FAS] P{ $pid } QoS 钳制解除（持续 { $held }s，max 恢复 { $freq }kHz）
+fas-qos-clamp-long = [FAS] P{ $pid } QoS 钳制已持续 { $held }s（写 { $wrote }kHz，读回 { $read }kHz），热控疑似长期钳死锁频
+fas-freq-tamper = [FAS] P{ $pid } 锁频被异常改写（写 { $wrote }kHz，读回 { $read }kHz）-> 重新收敛
 
 # --- FAS（白名单/调度集成）---
 main-fas-whitelist-exported = [Main] 已导出 { $count } 个 FAS 白名单条目到 fas_whitelist.yaml
@@ -299,6 +302,11 @@ corectl-restore-pending = [CoreCtl] { $count } 个核心恢复上线失败，将
 corectl-self-pinned = [CoreCtl] 调度服务已钉到专用小核 cpu{ $core }
 corectl-unavailable = [CoreCtl] 未发现可用的 core_ctl 节点，接管跳过
 corectl-write-failed = [CoreCtl] core_ctl 写入失败: { $path }
+corectl-node-missing = [CoreCtl] core_ctl 节点缺失/不可读: { $path }（该簇降级逐核 offline 兜底）
+corectl-vendor-override = [CoreCtl] core_ctl 节点被厂商改写（写后读回非 0）: { $path }，不与厂商拉锯，退出按快照恢复
+corectl-verify-failed = [CoreCtl] core_ctl 节点读回失败（写已发出，按已生效记账）: { $path }
+corectl-scenemode-halt = [CoreCtl] scenemode prime 簇已经 core_ctl max_cpus 整簇 halt
+clampev-node-missing = [Diag] clamp-evidence 佐证节点不可用: { $key } ({ $path })
 
 # --- Notify（常驻状态通知）---
 # 通知内容由 daemon 组装（src/notify.rs），通过 `cmd notification post` 投递/更新

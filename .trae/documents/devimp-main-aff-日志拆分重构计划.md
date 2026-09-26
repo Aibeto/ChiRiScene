@@ -99,7 +99,7 @@
 3. `paths.ts:47` `devimpDir:'devimp'` 不动（目录名保留）；LogsView devimp Panel 的 i18n 标题文案（zh/en）改为「诊断日志（main* 决策 / aff* 线程）」口径。
 4. webui/README.md:58 导出口径修正（`.tar.xz`→`.tar.gz`、`devimp_`→`logd_`）。
 
-### G. 文档同步（docs/agents + 记忆，按仓库惯例）
+### G. 文档同步（agentsdocs + 记忆，按仓库惯例）
 
 1. `02-convention.md` :41（开发诊断日志条重写为双文件+帧格式）、:43（ts 口径）、:45/:47（tgtop 条删除、新增 aff 帧条）、:49（「毫秒时间戳」→「MMDD-HHmmss 秒级+同秒 -N」）、:27（锁序约定扩两写入器）。
 2. `03-chiri.md` :165（轮次改 4）、:77（max*util 列说明保持）、frozen 条(:137) 补 aff* 同停。

@@ -13,7 +13,7 @@ todos:
     content: Phase 3：逐文件审计 sleep 轮询，有事件源的改 uevent/事件驱动，其余核实间隔
     status: completed
   - id: p4-misc
-    content: Phase 4：profile 微调（codegen-units=1）+ 白名单精确条目 HashMap + 同步 docs/agents 与 memory 日志
+    content: Phase 4：profile 微调（codegen-units=1）+ 白名单精确条目 HashMap + 同步 agentsdocs 与 memory 日志
     status: completed
 ---
 
@@ -26,7 +26,7 @@ todos:
 发现：每 tick 大量 `fs::read_to_string` + `format!` 现拼路径（如 [src/chiri/cpu_load_governor.rs](../../src/chiri/cpu_load_governor.rs) :759 防篡改重读、[src/chiri/affinity.rs](../../src/chiri/affinity.rs) :833 uclamp 读、[src/chiri/core_ctl.rs](../../src/chiri/core_ctl.rs) :422/:474），每次都是路径分配 + String 分配 + open/close。
 
 - 在 [src/utils.rs](../../src/utils.rs) 的 [fast_writer] 区块旁新增 `FastReader`：镜像 FastWriter 的 keep-open File + seek(0) 读入可复用 buf，提供 `read_u32() -> Option<u32>`（trim+parse 不经 String 分配）；只读**稳定路径的整型节点**用它。
-- keep-open 只收常驻节点（cpufreq policy 的 scaling_*、uclamp 等——policy 节点不随 core_ctl 核心上下线消失）；per-pid /proc 读不入 keep-open（进程退出节点即失效），保持每次 open。读错误丢弃 fd、下次重开。
+- keep-open 只收常驻节点（cpufreq policy 的 scaling\_\*、uclamp 等——policy 节点不随 core_ctl 核心上下线消失）；per-pid /proc 读不入 keep-open（进程退出节点即失效），保持每次 open。读错误丢弃 fd、下次重开。
 - 读取三态（正常空值 / 合法缺失 / 读取失败）语义不变；:759 防篡改重读是内容比较点，保留原文比较、不换 `read_u32` 归一化。
 - 高频读节点的路径字符串提升到初始化期缓存（对齐 FastWriter 已有做法），删除 tick 路径上的 `format!`。
 - 实际落点（2026-09-24 执行核正）：core_ctl tick 读、affinity uclamp 快照读。计划原列三处均不成立、未改：CLG「:759 防篡改重读」实为加载期 `read_affected_cpus` 冷路径（flush 只写不读，防篡改是盲重写）；affinity uclamp 实为接管快照（一次性，非 tick）；cpu_monitor 无稳定节点文件读（负载全来自 eBPF map，仅剩 per-pid 读）。
@@ -55,7 +55,7 @@ todos:
 
 - [Cargo.toml](../../Cargo.toml) [profile.release] 的 `codegen-units = 1` **本已存在**（:64），无需补；opt-level 维持 "z"。**不加** `panic = "abort"`（已确认未加）：`spawn_guarded` 的 `catch_unwind` 与看门狗重启契约依赖 unwind。
 - [src/common.rs](../../src/common.rs) :393 起的白名单精确条目改 HashMap 查找（regex 条目已一次编译、保持线性；收益小，顺手做）。
-- 按仓库规约同步 `docs/agents/` 与 `.cursor/memory/` 当日日志。
+- 按仓库规约同步 `agentsdocs/` 与 `.cursor/memory/` 当日日志。
 
 ## 验证口径
 

@@ -120,6 +120,9 @@
 - **CLG 热压制语义（2026-09-23 修）**：只钳写频、**不回写 `current_perf`**（回写会让状态卡死在 cap，「持续高负载涨过豁免档」不成立）；生效区间 `(soft_perf_cap, free_above)`，`>= free_above` 不钳制。**豁免档必须严格大于 soft_perf_cap**——8550 曾 free 0.80 被 normalize 抬到 0.85 = 压制带为空、41℃ 软限档全程空转（cap=85 仍写 hw_max），已改 0.95（normalize 同日收紧为「过低或相等 → soft+0.10」）。热压制只作用于 CLG，tuned（playback/akmode）不参与。
 - **FAS「接管了但没帧」= uprobe 帧源没挂上，不是策略问题（2026-09-25 定位）**：status.csv 有 `mode=fas` 行而 `fps` 列全空、daemon.log 反复刷 `PID 切换失败: error resolving symbol` → libgui 的 `Surface::queueBuffer` mangled 名随 Android 版本变化，硬编码短/长签名在部分机型全miss。表现：FAS 档位永不调整，snap 侧 fas 段 `cur==max` 整段恒定、governor=performance，功耗显著高于基线。判读顺序：daemon.log 的 PID 切换失败 → status.csv 的 fps 列 → snap 的 cur/max。修复方向在 `monitor/fps_monitor.rs`（dynsym 扫描取变体 + 失败退避），判据见代码注释。
 
+- **8550 簇拓扑与 OPP 口径（2026-09-26 上游 DT 核实）**：little=CPU0-2/policy0、big=CPU3-6/policy3、prime=CPU7/policy7（勿按 8475 的 0-3/4-6/policy4 理解）；OPP 阶梯与真机逐档吻合，表在 `.codebuddy/docs/2026-09-26-sm8550-opp-ladder.md`。真机 capacity=280/855/1024，与 mainline DT（326/693/1024）不符，算容量只认 `cpu_capacity`。内核对 scaling_max 写入向下 clamp 到档：CLG/tuned/PowerBase 取档已改 floor 对齐（≤目标的最近档）后再写，写非档位值的「假性频率不匹配」不再产生。真机 FAS 算力 280/855/1024 来自厂商 DT 覆盖。
+- **8550 的 A510 是 AArch64+AArch32 双支持（r1），不是「只能跑 32 位」**：A715/X3 才移除了 AArch32，32 位任务可跑 little + big 内核；A510 为支持 AArch32 放弃 merged-core 省电形态、能效差，而 DT 能耗模型（coeff 251）低估其真实能耗 → EAS 把 64 位工作线程吸进 little 贴顶（2026-09-26 日志实证 DefaultDispatch/ThreadPoolForeg 等高频出现在 cpu0-2）。对策（2026-09-26）：default 段 `per_cluster.little.up_threshold: 0.95` 抬门槛抑制贴顶——**不砍上限**，「CLG 随时可达最高频」硬口径不可用 perf_ceil/headroom<1 破坏（曾试 little 封顶 0.85，与规则冲突已撤销）；另 affinity 升核 pin EINVAL（目标掩码与线程 allowed 交集空，如 32 位任务钉 A715/X3）时标记 `pin_incapable` 跳过后续尝试。
+
 ## 电池读数（遥测）
 
 - 默认标准节点 `/sys/class/power_supply/battery/{current_now,voltage_now}`（ABI µV/µA）；`oplus_chg` 开时优先 `bcc_parms`（0 基下标 6=电芯0电压、8=电流、11=电芯1电压），存在**且有效**才只认它，无效回退标准节点；私有节点 60s 复查存在性。
@@ -156,6 +159,6 @@
 - **devimp 日志包分析入口 = 命令 `/devimp-log-analysis`（2026-09-23 用户定，同日由 skill 转入）**：正文在 `.cursor/commands/devimp-log-analysis.md`（唯一副本，勿再建 skill 或镜像），聚合脚本在 `scripts/devimp-analyze.py`（git mv 自 skill 目录，用法 `python scripts\devimp-analyze.py <解压目录>`）。`.agents/skills/` 下已无项目 skill，旧「skill 位置/镜像」约定随之作废。
 - 评估与准备 ≠ 批准开工。没说「开始改」就不建不改源码；改动前 `git status` 核对足迹，汇报给文件级清单。
 - **只改任务范围内的东西，不「顺手修」**：未提交改动、被注释的代码可能是用户 WIP。检查报错若指向用户正在编辑的文件，只报告不动手。汇报区分「我改的」与「工作区里已有的」。
-- **Yumi 权重归零（2026-09-20 用户声明）**：性能优化及同类工作中，`src/scheduler/` 与 Yumi 设备兼容**不再作为约束**，改动即使波及也可进行（通常只做类型适配，不主动改逻辑）。2026-09-22 Yumi 调度本体已删，`docs/agents/` 口径已同步，本条冲突消解。
+- **Yumi 权重归零（2026-09-20 用户声明）**：性能优化及同类工作中，`src/scheduler/` 与 Yumi 设备兼容**不再作为约束**，改动即使波及也可进行（通常只做类型适配，不主动改逻辑）。2026-09-22 Yumi 调度本体已删，`agentsdocs/` 口径已同步，本条冲突消解。
 - **注释口径（2026-09-23 用户定）**：注释只写「这是什么 + 注意点什么」，不写实测数据、日期溯源、「因为…导致…」的因果叙述；待验证/待办一律写**标准 `TODO: ` 前缀**（不放日期括注，避免 IDE 的 TODO→Problems 扩展正则不匹配），关键数字放进 TODO 文案里。
 - 常驻技能 **humanizer-zh** 与 **token-efficient-coding**：中文去 AI 腔；Rust 文件头 `//! x.rs - 区块索引: [a] [b]`（ASCII 方括号）；先读头部再定位、单任务 Read ≤200 行、Edit 局部改禁整文件重写、工具调用并行、shell 输出过滤、回复精简给 diff。

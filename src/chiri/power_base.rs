@@ -55,7 +55,10 @@ struct BasePolicy {
 }
 
 impl BasePolicy {
-    /// 性能比 → 频率档位（硬件最低 + 跨度 × 比例，就近取不低于它的档）。
+    /// 性能比 → 频率档位（硬件最低 + 跨度 × 比例，取 ≤ 目标的最大档，floor 对齐）。
+    /// PowerBase 的 perf 是功耗预算内允许的上限，落点不得高于它——ceil 会突破
+    /// 预算，且目标落在两档之间时内核本就把 max 向下 clamp，先对齐再写才能
+    /// 账实一致、同值不落盘的去重才有效。
     /// 挂在 policy 上而不是 PowerBase 上：tick 里要在 `&mut self.policies` 的循环内
     /// 调用它，取 &self 会与那个可变借用冲突。
     fn freq_for(&self, perf: f32) -> u32 {
@@ -63,9 +66,10 @@ impl BasePolicy {
         let want = want as u32;
         self.freqs
             .iter()
+            .rev()
             .copied()
-            .find(|f| *f >= want)
-            .unwrap_or(self.hw_max)
+            .find(|f| *f <= want)
+            .unwrap_or(self.hw_min)
     }
 }
 
@@ -149,7 +153,12 @@ impl PowerBase {
                 .filter_map(|s| s.parse().ok())
                 .collect();
             if freqs.is_empty() {
-                continue;
+                // scaling_available_frequencies 读不到/空表：按 policy 首核映射核心组，
+                // 回退 soc.yaml [freq_khz] 兜底（只补表，不改取档/floor 对齐逻辑）
+                match crate::common::soc_freq_fallback_for_policy(pid) {
+                    Some(f) => freqs = f,
+                    None => continue,
+                }
             }
             freqs.sort_unstable();
             freqs.dedup();

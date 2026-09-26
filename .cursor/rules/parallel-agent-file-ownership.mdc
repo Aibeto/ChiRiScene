@@ -13,7 +13,7 @@ alwaysApply: false
 1. 按**文件所有权**切分任务：同一文件同一时间只归一个子代理。分派时明确
    「可改清单 + 禁改清单」，禁改清单写进任务描述，不是口头约定。
 2. 跨任务的契约数字、命令口径、架构约定变更由**主线统一**同步到
-   `docs/agents/` 与本环境 `.cursor/memory/MEMORY.md`；子代理不各自改这两个地方，
+   `agentsdocs/` 与本环境 `.cursor/memory/MEMORY.md`；子代理不各自改这两个地方，
    只在交付里说明「哪些口径需要同步」，避免并行写入口径分叉。
 3. 具体改动经过只写本环境当日日志（`.cursor/memory/YYYY-MM-DD.md`），主线汇总。
 4. 收口必做全局自证：所有批次完成后 mtime 前移 + `cargo check`
@@ -27,6 +27,6 @@ alwaysApply: false
 [BAD] 两个子代理同时改 logger.rs（一个改归档、一个改零写入），后写覆盖先写。
 [GOOD] logger.rs 归属零写入任务独占；归档语义任务只出报告与文档同步项，冲突面归零。
 
-[BAD] 每个子代理各自更新 docs/agents/02-convention.md 的契约数字。
+[BAD] 每个子代理各自更新 agentsdocs/02-convention.md 的契约数字。
 [GOOD] 子代理在交付里列出「应同步的数字与出处」，主线核实后一次性落文档。
 ```

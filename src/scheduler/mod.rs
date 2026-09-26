@@ -67,14 +67,19 @@ pub(super) fn probe_policy_capacity(policy_id: i32) -> Option<u32> {
     })
     .ok()?;
     let first_cpu: u32 = related_str.split_whitespace().next()?.parse().ok()?;
-    fs::read_to_string(format!(
+    // 真机 sysfs 永远优先（8550 真机实测 280/855/1024，与 mainline DT 326/693/1024
+    // 不同——厂商板级覆盖）：cpu_capacity 读不到/解析失败时，才按首核所属核心组
+    // 查 soc.yaml [capacity] 兜底；两边都没有才返回 None。
+    if let Some(cap) = fs::read_to_string(format!(
         "/sys/devices/system/cpu/cpu{}/cpu_capacity",
         first_cpu
     ))
-    .ok()?
-    .trim()
-    .parse::<u32>()
     .ok()
+    .and_then(|s| s.trim().parse::<u32>().ok())
+    {
+        return Some(cap);
+    }
+    crate::common::soc_capacity_for_group(crate::common::core_group_of(first_cpu)?)
 }
 
 /// 根据 CPU capacity 自动计算每个 cluster 的权重

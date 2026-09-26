@@ -69,24 +69,17 @@ struct ClusterState {
 }
 
 impl ClusterState {
-    /// 把目标性能比映射到最近的可用频率档位（基于 cached_ratios 二分查找最近点）
+    /// 把目标性能比映射到可用频率表中 **≤ 目标** 的最大档（floor 对齐）。
+    /// 写的是 scaling_max（上限），落点不得高于计算目标——否则会比决策多给一档
+    /// 频率；且目标落在两档之间时内核本就把 max 向下 clamp，先对齐再写才能
+    /// 账实一致，同值不落盘的去重才有效。
     #[inline]
-    fn find_nearest_freq(&self, target_ratio: f32) -> u32 {
-        let idx = self.cached_ratios.partition_point(|&r| r < target_ratio);
+    fn find_floor_freq(&self, target_ratio: f32) -> u32 {
+        let idx = self.cached_ratios.partition_point(|&r| r <= target_ratio);
         if idx == 0 {
             self.available_freqs[0]
-        } else if idx >= self.available_freqs.len() {
-            *self.available_freqs.last().unwrap()
         } else {
-            let lo = idx - 1;
-            let hi = idx;
-            if (self.cached_ratios[hi] - target_ratio).abs()
-                < (self.cached_ratios[lo] - target_ratio).abs()
-            {
-                self.available_freqs[hi]
-            } else {
-                self.available_freqs[lo]
-            }
+            self.available_freqs[idx - 1]
         }
     }
 
@@ -497,7 +490,7 @@ impl CoreGroupWorker {
             // 的矛盾记录。真实降频路径（落点超死区）行为不变；flush 每 tick 经
             // write_freq 值去重为 no-op（同值不落盘），防篡改仅在目标值变化时的
             // 写入中顺带发生，稳态跳过决策写频无副作用。
-            let target_freq = self.cluster.find_nearest_freq(target_perf);
+            let target_freq = self.cluster.find_floor_freq(target_perf);
             // [deadzone_hold] hold 判定用死区比较（≤ 死区频差，含相等；
             // write_deadzone=0 时退化为精确相等）：死区频差与 write_freq 吞写
             // gate 共用 deadzone_band()，写不进 sysfs 的落点不累计 down_wait。
@@ -559,7 +552,7 @@ impl CoreGroupWorker {
         } else {
             self.cluster.current_perf
         };
-        let target_freq = self.cluster.find_nearest_freq(eff_perf);
+        let target_freq = self.cluster.find_floor_freq(eff_perf);
         // [dwell] 豁免判定：触摸 floor 提频的升向写入 / 极低负载立即降频的降向写入
         // （fast_down 消费制，只作用本次 flush）/ 上次写失败的防篡改补写。热保护
         // clamp 刻意不豁免（温度毛刺不得绕过滞回直写频率），它是降频方向，经
@@ -670,7 +663,12 @@ impl CoreGroupWorker {
             .filter_map(|s| s.parse().ok())
             .collect();
         if freqs.is_empty() {
-            return None;
+            // scaling_available_frequencies 读不到/空表：按 policy 首核映射核心组，
+            // 回退 soc.yaml [freq_khz] 兜底（只补表，不改取档/floor 对齐逻辑）
+            match crate::common::soc_freq_fallback_for_policy(pid) {
+                Some(f) => freqs = f,
+                None => return None,
+            }
         }
         freqs.sort_unstable();
         freqs.dedup();
@@ -774,7 +772,7 @@ impl CoreGroupWorker {
             fast_down: false,
         };
 
-        let init_freq = cluster.find_nearest_freq(init_perf);
+        let init_freq = cluster.find_floor_freq(init_perf);
         // 初始接管只写 max=perf_init 档（min 已在上面压到硬件最低）
         let init_ok = cluster.max_writer.write_value_force(init_freq);
         if init_ok {

@@ -1,8 +1,9 @@
 //! mod.rs: [consts] [thermal] [policies] [aff_snap] [affinity] [threads] [config_watcher] [ipc_main] [ipc_state] [evt_loop] [evt_screen] [evt_mode] [evt_pkg_switch] [evt_load] [evt_frame] [evt_reload] [evt_bpf] [panic_recovery]
 
 use anyhow::Result;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, RwLock, mpsc};
+use std::sync::{Arc, Mutex, RwLock, OnceLock, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -262,6 +263,124 @@ pub fn cpu_freq_snapshot() -> (String, String, String, String) {
         push(&mut gov, read("scaling_governor"));
     }
     (cur, max, min, gov)
+}
+
+// [clamp_evidence]
+/// P1-2 锁频钳制旁证快照：`clamp_change` 事件行 reason 内容。把「锁频被压」
+/// 归因到三个来源：
+/// 1. **FREQ_QOS 钳制**（thermal cooling / msm_performance / input-boost）——
+///    `smax` 读回低于 ChiRi 写入值，msmp/corectl 佐证是否有第三方并发写；
+/// 2. **硬件热压**（LMh/DCVS）——smax 读数正常、实际频率被压，佐证
+///    `dcvsh_freq_limit`（每簇首核）是否低于硬件 max；
+/// 3. **厂商并发写**——msm_performance 参数 / core_ctl min_cpus/max_cpus/enable
+///    被改；`/proc/horae_qmi` 只记存在性。
+///
+/// **【临时采集】** 本节为 P2 真机取证（device-todo T4/T5/T8/T10）临时 instrumentation：
+/// 验证期结束后评估去留——结论沉淀进判读文档后，本采集可整体移除或收窄。
+/// 全部只读；节点缺失/读失败值记 `-` 并对该节点 warn 一次（`warned` 去重，
+/// 之后静默，避免 2s 周期刷屏）。policy 列表进程内缓存（OnceLock，运行期不变）。
+/// 只在 `diag_active()` 时由 2s 热块调用；调用方比对快照字符串，未变化零落盘。
+fn clamp_evidence_snapshot(warned: &mut HashSet<String>) -> String {
+    /// 缺失节点首见告警一次（key 形如 "smax@policy4"，附完整路径便于排查）
+    fn warn_once(warned: &mut HashSet<String>, key: String, path: &str) {
+        if warned.insert(key.clone()) {
+            log::warn!(
+                "{}",
+                t_with_args(
+                    "clampev-node-missing",
+                    &fluent_args!("key" => key.as_str(), "path" => path)
+                )
+            );
+        }
+    }
+    /// 非空读取：缺失/空串统一返回 None（节点存在但内容空按缺失处理）
+    fn read_trim(path: &str) -> Option<String> {
+        std::fs::read_to_string(path)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+    /// 按 `policy<id>:<val>` 追加分段（与 cpu_freq_snapshot 的多 policy 拼法一致）
+    fn seg_push(dst: &mut String, id: i32, val: &str) {
+        if !dst.is_empty() {
+            dst.push(';');
+        }
+        dst.push_str(&format!("policy{}:{}", id, val));
+    }
+
+    static POLICIES: OnceLock<Vec<i32>> = OnceLock::new();
+    let policies = POLICIES.get_or_init(|| get_cpu_policies().into_iter().map(|p| p.id).collect());
+
+    let mut smax = String::new();
+    let mut dcvsh = String::new();
+    let mut corectl = String::new();
+    for id in policies {
+        // smax：FREQ_QOS_MAX 聚合结果的读回值（低于写入值 = 被 QoS 钳制）
+        let path = format!("/sys/devices/system/cpu/cpufreq/policy{}/scaling_max_freq", id);
+        match read_trim(&path) {
+            Some(v) => seg_push(&mut smax, *id, &v),
+            None => {
+                seg_push(&mut smax, *id, "-");
+                warn_once(warned, format!("smax@policy{}", id), &path);
+            }
+        }
+        // dcvsh：硬件 DCVS 限频佐证（policy id 即簇首核；部分内核未导出属常态）
+        let path = format!("/sys/devices/system/cpu/cpu{}/dcvsh_freq_limit", id);
+        match read_trim(&path) {
+            Some(v) => seg_push(&mut dcvsh, *id, &v),
+            None => {
+                seg_push(&mut dcvsh, *id, "-");
+                warn_once(warned, format!("dcvsh@cpu{}", id), &path);
+            }
+        }
+        // core_ctl：厂商并发写观测（min_cpus/max_cpus/enable，每簇首核一份；
+        // 目录整体缺失多为机型不支持，按目录级告警一次，段记 "-"）
+        let cdir = format!("/sys/devices/system/cpu/cpu{}/core_ctl", id);
+        if !std::path::Path::new(&cdir).exists() {
+            seg_push(&mut corectl, *id, "-");
+            warn_once(warned, format!("corectl@cpu{}", id), &cdir);
+        } else {
+            let mut cc = String::new();
+            for (i, name) in ["min_cpus", "max_cpus", "enable"].iter().enumerate() {
+                if i > 0 {
+                    cc.push('/');
+                }
+                let path = format!("{}/{}", cdir, name);
+                match read_trim(&path) {
+                    Some(v) => cc.push_str(&v),
+                    None => {
+                        cc.push('-');
+                        warn_once(warned, format!("corectl.{}@cpu{}", name, id), &path);
+                    }
+                }
+            }
+            seg_push(&mut corectl, *id, &cc);
+        }
+    }
+    // msm_performance 参数（单值，非逐 policy）；horae_qmi 只记存在性
+    let mut msmp = [String::new(), String::new()];
+    for (i, name) in ["cpu_min_freq", "cpu_max_freq"].iter().enumerate() {
+        let path = format!("/sys/module/msm_performance/parameters/{}", name);
+        match read_trim(&path) {
+            Some(v) => msmp[i] = v,
+            None => {
+                msmp[i] = "-".to_string();
+                warn_once(warned, format!("msmp.{}", name), &path);
+            }
+        }
+    }
+    let horae = if std::path::Path::new("/proc/horae_qmi").exists() {
+        "1"
+    } else {
+        "-"
+    };
+    if horae == "-" {
+        warn_once(warned, "horae_qmi".to_string(), "/proc/horae_qmi");
+    }
+    format!(
+        "msmp_min={} msmp_max={} horae={} smax={} dcvsh={} corectl={}",
+        msmp[0], msmp[1], horae, smax, dcvsh, corectl
+    )
 }
 
 /// GPU 频率快照的节流间隔：读 GPU 频率节点（尤其 Adreno 的 `gpuclk`）会把 GPU
@@ -800,7 +919,8 @@ fn build_aff_snapshot(
 /// 内部带去重：布局与 PID 未变化时无 sysfs 写入，可安全周期性调用。
 /// `core_utils` 为最近一次 SystemLoadUpdate 的逐核 util（按核选核打分输入）。
 /// `scenemode_offline` 为 scenemode 激活标志：抑制 boost（boost 会把 min_cpus
-/// 抬回全组常在线、把下线的核拉回来）并触发 core_ctl 离线（prime 下线深度省电）。
+/// 抬回全组常在线、把被压制的核拉回来）并触发 scenemode 大核压制——首选
+/// WALT core_ctl `max_cpus=0` 收缩 prime 簇，兜底逐核 online 下线（见 core_ctl.rs）。
 fn apply_affinity_and_corectl(
     affinity: &mut affinity::AffinityManager,
     corectl: &mut core_ctl::CoreCtlManager,
@@ -826,15 +946,16 @@ fn apply_affinity_and_corectl(
         return;
     }
     // stardust 家族（scenemode）语义：停线程迁移与动态分组、全部 cpuset 恢复全核——
-    // 压频只压 CLG 频率上限，不做任何核心/线程特化（原「prime 整簇下线 + 保留核
-    // 独占」已废弃，core_ctl 回 Normal）。affinity.release 会把此前收窄的组按快照恢复。
+    // 压频只压 CLG 频率上限；核心层面仅做 prime 簇压制（首选 WALT core_ctl
+    // max_cpus=0 整簇 halt，兜底逐核 online 下线，见 core_ctl.rs [max_cpus]），
+    // 线程/组摆放不做任何特化。affinity.release 会把此前收窄的组按快照恢复。
     // 本分支由 2s 周期块与场景事件反复进入：仅在持有接管时 release 一次，
     // 避免息屏全程每 2s 重复回写后台组 uclamp.max 并刷「已释放接管」日志
     if scenemode_offline {
         if affinity.is_active() {
             affinity.release();
         }
-        corectl.set_power_state(false, false);
+        corectl.set_power_state(false, config.core_ctl.enabled);
         return;
     }
     // fas 模式按 boost 处理：FAS 只负责调频，线程摆放沿用 boost 布局
@@ -868,8 +989,8 @@ fn apply_affinity_and_corectl(
         core_utils,
         uclamp_override,
     );
-    // core_ctl 在线接管随 boost 走；scenemode 不再触发 prime 下线（stardust 家族
-    // 语义 = 全核心 + 仅压频，见上方分支）
+    // core_ctl 在线接管随 boost 走；scenemode 的 prime 压制在上方分支处理
+    // （core_ctl max_cpus 首选、逐核 offline 兜底），不与本路径混用
     corectl.set_power_state(config.core_ctl.enabled && boost, false);
 }
 
@@ -1306,6 +1427,10 @@ pub fn start_scheduler_thread(
             let mut last_thermal_check = Instant::now();
             // 当前生效的热保护上限（1.0 = 无压制）；变化时才写 governor，避免高频原子写
             let mut thermal_cap_current: f32 = 1.0;
+            // P1-2 旁证采集状态（【临时】，真机验证期用，见 clamp_evidence_snapshot）：
+            // 上次 clamp_change 快照（变化才落行）+ 缺失节点 warn 去重（每节点首见告警一次，之后静默记 "-"）
+            let mut clamp_prev: Option<String> = None;
+            let mut clamp_warned: HashSet<String> = HashSet::new();
             // 当前生效的压制豁免档（与 governor 内原子量同步，配置热重载时下发新值）
             let mut thermal_free_current: f32 = config_clone.read().unwrap().thermal.free_above;
             // 启动即把配置豁免档同步给 governor（内部默认 0.80，配置可能不同）
@@ -2084,6 +2209,17 @@ pub fn start_scheduler_thread(
                 // 豁免档：当前性能比已高于豁免档时不压制，高负载不挡路。
                 if last_thermal_check.elapsed() >= THERMAL_CHECK_INTERVAL {
                     last_thermal_check = Instant::now();
+                    // P1-2 旁证节点采集（diag 开启时每 2s 一次）：锁频被压归因
+                    // （FREQ_QOS 钳制 / 硬件热压 LMh·DCVS / 厂商并发写）。快照
+                    // 未变化则零产出（连 format! 都不进）。放在 halted/FAS 门控
+                    // 之外——停摆与 FAS 接管期间的钳制同样需要旁证。
+                    if crate::logger::diag_active() {
+                        let snap = clamp_evidence_snapshot(&mut clamp_warned);
+                        if clamp_prev.as_deref() != Some(snap.as_str()) {
+                            crate::logger::main_event("clamp_change", "-", &snap);
+                            clamp_prev = Some(snap);
+                        }
+                    }
                     // FAS 活跃时整体跳过 ChiRi 热保护：温控移除，一切交由 FAS 引擎
                     // （FasManager 内部独立刷新温度喂给引擎）。cap 冻结在当前值；
                     // 2s 亲和块共用本计时器不受影响，1s 遥测块温度读数照常刷新。
@@ -2883,10 +3019,11 @@ pub fn start_scheduler_thread(
                                             }
                                             log::info!("{}", t("scheduler-scene-mode-enter"));
                                             scene_mode_active = true;
-                                            // 立即应用 scenemode 离线核（不等 2s 周期块）：
+                                            // 立即应用 scenemode 核心压制（不等 2s 周期块）：
                                             // 小核+大核常驻低频（频率上限由 scenemode
-                                            // CLG 配置压制）+ prime 下线 + 专用小核独占
-                                            // 自钉（cpuset 排除其他进程）
+                                            // CLG 配置压制）+ prime 簇压制（首选 WALT
+                                            // core_ctl max_cpus，兜底逐核 offline）+
+                                            // 专用小核独占自钉（cpuset 排除其他进程）
                                             {
                                                 let cfg = config_clone.read().unwrap();
                                                 apply_affinity_and_corectl(

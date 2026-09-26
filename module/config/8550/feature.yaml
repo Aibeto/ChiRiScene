@@ -31,6 +31,11 @@ Affinity:
   # 刻意不含 system-background（媒体/音频等可感知的系统后台）。
   # TODO: 实机复核 35（看后台同步/消息推送是否受影响）。
   background_uclamp_max_pct: 35
+  # normal（非 boost）下 top-app/foreground 组掩码剔除 little 的预置开关（默认关闭）：
+  # A510 能效差且 DT 能耗模型低估其真实能耗，EAS 会把 64 位前台线程吸进 little；
+  # 收窄后 32 位任务的允许核交集由内核兜底（big 内 A710 仍在掩码内），每 2s 纠偏。
+  # TODO: 待内核信息（32 位核位图 / A710 核位，读 /sys/.../midr_el1 可核）针对化后决定开启。
+  normal_fg_exclude_little: false
 
 # [corectl]
 CoreCtl:
@@ -43,6 +48,9 @@ CoreCtl:
 # [thermal]
 Thermal:
   enabled: true
+  # CPU 温度探测名单默认 = 内置（soc_max → cpuss → mtktscpu/… 按序 contains
+  # 匹配）：soc_max 为聚合温区（偏保守、非纯 CPU），cpuss0-3 为 cluster 级
+  # 单传感器回退；本机若需增删节点才写 cpu_temp_zone_types 覆盖
   batt_soft_temp_c: 41
   batt_hard_temp_c: 45
   # CPU 温度仅极端热时参与（内核 ~95°C 温控兜底）：soc_max 合成温区在大型游戏
@@ -133,9 +141,16 @@ default:
     # surfaceflinger/system_server 主导的亮屏 UI 固有形态，视频稳态才是 ~300/s。
     # 之前拿 cloudmusic（亮屏 UI）对比 0920 视频稳态属场景错配，P2 嫌疑解除，
     # 恢复按簇收紧。
-    # 本档不做 per_cluster 覆盖：三簇上限都交给负载动态决定（见 perf_ceil 注释）。
+    # 本档不做 per_cluster 上限覆盖：三簇都保留随时到最高频的能力（硬性口径）。
     # 历史：2026-09-22 曾按簇收紧（little 0.70 / prime 0.65），2026-09-23 改为不封顶、只控门槛；
     # 迁移率的 A/B 结论（高迁移是亮屏 UI 固有形态，与 per_cluster 无关）见 memory/2026-09-22.md。
+    # little 抬升频门槛：A510 能效差（为 AArch32 放弃 merged-core），DT 能耗模型
+    # 低估其真实能耗，little 高频时 EAS 会把 64 位工作线程吸进来贴顶运行；抬高
+    # 门槛后滞回带内慢速爬升、贴顶时间大减，负载真高时仍全速到顶（不砍上限）。
+    # TODO: 实机复核 0.95（看 little 贴顶时间、功耗回落与 32 位 App 响应）。
+    per_cluster:
+      little:
+        up_threshold: 0.95
     # 跳变门槛：target 相对当前跳升超过该值才算「显著跳变」而立即升频，
     # 否则走滞回带慢速爬升（提高它 = 尖峰更难把上限瞬间拉到高频）
     up_jump_threshold: 0.45

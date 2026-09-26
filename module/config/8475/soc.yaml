@@ -1,0 +1,22 @@
+# 8475/soc.yaml: [topology] [capacity] [freq] [idle] [dpc]
+# SoC 硬件基线：编译期嵌入（同 feature.yaml，防篡改、磁盘不落盘）。
+# 定位 = 运行时 sysfs 探测的兜底与校准基准，不是调优输入；改动需重编。
+soc: "8475"
+
+# [topology] 核心组 CPU ID 区间（左闭右开），common.rs::chiri_core_ranges 的数据源。
+# 8475 布局：little 4 核（0-3）/ big 3 核（4-6）/ prime 1 核（7，X2）。
+# 注意与 8550 不同（8550 是 little 0..3 / big 3..7 / prime 7..8），勿混淆。
+topology:
+  little: { start: 0, end: 4 }
+  big: { start: 4, end: 7 }
+  prime: { start: 7, end: 8 }
+
+# [capacity] 8475 无本地 dtsi，capacity 以真机 sysfs（cpu_capacity）为准，拿到 dtsi 后补。
+# 厂商板级 DTS 常覆盖 mainline 值（8550 即如此），兜底值不要照抄上游。
+
+# [freq] 8475 无本地 dtsi，频率档位以真机 sysfs（scaling_available_frequencies）为准，
+# 拿到 dtsi 后补。写 scaling_max_freq 前 floor 对齐到表内档位。
+
+# [idle] 8475 无本地 dtsi，暂无 idle-state 代价数据，拿到 dtsi 后补。
+
+# [dpc] 8475 无本地 dtsi，暂无 dynamic-power-coefficient 数据，拿到 dtsi 后补。

@@ -1,0 +1,50 @@
+# 8550/soc.yaml: [topology] [capacity] [freq] [idle] [dpc]
+# SoC 硬件基线：编译期嵌入（同 feature.yaml，防篡改、磁盘不落盘）。
+# 定位 = 运行时 sysfs 探测的兜底与校准基准，不是调优输入；改动需重编。
+soc: "8550"
+
+# [topology] 核心组 CPU ID 区间（左闭右开），common.rs::chiri_core_ranges 的数据源。
+# little A510 3 核 / big A715 4 核 / prime X3 1 核
+topology:
+  little: { start: 0, end: 3 }
+  big: { start: 3, end: 7 }
+  prime: { start: 7, end: 8 }
+
+# [capacity] EAS capacity 兜底（真机 cpu_capacity 读不到时用）：
+# 真机 FAS 日志实测 280/855/1024（出处未在厂商 DT 实证——本仓库不含真机设备树，
+# 待真机 /proc/device-tree 或 dtb 反编译确证，见 .cursor/docs/kernel-analysis/device-todo.md T1）；
+# mainline DT（mdocs/sm8550.dtsi）参照 326/693/1024。**本表仅代表 8550 真机实测，其他 SoC 勿套用**——
+# 算容量一律优先读各机型真机 cpu_capacity，本表只作 sysfs 读不到时的兜底。
+capacity:
+  little: 280
+  big: 855
+  prime: 1024
+
+# [freq] 频率档位兜底（kHz 升序；scaling_available_frequencies 读不到时用）。
+# 来源：mainline DT CPU OPP 表（mdocs/sm8550.dtsi 458-753 行附近），
+# 已与真机 scaling_available_frequencies 逐档核对一致（.codebuddy/docs/2026-09-26-sm8550-opp-ladder.md）。
+# 写 scaling_max_freq 前必须 floor 对齐到表内档位（内核 clamp 向下取最近档）。
+freq_khz:
+  # little / policy0：16 档 307200-2016000
+  little: [307200, 441600, 556800, 672000, 787200, 902400, 1017600, 1113600,
+           1228800, 1344000, 1459200, 1555200, 1670400, 1785600, 1900800, 2016000]
+  # big / policy3：20 档 499200-2803200
+  big: [499200, 614400, 729600, 844800, 940800, 1056000, 1171200, 1286400,
+        1401600, 1536000, 1651200, 1785600, 1920000, 2054400, 2188800, 2323200,
+        2457600, 2592000, 2707200, 2803200]
+  # prime / policy7：21 档 595200-3187200
+  prime: [595200, 729600, 864000, 998400, 1132800, 1248000, 1363200, 1478400,
+          1593600, 1708800, 1843200, 1977600, 2092800, 2227200, 2342400,
+          2476800, 2592000, 2726400, 2841600, 2956800, 3187200]
+
+# [idle] 空闲态代价（µs，mainline DT idle-states；校准基准，暂无运行时消费方）。
+# silver/gold/goldplus-rail-power-collapse 每 CPU 态 + 两级簇态。
+# 推论：prime 睡实需 >=7.5ms 空闲、唤醒 1.35ms，远高于 FAS migration_cost 400µs。
+idle_us:
+  exit_latency: { little: 750, big: 1300, prime: 1350 }
+  min_residency: { little: 6700, big: 8136, prime: 7480 }
+  cluster_exit_latency: [2350, 4400]   # cluster-sleep-0 / cluster-sleep-1
+
+# [dpc] dynamic-power-coefficient（mainline DT；校准基准，暂无运行时消费方）。
+# 用于内核 EAS 能量模型推算动态功耗，ChiRi 侧仅留作校准参照。
+dpc: { little: 251, big: 447, prime: 1057 }

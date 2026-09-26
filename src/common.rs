@@ -1,4 +1,4 @@
-//! common.rs: [events] [proc_snap] [paths] [soc_detect] [core_ranges] [special_tuned] [fas_whitelist] [aff_blacklist] [embedded] [external_meta]
+//! common.rs: [events] [proc_snap] [paths] [soc_detect] [core_ranges] [soc_config] [special_tuned] [fas_whitelist] [aff_blacklist] [embedded] [external_meta]
 
 use crate::monitor::config::RulesConfig;
 use include_dir::{Dir, include_dir};
@@ -97,8 +97,10 @@ fn read_first_line(path: &str) -> String {
 /// 探测到任一命中即启用 Chiri 调度器；新增机型只需在此追加片段，不要绑定单一型号。
 /// 例：SM8550（骁龙 8 Gen 2）含 "8550"，SM8475（骁龙 8+ Gen 1）含 "8475"，
 /// MSM8998（骁龙 835）含 "8998"。片段须能互相区分（8550 不含 8475，反之亦然）。
+/// 8998 暂时下线（2026-09-26）：从名单移除即不命中 → 不接管 CPU、仅监控；
+/// config/8998/ 目录与兜底 match 保留，恢复支持时把片段加回来即可。
 // [soc_detect]
-const CHIRI_SOC_HINTS: &[&str] = &["8550", "8475", "8998"];
+const CHIRI_SOC_HINTS: &[&str] = &["8550", "8475"];
 
 /// 读取单个 Android 系统属性（getprop key），失败/为空返回空串。
 /// 跨分区属性（ro.product.model 等在 /product、/vendor 的 build.prop 里）
@@ -199,12 +201,21 @@ pub struct CoreGroupRanges {
     pub prime: std::ops::Range<usize>,
 }
 
-/// 按命中的处理器片段返回核心组区间：
-/// - 8550（骁龙 8 Gen 2）：little 0-2 / big 3-6 / prime 7
-/// - 8475（骁龙 8+ Gen 1）：little 0-3 / big 4-6 / prime 7
-/// - 8998（骁龙 835）：little 0-3 / big 4-7 / 无 prime
-/// 未命中（非 ChiRi）回退 8550 布局兜底（仅 Chiri 路径调用，正常不会发生）。
+/// 按命中的处理器片段返回核心组区间：数据源 = soc.yaml [topology] 段
+/// （config/{soc}/soc.yaml，编译期嵌入，见 [soc_config]），缺失/损坏/字段不完整时
+/// 回退下方硬编码兜底。新增 SoC：加 config/{片段}/soc.yaml + 片段进 CHIRI_SOC_HINTS，
+/// 无需改 .rs；硬编码 match 仅作兜底保留。
 pub fn chiri_core_ranges() -> CoreGroupRanges {
+    // 热路径（20+ 调用点，每轮周期块都走）：OnceLock 读 + 区间小拷贝，不重解析 yaml
+    if let Some(topo) = soc_config().and_then(|c| c.topology.as_ref()) {
+        if let (Some(l), Some(b), Some(p)) = (&topo.little, &topo.big, &topo.prime) {
+            return CoreGroupRanges {
+                little: l.start..l.end,
+                big: b.start..b.end,
+                prime: p.start..p.end,
+            };
+        }
+    }
     match matched_soc_hint() {
         Some("8475") => CoreGroupRanges {
             little: 0..4,
@@ -222,6 +233,174 @@ pub fn chiri_core_ranges() -> CoreGroupRanges {
             prime: 7..8,
         },
     }
+}
+
+// [soc_config]
+/// CPU 所属核心组（[`core_group_of`] 的返回，供按 CPU/policy 映射 soc.yaml 分段）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoreGroup {
+    Little,
+    Big,
+    Prime,
+}
+
+/// cpu id 落在哪一个核心组；都不在返回 None（8998 的空 prime 区间不会命中 prime）。
+/// 区间以 [`chiri_core_ranges`] 为准（soc.yaml topology 优先，硬编码兜底）。
+pub fn core_group_of(cpu: u32) -> Option<CoreGroup> {
+    let r = chiri_core_ranges();
+    let c = cpu as usize;
+    if r.little.contains(&c) {
+        Some(CoreGroup::Little)
+    } else if r.big.contains(&c) {
+        Some(CoreGroup::Big)
+    } else if r.prime.contains(&c) {
+        Some(CoreGroup::Prime)
+    } else {
+        None
+    }
+}
+
+/// SoC 硬件基线（{soc}/soc.yaml，随 module/config 整目录编译期嵌入，同 feature.yaml
+/// 防篡改、磁盘不落盘口径）。定位 = 运行时 sysfs 探测的兜底与校准基准，不是调优输入。
+///
+/// 全部字段可缺省（缺段 = None → 调用方走原有回退路径）：8475/8998 的 soc.yaml 只有
+/// topology 占位，其余段缺失不影响行为。新增 SoC = 加 config/{片段}/soc.yaml +
+/// 片段进 CHIRI_SOC_HINTS，无需改 .rs。
+/// 注意：serde 无 deny_unknown_fields——yaml 里未定义的键（如信息性的 `soc:`）
+/// 被静默忽略，键名拼错也只会整段变 None 走兜底，排障时留意 warn 日志。
+#[derive(Debug, Clone, Deserialize)]
+pub struct SocConfig {
+    /// 核心组 CPU ID 区间（[chiri_core_ranges] 的数据源）
+    #[serde(default)]
+    pub topology: Option<SocTopology>,
+    /// EAS capacity 兜底（真机 cpu_capacity 读不到时用；真机 sysfs 永远优先）
+    #[serde(default)]
+    pub capacity: Option<SocTriValues>,
+    /// 频率档位兜底（kHz 升序；scaling_available_frequencies 读不到时用）
+    #[serde(default)]
+    pub freq_khz: Option<SocFreqTable>,
+    /// 空闲态代价 µs（校准基准，本期无运行时消费方）
+    #[serde(default)]
+    #[allow(dead_code)] // 解析留存备用，暂无读取方（与 dpc 同口径）
+    pub idle_us: Option<SocIdleUs>,
+    /// dynamic-power-coefficient（校准基准，本期无运行时消费方）
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub dpc: Option<SocTriValues>,
+}
+
+/// 核心组 CPU ID 区间（左闭右开）
+#[derive(Debug, Clone, Deserialize)]
+pub struct SocRange {
+    #[serde(default)]
+    pub start: usize,
+    #[serde(default)]
+    pub end: usize,
+}
+
+/// 核心组 topology：字段缺失 = 整段视为不完整（不启用 topology），而非空区间
+#[derive(Debug, Clone, Deserialize)]
+pub struct SocTopology {
+    #[serde(default)]
+    pub little: Option<SocRange>,
+    #[serde(default)]
+    pub big: Option<SocRange>,
+    #[serde(default)]
+    pub prime: Option<SocRange>,
+}
+
+/// 按核心组的三值段（capacity / dpc 共用；单值缺失 = None，调用方回退）
+#[derive(Debug, Clone, Deserialize)]
+pub struct SocTriValues {
+    #[serde(default)]
+    pub little: Option<u32>,
+    #[serde(default)]
+    pub big: Option<u32>,
+    #[serde(default)]
+    pub prime: Option<u32>,
+}
+
+/// 频率档位表（kHz，升序；写 scaling_max 前仍须 floor 对齐到表内档位）
+#[derive(Debug, Clone, Deserialize)]
+pub struct SocFreqTable {
+    #[serde(default)]
+    pub little: Vec<u32>,
+    #[serde(default)]
+    pub big: Vec<u32>,
+    #[serde(default)]
+    pub prime: Vec<u32>,
+}
+
+/// 空闲态代价（µs；校准基准，本期无运行时消费方，字段解析留存备用）
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
+pub struct SocIdleUs {
+    #[serde(default)]
+    pub exit_latency: Option<SocTriValues>,
+    #[serde(default)]
+    pub min_residency: Option<SocTriValues>,
+    #[serde(default)]
+    pub cluster_exit_latency: Vec<u32>,
+}
+
+/// 命中 SoC 的硬件基线（{soc}/soc.yaml），OnceLock 惰性解析一次。
+/// None = 非 ChiRi SoC / 嵌入文件缺失 / yaml 损坏（warn 一次，不 panic）——
+/// 调用方一律走原有回退路径。
+static SOC_CONFIG: OnceLock<Option<SocConfig>> = OnceLock::new();
+
+/// 当前命中 SoC 的硬件基线；解析结果全程缓存，重复调用零开销。
+pub fn soc_config() -> Option<&'static SocConfig> {
+    SOC_CONFIG
+        .get_or_init(|| {
+            let Some(hint) = matched_soc_hint() else {
+                return None;
+            };
+            let Some(text) = embedded_config_file(&format!("{hint}/soc.yaml")) else {
+                return None;
+            };
+            match serde_yaml::from_str::<SocConfig>(text) {
+                Ok(c) => Some(c),
+                Err(e) => {
+                    log::warn!("soc-config-parse-failed ({hint}): {e}");
+                    None
+                }
+            }
+        })
+        .as_ref()
+}
+
+/// capacity 兜底：按核心组取 soc.yaml [capacity] 值（真机 sysfs 由调用方优先读）
+pub(crate) fn soc_capacity_for_group(group: CoreGroup) -> Option<u32> {
+    let cap = soc_config()?.capacity.as_ref()?;
+    match group {
+        CoreGroup::Little => cap.little,
+        CoreGroup::Big => cap.big,
+        CoreGroup::Prime => cap.prime,
+    }
+}
+
+/// policy 的首个相关 CPU（related_cpus 优先，退 affected_cpus），供按 policy
+/// 映射核心组使用。
+pub(crate) fn policy_first_cpu(policy_id: i32) -> Option<u32> {
+    let base = format!("/sys/devices/system/cpu/cpufreq/policy{policy_id}");
+    let text = std::fs::read_to_string(format!("{base}/related_cpus"))
+        .or_else(|_| std::fs::read_to_string(format!("{base}/affected_cpus")))
+        .ok()?;
+    text.split_whitespace().next()?.parse().ok()
+}
+
+/// 频率档位兜底：scaling_available_frequencies 读不到/空表时，按 policy 首核所属
+/// 核心组回退 soc.yaml [freq_khz]（升序拷贝；排序去重由调用方原逻辑兜一遍）。
+/// soc.yaml 无表 / 非 ChiRi SoC / 首核不在任何核心组（8998 空 prime 不会发生——
+/// 每个 policy 首核必落 little/big）返回 None，调用方维持原失败路径。
+pub(crate) fn soc_freq_fallback_for_policy(policy_id: i32) -> Option<Vec<u32>> {
+    let table = soc_config()?.freq_khz.as_ref()?;
+    let v = match core_group_of(policy_first_cpu(policy_id)?)? {
+        CoreGroup::Little => &table.little,
+        CoreGroup::Big => &table.big,
+        CoreGroup::Prime => &table.prime,
+    };
+    (!v.is_empty()).then(|| v.to_vec())
 }
 
 /// 特调可用性共享标志：chiri Config 合并 tuned_profiles.yaml 成功后置 true，

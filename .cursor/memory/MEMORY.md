@@ -7,7 +7,7 @@
 
 - 一切 AI 产出文件（计划、评估、报告等）只写项目文件夹内：本环境文档放 `.cursor/docs/`、记忆放 `.cursor/memory/`；
   工具自动写到项目外的副本（如 Cursor plans 目录）复制回项目后删除原件。
-- 架构约定、契约数字、命令口径变更同步 `docs/agents/` 与本文件；具体改动经过写 `.cursor/memory/YYYY-MM-DD.md`。
+- 架构约定、契约数字、命令口径变更同步 `agentsdocs/` 与本文件；具体改动经过写 `.cursor/memory/YYYY-MM-DD.md`。
 - CI 跳过口径：`build.yml` 的 `check-skip` 闸——提交信息含 `skip ci`（不分大小写、无需方括号）即跳过该次构建；
   `[skip ci]` 等方括号标记另走 GitHub 原生整 run 跳过；`workflow_dispatch` 手动触发恒运行；提交信息仅提及该字样也会命中。
 - WebUI type-check 口径（2026-09-24）：`npm run type-check` = `svelte-check --tsgo`；TypeScript 7 经 npm 别名
@@ -16,11 +16,12 @@
 
 ## 契约要点
 
+- **SoC 硬件基线 soc.yaml（2026-09-26）**：`module/config/{soc}/soc.yaml`（topology/capacity/freq_khz/idle/dpc），编译期嵌入，sysfs 兜底与校准基准、非调优输入；`chiri_core_ranges`/capacity/freq 兜底已接，硬编码 match 保留为最后兜底。口径与坑见 agentsdocs/02-convention.md 配置嵌入条；审计结论（其余 rs 常数不外挂）见 `.cursor/docs/2026-09-26-soc-hardcode-audit.md`。
 - logd/ 归档预算清理（2026-09-24 起）：`enforce_logd_limit` 按**归档批次原子删**——
   `<ts>.tar` 与 `devimp_<ts>.tar` 同进退、最新批次永不删，最新批次 ≥200MB 时收到 256MB 即停。
   背景：超大 devimp 归档（114MB）曾把同批 daemon.log/status.csv 归档挤掉（logd_0924-173105 包）。
   目录预算同日扩容：`LOGD_MAX_BYTES` / `DEVIMP_DIR_MAX_BYTES` 128→256MB、TARGET 96→200MB。
-  详见 docs/agents/02-convention.md 归档条与「被挤掉」历史坑。
+  详见 agentsdocs/02-convention.md 归档条与「被挤掉」历史坑。
 - **归档格式（2026-09-25，契约变更；同日改内置库）**：启动归档两目录产物均为 **`logd/<ts>.tar.lz4`** 与
   **`logd/devimp_<ts>.tar.lz4`**——pack.sh archive 只打无压缩 tar，**Rust 内置 `lz4_flex` 流式压缩**
   （不依赖设备 lz4 二进制；仅 lz4 落盘 I/O 失败才回落 `.tar`）。导出包 `logd_*.tar.gz` 的 gzip 主选走
@@ -49,7 +50,7 @@
 - aff 减量（2026-09-24，四文件）：① `@S` 线程快照改**差分帧**——前台线程与被管条目
   （`pinned`）每帧全量，长尾只在 `u/core/home/pin` 变化时落行、每 30 帧全量刷新一次
   （**缺失行 = 与上帧相同**，长尾 `u` 为 ≤30s 均值）；每帧 t 行 767→约 374、stat 读 −52%、
-  aff_ 121MB/42min → ~62MB（128MB 门限重启周期 42min → ~1.2h）。② 清理类动作汇总为
+  aff\_ 121MB/42min → ~62MB（128MB 门限重启周期 42min → ~1.2h）。② 清理类动作汇总为
   `<场景>_bulk`（`value`=条数），逐条 `bind_release` 只剩真有内核动作的条目。③ `t` 行 pid 由
   `/proc/<tid>/status` Tgid 补全（旧包 54% `pid=0`）。④ `threads` 表新增 `is_fg`，四处
   「`pid>0` 当前台哨兵」的判据改看它（等价重构，调度决策未变）。⑤ bg uclamp 值守卫：
@@ -60,13 +61,13 @@
   释放分支条件 = `group_bind != GroupBind::None` + `!key_pressure` 守卫（原 `== GroupBind::Key`
   只兜 Key 绑定）。原因：Busy 绑定的空闲回落只写在 `promote_busy_foreground` 内，而该函数在
   `key_pressure` 解除后整段不再被调用 → 压力一落，Busy 线程就带着 big∪prime 收窄掩码滞留
-  （logd_0925 实测 95min 会话末帧仍有 1115 条 `pin=1/home=-1` 未释放，占 aff_ 116MB/128MB）。
+  （logd*0925 实测 95min 会话末帧仍有 1115 条 `pin=1/home=-1` 未释放，占 aff* 116MB/128MB）。
   **结论：新增组绑定触发条件时，必须同步检查释放侧是否有窗口外兜底。**
 
 - devimp 目录懒创建与零写入（2026-09-24）：`devimp/` **唯一创建者 = `main_open`/`aff_open`**（两者都在
   `diag_active()` 门控内）；`diag_prepare` 目录不存在即早退、启动归档不预建、短会话清空后连空目录
   `remove_dir`——**dev_record 关闭时不产生任何数据（含空目录）**。`set_diag_package` 加 `diag_active()`
-  门控（关时零锁零分配；重开后下一秒仍按包名切 main_ 文件）。`current_mode.chr` 5s 自愈改 `ModeFile`
+  门控（关时零锁零分配；重开后下一秒仍按包名切 main\_ 文件）。`current_mode.chr` 5s 自愈改 `ModeFile`
   （记账 + 磁盘内容双重比对，跳过时 5 syscall → 1 read；`remove()` 清记账防文件空窗）。
 - 前台 PID 广播改推送（2026-09-24）：`monitor/mod.rs` 的 `pid_watcher`（500ms 轮询原子量）已删，
   改在 `app_detect` 的 `set_current_package` 生效点就地 `pid_tx.send`（发送条件与原线程逐位一致：
@@ -78,7 +79,7 @@
   `mod.rs` 首激活门控——稳态唤醒 2 次/s → 0。**勿退回裸原子量轮询**：FAS 会在前台 PID
   未变时重新激活（息屏释放、冷却结束），只等 PID 会漏唤醒。
 
-- ChiRi 默认全局唯一调度程序（口径，2026-09-24）：设备上**不存在常态竞争的厂商守护进程/第三方调度模块**；防篡改/周期重写（fast/power_base 5s、FAS 30s 强制重写、CLG 1s、bg uclamp 60s 再断言等）一律是**异常兜底**——防的是残留旧模块、手动调试、内核异常态下的异常改写，文档/汇报勿再写成厂商对抗。
+- ChiRi 是设备上唯一的 userspace sysfs 写频调度程序（口径，2026-09-26 依内核源码分析修正）：设备上**不存在常态竞争的厂商守护进程/第三方调度模块**；频率实际决策链 = waltgov + vendor hook（OMRG/frame_boost）+ FREQ_QOS 聚合，详见 `.cursor/docs/kernel-analysis/06-vendor-inventory.md`，ChiRi 写 scaling_max/min 是 clamp 不是频率决策，内核 thermal QoS 钳制是合法态不算篡改；防篡改/周期重写（fast/power_base 5s、FAS 30s 强制重写、CLG 1s、bg uclamp 60s 再断言等）一律是**异常兜底**——防的是残留旧模块、手动调试、内核异常态下的异常改写，文档/汇报勿再写成厂商对抗。
 
 ## 进行中
 

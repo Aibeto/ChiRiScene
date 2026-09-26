@@ -153,8 +153,30 @@ python scripts\devimp-analyze.py <解压目录> [--since MMDD-HHMMSS] [--min-n 3
 
 - **`cur_freq_khz`/`max_freq_khz` 是调度器写入的 scaling_max 决策值，不是实际频率**；实际值看 snap 的 `cpu_cur_khz`。比率 = cap%
 - **`deb_up`/`deb_down` = `up_wait`/`down_wait` 连续方向 tick 计数**（2026-09-24 源码确认）：
-  升/降频速率限制计数器，非错误计数；「decision=down 但 cur_freq 不动」可能是触摸地板/
-  热 clamp 钉住（flush 里 `current_perf.max(floor)` 在决策之后），不要读成写频失败或假 down
+  升/降频速率限制计数器，非错误计数；「decision=down 但 cur_freq 不动」不要读成写频失败或假 down。
+  **归因五层**（2026-09-26 真机内核验证，按概率排序）：
+  ① `scaling_cur_freq` 是**票值**（qcom-cpufreq-hw 的 get 读 EPSS `reg_perf_state` 寄存器
+  = 软件最后写入的票），硬件实际频率被压低时票也不动；
+  ② LMh/DCVS 热压抬底：只注入调度容量热压 + 暴露 `dcvsh_freq_limit`/`lmh_freq_limit`，
+  **不碰 policy->max**，票值与 scaling_max 读数都不变而实际频率被压低；
+  ③ 实际 governor 是 waltgov（busy-hold + rate_limit）：down 决策只改 next_freq，
+  落地要等下一次 util 更新且不被 hold；
+  ④ FREQ_QOS 钳制（thermal cooling / msm_performance / input-boost）：此时
+  `scaling_max_freq` 读数也会被拉低，可与 ②③ 区分；
+  ⑤ 触摸地板（flush 里 `current_perf.max(floor)` 在决策之后）。
+  排障指令：读 `dcvsh_freq_limit` / `lmh_freq_limit` 区分热压，
+  `/sys/kernel/qcom-cpufreq-hw/print_cpufreq_debug_regs` 区分「票被改」vs「硬件压频」
+  【临时旁证】devimp 新增 `clamp_change` 事件行（reason 内嵌 smax/dcvsh/corectl/msmp/horae 快照，
+  变化才落行）自动采集上述旁证节点——**临时 instrumentation**，真机验证（device-todo T4/T5/T8/T10）
+  完成后评估去留，验证结论沉淀回本节。
+
+  **「QoS 钳制 vs 硬件热压 vs 决策未落地」三态对照**：
+
+  | 状态 | scaling_max 读数 | cur_freq 票值 | 实际频率 | 排障动作 |
+  |---|---|---|---|---|
+  | FREQ_QOS 钳制 | **被拉低** | 跟随被拉低的 max | 与票一致 | 查 thermal cooling / `msm_performance` cpu_max_freq / input-boost（MIN 侧抬 FREQ_QOS_MIN） |
+  | 硬件热压（LMh/DCVS） | 正常 | 不变（仍高） | **被压低** | 读 `dcvsh_freq_limit` / `lmh_freq_limit`；`print_cpufreq_debug_regs` 区分票改 vs 硬压 |
+  | 决策未落地（waltgov） | 正常 | down 未写入 | 暂未跟上 | busy-hold + rate_limit 属正常，等下一次 util 更新；连续多帧不动再按 ②④ 排查 |
 - `max_util`：CLG 行 = 平滑前原始 util；tuned（akmode/playback）行 = 平滑后决策负载——离线二次平滑前先区分来源
 - `migrations`/`wakeups` = BpfStats **2s 增量**（源码 `src/common.rs` `DaemonEvent::BpfStats`，
   `cpu_monitor` 每 2s 发一次差分）：**÷2 = 每秒**
@@ -231,7 +253,11 @@ python scripts\devimp-analyze.py <解压目录> [--since MMDD-HHMMSS] [--min-n 3
 10. **daemon.log 文本里有 U+2068/U+2069 隔离符**（`P⁨0⁩`、`⁨playback⁩`）：写正则前先
     `re.sub(r"[\u2068\u2069]", "", s)`，否则 `P(\d+)`、`mode=⁨…⁩` 之类匹配全部失败
 11. **`@A result=e0` 不是「成功」**：`affinity::io_result_tag` 用 `raw_os_error().unwrap_or(0)`，
-    拿不到 errno 时写 `e0`；`e3`=ESRCH（线程已退出，正常）、`e22`=EINVAL（偶发）
+    拿不到 errno 时写 `e0`；`e3`=ESRCH（线程已退出，正常）、`e22`=EINVAL（偶发）。
+    **`e22`/`e3` 还有 walt_halt 来源**（2026-09-26 内核验证）：WALT core_ctl 可 pause CPU
+    （`walt_halt_cpus`），被 halt 的核被所有选核路径避开、setaffinity 到它会失败——
+    ChiRi 绑核到被 halt 的核是 `e22`/`e3` 的候选来源，归因前先看 core_ctl 状态；
+    另外 `getaffinity` 返回掩码会**扣掉 halted 核**，观测掩码 ≠ 真实 allowed
 12. **外层包只有 `devimp_*.tar`、没有 `<ts>.tar`（daemon.log/status.csv）**：2026-09-24 之前的
     logd 预算清理 bug 产物（超大 devimp 归档把同批 logs 侧小 tar 挤掉，实例 logd_0924-173105），
     已按批次原子清理修复；老包按「缺 logd 侧」降级口径（无 fps/FAS/charge/PowerAVG）判读

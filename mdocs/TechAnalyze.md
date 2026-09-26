@@ -102,10 +102,12 @@ ChiRi 另行计算一份 util（`src/monitor/cpu_monitor.rs`），数据源为 e
 
 cpuset 为硬约束（限定可用核心集合），uclamp 为软性诉求（表达性能倾向）。涉及两个参数：
 
-- `cpu.uclamp.min`：抬升诉求，使 EAS 倾向分配高频或大核
-- `cpu.uclamp.max`：压制诉求，使 EAS 倾向分配低频或小核
+- `cpu.uclamp.min`：抬升诉求，选核侧（WALT）以 boosted / latency_sensitive 分类倾斜放置，调频侧经 `effective_cpu_util` 抬升限频下限
+- `cpu.uclamp.max`：压制诉求，在真机 waltgov 路径下主要走 `effective_cpu_util` 的 rq 级 clamp 限频；rq 聚合为 **max 语义**——同核上任一高 clamp 任务都会把频率顶回去，85 只有在该 CPU 全部 runnable 任务的有效 uclamp.max 都 ≤85 时才生效
 
-ChiRi 使用 `uclamp.max` 压制后台组（`background`、`restricted`），降低后台任务抢占大核与高频的倾向，但**不禁止**其使用（空闲时仍可被调度至大核）。
+> 真机语境（内核分析见 `.cursor/docs/kernel-analysis/03-sched-eas-hooks.md`）：SM8550 选核由 WALT 经 `android_rvh_select_task_rq_fair` 无条件接管，GKI EAS 的 `find_energy_efficient_cpu` 不参与，uclamp.max 不进入能量模型、不影响放置。
+
+ChiRi 使用 `uclamp.max` 压制后台组（`background`、`restricted`），主要压低后台任务的限频诉求、减少其占用高频，但**不禁止**其使用（空闲时仍可被调度至大核）。
 
 ### 1.6 core_ctl
 
@@ -1588,7 +1590,7 @@ WatchDog 使用 inotify 监听，掩码额外包含 `DELETE`，即删除文件�
 
 ### 6.1 为什么需要手动摆线程
 
-内核的 EAS 会自动把任务放到合适的核上，但它看到的信息有限：它不知道哪个线程是渲染线程、哪个是后台同步线程，也不知道某个应用正处于游戏场景。ChiRi 补上这部分信息，做法是：
+内核调度器会自动把任务放到合适的核上——真机（SM8550，5.15 GKI + QCOM/OPLUS）上由 WALT FEEC 接管选核，GKI EAS 的 `find_energy_efficient_cpu` 是死代码，见 `.cursor/docs/kernel-analysis/03-sched-eas-hooks.md`——但它看到的信息有限：它不知道哪个线程是渲染线程、哪个是后台同步线程，也不知道某个应用正处于游戏场景。ChiRi 补上这部分信息，做法是：
 
 - **关键线程绑核**：渲染线程这类对延迟敏感的线程，绑到大核或超大核
 - **普通线程分散**：单核钉定，避免多个线程挤在一个核上做时间片轮转
@@ -1817,12 +1819,12 @@ boost 模式下若 cpuset 可用，关键线程**不写掩码**：cpuset 已将�
 
 ChiRi 默认是设备上唯一的调度/调频接管程序，常态没有竞争者会改这些 sysfs 节点；节点被改写属异常态（残留旧模块、手动调试、内核异常态）。周期性重写是异常兜底，把节点收敛回目标值：
 
-| 模块       | 重写周期          | 方式                        |
-| ---------- | ----------------- | --------------------------- |
-| fast_lock  | 5s                | `write_value_force`，不去重 |
-| CLG worker | 1s（超时分支）    | 重写当前频率                |
-| FAS        | 30s（时间基准）   | 强制重写（2026-09-24 前按帧计数） |
-| 模式文件   | 5s                | 自愈重写                    |
+| 模块       | 重写周期        | 方式                              |
+| ---------- | --------------- | --------------------------------- |
+| fast_lock  | 5s              | `write_value_force`，不去重       |
+| CLG worker | 1s（超时分支）  | 重写当前频率                      |
+| FAS        | 30s（时间基准） | 强制重写（2026-09-24 前按帧计数） |
+| 模式文件   | 5s              | 自愈重写                          |
 
 CLG 那条注释说明了为什么 1 秒粒度够用：「异常改写也是秒级动作」。
 
@@ -2030,7 +2032,7 @@ i18n/en.ftl
 
 ## 9. 日志与诊断
 
-> 历史快照（2026-09-22 起 devimp 拆分为 main_/aff_ 双文件、锁增为六把），以 docs/agents/02-convention.md 为准；本节原文保留不改写。
+> 历史快照（2026-09-22 起 devimp 拆分为 main*/aff* 双文件、锁增为六把），以 agentsdocs/02-convention.md 为准；本节原文保留不改写。
 
 ### 9.1 三个日志文件
 
@@ -3048,23 +3050,23 @@ WebUI 侧的路径注入防护（`isSafeConfigRel` 拒绝绝对路径、`..`、�
 
 **阈值类**
 
-| 常量                            | 值          | 位置                       |
-| ------------------------------- | ----------- | -------------------------- |
-| `SCENEMODE_SAT_UTIL`            | 0.75        | `chiri/mod.rs`             |
-| `THERMAL_UNPRESS_STEP`          | 0.15        | `chiri/mod.rs`             |
-| `SCHEDULER_IPC_RESTART_MAX`     | 5           | `chiri/mod.rs`             |
-| `OVERLOAD_MARGIN`               | 0.15        | `chiri/affinity.rs`        |
-| `CORE_OVERLOAD_UTIL`            | 0.70        | `chiri/affinity.rs`        |
-| `PINNED_WEIGHT`                 | 0.4         | `chiri/affinity.rs`        |
-| `MAX_PINS_PER_CORE`             | 3           | `chiri/affinity.rs`        |
-| `PROMOTE_UTIL_PCT`              | 25.0        | `chiri/affinity.rs`        |
-| `DEMOTE_UTIL_PCT`               | 5.0         | `chiri/affinity.rs`        |
-| `FG_BUSY_UTIL_PCT`              | 30.0        | `chiri/affinity.rs`        |
-| `FG_BUSY_RELEASE_UTIL_PCT`      | 15.0        | `chiri/affinity.rs`        |
-| `BIG_HIGH_WATER`                | 0.90        | `chiri/affinity.rs`        |
-| `LITTLE_HIGH_WATER`             | 0.70        | `chiri/affinity.rs`        |
-| `FRAMETIME_WINDOW`              | 144         | `monitor/fps_monitor.rs`   |
-| `MIN_FRAME_NS` / `MAX_FRAME_NS` | 1ms / 200ms | `monitor/fps_monitor.rs`   |
+| 常量                            | 值          | 位置                     |
+| ------------------------------- | ----------- | ------------------------ |
+| `SCENEMODE_SAT_UTIL`            | 0.75        | `chiri/mod.rs`           |
+| `THERMAL_UNPRESS_STEP`          | 0.15        | `chiri/mod.rs`           |
+| `SCHEDULER_IPC_RESTART_MAX`     | 5           | `chiri/mod.rs`           |
+| `OVERLOAD_MARGIN`               | 0.15        | `chiri/affinity.rs`      |
+| `CORE_OVERLOAD_UTIL`            | 0.70        | `chiri/affinity.rs`      |
+| `PINNED_WEIGHT`                 | 0.4         | `chiri/affinity.rs`      |
+| `MAX_PINS_PER_CORE`             | 3           | `chiri/affinity.rs`      |
+| `PROMOTE_UTIL_PCT`              | 25.0        | `chiri/affinity.rs`      |
+| `DEMOTE_UTIL_PCT`               | 5.0         | `chiri/affinity.rs`      |
+| `FG_BUSY_UTIL_PCT`              | 30.0        | `chiri/affinity.rs`      |
+| `FG_BUSY_RELEASE_UTIL_PCT`      | 15.0        | `chiri/affinity.rs`      |
+| `BIG_HIGH_WATER`                | 0.90        | `chiri/affinity.rs`      |
+| `LITTLE_HIGH_WATER`             | 0.70        | `chiri/affinity.rs`      |
+| `FRAMETIME_WINDOW`              | 144         | `monitor/fps_monitor.rs` |
+| `MIN_FRAME_NS` / `MAX_FRAME_NS` | 1ms / 200ms | `monitor/fps_monitor.rs` |
 
 **容量类**
 

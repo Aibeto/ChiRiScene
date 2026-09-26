@@ -73,7 +73,7 @@ fn core_name_for(affected: &[usize]) -> Option<&'static str> {
 /// 明日方舟特调（akmode）控制器：独立于 CLG 的动态限频调度，**无档位**。
 /// 每个负载 tick 按核心组实时负载直接计算 scaling_max_freq 目标上限：
 ///   target_ratio = clamp(组内最大核心占用率 × headroom, perf_floor, 1.0)
-///   target_max   = 频率表中不低于 ratio × 硬件最高的最低档位
+///   target_max   = 频率表中 ≤ ratio × 硬件最高的最大档位（floor 对齐）
 /// 升频立即执行（响应性优先），降频须目标偏离超过 hysteresis 且持续
 /// down_hold_ms 才执行（防负载抖动来回改写）。
 /// 替代原四档 core-count 阈值方案——后者在「少数线程高占用」负载（如明日方舟
@@ -157,7 +157,12 @@ impl TunedGovernor {
                 .filter_map(|s| s.parse().ok())
                 .collect();
             if freqs.is_empty() {
-                continue;
+                // scaling_available_frequencies 读不到/空表：按 policy 首核映射核心组，
+                // 回退 soc.yaml [freq_khz] 兜底（只补表，不改取档/floor 对齐逻辑）
+                match crate::common::soc_freq_fallback_for_policy(pid) {
+                    Some(f) => freqs = f,
+                    None => continue,
+                }
             }
             freqs.sort_unstable();
             freqs.dedup();
@@ -367,12 +372,19 @@ impl TunedGovernor {
         );
     }
 
-    /// 频率表中找「不低于 ratio × 硬件最高」的最低档位：
-    /// 升频响应性优先，落点略高于理论值无妨；降频由 hysteresis + hold 防抖兜住。
+    /// 频率表中找「≤ ratio × 硬件最高」的最大档位（floor 对齐）。
+    /// 写的是 scaling_max（上限），落点不得高于计算目标——ceil 会比决策多给一档
+    /// 频率，且目标落在两档之间时内核本就把 max 向下 clamp，先对齐再写才能
+    /// 账实一致、同值不落盘的去重才有效。
     fn freq_for_ratio(freqs: &[u32], ratio: f32) -> u32 {
         let hw_max = *freqs.last().unwrap_or(&0);
         let want = (hw_max as f32 * ratio) as u32;
-        freqs.iter().copied().find(|&f| f >= want).unwrap_or(hw_max)
+        freqs
+            .iter()
+            .rev()
+            .copied()
+            .find(|&f| f <= want)
+            .unwrap_or_else(|| *freqs.first().unwrap_or(&0))
     }
 
     // [dwell] 受控写频（与 CLG write_freq 同口径）：死区由调用方 hysteresis 保证

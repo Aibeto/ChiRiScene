@@ -96,7 +96,12 @@ impl FastLock {
                 .filter_map(|s| s.parse().ok())
                 .collect();
             if freqs.is_empty() {
-                continue;
+                // scaling_available_frequencies 读不到/空表：按 policy 首核映射核心组，
+                // 回退 soc.yaml [freq_khz] 兜底（只补表，不改取档/floor 对齐逻辑）
+                match crate::common::soc_freq_fallback_for_policy(pid) {
+                    Some(f) => freqs = f,
+                    None => continue,
+                }
             }
             freqs.sort_unstable();
             freqs.dedup();
