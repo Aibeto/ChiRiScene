@@ -220,7 +220,7 @@ pub fn read_file_content(path: &str) -> Result<String> {
 /// `Thermal.cpu_temp_zone_types` 可覆盖（默认所有 SoC 都不写这份名单，
 /// 即用内置默认，行为不变）。
 ///
-/// 名单语义（依据内核分析报告 `.cursor/docs/kernel-analysis/04-thermal.md`）：
+/// 名单语义（依据内核分析报告 `.archive/.cursor/docs/kernel-analysis/04-thermal.md`）：
 /// - `soc_max` = virtual-sensor 聚合温区（多传感器取 max，可能含 GPU/CDSP
 ///   等非 CPU 传感器），作 cpu_temp 偏保守、**非纯 CPU 温度**；
 /// - `cpuss` = cluster 级 tsens 单传感器（真机回退命名 cpuss0-3），soc_max

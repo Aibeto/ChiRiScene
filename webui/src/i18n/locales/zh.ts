@@ -133,7 +133,7 @@ export default {
   'config.advanced': '高级设置',
   'config.advanced.hint': '请在开发者指导下操作',
   'config.down': 'DOWN',
-  'config.down.hint': '请在开发者指导下启用',
+  'config.down.hint': '除非开发者要求否则不应启用',
   'config.down.on': 'DOWN 已启用',
   'config.down.off': '正常调度',
   'config.powerAvg': '显示平均功耗',

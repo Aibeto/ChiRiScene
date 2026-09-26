@@ -32,7 +32,7 @@ tuned_profiles:
   # boost_affinity=false：不做 boost 亲和收窄、不保大核常在线——保大核与
   # 「贴负载省电」相反，播放场景让核按 EAS 自然摆放。
   #
-  # 2026-09-20 8550 视频功耗回放调整（依据见 .codebuddy/docs/2026-09-20-8550-video-power-analysis.md）：
+  # 2026-09-20 8550 视频功耗回放调整（依据见 .archive/.codebuddy/docs/2026-09-20-8550-video-power-analysis.md）：
   # - headroom 1.05 → 0.95：原「别压太紧」档位下 little 上限仍达 72%（p95 100%），
   #   而 capfreq_little 与 batt_p 相关性最强（r=0.884），是头号功耗驱动；
   # - util_smoothing 0.35 → 0.25：进一步滤掉弹幕/进度条尖峰，压 prime 的 p95（84%）；

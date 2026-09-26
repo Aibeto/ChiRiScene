@@ -12,7 +12,7 @@ topology:
 
 # [capacity] EAS capacity 兜底（真机 cpu_capacity 读不到时用）：
 # 真机 FAS 日志实测 280/855/1024（出处未在厂商 DT 实证——本仓库不含真机设备树，
-# 待真机 /proc/device-tree 或 dtb 反编译确证，见 .cursor/docs/kernel-analysis/device-todo.md T1）；
+# 待真机 /proc/device-tree 或 dtb 反编译确证，见 .archive/.cursor/docs/kernel-analysis/device-todo.md T1）；
 # mainline DT（mdocs/sm8550.dtsi）参照 326/693/1024。**本表仅代表 8550 真机实测，其他 SoC 勿套用**——
 # 算容量一律优先读各机型真机 cpu_capacity，本表只作 sysfs 读不到时的兜底。
 capacity:
@@ -22,7 +22,7 @@ capacity:
 
 # [freq] 频率档位兜底（kHz 升序；scaling_available_frequencies 读不到时用）。
 # 来源：mainline DT CPU OPP 表（mdocs/sm8550.dtsi 458-753 行附近），
-# 已与真机 scaling_available_frequencies 逐档核对一致（.codebuddy/docs/2026-09-26-sm8550-opp-ladder.md）。
+# 已与真机 scaling_available_frequencies 逐档核对一致（.archive/.codebuddy/docs/2026-09-26-sm8550-opp-ladder.md）。
 # 写 scaling_max_freq 前必须 floor 对齐到表内档位（内核 clamp 向下取最近档）。
 freq_khz:
   # little / policy0：16 档 307200-2016000

@@ -43,3 +43,39 @@
 - **整文件覆盖（Write）前必须确认目标不是已跟踪文件**：本轮为嵌 WebUI 资产直接整文件重写了已有 `build.rs`，丢掉 eBPF 构建与 `assert_required_configs` 断言——cargo check 静默通过（ebpf 占位产物已存在、断言消失不会报错），靠 diff 审查才抓回。写整文件前先 `git status` 该路径 / 读原文件；向既有文件加功能一律局部 Edit。cargo/类型检查通过 ≠ 构建脚本语义完整。
 
 - **「field is never read」当 bug 查，别当冗余直接删（2026-09-22）**：`fast.rs` 的 `LockedPolicy.target` 报 never read，真相是 `tick()` 防篡改重写误用了 `hw_max`——frozen（锁最低频）每 5 秒被拉回最高频，功能等于没有。之前的审查两轮都只看到字段存在就放行了。字段「写了没人读」和「读的地方读错了对象」在警告里长得一样：先找这个字段的赋值语义本该被谁消费、那个消费方实际读的是不是另一个字段，再决定是删字段还是修消费方。
+
+- **口径类改动必须代码表达式与文档双向核对（2026-09-18）**：功耗采样门槛 `sample_ok` 的表达式与文档/记忆口径写反并存续 17 轮——记忆把错误表达式当口径记录。沉淀口径时同一句话拿代码算一遍；发现矛盾以代码为准并同步修文档。「存在 ≠ 有效」这类语义也勿过度解读（用户纠正过）。
+
+- **normalize 会静默抬参数**：headroom clamp 下限曾是 1.0，任何 <1 的收紧值（如 0.95）被 normalize 静默抬回 1.0，省电方向参数等于失效且无告警（2026-09-20 放宽到 (0.5, 2.0)）；同理热压制豁免档 `free_above` 被 normalize 抬到与 soft_perf_cap 相等 → 压制带为空、cap=85 时段零压制（2026-09-23 修复：normalize 对「过低或相等」统一抬到 soft_perf_cap+0.10）。新增 normalize 约束时先想清楚「合法的省电方向值」会不会被它吃掉。
+
+- **is_fast_lock 六入口收敛（2026-09-22）**：`is_fast_lock(mode)` 必须覆盖 vector|frozen 全集，六个接管入口（启动/亮屏/ModeChange/ConfigReload/DOWN 退出/panic 自愈）漏一个就静默失效——曾漏 ConfigReload 分支（`== "vector"` 没算 frozen），配置热重载即 fast_lock.release()。核对手段：`git grep '== "vector"' src` 应为空。
+
+- **锁频写序**：升频先写 max 后写 min、降频先写 min 后写 max——反序出现 min>max 被内核拒绝、写失败后状态静默失效（frozen、PowerBase 接管首拍都踩过：接管时立刻写 min=max=最高频且 perf 同步 1.0，否则首 tick 走升频写序时 max<min 被拒 → perf 不前移 → 永久静默失效且零报错）。
+
+- **写频滞回三断链（2026-09-24，全部 cargo check 通过仍错）**：① 死区吞写 × hold 用精确比较 → 假 down 循环（hold 改用死区比较，`deadzone_band()` 是唯一换算点，对称假 up 同修）；② CLG up 判定加 1e-6 epsilon（α≤0.5 慢升时 1 ulp 舍入停滞 → 假 up 无限累加）；③ last_failed 悬挂：write_freq 值去重早退路径要补清失败标记。cargo/类型检查通过 ≠ 行为等价，浮点比较与早退路径要单独过一遍。
+
+- **组绑定释放臂必须覆盖压力窗口外（2026-09-24/25）**：新增任何组绑定触发条件时，同步检查「触发条件消失后」的释放侧兜底——Busy 绑定回落曾被 key_pressure 门控在 promote 路径内，压力一落线程带收窄掩码滞留 95 分钟（详见 03 亲和小节）。
+
+- **有副作用的读不能挂高频采样（2026-09-22）**：每秒读 Adreno gpuclk/devfreq cur_freq 会唤醒低功耗态 GPU，playback 实测 +47% 功耗（1.76→2.59W），CPU cpufreq 读取则廉价。定位手法：调参没变而功耗涨 → 涨的只能是新加的东西（控制变量）。
+
+- **Rust 块注释里写 sysfs 通配路径会吃掉注释配对（2026-09-26）**：路径中的 `/*` `*/` 与块注释定界符冲突（screen_detect.rs 实例），注释里的通配路径要改写成不含 `/*` 的形式。
+
+- **meta 新字段漏同步 = 配置死循环（2026-09-22）**：`MetaYamlFile`（deny_unknown_fields）缺新字段时，WebUI 写入该键 → 整文件判非法 → sync_meta_snapshot 内嵌默认整体覆盖 → 用户 oplus/双电芯设置被抹、循环往复。同步点清单见 02「新增字段要同步」，漏一处即此后果。
+
+- **devimp main_ 的 batt_i 列疑似整数化（值域仅 0-3，2026-09-24）**：「batt_i==0 严格排除」会误删过半样本、P_avg 系统性高估（aweme 3.35 vs 真值 2.14W）——**功耗一律以 status.csv 的 charge+batt_power_w 为准**。
+
+- **PowerShell 管道陷阱（2026-09-17）**：svelte-check 等命令输出经 `2>&1` 变对象数组，直接管道 Select-String 会漏——先存变量再筛（`$o = & node ... 2>&1; $o | Select-String ...`）。
+
+- **js-yaml 5.x 无 default 导出**（只有命名导出 `load`），且须卸载 `@types/js-yaml`（v4 的 `export =` 会掩盖 default 导入类型错误）。
+
+- **CSS 覆盖三坑**：别靠「写在后面」覆盖前文规则（同权重后者胜，要用后代选择器提权重）；类选择器自带 `display` 时会压过 UA 的 `[hidden]` → 显式写 `.xxx[hidden]{display:none}`；原生 `<select>` 自绘弹层不吃继承色，`option` 也要显式背景+文字色（深色页白底白字）。
+
+- **ak-ui 深坑（2026-09-18/19 实测）**：`--ak-progress-signal/value` 默认值声明在 `.ak-progress` 根元素上，裸用 track/fill 取不到 signal 变量 → background invalid → 进度条透明（两次「修宽度」无效的真根因）；独立页面（analyze/）应 import tokens.css 自建样式，别拼组件类。走查用 agent-browser 时 `wait --load networkidle` 因 Vite HMR 长连接永不完成——固定等待 + eval 读 DOM。
+
+- **git 尾注与历史改写（2026-09-26 实录）**：commit message 尾注 `Co-authored-by:` 会被 GitHub 解析计入 Contributors（本地 shortlog/log --author 查不到）；`git filter-branch --msg-filter` 改写后**全部 commit hash 作废**（tree/parent/作者/日期不变），其他克隆需重 clone 或 reset --hard，dependabot 旧链等其自行 rebase。
+
+- **A/B 纪律（2026-09-22/24）**：采集态自身开销不可忽略（logd 待机占 launcher 场景 ~18%、视频 ~14%）——任何功耗 A/B 必须同 dev_record 状态；devimp 无 charge 列只能 `batt_i<0` 滤充电，不滤 39W 快充直接进均值；跨批次（不同日/固件/机型）数据不可比。
+
+- **文档里的数字必须从常量定义核对**，不能凭印象写（CLG_STALE_MAX 实为 5s，初稿误写 30s；TUNED_COOLDOWN=300s 已核）。
+
+- **未提交的工作区改动（尤其注释掉的代码）可能是用户重构中间态（2026-09-16）**：报错指向用户正在编辑的文件时只报告、不动手；顺手修之前区分「我改的/工作区已有的」，评估 ≠ 批准开工。

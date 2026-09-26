@@ -942,7 +942,7 @@ pub struct ThermalGuardConfig {
     /// （cpuss0-3），作 soc_max 缺失时的回退。匹配按名单序分层扫描（外层
     /// 名单项、内层 zones，第一个命中项胜出，utils::find_cpu_temp_path），
     /// 保证 soc_max 优先于 cpuss。依据内核分析
-    /// `.cursor/docs/kernel-analysis/04-thermal.md`。
+    /// `.archive/.cursor/docs/kernel-analysis/04-thermal.md`。
     #[serde(default = "crate::utils::default_cpu_temp_zone_types")]
     pub cpu_temp_zone_types: Vec<String>,
 }

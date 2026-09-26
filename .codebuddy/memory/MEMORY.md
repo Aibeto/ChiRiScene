@@ -78,7 +78,7 @@
 - **运行时锁定**：套用成功写 `/tmp/chiri-labs.lock`（退 `/dev`），存在期间不还原、以 rhine.chr 为意图来源 reassert（**绝不重写 rhine-back**）。重启 tmpfs 空 + service.sh 删 rhine.chr 才还原。
 - **保留字 `off`** = 强制关闭（UI 走风险确认），必须在 YAML 解析前字面量比较（YAML 1.1 里 off 是布尔）。
 - 篡改痕迹：标记首行模式名 + 其后 `# 代号`（代号而非文案，可能早于 `load_language`）；WebUI `labWarnings` 映射。
-- WebUI 模式列表硬编码（`LAB_MODE_KEYS`+`lab.mode.*`+`LAB_TAKEOVER`+rhine-init 四处同步）；`LAB_ENABLEABLE` = vector/contingency/babel。**zh 用中文名+彩蛋、en 用英文名**（2026-09-17 起），勿按旧约「修正」。
+- WebUI 模式列表硬编码（`LAB_MODE_KEYS`+`lab.mode.*`+`LAB_TAKEOVER`+rhine-init 四处同步）；`LAB_ENABLEABLE` = vector/contingency/babel/frozen 四项（2026-09-22 起 frozen 可启用，`webui/src/data/lab.ts`）。**zh 用中文名+彩蛋、en 用英文名**（2026-09-17 起），勿按旧约「修正」。
 
 ### DOWN 停摆
 
