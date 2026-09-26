@@ -24,7 +24,7 @@ export interface AppTagContext {
 
 // [fetch]
 /**
- * 安装的应用（第三方）优先 KernelSU 原生 bridge，失败回退 `pm list packages -3`；应用名获取失败静默降级为包名
+ * 安装的应用（第三方）。优先 KernelSU 原生 bridge，失败回退 `pm list packages -3`；应用名获取失败静默降级为包名
  */
 export async function fetchInstalledPackages(): Promise<InstalledApp[]> {
   let pkgs: string[] = []

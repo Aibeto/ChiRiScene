@@ -257,7 +257,7 @@ apply_divisor_from_raw() {
     return 0
 }
 
-# 私有节点可用 → 开 oplus_chg / oplus_dual_cell；返回 1 = 没有私有节点，调用方接着走标准节点校准
+# 私有节点可用 → 开 oplus_chg / oplus_dual_cell；返回 1 = 没有私有节点」，调用方接着走标准节点校准
 apply_oplus_switches() {
     local meta="$1"
     local bcc=""

@@ -28,7 +28,7 @@ impl CpuScheduler {
         }
     }
 
-    /// 应用所有一次性的、与模式无关的系统调整停摆期一律跳过（含调用的竞争窗口）：本函数是唯一的入口，闸内的那次复查才是权威判定
+    /// 应用所有一次性的、与模式无关的系统调整。停摆期一律跳过（含调用的竞争窗口）：本函数是唯一的入口，闸内的那次复查才是权威判定
     pub fn apply_system_tweaks(&self) -> Result<()> {
         let _gate = Self::tweaks_gate()
             .lock()
@@ -53,14 +53,14 @@ impl CpuScheduler {
         SNAP.get_or_init(|| Mutex::new(HashMap::new()))
     }
 
-    /// 下发与还原的互斥闸：两个调用方在不同线程（config_watcher 与调度循环），「判完 is_down 就被另一线程切进/切出 DOWN」的窗口会让 tweak 写进停摆期、或还原覆盖掉刚补发的下发
+    /// 下发与还原的互斥闸：两个调用方在不同线程（`config_watcher` 与调度循环），「判完 is_down 就被另一线程切进/切出 DOWN」的窗口会让 tweak 写进停摆期、或还原覆盖掉刚补发的下发
     /// 双方都在闸内**再看一次**停摆标志即闭合该窗口
     fn tweaks_gate() -> &'static Mutex<()> {
         static GATE: OnceLock<Mutex<()>> = OnceLock::new();
         GATE.get_or_init(|| Mutex::new(()))
     }
 
-    /// 节点不存在/不可读时不记录（写也一定失败，没有可还原的东西）IO 调度器节点（*/queue/scheduler）读出是候选列表、当前值带方括号，
+    /// 节点不存在/不可读时不记录（写也一定失败，没有可还原的东西）。IO 调度器节点（`*/queue/scheduler`）读出是候选列表、当前值带方括号，
     /// 写回必须剥壳——原样写 "[mq-deadline] kyber" 是非法值
     fn snapshot_node(path: &str) {
         let Ok(raw) = fs::read_to_string(path) else {
@@ -77,7 +77,7 @@ impl CpuScheduler {
         snap.entry(path.to_string()).or_insert(value);
     }
 
-    /// write_nodes 批量写不读原值，写前先补齐快照与 utils::write_nodes 同口径泛型：Vec<(String, String)> 与 &[(&str, &str)] 都能直接传（这里只取路径，
+    /// `write_nodes` 批量写不读原值，写前先补齐快照。与 `utils::write_nodes` 同口径泛型：`Vec<(String, String)>` 与 `&[(&str, &str)]` 都能直接传（这里只取路径，
     /// 值不参与快照）
     fn snapshot_nodes<P: AsRef<str>, V>(items: &[(P, V)]) {
         for (path, _) in items {
@@ -130,7 +130,7 @@ impl CpuScheduler {
         "sched_schedstats",
     ];
 
-    /// 写入 Sched 段配置的内核调度器参数：节点写入去重不是本层职责（FastWriter 面向高频路径，此处热重载频率低、直接写）逐节点 debug、结束 info 汇总实际写入数；空值与越白名单键跳过
+    /// 写入 Sched 段配置的内核调度器参数：节点写入去重不是本层职责（FastWriter 面向高频路径，此处热重载频率低、直接写）。逐节点 debug、结束 info 汇总实际写入数；空值与越白名单键跳过
     fn apply_sched_params(&self) -> Result<()> {
         let config = self.config.read().unwrap();
         let sched = &config.sched;
@@ -172,7 +172,7 @@ impl CpuScheduler {
     }
 
     // [cpu_idle]
-    /// 写入 cpuidle current_governor：仅在 CpuIdleScalingGovernor 开关开启、配置了目标 governor 且 sysfs 路径存在时写
+    /// 写入 cpuidle current_governor：仅在 `CpuIdleScalingGovernor` 开关开启、配置了目标 governor 且 sysfs 路径存在时写
     fn apply_cpu_idle_governor(&self) -> Result<()> {
         let config = self.config.read().unwrap();
         if config.function.cpu_idle_scaling_governor && !config.cpu_idle.current_governor.is_empty()
@@ -204,7 +204,7 @@ impl CpuScheduler {
             return Ok(());
         }
 
-        // 逐设备逐参数收集，最后一次批量写：单节点失败 debug、全部失败 warn（见 utils::write_nodes）不再逐节点预判 exists——块设备/参数节点各机型差异大，
+        // 逐设备逐参数收集，最后一次批量写：单节点失败 debug、全部失败 warn（见 utils::write_nodes）。不再逐节点预判 exists——块设备/参数节点各机型差异大，
         // 预判会让日志与真实写入结果脱节
         let mut items: Vec<(String, String)> = Vec::new();
         if let Ok(entries) = fs::read_dir(block_dir) {

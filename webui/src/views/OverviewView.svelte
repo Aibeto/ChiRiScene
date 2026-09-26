@@ -461,7 +461,7 @@
     gap: var(--ak-space-2);
   }
 
-  /* 家族名：小字上标（与 .mode__id 同档）此前无规则 → `<p>` 的默认外边距会顶开 .mode__main 的 0.2rem 行距，三行看起来是散的 */
+  /* 家族名：小字上标（与 .mode__id 同档）。此前无规则 → `<p>` 的默认外边距会顶开 .mode__main 的 0.2rem 行距，三行看起来是散的 */
   .mode__family {
     margin: 0;
     color: var(--ak-text-secondary);

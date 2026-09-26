@@ -1,5 +1,5 @@
 //! rhine.rs: [consts] [defs] [state] [backup] [lock] [flow] [startup] [watch]
-//! 实验室（rhine）：模块内置的实验性调度模式开关，ChiRi 专属三个文件各管一件事：
+//! 实验室（rhine）：模块内置的实验性调度模式开关，ChiRi 专属。三个文件各管一件事：
 //! - `rhine-init.yaml`（编译期嵌入、不落盘）：模式定义；**缺省条目 = 该项不变更**
 //! - `rhine.chr`（模块根，对外暴露）：实验室状态，内容即模式 key；空/只有注释 = 未启用
 //! - `rhine-back.chr`（daemon 生成）：套用前一刻的原值快照，还原完即删；也是「上次启用过实验室」
@@ -34,7 +34,7 @@ const RHINE_DEFAULT_CHR: &str = include_str!("../module/rhine.chr");
 const WATCH_RETRY_BACKOFF: Duration = Duration::from_secs(2);
 
 // [defs]
-/// 单个实验室模式的影响项全是 Option：**缺省 = 该项不变更**
+/// 单个实验室模式的影响项。全是 Option：**缺省 = 该项不变更**
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RhineModeDef {
@@ -105,7 +105,7 @@ fn is_force_off(raw: &str) -> bool {
         .eq_ignore_ascii_case("off")
 }
 
-/// 解析 rhine.chr 内容空行与 `#` 注释行先剥掉——文件允许只写注释（语义为空）
+/// 解析 rhine.chr 内容。空行与 `#` 注释行先剥掉——文件允许只写注释（语义为空）
 fn parse_state(text: &str) -> State {
     let body: Vec<&str> = text
         .lines()
@@ -209,7 +209,7 @@ pub const LOCK_NAME: &str = "chiri-labs.lock";
 /// 候选目录按序探测（/dev 是 Android 必有的 tmpfs）；WebUI 按同一顺序探测，见 webui/src/contract/lab.ts
 const LOCK_DIRS: [&str; 2] = ["/tmp", "/dev"];
 
-/// 痕迹代号（写进标记，WebUI 按 `lab.lock.note.*` 映射成文案）刻意用代号而非现成文案：写痕迹可能发生在 load_language 之前，i18n 未就绪时 t() 只会原样返回 key
+/// 痕迹代号（写进标记，WebUI 按 `lab.lock.note.*` 映射成文案）。刻意用代号而非现成文案：写痕迹可能发生在 load_language 之前，i18n 未就绪时 t() 只会原样返回 key
 const NOTE_STATE_RESET: &str = "state-reset";
 const NOTE_CLOSE_REJECTED: &str = "close-rejected";
 const NOTE_BACKUP_REBUILT: &str = "backup-rebuilt";
@@ -255,7 +255,7 @@ fn write_lock(mode: &str, notes: &[String]) -> bool {
     common::write_file_no_panic(p, text.as_bytes())
 }
 
-/// 标记里记录的模式（第一行）文件不存在 / 内容不是已知模式 → None
+/// 标记里记录的模式（第一行）。文件不存在 / 内容不是已知模式 → None
 fn lock_mode() -> Option<String> {
     let text = fs::read_to_string(lock_path()?).ok()?;
     let first = text.lines().next()?.trim().to_string();
@@ -349,7 +349,7 @@ fn apply(root: &Path, meta_path: &Path, key: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 读回快照（不存在 / 非法 → None）换模式回落时用它取「启用前的原值」
+/// 读回快照（不存在 / 非法 → None）。换模式回落时用它取「启用前的原值」
 fn read_backup(root: &Path) -> Option<Backup> {
     let text = fs::read_to_string(root.join(RHINE_BACK_CHR)).ok()?;
     serde_yaml::from_str::<Backup>(&text).ok()
@@ -435,7 +435,7 @@ fn write_fallback_backup(root: &Path, key: &str) {
     }
 }
 
-/// 按 rhine-back.chr 还原原值并删除快照；没有快照 = 无事可做快照非法（被改坏/截断）时用内嵌默认收尾：三个总闸回内嵌默认、运行时覆盖全清——最坏是回到出厂设定，不会卡在退不出的半覆盖状态
+/// 按 rhine-back.chr 还原原值并删除快照；没有快照 = 无事可做。快照非法（被改坏/截断）时用内嵌默认收尾：三个总闸回内嵌默认、运行时覆盖全清——最坏是回到出厂设定，不会卡在退不出的半覆盖状态
 fn restore(root: &Path, meta_path: &Path) -> Option<String> {
     let path = root.join(RHINE_BACK_CHR);
     if !path.exists() {
@@ -497,7 +497,7 @@ fn restore(root: &Path, meta_path: &Path) -> Option<String> {
 /// 一次收敛的结果
 #[derive(Debug, Default)]
 struct Converged {
-    /// 被还原的快照来源（origin）空串表示快照非法、走的是内置默认值兜底
+    /// 被还原的快照来源（origin）。空串表示快照非法、走的是内置默认值兜底
     restored: Option<String>,
     /// 成功套用的实验室模式
     enabled: Option<String>,
@@ -650,7 +650,7 @@ fn refresh_mode() {
 /// 启动期处理结果（main 在 logger::init 之后补打点——归档/还原都发生在 init 之前）
 #[derive(Debug, Default)]
 pub struct StartupReport {
-    /// 被还原的快照来源（origin）None = 没有快照；空串 = 快照非法，走内置默认兜底
+    /// 被还原的快照来源（origin）。None = 没有快照；空串 = 快照非法，走内置默认兜底
     pub restored: Option<String>,
     /// 本次启动后生效的实验室模式
     pub enabled: Option<String>,
@@ -664,9 +664,9 @@ pub struct StartupReport {
     pub forced: bool,
 }
 
-/// 启动期处理，main 在首次 Config::load 之前调用（只有 Chiri 调用）先还原后套用，三条路径自洽：
+/// 启动期处理，main 在首次 Config::load 之前调用（只有 Chiri 调用）。先还原后套用，三条路径自洽：
 /// - 开机：service.sh 已清空 rhine.chr，只剩快照 → 只还原；
-/// - 不停机重启调度：rhine.chr 与快照都在 → 先还原再重新套用、快照刷新，不会把改过的状态记成原值；
+/// - 不停机重启调度：rhine.chr 与快照都在 → 先还原再重新套用、快照刷新，不会把改过的状态」记成原值；
 /// - 平时：两个文件都不在 → 什么都不做
 pub fn on_startup(root: &Path, meta_path: &Path) -> StartupReport {
     let c = converge(root, meta_path);

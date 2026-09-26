@@ -19,7 +19,7 @@ use crate::i18n::{t, t_with_args};
 /// 无额外轮询
 static CLAMP_HEAVY: AtomicBool = AtomicBool::new(true);
 
-/// 由配置层同步 `Thermal.clamp_heavy`（`Config::load` 调用）热重载即时生效
+/// 由配置层同步 `Thermal.clamp_heavy`（`Config::load` 调用）。热重载即时生效
 pub fn set_clamp_heavy(v: bool) {
     CLAMP_HEAVY.store(v, Ordering::Relaxed);
 }
@@ -1099,7 +1099,7 @@ impl CpuLoadGovernor {
         self.cfg.normalize();
     }
 
-    /// 停止所有 Worker：通知停止 → 等待线程退出 → 恢复系统状态Worker 线程退出前会自行恢复其 policy，此处仅做 join 确保退出完成
+    /// 停止所有 Worker：通知停止 → 等待线程退出 → 恢复系统状态。 Worker 线程退出前会自行恢复其 policy，此处仅做 join 确保退出完成
     fn stop_workers(&mut self) {
         // 通知所有 Worker 停止
         self.stop.store(true, Ordering::Release);

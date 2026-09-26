@@ -201,7 +201,7 @@ pub struct FasRulesConfig {
     #[serde(default = "d_temp_perf")]
     pub core_temp_throttle_perf: f32,
 
-    /// 接管期间写入 /proc/sys/kernel/sched_migration_cost_ns（None = 不动），退出按快照恢复
+    /// 接管期间写入 `/proc/sys/kernel/sched_migration_cost_ns`（None = 不动），退出按快照恢复
     #[serde(default)]
     pub migration_cost_ns: Option<u64>,
 

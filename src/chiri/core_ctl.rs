@@ -1,6 +1,6 @@
 //! core_ctl.rs: [types] [helpers] [state] [max_cpus] [scenemode] [online_reader] [restore]
 
-/// 核心在线控制器接管（ChiRi 专属）三态状态机（互斥，按「最近一次 apply」切换，内部去重）：
+/// 核心在线控制器接管（ChiRi 专属）。三态状态机（互斥，按「最近一次 apply」切换，内部去重）：
 /// - **Boost**（boost/vector/特调）：各 cluster 的 core_ctl `min_cpus` 抬到全组常在线，防止低负载时
 /// 热插拔回滞把大核下线、与 ChiRi 升降频决策打架；
 /// - **Scenemode 离线**（息屏深度省电）：首选 WALT core_ctl 写簇首核 `max_cpus=0` 让内核 walt_halt_cpus
@@ -70,7 +70,7 @@ pub struct CoreCtlManager {
     max_cpus_warned: bool,
 /// 上次 max_cpus 纠偏（重写 "0"）时刻：冷却内不重复，防与厂商 pipeline 逐周期拉锯
     max_cpus_reassert_at: Option<Instant>,
-    /// scenemode 下守护进程自身线程是否已**全部**钉到专用小核（部分失败为false，下次触发重试钉定）
+    /// scenemode 下守护进程自身线程是否已**全部**钉到专用小核（部分失败为 false，下次触发重试钉定）
     self_pinned: bool,
 /// 实际钉住的自身 tid 清单（**只记成功**）：unpin 按它逐个恢复，避免部分失败时已钉线程永久滞留单核掩码
     self_pinned_tids: Vec<i32>,
@@ -413,7 +413,7 @@ impl CoreCtlManager {
                 false
             }
             None => {
-                // 读回持续失败：写已发出、生效状态未知，按已生效记账防恢复漏记（restore_max_cpus 按快照写回；即使 halt 未生效，写回快照原值也无害）维持期 reassert 会重读并纠偏
+                // 读回持续失败：写已发出、生效状态未知，按已生效记账防恢复漏记（restore_max_cpus 按快照写回；即使 halt 未生效，写回快照原值也无害）。维持期 reassert 会重读并纠偏
                 warn!(
                     "{}",
                     t_with_args("corectl-verify-failed", &fluent_args!("path" => path))
@@ -506,7 +506,7 @@ impl CoreCtlManager {
         }
     }
 
-/// 兜底路径：逐核写 online=0 下线 prime 簇（core_ctl 节点不可用的机型）回读验证，失败跳过记 warn；成功下线的核连同原始 online 值记入 offlined 供恢复
+/// 兜底路径：逐核写 online=0 下线 prime 簇（core_ctl 节点不可用的机型）回读验证，失败跳过（记 warn）；成功下线的核连同原始 online 值记入 offlined 供恢复
     fn offline_cores_direct(&mut self) {
         for cpu in scenemode_targets() {
             // 防重复：上轮恢复失败的残留核（已在 offlined 中）跳过重复登记
@@ -716,7 +716,7 @@ impl CoreCtlManager {
         }
     }
 
-/// 恢复被下线的核：按快照值写回 online，带回读 + 一次重试**恢复失败的核保留在 offlined 中**（clear 掉则状态机回 NONE 后再无重试路径，被内核拒绝 / 异步热插拔未完成的核会永久离线），
+/// 恢复被下线的核：按快照值写回 online，带回读 + 一次重试。**恢复失败的核保留在 offlined 中**（clear 掉则状态机回 NONE 后再无重试路径，被内核拒绝 / 异步热插拔未完成的核会永久离线），
 /// 由每 2s 周期重试
     fn restore_online(&mut self) {
         // 先恢复 core_ctl max_cpus 记账（与 offlined 互斥，两路径只会有一个生效）

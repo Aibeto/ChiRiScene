@@ -226,7 +226,7 @@
   </Panel>
 
   {#if app.isChiri}
-    <!-- 实验室：二级页面入口只显示「有没有启用」这一个事实，具体在实验室页里管 -->
+    <!-- 实验室：二级页面入口。只显示「有没有启用」这一个事实，具体在实验室页里管 -->
     <Panel
       signal={app.labMode ? 'danger' : ''}
       title={t('lab.entry')}
@@ -251,7 +251,7 @@
 </div>
 
 <style>
-  /* 单按钮的入口行：靠右对齐原来借 .u-between 但只有一个子元素，space-between 等于左对齐；这里显式 flex-end（漏了这条规则时按钮会贴在左边） */
+  /* 单按钮的入口行：靠右对齐。原来借 .u-between 但只有一个子元素，space-between 等于左对齐；这里显式 flex-end（漏了这条规则时按钮会贴在左边） */
   .entry__row {
     display: flex;
     justify-content: flex-end;

@@ -136,7 +136,7 @@ label {
   outline-offset: var(--ak-focus-offset);
 }
 
-/* [utilities] 项目级通用类：只做布局与排版，视觉决策一律走 --ak-* token */
+/* [utilities] 项目级通用类：只做布局与排版，视觉决策一律走 --ak-* token。 */
 .u-row {
   display: flex;
   align-items: center;
@@ -183,7 +183,7 @@ label {
 }
 
 /*
- * 页面/面板内的纵向分组（视图根节点与字段组共用）列宽必须显式 minmax(0,1fr)：网格项默认 min-width:auto，日志这类 nowrap 宽内容会把整列（乃至整页）撑出屏幕
+ * 页面/面板内的纵向分组（视图根节点与字段组共用）。列宽必须显式 minmax(0,1fr)：网格项默认 min-width:auto，日志这类 nowrap 宽内容会把整列（乃至整页）撑出屏幕
  */
 .u-stack {
   display: grid;
@@ -199,7 +199,7 @@ label {
 }
 
 /*
- * 说明性小字：面板底注/状态附注/字段提示.u-mt-* 必须定义在其后，组合使用时 margin-top 才不会被 margin:0 吃掉
+ * 说明性小字：面板底注/状态附注/字段提示。.u-mt-* 必须定义在其后，组合使用时 margin-top 才不会被 margin:0 吃掉
  */
 .u-note {
   margin: 0;
@@ -344,7 +344,7 @@ label {
   background-color: var(--ak-surface-panel);
 }
 
-/* 标签里承载标识符（包名/配置名/模式名）：不做大小写变换，避免界面显示与设备真实取值不一致（ak-ui 默认 uppercase） */
+/* 标签里承载标识符（包名/配置名/模式名）：不做大小写变换，避免界面显示与设备真实取值不一致（ak-ui 默认 uppercase）。 */
 [data-ak-ui] .ak-tag {
   text-transform: none;
   letter-spacing: 0.04em;
@@ -595,7 +595,7 @@ label {
   overflow-wrap: anywhere;
 }
 
-/* [lists] 提示清单：暖色短竖条 + 次要小字（总览页导出须知 / 实验室须知共用） */
+/* [lists] 提示清单：暖色短竖条 + 次要小字（总览页导出须知 / 实验室须知共用）。 */
 .u-notice {
   display: grid;
   gap: 0.5rem;

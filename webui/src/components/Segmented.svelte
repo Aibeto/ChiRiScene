@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Segmented.svelte: [switch] [keyboard]单选切换：radiogroup/radio 语义（互斥选择而非 tab），补方向键导航满足键盘可达性
+  // Segmented.svelte: [switch] [keyboard]单选切换：radiogroup/radio 语义（互斥选择，而非 tab），补方向键导航满足键盘可达性
   type SegmentedItem = { id: string; label: string }
 
   let {

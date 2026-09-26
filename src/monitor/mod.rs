@@ -48,7 +48,7 @@ pub static CPU_HOTPLUG_DIRTY: AtomicBool = AtomicBool::new(false);
 /// **store 与 notify 必须同锁**：读标志与入睡拆开必有丢唤醒窗口（读到 false → 置位方 notify
 /// 时队列为空通知丢失 → 等待方入睡后漏唤醒）；同锁后仅剩两种不丢唤醒的交错，勿拆
 pub struct FasSignal {
-    /// 状态本体热路径只读原子量，与改造前的裸 `AtomicBool` 同价
+    /// 状态本体。热路径只读原子量，与改造前的裸 `AtomicBool` 同价
     flag: AtomicBool,
 /// **播放态旁路采样**谓词（2026-09-27）：特调 `playback` 接管时置位，让 fps 探针在非 FAS 会话里也挂帧源。
 /// 与 `flag` 分开存而非复用：`flag` 的语义被 FasManager/调度侧消费（FAS 是否接管），播放态混进去会让
@@ -71,7 +71,7 @@ impl FasSignal {
         }
     }
 
-    /// 只读当前状态：等价裸原子量 load(Acquire)，供热路径零成本判定（fps 探针门控、待机线程唤醒后二次判定）
+    /// 只读当前状态：等价裸原子量 `load(Acquire)`，供热路径零成本判定（fps 探针门控、待机线程唤醒后二次判定）
     pub fn is_active(&self) -> bool {
         self.flag.load(Ordering::Acquire)
     }
@@ -149,7 +149,7 @@ pub fn start_monitor(
     }
 
     // --- 初始化配置 ---
-    // 嵌入 rules.yaml 为唯一规则来源（编译期打包防篡改）；磁盘文件仅是启动时复制的展示副本（main.rs::sync_rules_snapshot），不参与运行时读取
+    // 嵌入 rules.yaml 为唯一规则来源（编译期打包，防篡改）；磁盘文件仅是启动时复制的展示副本（main.rs::sync_rules_snapshot），不参与运行时读取
     let initial_config = crate::common::embedded_rules();
 
     let config_arc = Arc::new(Mutex::new(initial_config));

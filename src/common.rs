@@ -309,7 +309,7 @@ pub struct SocIdleUs {
 }
 
 /// 命中 SoC 的硬件基线（{soc}/soc.yaml），OnceLock 惰性解析一次
-/// None = 非 ChiRi SoC / 嵌入缺失 / yaml 损坏（warn 一次不 panic），调用方一律走原有回退路径
+/// None = 非 ChiRi SoC / 嵌入缺失 / yaml 损坏（warn 一次，不 panic），调用方一律走原有回退路径
 static SOC_CONFIG: OnceLock<Option<SocConfig>> = OnceLock::new();
 
 /// 当前命中 SoC 的硬件基线；解析结果全程缓存，重复调用零开销
@@ -395,7 +395,7 @@ pub fn powerbase_enabled() -> bool {
     POWERBASE_ENABLED.load(Ordering::Acquire)
 }
 
-/// 息屏判定值（screen_off_value，缺省 1）：debug.tracing.screen_state 等于该值视为息屏，其余数字视为亮屏Config::load 同步原子量，
+/// 息屏判定值（screen_off_value`，缺省 1）：debug.tracing.screen_state 等于该值视为息屏，其余数字视为亮屏。Config::load 同步原子量，
 /// 屏幕检测（monitor/screen_detect.rs [prop]）只读原子量，不在 tick 内读磁盘
 static SCREEN_OFF_VALUE: AtomicU32 = AtomicU32::new(1);
 
@@ -621,7 +621,7 @@ pub fn is_special_mode_allowed(pkg: &str, mode: &str) -> bool {
 
 // 白名单与每应用配置（normal/fas.yaml 与 normal/fas/<配置名>.yaml）随 module/config 整体构建期嵌入（见 [embedded]），不在此逐文件硬编码
 
-/// 按配置名返回嵌入 FAS 配置文本（构建期自动收录 normal/fas/*.yaml）新增 FAS 游戏：fas.yaml 白名单加一行 + 新建 normal/fas/<配置名>.yaml，无需改 .rs
+/// 按配置名返回嵌入 FAS 配置文本（构建期自动收录 normal/fas/*.yaml）。新增 FAS 游戏：fas.yaml 白名单加一行 + 新建 normal/fas/<配置名>.yaml，无需改 .rs
 pub fn embedded_fas_app_str(name: &str) -> Option<&'static str> {
     embedded_config_file(&format!("normal/fas/{name}.yaml"))
 }
@@ -715,7 +715,7 @@ pub fn is_fas_mode(mode: &str) -> bool {
     mode == "fas"
 }
 
-// 线程亲和黑名单（src/chiri/affinity_blacklist.yaml，编译期嵌入，用户/WebUI 不可修改，独立成文件便于维护）命中黑名单的进程全部线程保持全核运行，
+// 线程亲和黑名单（src/chiri/affinity_blacklist.yaml，编译期嵌入，用户/WebUI 不可修改，独立成文件便于维护）命中黑名单的进程：全部线程保持全核运行，
 // AffinityManager 不做任何迁移与亲和
 
 // [aff_blacklist]
@@ -768,7 +768,7 @@ pub fn affinity_blacklist_entries() -> &'static [AffinityBlacklistEntry] {
     AFFINITY_BLACKLIST.get_or_init(|| parse_affinity_blacklist(AFFINITY_BLACKLIST_TEXT))
 }
 
-/// 进程 cmdline（或线程 comm）是否命中亲和黑名单另含两条内置兜底（不经文件、不可关闭）：空 cmdline = 内核线程 → 黑名单；'/' 开头 = native 二进制路径 → 黑名单
+/// 进程 cmdline（或线程 comm）是否命中亲和黑名单。另含两条内置兜底（不经文件、不可关闭）：空 cmdline = 内核线程 → 黑名单；'/' 开头 = native 二进制路径 → 黑名单
 pub fn is_affinity_blacklisted(cmdline: &str) -> bool {
     if cmdline.is_empty() || cmdline.starts_with('/') {
         return true;
@@ -811,7 +811,7 @@ pub fn embedded_feature_str() -> &'static str {
     embedded_config_file("feature.yaml").unwrap_or_default()
 }
 
-/// 嵌入的 tuned_profiles.yaml（config/normal/）：特调参数组——缺省段 akmode（游戏特调兼未注册模式回退）+ tuned_profiles 段按模式名分派
+/// 嵌入的 tuned_profiles.yaml（config/normal/）：特调参数组——缺省段 `akmode`（游戏特调兼未注册模式回退）+ `tuned_profiles` 段按模式名分派
 pub fn embedded_tuned_profiles_str() -> &'static str {
     embedded_config_file("normal/tuned_profiles.yaml").unwrap_or_default()
 }
@@ -865,7 +865,7 @@ struct MetaYamlFile {
     language: Option<String>,
     loglevel: Option<String>,
     dev_record: Option<bool>,
-/// aff @S 每秒快照帧的 top-N 进程数（手改字段，WebUI 无开关），详见 ExternalMetaOverrides 同名字段
+/// aff `@S` 每秒快照帧的 top-N 进程数（手改字段，WebUI 无开关），详见 ExternalMetaOverrides 同名字段
     devimp_top_n: Option<usize>,
     fas_enabled: Option<bool>,
     scenemode_enabled: Option<bool>,
@@ -906,7 +906,7 @@ pub struct ExternalMetaOverrides {
     pub devimp_top_n: Option<usize>,
     pub fas_enabled: Option<bool>,
     pub scenemode_enabled: Option<bool>,
-/// 线程摆放总闸（thread_bind）：实验室 frozen 专用机制——用户侧开关已移除，仅 frozen 模式写 false 交还线程亲和/绑核与 core_ctl与机型内嵌 feature
+/// 线程摆放总闸（`thread_bind`）：实验室 frozen 专用机制——用户侧开关已移除，仅 frozen 模式写 false 交还线程亲和/绑核与 core_ctl。 与机型内嵌 feature
 /// yaml 的两个子开关取「与」，见 chiri/config.rs::Config::load
     pub thread_bind: Option<bool>,
 /// PowerBase 总开关（缺省 false）：开启后原由 CLG 接管的亮屏日常场合改由 PowerBase 接管（以放电功耗为指标）消费点：Config::
@@ -918,8 +918,8 @@ pub struct ExternalMetaOverrides {
 /// 常驻状态通知开关（notify，默认 true）：daemon 每 5s 把调度状态（前台包名/模式/家族/子模式/温度/功耗）写进常驻通知，见 src/notify.rs
 /// false = 不投递并撤销已投递通知；仅 ChiRi 1s 循环消费
     pub notify: Option<bool>,
-/// OPlus 私有电压/电流节点（oplus_chg，默认 false）：true = 优先读 /sys/class/oplus_chg/battery/bcc_parms（下标 6 电芯电压0、8 电流、11 电芯电压1，
-/// mV/mA），读不到回退标准 power_supply 节点仅 OPlus 机型有意义
+/// OPlus 私有电压/电流节点（`oplus_chg`，默认 false）：true = 优先读 `/sys/class/oplus_chg/battery/bcc_parms`（下标 6 电芯电压0、8 电流、11 电芯电压1，
+/// mV/mA），读不到回退标准 power_supply 节点。仅 OPlus 机型有意义
     pub oplus_chg: Option<bool>,
 /// OPlus 双电芯（默认 false）：私有节点按两节并联读——电压取两节平均（下标 6 与 11）、电流 ×2（下标 8 为单节支路）；仅在 oplus_chg 打开时生效
     pub oplus_dual_cell: Option<bool>,
@@ -1064,7 +1064,7 @@ fn parse_disk_meta(text: &str) -> Option<ExternalMetaOverrides> {
 }
 
 /// meta.yaml 快照自愈：main.rs 启动时与 chiri config_watcher 触发热重载前调用文件合法 → 跳过写入（返回 false，防 config_watcher 事件成环）；
-/// 文件缺失/不可读 → 嵌入原文原子重建（不留警告注释）任一字段非法 → 嵌入原文整体覆盖 + 末尾追加警告注释 + warn 日志（完全丢失重建与修改出错纠正不同，前者不留言）
+/// 文件缺失/不可读 → 嵌入原文原子重建（不留警告注释）-任一字段非法 → 嵌入原文整体覆盖 + 末尾追加警告注释 + warn 日志（完全丢失重建与「修改出错纠正不同，前者不留言）
 pub fn sync_meta_snapshot(meta_path: &Path) -> bool {
     let embedded = embedded_meta_str();
     let corrected = match std::fs::read_to_string(meta_path) {
@@ -1137,9 +1137,9 @@ pub(crate) fn write_file_no_panic(path: &Path, bytes: &[u8]) -> bool {
     atomic_ok || crate::utils::try_write_file(path, bytes).is_ok()
 }
 
-/// meta.yaml 顶层行替换：只匹配缩进为 0 的 键: 值 行，保留键名大小写、分隔空白与行内注释；字段不存在返回 None，调用方放弃写入，绝不退化成整文件重排不走 serde 反序列化再序列化：
-/// 整文件重排会吃掉用户注释，且 MetaYamlFile 带 deny_unknown_fields，漏一个新字段就会让下次 sync_meta_snapshot 判非法整体覆盖
-/// 口径与 WebUI contract/meta.ts::replaceTopLevelField 一致，两边不要各写一套
+/// meta.yaml 顶层行替换：只匹配缩进为 0 的 `键: 值` 行，保留键名大小写、分隔空白与行内注释；字段不存在返回 None，调用方放弃写入，绝不退化成整文件重排不走 serde 反序列化再序列化：
+/// 整文件重排会吃掉用户注释，且 `MetaYamlFile` 带 deny_unknown_fields，漏一个新字段就会让下次 sync_meta_snapshot 判非法整体覆盖
+/// 口径与 WebUI `contract/meta.ts::replaceTopLevelField` 一致，两边不要各写一套
 pub(crate) fn replace_top_level_bool(content: &str, field: &str, value: bool) -> Option<String> {
     let want = field.to_ascii_lowercase();
     let mut lines: Vec<String> = content.split('\n').map(str::to_string).collect();
@@ -1175,7 +1175,7 @@ pub(crate) fn replace_top_level_bool(content: &str, field: &str, value: bool) ->
     None
 }
 
-/// 一次写盘改掉 meta.yaml 的总开关（None = 该项不动；thread_bind 仅实验室使用）返回 false 表示文件没被改到期望状态（字段缺失 / 读写失败），调用方放弃本次实验室套用
+/// 一次写盘改掉 meta.yaml 的总开关（None = 该项不动；thread_bind 仅实验室使用）。返回 false 表示文件没被改到期望状态（字段缺失 / 读写失败），调用方放弃本次实验室套用
 /// 多个开关必须一次写完：分两次写会触发两轮 config_watcher 热重载，中间态会被 apply_system_tweaks 真的执行一遍
 pub(crate) fn rewrite_meta_toggles(
     path: &Path,

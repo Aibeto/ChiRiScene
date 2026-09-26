@@ -57,7 +57,7 @@ pub fn monitor_touch(tx: SyncSender<()>) {
                 })
                 .collect();
 
-            // [poll_wait] 超时 -1 = 无限期阻塞旧 200ms 超时分支（ret==0 → continue）不改任何状态、只是每秒 5 次空唤醒，删掉与保留等价；事件处理与重枚举时机不变
+            // [poll_wait] 超时 -1 = 无限期阻塞。旧 200ms 超时分支（ret==0 → continue）不改任何状态、只是每秒 5 次空唤醒，删掉与保留等价；事件处理与重枚举时机不变
             let ret = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) };
             if ret < 0 {
                 debug!("{}", t("touch-detect-poll-error"));
@@ -67,7 +67,7 @@ pub fn monitor_touch(tx: SyncSender<()>) {
 
             let mut buf = [0u8; INPUT_EVENT_SIZE];
             for (i, pfd) in fds.iter().enumerate() {
-                // 挂断/错误/无效描述符（部分内核在设备断开时上报）：与读错误同路重新枚举阻塞等待后没有超时兜底，这类 revents 必须显式处理，否则 poll 立即返回却无事可做，会原地空转
+                // 挂断/错误/无效描述符（部分内核在设备断开时上报）：与读错误同路重新枚举。阻塞等待后没有超时兜底，这类 revents 必须显式处理，否则 poll 立即返回却无事可做，会原地空转
                 if pfd.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
                     // [poll_backoff] 异常 revents 多为电平触发，重枚举后 poll 会立即返回；退避 500ms（与 poll 出错路径同款）防持续异常时紧循环空转
                     std::thread::sleep(Duration::from_millis(500));

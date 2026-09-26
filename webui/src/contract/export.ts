@@ -1,4 +1,4 @@
-// export.ts: [start] [poll]导出历史归档：把 logd/（历次重启的日志归档）打成 tar.gz 放到 /sdcard/Download打包交给外部脚本 scripts/pack
+// export.ts: [start] [poll]。导出历史归档：把 logd/（历次重启的日志归档）打成 tar.gz 放到 /sdcard/Download。打包交给外部脚本 scripts/pack
 // sh（对外暴露的稳定接口，与守护进程启动归档共用、构建流程不得修改）：先 tar 再 gzip，完成后删除中间 .tar；设备无 gzip 时保留未压缩 .tar 作为产物硬约束——后台执行：归档可达几百 MB、
 // 压缩数十秒级，前台等ksu exec 会被桥的超时掐断，命令自己 fork 到后台、结束写产物/标记文件，前端只轮询
 import { absOf, shQuote } from './paths'

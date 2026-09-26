@@ -1,5 +1,5 @@
 // shell.ts: [contract] [injection] [run]唯一的命令执行出口：真实实现走 KernelSU exec；
-// dev / 单测可经 setShell 注入替代实现——这是契约层与数据层可脱离真机断言的前提
+// dev / 单测可经 setShell 注入替代实现——这是“契约层与数据层可脱离真机断言”的前提
 import { exec as ksuExec, hasKsu } from './ksu'
 
 export interface ExecResult {

@@ -1,4 +1,4 @@
-// down.ts: [read] [write]DOWN 停摆契约（down.chr）：文件对外暴露、支持手改，读写的唯一权威是它本身与 lab 同款：文件不存在 = 正常调度（daemon 会补建模板）；
+// down.ts: [read] [write]。DOWN 停摆契约（down.chr）：文件对外暴露、支持手改，读写的唯一权威是它本身与 lab 同款：文件不存在 = 正常调度（daemon 会补建模板）；
 // 解除停摆写空内容而非删文件
 import { absOf, shQuote } from './paths'
 import { isLive, run } from '@/kernel/shell'

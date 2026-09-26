@@ -36,7 +36,7 @@ pub struct PolicyController {
     /// 写频后校验间隔（来自 FasRulesConfig::verify_freq_interval_secs）
     verify_interval: Duration,
 
-    /// QoS 钳制状态：读回 scaling_max_freq < 上次写入值时进入写 scaling_max_freq 只是追加一条 FREQ_QOS_MAX 请求（thermal
+    /// QoS 钳制状态：读回 scaling_max_freq < 上次写入值时进入。写 scaling_max_freq 只是追加一条 FREQ_QOS_MAX 请求（thermal
     /// cooling/msm_performance/input-boost 各持一条，聚合取min），热压期内核请求更低、读回偏小是合法态不是篡改；重写改不了聚合 min，只会死循环白写
     qos_clamped: bool,
     /// 进入钳制的时刻，用于长窗口告警与退出时报告持续时长
@@ -46,7 +46,7 @@ pub struct PolicyController {
 
     pub ignore_write: bool,
 
-    /// 接管前该 policy 的原始 governor（load_policies 快照）FAS 接管期间把 governor 改写为performance 配合 min=max 锁频，退出必须恢复，
+    /// 接管前该 policy 的原始 governor（load_policies 快照）。FAS 接管期间把 governor 改写为 performance 配合 min=max 锁频，退出必须恢复，
     /// 否则性能模式泄漏到 CLG/akmode/系统调频
     orig_governor: Option<String>,
 }

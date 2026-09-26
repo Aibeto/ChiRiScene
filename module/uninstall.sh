@@ -22,7 +22,7 @@ for d in /sys/devices/system/cpu/cpufreq/policy*; do
   fi
 done
 
-# [restore-vendor] 恢复 OPPO/OnePlus/Realme 的 Oiface（当前注释停用）if [ -n "$(getprop persist.sys.oiface.enable)" ];
+# [restore-vendor] 恢复 OPPO/OnePlus/Realme 的 Oiface（当前注释停用） if [ -n "$(getprop persist.sys.oiface.enable)" ];
 # then setprop persist.sys.oiface.enable 1 fi
 
 # 恢复小米的 Joyose 服务

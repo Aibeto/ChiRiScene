@@ -113,7 +113,7 @@ export interface LabLock {
   notes: string[]
 }
 
-/** 解析标记文件内容`exists` 为 false 时（文件不存在）一律视为未锁定 */
+/** 解析标记文件内容。`exists` 为 false 时（文件不存在）一律视为未锁定。 */
 export function parseLabLock(text: string, exists: boolean): LabLock {
   if (!exists) return { locked: false, mode: '', notes: [] }
   const lines = text.split('\n')

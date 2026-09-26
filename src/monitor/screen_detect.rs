@@ -71,7 +71,7 @@ fn update_state_if_changed(state_arc: &Arc<Mutex<bool>>, new_state: bool, source
    LcdPower,
    /// DRM 内屏 connector 的 `enabled`："enabled" = 亮、"disabled" = 灭（内核 DPMS 口径）；外接 HDMI/DP 不计
    DrmEnabled,
-   /// DRM connector 的 `dpms`（enabled 缺失时的老内核兜底）："On" = 亮，"Off"/"Standby"/"Suspend" = 灭
+   /// DRM connector 的 `dpms`（`enabled` 缺失时的老内核兜底）："On" = 亮，"Off"/"Standby"/"Suspend" = 灭
    DrmDpms,
    }
    impl ScreenSourceKind {
@@ -86,8 +86,8 @@ fn update_state_if_changed(state_arc: &Arc<Mutex<bool>>, new_state: bool, source
    }
    }
    }
-   /// leds class 背光节点名关键字：厂商命名差异极大（MTK/海思 lcd-backlight、高通 panel-backlight、
-   /// Awinic aw22xxx-backlight、展锐 sprd-backlight、wled/disp-backlight 等），只认命中关键字的亮度节点
+   /// leds class 背光节点名关键字：厂商命名差异极大（MTK/海思 `lcd-backlight`、高通 `panel-backlight`、
+   /// Awinic `aw22xxx-backlight`、展锐 `sprd-backlight`、wled/`disp-backlight 等），只认命中关键字的亮度节点
    const BACKLIGHT_LED_KEYWORDS: [&str; 5] = ["backlight", "lcd", "panel", "wled", "disp"];
    /// 非面板 LED 关键字豁免：键盘背光/按键灯/充电/通知灯/闪光灯/RGB 灯即便含上表关键字也不是屏幕背光，
    /// 这类灯随充电/通知亮灭，计入息屏仲裁会持续投亮屏票（永远进不了息屏）
@@ -131,9 +131,9 @@ fn update_state_if_changed(state_arc: &Arc<Mutex<bool>>, new_state: bool, source
    LazyLock::new(|| Mutex::new(None));
    /// 节点清单缓存 TTL = 10 分钟：拓扑变化集中在开机早期（驱动加载/模块开关），足够稀疏又能及时补全残缺清单
    const SCREEN_NODES_TTL: Duration = Duration::from_secs(600);
-   /// 取候选节点清单（TTL 内命中缓存只做引用计数递增 + 一次 Instant 读取，零分配零 syscall）
-   /// 返回 Arc 快照并立刻释放缓存锁：投票要逐个读节点文件，持锁会把 uevent 线程的翻转投票堵在锁上
-   /// TTL 到期当作未命中重新枚举并刷新创建时刻（判定就在本调用点顺带做，无独立刷新线程）
+   /// 取候选节点清单（TTL 内命中缓存只做一次引用计数递增 + 一次 `Instant` 时钟读取，零分配零 syscall）
+   /// 返回 `Arc` 快照并立刻释放缓存锁：投票要逐个读节点文件，持锁会把 uevent 线程的翻转投票堵在锁上
+   /// TTL 到期当作未命中：重新枚举并刷新创建时刻（判定就在本调用点顺带做，无独立刷新线程）
    fn screen_nodes() -> Arc<Vec<(PathBuf, ScreenSourceKind)>> {
    {
    let guard = SCREEN_NODES.lock().unwrap();
@@ -155,18 +155,18 @@ fn update_state_if_changed(state_arc: &Arc<Mutex<bool>>, new_state: bool, source
    SCREEN_NODES.lock().unwrap() = None;
    }
    /// 按可靠性优先级枚举全部候选屏幕状态节点（有序）：
-   /// 1. /sys/class/backlight：具备 bl_power/actual_brightness/brightness 的设备（QCOM/通用内核）；
-   /// 2. /sys/class/leds 背光节点（MTK lcd-backlight、panel/wled/aw22xxx/sprd-backlight 等）——backlight
+   /// 1. `/sys/class/backlight`：具备 bl_power/actual_brightness/brightness 的设备（QCOM/通用内核）；
+   /// 2. `/sys/class/leds` 背光节点（MTK lcd-backlight、panel/wled/aw22xxx/sprd-backlight 等）——backlight
    ///    缺失机型的主要修复路径（非面板 LED 不计，见 is_backlight_led_name）；
-   /// 3. /sys/class/graphics/fb<编号>/blank（fbdev 旧接口兜底，fb0/fb1/… 全部计入）；
-   /// 4. /sys/class/lcd/<设备>/lcd_power（LCD class，三星 Exynos panel/lcd_power 等唯一可用节点，FB_BLANK 口径）；
-   /// 5. /sys/class/drm 内屏 connector（dsi/edp/lvds）的 enabled 节点，缺 enabled 退 dpms——backlight/leds 全缺机型的兜底
+   /// 3. `/sys/class/graphics/fb<编号>/blank`（fbdev 旧接口兜底，fb0/fb1/… 全部计入）；
+   /// 4. `/sys/class/lcd/<设备>/lcd_power`（LCD class，三星 Exynos `panel/lcd_power` 等唯一可用节点，FB_BLANK 口径）；
+   /// 5. `/sys/class/drm` 内屏 connector（dsi/edp/lvds）的 `enabled` 节点，缺 enabled 退 dpms——backlight/leds 全缺机型的兜底
    fn enumerate_screen_nodes() -> Vec<(PathBuf, ScreenSourceKind)> {
    let mut nodes = Vec::new();
    if let Ok(entries) = fs::read_dir("/sys/class/backlight") {
    for entry in entries.flatten() {
    let dev = entry.path();
-   // brightness 兜底：部分驱动未实现 get_brightness（actual_brightness 读不到）也无 bl_power，只能看驱动存的亮度值
+   // brightness 兜底：部分驱动未实现 get_brightness（actual_brightness 读不到）、也无 bl_power，只能看驱动存的亮度值
    if dev.join("bl_power").exists()
    || dev.join("actual_brightness").exists()
    || dev.join("brightness").exists()
@@ -223,7 +223,7 @@ fn update_state_if_changed(state_arc: &Arc<Mutex<bool>>, new_state: bool, source
    nodes
    }
    // [read]
-   /// 息屏仲裁票数：只统计**有效读数**读不到、不存在的节点不计票，也不否决
+   /// 息屏仲裁票数：只统计**有效读数**。读不到、不存在的节点不计票，也不否决
    struct ScreenVotes {
    off: usize,
    on: usize,
@@ -298,10 +298,10 @@ fn update_state_if_changed(state_arc: &Arc<Mutex<bool>>, new_state: bool, source
    }
    }
    }
-   /// 读取 backlight class 设备的屏幕开关状态bl_power == 0 → 亮（权威信号）；bl_power != 0 → 不可信
+   /// 读取 backlight class 设备的屏幕开关状态：`bl_power == 0` → 亮（权威信号）；`bl_power != 0` → 不可信
    /// （部分 DRM 面板驱动息屏写 FB_BLANK 后亮屏路径不清零，当权威信号会让 verify 把状态钉死在 false），
-   /// 以 actual_brightness 为准（Android 息屏背光写 0，>0 即面板在发光）；bl_power 不可读 → 回退
-   /// actual_brightness > 0，也不可读 → 回退 brightness > 0（驱动存的目标亮度）；全部不可读 → None
+   /// 以 `actual_brightness` 为准（Android 息屏背光写 0，>0 即面板在发光）；`bl_power` 不可读 → 回退
+   /// `actual_brightness` > 0，也不可读 → 回退 `brightness > 0`（驱动存的目标亮度）；全部不可读 → None
    fn read_backlight_state(dev: &Path) -> Option<bool> {
    let bl_power = dev.join("bl_power");
    let actual = dev.join("actual_brightness");
@@ -372,7 +372,7 @@ fn read_screen_prop() -> bool {
 /// 属性轮询周期：单次属性读取开销极小，500ms 在感知延迟与线程空转间取衡
 const SCREEN_PROP_POLL_MS: u64 = 500;
 
-/// 屏幕状态属性轮询线程（现役）：每 500ms 读一次 debug.tracing.screen_state，变化即更新共享状态并直推 ScreenStateChange 事件（与原 uevent 直推同管道）
+/// 屏幕状态属性轮询线程（现役）：每 500ms 读一次 debug.tracing.screen_state，变化即更新共享状态并直推 `ScreenStateChange` 事件（与原 uevent 直推同管道）
 pub fn monitor_screen_state_property(state_arc: Arc<Mutex<bool>>, tx: SyncSender<DaemonEvent>) {
     loop {
         thread::sleep(Duration::from_millis(SCREEN_PROP_POLL_MS));
@@ -421,7 +421,7 @@ pub fn monitor_screen_state_uevent(
                         // CPU hotplug（cpuN/online 变更）：只置脏标记，下一轮 affinity 立即刷新在线核位图（≤2s），事件风暴也只是次原子写
                         crate::monitor::CPU_HOTPLUG_DIRTY.store(true, Ordering::Relaxed);
                     }
-                    /* [PAUSED] backlight/leds 屏幕分支暂停（属性轮询见 [prop]）：恢复 = 还原两个分支体，并在导入处补回 kobject_uevent::ActionType */
+                    /* [PAUSED] backlight/leds 屏幕分支暂停（属性轮询见 [prop]）：恢复 = 还原两个分支体，并在导入处补回 kobject_uevent::ActionType。 */
 
                     /* thread::sleep(Duration::from_millis(100));
                        // 与 verify 自愈同口径（read_backlight_state）：bl_power==0 → 亮；非 0（含亮屏

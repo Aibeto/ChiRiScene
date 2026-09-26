@@ -1,7 +1,7 @@
 //! gpu.rs: [detect] [types] [lock] [release]GPU 频率锁（contingency 使用）：启动时探测一次 devfreq 节点，能确定硬件最高频的才收录；
 //! lock 时快照当前min/max 并锁 min=max=硬件最高频，release 按快照恢复；探测不到任何可用节点保持空表、lock 为 no-op（只打一次 warn）——GPU 节点各 SoC 差异很大，
-//! 宁可不管也不乱写节点覆盖：高通 Adreno /sys/class/kgsl/kgsl-3d0/（硬件上限 max_gpu_clk，写入走同名 devfreq）
-//! + 通用 devfreq /sys/class/devfreq/ 下名字含 gpu / kgsl / mali 的设备
+//! 宁可不管也不乱写。节点覆盖：-高通 Adreno /sys/class/kgsl/kgsl-3d0/`（硬件上限 `max_gpu_clk`，写入走同名 devfreq）
+//! + 通用 devfreq /sys/class/devfreq/` 下名字含 gpu / kgsl / mali 的设备
 use crate::utils::FastWriter;
 use log::{info, warn};
 use std::fs;
@@ -85,9 +85,9 @@ pub struct GpuGuard {
     active: bool,
 }
 
-/// devimp snap 行用：GPU 各节点的**实际**当前频率 / 上下限 / 调速器多节点以 `;` 分隔，每项 `<设备名>:<值>`，读不到写 `-`
-/// **只在 devimp 开启时调用**（每秒一次 sysfs 读），故不做缓存——值会被内核 devfreq 与其它进程改动节点口径与探测一致（Adreno kgsl-3d0 + 通用 devfreq gpu/kgsl/mali）
-/// **当前未被调用**：chiri/mod.rs 的 GPU_SNAPSHOT_ENABLED 默认 false——读 GPU 节点会拉起 GPU 出低功耗（8550 实测同场景功耗 +47%），保留实现待该问题有解或确需数据时再开
+/// devimp snap 行用：GPU 各节点的**实际**当前频率 / 上下限 / 调速器。多节点以 `;` 分隔，每项 `<设备名>:<值>`，读不到写 `-`
+/// **只在 devimp 开启时调用**（每秒一次 sysfs 读），故不做缓存——值会被内核 devfreq 与其它进程改动节点口径与探测一致（Adreno kgsl-3d0) + 通用 devfreq gpu/kgsl/mali）
+/// **当前未被调用**：`chiri/mod.rs` 的 `GPU_SNAPSHOT_ENABLED` 默认 false——读 GPU 节点会拉起 GPU 出低功耗（8550 实测同场景功耗 +47%），保留实现待该问题有解或确需数据时再开
 #[allow(dead_code)]
 pub fn devfreq_snapshot() -> (String, String, String, String) {
     // 目录按**设备名**去重且标准 devfreq 优先：kgsl-3d0 会同时出现在 /sys/class/devfreq/ 与 /sys/class/kgsl/ 下，
@@ -128,7 +128,7 @@ pub fn devfreq_snapshot() -> (String, String, String, String) {
         }
         "-".to_string()
     };
-// 调速器只在标准 devfreq 下读（Adreno 私有目录里的同名节点可能是频率值，不是 governor 名）；读到的内容整体是数字也判定无效
+// 调速器：只在标准 devfreq 下读（Adreno 私有目录里的同名节点可能是频率值，不是 governor 名）；读到的内容整体是数字也判定无效
     let read_gov = |dir: &str, is_devfreq: bool| -> String {
         if !is_devfreq {
             return "-".to_string();
@@ -229,7 +229,7 @@ impl GpuGuard {
     }
 
     // [release]
-    /// 按快照恢复原 min/max先降 min 再降 max（避免 max<min 被内核拒绝）
+    /// 按快照恢复原 min/max。先降 min 再降 max（避免 max<min 被内核拒绝）
     pub fn release(&mut self) {
         if !self.active {
             return;

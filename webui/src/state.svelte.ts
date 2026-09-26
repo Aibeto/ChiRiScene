@@ -234,7 +234,7 @@ class AppStore {
   async loadStatic(force = false): Promise<void> {
     if (this.staticJob) {
       if (!force) return this.staticJob
-      // force 请求不能被在飞的非 force 补拉吞掉：那次 job 读的是写前数据，复用会让本次写入的静态项最长 30s 不更新先等它落地，再走下方强制重读
+      // force 请求不能被在飞的非 force 补拉吞掉：那次 job 读的是写前数据，复用会让本次写入的静态项最长 30s 不更新。先等它落地，再走下方强制重读
       await this.staticJob
     }
     if (!force && Date.now() - this.staticLoadedAt < STATIC_TTL_MS) return
@@ -297,7 +297,7 @@ class AppStore {
       // 静态项（module.prop/meta/白名单/hasActionScript/机型）退出秒级轮询：陈旧（从未加载或距上次 >30s）时与本 tick 并行补拉一次，不阻塞活跃项读取
       const staticRefresh =
         Date.now() - this.staticLoadedAt >= STATIC_TTL_MS ? this.loadStatic() : null
-      // [tag] 秒级开销收敛：活跃项合并为一次 readMany（稳态 = 1 次 exec）——current_mode.chr、PowerAVG.chr、status.csv 尾部、特调/FAS 白名单，
+      // [tag] 秒级开销收敛：活跃项合并为一次 readMany（稳态 = 1 次 exec）—— current_mode.chr、PowerAVG.chr、status.csv 尾部、特调/FAS 白名单，
       // 及 LiveTime.chr（存活判据 judgeLiveness）
       const rm = await readMany([
         { key: 'mode', path: absOf('currentMode') },
@@ -557,7 +557,7 @@ class AppStore {
     }
   }
 
-  /** 启用（传 key）或关闭（传 null）实验室写后回读，状态以文件实际内容为准 */
+  /** 启用（传 key）或关闭（传 null）实验室。写后回读，状态以文件实际内容为准。 */
   async setLabMode(mode: LabModeKey | null): Promise<void> {
     // 锁定期间关不掉（守护进程会把 rhine.chr 原样写回）：先挡住；要关走 forceDisableLab（写保留字 off）
     if (mode === null && this.labLocked) {
@@ -663,7 +663,7 @@ class AppStore {
 
   // [powerMax]
   /**
-   * 耗电仪表盘满量程（W）：meta.yaml 可选字段 `power_max_w`，缺省/越界/非法一律按 12只在 meta.yaml 手改（高级设置不提供输入框），此处仅供仪表盘换算读取
+   * 耗电仪表盘满量程（W）：meta.yaml 可选字段 `power_max_w`，缺省/越界/非法一律按 12。 只在 meta.yaml 手改（高级设置不提供输入框），此处仅供仪表盘换算读取
    */
   get powerMaxWatt(): number {
     const v = this.metaSnapshot?.values?.power_max_w
@@ -737,7 +737,7 @@ class AppStore {
     }
   }
 
-  /** 开启/解除 DOWN 停摆写后回读，状态以 down.chr 实际内容为准 */
+  /** 开启/解除 DOWN 停摆。写后回读，状态以 down.chr 实际内容为准 */
   async setDown(active: boolean): Promise<void> {
     if (this.downPending) return
     this.downPending = true
@@ -852,7 +852,7 @@ class AppStore {
   }
 
   /**
-   * 电池读数页：直写 meta.yaml（不走草稿，立即热重载）开启 OPlus 私有节点时把倍电压/倍电流
+   * 电池读数页：直写 meta.yaml（不走草稿，立即热重载）。开启 OPlus 私有节点时把倍电压/倍电流
    * 一并清掉——两者互斥（daemon 侧也只认私有节点）；界面已置灰，这里再兜底写后回读
    */
   async setBatteryFields(
@@ -905,7 +905,7 @@ class AppStore {
   exportTotal = $state(0)
   exportBytes = $state(0)
 
-  /** 进度百分比：封顶 99，100 留给完成态分母是文件数，文件少时粒度偏粗 */
+  /** 进度百分比：封顶 99，100 留给完成态。分母是文件数，文件少时粒度偏粗 */
   get exportPercent(): number {
     if (this.exportTotal <= 0) return 0
     return Math.min(99, Math.round((this.exportDone / this.exportTotal) * 100))

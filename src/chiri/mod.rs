@@ -26,7 +26,7 @@ const SCENEMODE_SAT_UTIL: f32 = 0.75;
 const SCENEMODE_SAT_SECS: Duration = Duration::from_secs(10);
 /// scenemode 冷却：饱和退出后 300s 内不得重新进入（防止与后台负载反复拉锯）
 const SCENEMODE_COOLDOWN: Duration = Duration::from_secs(300);
-/// scheduler_ipc 事件循环 panic 自愈：连续崩溃超过该次数后放弃重启（防止poisoned lock 等确定性 panic 变成打满 CPU 的重启风暴），仅保留最终清理
+/// scheduler_ipc 事件循环 panic 自愈：连续崩溃超过该次数后放弃重启（防止 poisoned lock 等确定性 panic 变成打满 CPU 的重启风暴），仅保留最终清理
 const SCHEDULER_IPC_RESTART_MAX: u32 = 5;
 /// panic 重启退避：每次重启前等待，错开引发 panic 的外部状态（如负载风暴）
 const SCHEDULER_IPC_RESTART_BACKOFF: Duration = Duration::from_secs(1);
@@ -40,7 +40,7 @@ static BATT_STATUS_UNKNOWN_WARNED: AtomicBool = AtomicBool::new(false);
 const THERMAL_UNPRESS_STEP: f32 = 0.15;
 
 // [thermal]
-/// 读电池充放电状态（1s snap 处消费）：归一为小写短词；节点缺失或未知值返回"-"（与 CSV 缺失占位一致）电流符号因厂商节点方向不一不可靠，故读 status 字符串
+/// 读电池充放电状态（1s snap 处消费）：归一为小写短词；节点缺失或未知值返回"-"（与 CSV 缺失占位一致）。电流符号因厂商节点方向不一，不可靠，故读 status 字符串
 fn read_battery_charge_state() -> String {
     let state = match std::fs::read_to_string(BATT_STATUS_PATH) {
         Ok(s) => {
@@ -74,7 +74,7 @@ fn read_battery_charge_state() -> String {
     state.to_string()
 }
 
-/// 温度传感器滤波器：物理范围门 + 毛刺丢弃 + 3 样本中值 + 斜率限制MTK soc_max 等合成温区读数跳变极大（2s 内数十度、物理上不可能），直接用于带回滞的阈值判定会让 cap 以 ~8s 周期反复跳变，
+/// 温度传感器滤波器：物理范围门 + 毛刺丢弃 + 3 样本中值 + 斜率限制。MTK soc_max 等合成温区读数跳变极大（2s 内数十度、物理上不可能），直接用于带回滞的阈值判定会让 cap 以 ~8s 周期反复跳变，
 /// 逐级平滑后才能作为秒级热判定的输入
 struct TempFilter {
     /// 物理合理区间 [min_c, max_c]：节点异常/未初始化的读数直接丢弃
@@ -104,7 +104,7 @@ impl TempFilter {
         }
     }
 
-    /// 喂入一个原始样本，返回滤波后的温度样本被丢弃时返回上次输出（首个有效样本到来前返回 None）
+    /// 喂入一个原始样本，返回滤波后的温度。样本被丢弃时返回上次输出（首个有效样本到来前返回 None）
     fn push(&mut self, raw: f32) -> Option<f32> {
         // 1) 物理范围门：明显不合理的读数（如 0.3°C 的电池温度节点）丢弃
         if !(raw >= self.min_c && raw <= self.max_c) {
@@ -203,7 +203,7 @@ pub struct CpuPolicy {
     pub boost_frequencies: Vec<u32>,
 }
 
-/// 枚举系统中实际可用的 cpufreq policy，并读取各 policy 的 boost 频率结果按 policy id 升序返回（供 CLG 遍历初始化）
+/// 枚举系统中实际可用的 cpufreq policy，并读取各 policy 的 boost 频率。结果按 policy id 升序返回（供 CLG 遍历初始化）
 pub fn get_cpu_policies() -> Vec<CpuPolicy> {
     let mut policies = Vec::new();
     if let Ok(entries) = std::fs::read_dir("/sys/devices/system/cpu/cpufreq") {
@@ -339,7 +339,7 @@ fn clamp_evidence_snapshot(warned: &mut HashSet<String>) -> String {
             seg_push(&mut corectl, *id, &cc);
         }
     }
-    // msm_performance 参数（单值，非逐 policy）；horae_qmi 只记存在性【临时】读取退避：此二节点在部分机型恒不可读，连续 MSMP_FAIL_LIMIT 次读空后停读（快照项记 `-`），
+    // msm_performance 参数（单值，非逐 policy）；horae_qmi 只记存在性。【临时】读取退避：此二节点在部分机型恒不可读，连续 MSMP_FAIL_LIMIT 次读空后停读（快照项记 `-`），
     // 每 MSMP_RETRY_TICKS 次（≈128s）重试一轮，恢复即回归采集
     static MSMP_FAIL_STREAK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     static MSMP_SKIP_TICKS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
@@ -411,7 +411,7 @@ fn gpu_snapshot_due() -> bool {
     true
 }
 
-/// 读取指定 policy 的 scaling_boost_frequencies（kHz）文件不存在、为空或解析失败时返回空 Vec，不影响 policy 注册
+/// 读取指定 policy 的 scaling_boost_frequencies（kHz）。文件不存在、为空或解析失败时返回空 Vec，不影响 policy 注册
 fn read_boost_frequencies(pid: i32) -> Vec<u32> {
     let path = format!(
         "/sys/devices/system/cpu/cpufreq/policy{}/scaling_boost_frequencies",
@@ -482,12 +482,12 @@ fn sync_lab_governor_gpu(
 }
 
 /// 硬锁档判定：vector 与 frozen 都走 `FastLock` 的 min=max 硬锁（不注册 CLG 参数），差别只在锁定目标——vector 锁硬件最高频（极速），frozen 锁硬件最低频（待春归：最低功耗、
-/// 最冷，同时停掉亲和/迁移/诊断日志这类额外开销）两档在事件分支、停摆重建、亮屏恢复里都必须同进同出，漏一个就是「切过去没锁上」
+/// 最冷，同时停掉亲和/迁移/诊断日志这类额外开销）。两档在事件分支、停摆重建、亮屏恢复里都必须同进同出，漏一个就是「切过去没锁上」
 fn is_fast_lock(mode: &str) -> bool {
     mode == "vector" || mode == "frozen"
 }
 
-/// CLG 档位参数获取（未知/空模式名禁用 CLG，避免默认参数意外接管）与调度线程内的 get_clg_cfg 闭包同逻辑；文件级供 FAS 延迟退出等辅助函数使用
+/// CLG 档位参数获取（未知/空模式名禁用 CLG，避免默认参数意外接管）。与调度线程内的 get_clg_cfg 闭包同逻辑；文件级供 FAS 延迟退出等辅助函数使用
 fn clg_cfg_for(
     config: &crate::chiri::config::Config,
     mode: &str,
@@ -502,7 +502,7 @@ fn clg_cfg_for(
         })
 }
 
-/// 按目标模式接管频率（特调 / vector / CLG）FAS 正常退出与延迟退出共用调用前提：FAS 已完全退出（频率 + governor 已恢复）、各 governor 处于安全态、亮屏
+/// 按目标模式接管频率（特调 / vector / CLG）。FAS 正常退出与延迟退出共用。调用前提：FAS 已完全退出（频率 + governor 已恢复）、各 governor 处于安全态、亮屏
 /// akmode init 失败不设冷却（冷却语义只属于前台切换路径），直接 CLG 回退
 fn apply_mode_takeover(
     mode: &str,
@@ -521,7 +521,7 @@ fn apply_mode_takeover(
             }
         }
     } else if is_fast_lock(mode) {
-        // vector / frozen 都由 fast_lock 硬锁（不注册 CLG 参数），漏 init 就是频率零接管差别只在锁定目标：vector 锁硬件最高频（极速），frozen 锁硬件最低频（待春归）
+        // vector / frozen 都由 fast_lock 硬锁（不注册 CLG 参数），漏 init 就是频率零接管。差别只在锁定目标：vector 锁硬件最高频（极速），frozen 锁硬件最低频（待春归）
         ak_governor.release();
         cpu_governor.release();
         fast_lock.init(mode == "frozen");
@@ -530,8 +530,8 @@ fn apply_mode_takeover(
         fast_lock.release();
         let clg_cfg = clg_cfg_for(config, mode);
         if clg_cfg.enabled && crate::common::powerbase_enabled() {
-            // PowerBase 开启：**原本该 CLG 上场的场合**改由 PowerBase 接管模式名、current_mode.chr、规则与界面等外部接口一律不变，只替换「谁来调频」这一段实现
-            // CLG 必须先释放，否则两个调频器同时写scaling_max_freq 会互相踩
+            // PowerBase 开启：**原本该 CLG 上场的场合**改由 PowerBase 接管。模式名、current_mode.chr、规则与界面等外部接口一律不变，只替换「谁来调频」这一段实现
+            // CLG 必须先释放，否则两个调频器同时写 scaling_max_freq 会互相踩
             cpu_governor.release();
             power_base.init(&config.powerbase);
         } else if clg_cfg.enabled {
@@ -568,7 +568,7 @@ struct ThSnap {
     pin: bool,
     /// 上轮落盘的归属 pid：tid 被别的进程复用时它会变，必须算「变化」
     pid: u32,
-    /// 上轮落盘的线程 comm（`sample_one_tid` 的原始 stat 值，**不是**落盘用的`aff_token` 归一化串——归一化折叠不同 comm，比对它会把「换线程」判成没变）
+    /// 上轮落盘的线程 comm（`sample_one_tid` 的原始 stat 值，**不是**落盘用的 `aff_token` 归一化串——归一化折叠不同 comm，比对它会把「换线程」判成没变）
     /// 变更时借 `clear + push_str` 复用容量，稳态零堆分配
     comm: String,
     /// 热窗截止帧号：`frame <= hot_until` 时逐帧采样（见上方的常量说明）
@@ -614,7 +614,7 @@ fn mask_hex(pid: i32) -> String {
 }
 
 /// @S 每秒进程/线程快照帧（`devimp/aff_<ts>.log`）组装：top-N 进程 + 前台树/
-/// 被管进程线程下钻只在 `diag_active()` 时由 1s 块调用（与 main_snap 同门控，
+/// 被管进程线程下钻。只在 `diag_active()` 时由 1s 块调用（与 main_snap 同门控，
 /// 关闭路径零采样零写入），行数组交 `logger::aff_snapshot`（帧头计数由行反推）
 /// 落盘集合 = util top-N（N = meta.devimp_top_n）∪ 前台进程+全部线程 ∪ 被管
 /// 进程+被管线程；后两者 rank=0、util=0 也落盘前台子进程无现成枚举手段，
@@ -681,7 +681,7 @@ fn build_aff_snapshot(
     }
     tids.sort_unstable();
 
-    // 线程采样：stat 差分（首见/首帧只建基线 util=0）+ comm；core 取 stat 的processor 字段（读不到 -1）采样失败（线程已退出）即不落行
+    // 线程采样：stat 差分（首见/首帧只建基线 util=0）+ comm；core 取 stat 的 processor 字段（读不到 -1）。采样失败（线程已退出）即不落行
     // 末位 bool = 本帧是否落行（差分的核心：采样了也可能省行）
     let mut th_rows: Vec<(u32, u32, String, i32, i32, bool)> = Vec::with_capacity(tids.len());
     {
@@ -698,7 +698,7 @@ fn build_aff_snapshot(
         let refresh = first || frame % AFF_LONGTAIL_REFRESH_FRAMES == 0;
         for &(pid, tid, full) in &tids {
             let (home, pinned) = th_state.get(&tid).copied().unwrap_or((-1, false));
-            // 长尾且已退冷：本轮**不采样、不落行**（省 stat 读与行；语义由「缺失行 = 与上一帧相同」承载）刷新帧或热窗内的仍逐帧采样
+            // 长尾且已退冷：本轮**不采样、不落行**（省 stat 读与行；语义由「缺失行 = 与上一帧相同」承载）。刷新帧或热窗内的仍逐帧采样
             if !full && !refresh && !st.base.get(&tid).is_some_and(|e| e.hot_until >= frame) {
                 continue;
             }
@@ -773,7 +773,7 @@ fn build_aff_snapshot(
         // 删掉会把窗口重置为 0
         st.base.retain(|tid, _| seen_tid.contains(tid));
     }
-    // 被管进程的 comm 兜底（不在进程快照里时用其任一线程 comm）取**采样到**（含本帧省行）的线程：省行的线程其进程仍可能在补位 p 行上
+    // 被管进程的 comm 兜底（不在进程快照里时用其任一线程 comm）。取**采样到**（含本帧省行）的线程：省行的线程其进程仍可能在补位 p 行上
     let mut pid_comm: HashMap<u32, &str> = HashMap::new();
     for (pid, _, comm, _, _, _) in &th_rows {
         pid_comm.entry(*pid).or_insert(comm.as_str());
@@ -865,9 +865,9 @@ fn build_aff_snapshot(
 }
 
 // [affinity]
-/// 应用 CPU 亲和布局与 core_ctl 在线策略（ChiRi 专属，跟随模式/屏幕/前台 PID）内部带去重：布局与 PID 未变化时无 sysfs 写入，可安全周期性调用
-/// `core_utils` 为最近一次 SystemLoadUpdate 的逐核 util（按核选核打分输入）`scenemode_offline` 为 scenemode 激活标志：
-/// 抑制 boost（boost 会把 min_cpus 抬回全组常在线、把被压制的核拉回来）并触发 scenemode 大核压制——首选WALT core_ctl `max_cpus=0` 收缩 prime 簇，
+/// 应用 CPU 亲和布局与 core_ctl 在线策略（ChiRi 专属，跟随模式/屏幕/前台 PID）。内部带去重：布局与 PID 未变化时无 sysfs 写入，可安全周期性调用
+/// `core_utils` 为最近一次 SystemLoadUpdate 的逐核 util（按核选核打分输入）。`scenemode_offline` 为 scenemode 激活标志：
+/// 抑制 boost（boost 会把 min_cpus 抬回全组常在线、把被压制的核拉回来）并触发 scenemode 大核压制——首选 WALT core_ctl `max_cpus=0` 收缩 prime 簇，
 /// 兜底逐核 online 下线（见 core_ctl.rs）
 fn apply_affinity_and_corectl(
     affinity: &mut affinity::AffinityManager,
@@ -880,9 +880,9 @@ fn apply_affinity_and_corectl(
     scenemode_offline: bool,
 ) {
     // 实验室静态分组模式（contingency/babel）：停线程迁移、按模式写组级 cpus；governor/GPU 由调用方 sync（sync_lab_governor_gpu）
-    // 周期重入即纠偏（框架写回的 top-app/foreground 会被重写）core_ctl 交回系统（NONE）
+    // 周期重入即纠偏（框架写回的 top-app/foreground 会被重写）。core_ctl 交回系统（NONE）
     if mode == "contingency" || mode == "babel" {
-        // lab 静态分组本质是线程/核心摆放，与普通亲和一样受总闸约束（机型子开关与meta.thread_bind 在 Config::load 取「与」——后者是实验室 frozen 专用闸）
+        // lab 静态分组本质是线程/核心摆放，与普通亲和一样受总闸约束（机型子开关与 meta.thread_bind 在 Config::load 取「与」——后者是实验室 frozen 专用闸）
         if config.affinity.enabled {
             affinity.lab_static_apply(mode);
         } else {
@@ -893,7 +893,7 @@ fn apply_affinity_and_corectl(
     }
     // stardust 家族（scenemode）语义：停线程迁移与动态分组、全部 cpuset 恢复全核——压频只压 CLG 频率上限；
     // 核心层面仅做 prime 簇压制（首选 WALT core_ctl max_cpus=0 整簇 halt，兜底逐核 online 下线，见 core_ctl.rs [max_cpus]），线程/组摆放不做任何特化
-    // affinity.release 会把此前收窄的组按快照恢复本分支由 2s 周期块与场景事件反复进入：仅在持有接管时 release 一次，避免息屏全程每 2s 重复回写后台组 uclamp
+    // affinity.release 会把此前收窄的组按快照恢复。本分支由 2s 周期块与场景事件反复进入：仅在持有接管时 release 一次，避免息屏全程每 2s 重复回写后台组 uclamp
     // max 并刷「已释放接管」日志
     if scenemode_offline {
         if affinity.is_active() {
@@ -904,13 +904,13 @@ fn apply_affinity_and_corectl(
     }
     // fas 模式按 boost 处理：FAS 只负责调频，线程摆放沿用 boost 布局（top-app/foreground 收窄 prime∪big + 前台钉核 + core_ctl 保大核）；
     // FAS 与屏幕状态完全解耦（息屏不再释放实例），故全时段入 boost，不按 screen_on 回退 normal语义声明：boost 只看 mode、
-    // 不查 FAS 引擎是否活跃——初始化失败冷却期（最长FAS_COOLDOWN=300s）与重激活间隙内 mode 仍为 fas，boost 布局照常生效（调频为CLG default）这是有意的：
+    // 不查 FAS 引擎是否活跃——初始化失败冷却期（最长FAS_COOLDOWN=300s）与重激活间隙内， mode 仍为 fas，boost 布局照常生效（调频为CLG default）。这是有意的：
     // mode=="fas" 时前台必为白名单游戏，摆放非负收益，gating is_active 反而会引入激活边界的布局抖动省电型特调（boost_affinity=false，如 playback/daily）
     // 不走 boost：不收窄 cpuset、不保大核常在线——与省电目标相反（大核空转漏电、解码线程被低上限压住）
     let boost = ((is_boost_mode(mode) && tuned_boost_affinity(config, mode)) || mode == "fas")
         && !scenemode_offline;
     // top-app uclamp.max 放开（激活期写 100 让重线程可被 EAS 放到 prime）的管理归属：特调（akmode）由本函数按当前模式同步 Some(true)；
-    // fas 交给fas_affinity_hook（None = 本函数不干预，避免与其时序打架）；其余 boost 模式Some(false)——保证离开特调后不残留 100
+    // fas 交给 fas_affinity_hook（None = 本函数不干预，避免与其时序打架）；其余 boost 模式 Some(false)——保证离开特调后不残留 100
     // 省电型特调同样不放开（不抬 prime 上限）
     let uclamp_override = if mode == "fas" {
         None
@@ -929,7 +929,7 @@ fn apply_affinity_and_corectl(
     corectl.set_power_state(config.core_ctl.enabled && boost, false);
 }
 
-/// FAS 亲和接入点：FAS 激活/去激活时调整线程摆放相关状态当前职责：激活期放开 top-app uclamp.max 写 100（boost 布局写的 85 会钳制 EAS 对重线程的 capacity 视图、
+/// FAS 亲和接入点：FAS 激活/去激活时调整线程摆放相关状态。当前职责：激活期放开 top-app uclamp.max 写 100（boost 布局写的 85 会钳制 EAS 对重线程的 capacity 视图、
 /// 抑制 prime 放置，与 FAS 让 prime 承接负载相悖；FAS 激活期锁频绕过 schedutil，85 对调频无效），去激活还原后续 FAS 线程钉核扩展也在此实现
 fn fas_affinity_hook(
     affinity_mgr: &mut affinity::AffinityManager,
@@ -977,13 +977,13 @@ impl ModeFile {
     }
 }
 
-/// 读一次文件内容与期望字节比对（供跳过无变化的周期重写）读失败（文件缺失 / 不可读）即判不等 → 由调用方重写自愈
+/// 读一次文件内容与期望字节比对（供跳过无变化的周期重写）。读失败（文件缺失 / 不可读）即判不等 → 由调用方重写自愈
 fn file_content_eq(path: &std::path::Path, expected: &[u8]) -> bool {
     matches!(std::fs::read(path), Ok(cur) if cur == expected)
 }
 
 // [threads]
-/// 启动 Chiri 调度线程组（由 main.rs 调用）：`config_watcher` 监听 config 目录，热重载 Config 并重放一次性系统调整；
+/// 启动 Chiri 调度线程组（由 main.rs 调用）：-`config_watcher` 监听 config 目录，热重载 Config 并重放一次性系统调整；
 /// `scheduler_ipc` 消费 `DaemonEvent` 状态机，驱动 CLG 接管/释放/配置切换`rx` 为 Monitor↔调度层的有界事件通道，`shared_config` 为全局共享配置，
 /// `ak_active` 为特调激活标志（Monitor 层据此切换采样间隔），`fas_signal` 为 FAS 前台激活信号（FasManager 置位并唤醒等待者，
 /// fps_monitor 据此门控 eBPF 探针加载与 uprobe 挂载——反偷跑）
@@ -1200,9 +1200,9 @@ pub fn start_scheduler_thread(
             let mut last_down_heartbeat = Instant::now();
             // 停摆起始时刻（启动即停摆时就是现在）：心跳里带上已持续分钟数
             let mut halt_since: Option<Instant> = None;
-            // [halt] 停摆状态机：进入/退出 DOWN 时做一次性的释放与恢复放在调度循环里而不是监听线程里——这些 governor 对象归本线程独占
+            // [halt] 停摆状态机：进入/退出 DOWN 时做一次性的释放与恢复。放在调度循环里而不是监听线程里——这些 governor 对象归本线程独占
             let mut halted = crate::down::is_down();
-            // 停摆状态下启动：内存里的当前模式直接是 down，下面写文件、status.csv 的mode 列都用它（rules 里的真实模式不受影响，退出停摆时恢复）
+            // 停摆状态下启动：内存里的当前模式直接是 down，下面写文件、status.csv 的 mode 列都用它（rules 里的真实模式不受影响，退出停摆时恢复）
             if halted {
                 *mode_clone.lock().unwrap() = crate::down::DOWN_MODE.to_string();
                 // **开机就停摆必须显式打点**：状态机不会走「进入停摆」分支，日志里
@@ -1217,7 +1217,7 @@ pub fn start_scheduler_thread(
             }
 
             let mut cpu_governor = crate::chiri::cpu_load_governor::CpuLoadGovernor::new();
-            // 明日方舟特调（akmode）：独立于 CLG 的 4 档齿轮调度器，前台为白名单应用时接管传入特调激活共享标志，接管/释放时联动 Monitor 层切换采样间隔
+            // 明日方舟特调（akmode）：独立于 CLG 的 4 档齿轮调度器，前台为白名单应用时接管。传入特调激活共享标志，接管/释放时联动 Monitor 层切换采样间隔
             let ak_governor_flag = ak_active.clone();
             let mut ak_governor =
                 crate::chiri::tuned::TunedGovernor::new(ak_governor_flag, fas_signal.clone());
@@ -1229,7 +1229,7 @@ pub fn start_scheduler_thread(
             // 模式名与所有外部接口不变
             let mut power_base = crate::chiri::power_base::PowerBase::new();
 
-            // governor/GPU 接管层（contingency/babel 用；FAS 的 governor 在 FasManager 内部）GpuGuard::
+            // governor/GPU 接管层（contingency/babel 用；FAS 的 governor 在 FasManager 内部）。GpuGuard::
             // new 启动探测一次 devfreq 节点并缓存结果
             let mut governor_guard = governor::GovernorGuard::new();
             let mut gpu_guard = gpu::GpuGuard::new();
@@ -1281,7 +1281,7 @@ pub fn start_scheduler_thread(
             const FAS_COOLDOWN: Duration = Duration::from_secs(300);
             let mut fas_cooldown_until: Option<Instant> = None;
 
-            // scenemode 饱和退出冷却：常驻簇（大核簇）util 持续顶满上限退回reduce 后，300s 内不得重新进入 scenemode（防止与后台负载反复拉锯）
+            // scenemode 饱和退出冷却：常驻簇（大核簇）util 持续顶满上限退回 reduce 后，300s 内不得重新进入 scenemode（防止与后台负载反复拉锯）
             let mut scenemode_cooldown_until: Option<Instant> = None;
             // scenemode 饱和计时起点（常驻大核簇 max_util 连续超阈值的窗口起点）
             let mut scenemode_sat_since: Option<Instant> = None;
@@ -1356,7 +1356,7 @@ pub fn start_scheduler_thread(
                     crate::logger::set_diag_active(cfg.meta.dev_record);
                 }
                 crate::logger::set_diag_mode(&current_mode);
-                // 启动即按初始模式应用亲和布局与 core_ctl 在线策略**停摆启动时跳过**：接管亲和等于停摆期还在写 cpuset；且 halted 初值就是is_down()，循环里「进入停摆」
+                // 启动即按初始模式应用亲和布局与 core_ctl 在线策略。**停摆启动时跳过**：接管亲和等于停摆期还在写 cpuset；且 halted 初值就是is_down()，循环里「进入停摆」
                 // 分支不会执行，没人会把它收回去
                 if !halted {
                     let cfg = config_clone.read().unwrap();
@@ -1374,7 +1374,7 @@ pub fn start_scheduler_thread(
                 }
             }
 
-            // 事件循环包在 catch_unwind 中：panic 被捕获并记录，不会让调度线程静默挂掉（否则频率会停在最后状态）最近一次 SystemLoadUpdate 到达时间：
+            // 事件循环包在 catch_unwind 中：panic 被捕获并记录，不会让调度线程静默挂掉（否则频率会停在最后状态）。最近一次 SystemLoadUpdate 到达时间：
             // 供 CLG 看门狗判定负载源是否失效
             let mut last_load_event = Instant::now();
             // FAS 延迟退出期间记住的目标模式（fas → X 的 ModeChange 被延迟时记录），超时退出完成后按它重新接管（1s tick 巡检消费）
@@ -2286,7 +2286,7 @@ pub fn start_scheduler_thread(
                             );
 
                             if crate::common::is_special_mode(&current_mode) {
-                                // 亮屏恢复特调：息屏时若看门狗释放过 akmode 必须重新接管，否则特调限频失效、采样间隔不切回 40ms；冷却期内跳过特调直接走 CLG
+                                // 亮屏恢复特调：息屏时若看门狗释放过 akmode 必须重新接管，否则特调限频失效、采样间隔不切回 40ms；冷却期内跳过特调，直接走 CLG
                                 let in_cooldown = tuned_cooldown_until
                                     .map_or(false, |until| Instant::now() < until);
                                 if !ak_governor.is_active() && !in_cooldown {
@@ -2471,11 +2471,11 @@ pub fn start_scheduler_thread(
                                     fast_lock.release();
                                 }
 
-                                // 仅在亮屏时处理调度接管如果息屏，Doze 配置仍在生效，这里不能覆盖它
+                                // 仅在亮屏时处理调度接管。如果息屏，Doze 配置仍在生效，这里不能覆盖它
                                 if is_screen_on {
                                     let config_lock = config_clone.read().unwrap();
                                     if crate::common::is_special_mode(&mode) {
-                                    // 进入特调模式：停止 CLG 改由 akmode 接管；冷却期内跳过特调直接走 CLG
+                                    // 进入特调模式：停止 CLG 改由 akmode 接管；冷却期内跳过特调，直接走 CLG
                                         let in_cooldown = tuned_cooldown_until
                                             .map_or(false, |until| Instant::now() < until);
                                         if !in_cooldown {
@@ -2936,7 +2936,7 @@ pub fn start_scheduler_thread(
                 scenemode_sat_since = None;
                 last_core_utils.clear();
                 std::thread::sleep(SCHEDULER_IPC_RESTART_BACKOFF);
-                // 按当前模式重新接管（等价亮屏恢复语义；特调/fas 由后续事件重建）**停摆期间必须跳过**：重建无 mode 之外门控，模式停在 lab/vector 会把刚释放的接管重新接回
+                // 按当前模式重新接管（等价亮屏恢复语义；特调/fas 由后续事件重建）。**停摆期间必须跳过**：重建无 mode 之外门控，模式停在 lab/vector 会把刚释放的接管重新接回
                 if !halted {
                     let current_mode = mode_clone
                         .lock()

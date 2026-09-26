@@ -129,7 +129,7 @@ pub struct DirWatcher {
 const WATCH_SETTLE: Duration = Duration::from_millis(100);
 
 impl DirWatcher {
-    /// 监听 `dir` 目录（不递归）目录不存在/无权限时返回 Err，由调用方退避重试
+    /// 监听 `dir` 目录（不递归）。目录不存在/无权限时返回 Err，由调用方退避重试
     pub fn new(dir: &Path) -> Result<Self> {
 // CLOSE_WRITE 覆盖直接写入；MOVED_TO 覆盖原子替换（WebUI 用临时文件 + mv 保存，只有 MOVED_TO 能感知）
         Self::new_with_mask(dir, WatchMask::CLOSE_WRITE | WatchMask::MOVED_TO)
@@ -258,7 +258,7 @@ pub fn find_battery_temp_path() -> Option<&'static str> {
         .then_some(BATT_TEMP)
 }
 
-// 电池温度刻度预识别`/sys/class/power_supply/battery/temp` 的单位因内核/厂商而异（0.1°C / 毫摄氏度 / 直读 °C 三种），硬编码除数会有 10×/100× 偏差，
+// 电池温度刻度预识别 `/sys/class/power_supply/battery/temp` 的单位因内核/厂商而异（0.1°C / 毫摄氏度 / 直读 °C 三种），硬编码除数会有 10×/100× 偏差，
 // 故运行时预识别一次并缓存，热保护与温度护栏共用同一结论，避免口径漂移
 
 // [batt_temp]
@@ -424,7 +424,7 @@ impl FastWriter {
             path: path_ref.to_path_buf(),
             unmounted: false,
         };
-// 惰性卸载：仅当直接打开失败（挂载写保护/权限封装等异常态）时 umount 重开，避免对正常节点无条件detach（可能拆掉合法挂载）写被拒（EACCES/EROFS）时也会走一次卸载重试（见 do_write）
+// 惰性卸载：仅当直接打开失败（挂载写保护/权限封装等异常态）时 umount 重开，避免对正常节点无条件detach（可能拆掉合法挂载）。写被拒（EACCES/EROFS）时也会走一次卸载重试（见 do_write）
         if w.file.is_none() {
             w.unmount_and_reopen();
         }
@@ -688,7 +688,7 @@ pub fn default_true() -> bool {
     true
 }
 
-/// Serde 默认值辅助函数：耗电读数满量程（W）meta.yaml 的 power_max_w 缺省/非法时用此值（WebUI 仪表盘据此换算进度）
+/// Serde 默认值辅助函数：耗电读数满量程（W）。meta.yaml 的 power_max_w 缺省/非法时用此值（WebUI 仪表盘据此换算进度）
 pub fn default_power_max_w() -> f32 {
     12.0
 }

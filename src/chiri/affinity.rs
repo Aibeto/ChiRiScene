@@ -679,7 +679,7 @@ struct ThreadState {
     prev_home_at: Instant,
     /// 上次 overload_hold 打点时刻（HOLD_LOG_COOLDOWN 节流）
     last_hold_log: Instant,
-    /// 升核掩码与线程允许核交集为空（32 位任务钉无 AArch32 核等）：内核恒拒 EINVAL，置位后跳过该线程升核尝试；线程退出随表清理
+    /// 升核掩码与线程允许核交集为空（32 位任务钉无 AArch32 核等）：内核恒拒 EINVAL），置位后跳过该线程升核尝试；线程退出随表清理
     pin_incapable: bool,
 }
 
@@ -802,7 +802,7 @@ impl AffinityManager {
         );
     }
 
-    /// 应用布局（cgroup 收窄/uclamp）并按需再平衡线程`boost_uclamp_override` 三态：Some(true)=本调用放开为 100（特调 akmode）；Some(false)
+    /// 应用布局（cgroup 收窄/uclamp）并按需再平衡线程。`boost_uclamp_override` 三态：Some(true)=本调用放开为 100（特调 akmode）；Some(false)
     /// =负责还原不残留 100；None=不干预（fas 由 fas_affinity_hook 显式管理，与 2s 周期时序未必对齐）所有权协议：boost 进入由 apply_uclamp_max 写机型值 85，
     /// 需 prime 放置再抬 100；释放统一走 boost 退出链 restore_uclamp_max
     pub fn apply(
@@ -970,7 +970,7 @@ impl AffinityManager {
         }
     }
 
-    /// 钉线程到单核`pkg` 由调用方传入（前台为缓存 fg_cmdline，后台 "-"）避免重读 cmdline成败均落 @A 帧；失败保持原语义直接 return（不置状态，下次重试）
+    /// 钉线程到单核。`pkg` 由调用方传入（前台为缓存 fg_cmdline，后台 "-"），避免重读 cmdline。成败均落 @A 帧；失败保持原语义直接 return（不置状态，下次重试）
     fn pin_core(
         &mut self,
         tid: i32,
@@ -1052,7 +1052,7 @@ impl AffinityManager {
         logged_write(&format!("/dev/cpuset/{group}/tasks"), &tid.to_string())
     }
 
-    /// 关键线程组掩码兜底还原：恢复全核掩码并清 group_bind，不触碰单核钉定计数；失败不置 group_bind（下次重试）仅补 @A 帧未做组绑定时为无操作
+    /// 关键线程组掩码兜底还原：恢复全核掩码并清 group_bind，不触碰单核钉定计数；失败不置 group_bind（下次重试）。仅补 @A 帧未做组绑定时为无操作
     fn restore_group_mask(&mut self, tid: i32, pid: i32, pkg: &str) -> std::io::Result<()> {
         let pinned = self
             .threads
@@ -1406,7 +1406,7 @@ impl AffinityManager {
                                                     "home_overload",
                                                 );
                                             } else if core != home as usize {
-                                                // cand==home（全员饱和无更优核）不打点防每轮刷 hold 行；其余 hold 按 HOLD_LOG_COOLDOWN 节流
+                                                // cand==home（全员饱和无更优核）不打点，防每轮刷 hold 行；其余 hold 按 HOLD_LOG_COOLDOWN 节流
                                                 if let Some(st) = self.threads.get_mut(&tid) {
                                                     if now.duration_since(st.last_hold_log)
                                                         >= HOLD_LOG_COOLDOWN
@@ -1622,7 +1622,7 @@ impl AffinityManager {
                     self.bg_cursor %= n;
                     let end = (self.bg_cursor + BG_SCAN_WINDOW).min(n);
                     for (tid, group) in &bg[self.bg_cursor..end] {
-                        // 已 promote / 前台线程跳过（前者走复查，后者走前台路径）is_fg 而非 pid>0：后台候选 pid 已补真实 tgid，判据必须看归属
+                        // 已 promote / 前台线程跳过（前者走复查，后者走前台路径）。is_fg 而非 pid>0：后台候选 pid 已补真实 tgid，判据必须看归属
                         if let Some(st) = self.threads.get(tid) {
                             if st.promoted || st.is_fg {
                                 continue;
@@ -1881,7 +1881,7 @@ impl AffinityManager {
 
     // 实验室静态分组（contingency/babel）
 
-    /// 进入/纠偏静态分组：停线程迁移与动态分组（release 恢复此前接管），按模式写各业务组 cpus已在同模式时仅重写（框架写回的周期纠偏），快照不重复记录
+    /// 进入/纠偏静态分组：停线程迁移与动态分组（release 恢复此前接管），按模式写各业务组 cpus。已在同模式时仅重写（框架写回的周期纠偏），快照不重复记录
     pub fn lab_static_apply(&mut self, mode: &str) {
         if self.lab_static_mode.as_deref() != Some(mode) {
             // 先恢复此前接管的收窄（top-app cpus/uclamp/线程绑定回系统值），lab 快照记的才是真实原值
@@ -2176,7 +2176,7 @@ impl AffinityManager {
         self.release_impl("release");
     }
 
-    /// 释放（reason 按场景区分：常规收尾 "release"、总闸关闭 "disabled"）各恢复动作的帧由 write_cpuset_paths_items / restore_* /
+    /// 释放（reason 按场景区分：常规收尾 "release"、总闸关闭 "disabled"）。各恢复动作的帧由 write_cpuset_paths_items / restore_* /
     /// cleanup_thread 自落，这里补一条act=bind_release 汇总帧（result = 各线程恢复写入的首个失败 errno，全成功 ok）
     fn release_impl(&mut self, reason: &str) {
         let tids: Vec<i32> = self.threads.keys().copied().collect();

@@ -53,9 +53,9 @@ fn cal_git_code(sh: &Shell) -> Result<usize> {
     Ok(output.trim().parse::<usize>()?)
 }
 
-fn get_time() -> String {
-    chrono::Local::now().format("%H%M").to_string()
-}
+// fn get_time() -> String {
+//     chrono::Local::now().format("%H%M").to_string()
+// }
 
 /// 从 module/module.prop（KEY=VALUE，Magisk/KernelSU 模块规范）读取 name 与 version，作为产物命名依据
 fn read_module_prop() -> Result<(String, String)> {
@@ -87,11 +87,11 @@ fn build(sh: &Shell, no_pack: bool) -> Result<()> {
     // 产物命名以 module.prop 为准（name-version-提交数-时分）；无日期，同日多次构建靠时分区分、跨天靠版本号+提交数保证唯一
     let (module_name, module_version) = read_module_prop()?;
     let base_name = format!(
-        "{}-{}-{}-{}",
+        "{}-{}-{}",
         module_name,
         module_version,
         cal_git_code(sh)?,
-        get_time()
+        // get_time()
     );
 
     let _ = fs::remove_dir_all(&temp_dir);
@@ -154,7 +154,7 @@ fn build(sh: &Shell, no_pack: bool) -> Result<()> {
     fs::create_dir_all(output_dir)?;
 
     if no_pack {
-        // 不打包：组装好的模块目录移出临时目录交 CI/GitHub 打包，目录名即 artifact 名（下载时自动生成同名 .zip）
+        // 不打包：组装好的模块目录移出临时目录，交 CI/GitHub 打包，目录名即 artifact 名（下载时自动生成同名 .zip）
         let final_dir = output_dir.join(&base_name);
         let _ = fs::remove_dir_all(&final_dir);
         fs::rename(&temp_dir, &final_dir)?;

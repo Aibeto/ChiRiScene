@@ -1,7 +1,7 @@
 // mode.ts: [catalog] [derive]
 import { DOWN_WORD } from '@/data/down'
 // 模式派生事实来源 src/monitor/app_detect.rs::determine_mode：fas（白名单命中且应用配置可解析）
-// → 特调白名单 fallback → app_modes → global_mode只有 reduce/default/boost/vector 在 daemon 注册为 CLG 档；
+// → 特调白名单 fallback → app_modes → global_mode。只有 reduce/default/boost/vector 在 daemon 注册为 CLG 档；
 // 特调模式名由 special_tuned.yaml 定义；未注册字面值归为 unknown
 
 // [catalog]
@@ -60,7 +60,7 @@ const LAB_CATALOG: Record<string, {
 
 // [derive]
 /**
- * 由 current_mode 值与特调模式集合派生展示信息specialModes 来自 special_tuned.yaml 的 modes 并集——
+ * 由 current_mode 值与特调模式集合派生展示信息specialModes` 来自 special_tuned.yaml 的 modes 并集——
  * 该文件只导出精确条目，正则条目对应的特调模式 UI 不可知，只能覆盖「已配置」部分
  * descKey 一律返回空串（mode.*.desc 已全部注释，UI 对空描述跳过渲染）
  */

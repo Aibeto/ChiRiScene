@@ -89,7 +89,7 @@ static THREAD_RUN_TIME: HashMap<u32, u64> = HashMap::with_max_entries(32768, 0);
 static TGID_RUN_TIME: HashMap<u32, u64> = HashMap::with_max_entries(1024, 0);
 
 /// 线程级记账开关（0 = 关，非 0 = 开）：由用户态写，置位条件与 cpu_monitor 的FAS_FG_UTIL_ENABLED 相同（ChiRi SoC 且 FAS 配置可用）
-/// 关闭时 sched_switch 跳过THREAD_RUN_TIME 的 hash 查找/插入——该 map 只被用户态「TGID 主路径失败」降级路径消费
+/// 关闭时 sched_switch 跳过 THREAD_RUN_TIME 的 hash 查找/插入——该 map 只被用户态「TGID 主路径失败」降级路径消费
 #[map]
 static THREAD_ACCT: Array<u32> = Array::with_max_entries(1, 0);
 

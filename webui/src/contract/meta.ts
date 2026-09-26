@@ -266,7 +266,7 @@ export function validateFieldValue(
 /**
  * 顶层行替换：仅匹配缩进为 0 的 `键: 值` 行，保留键名大小写、分隔空白与行内注释；
  * 原值带引号时统一渲染为双引号（daemon 只做去引号比较，两种写法都合法）
- * 返回 null = 未找到该字段，调用方应放弃写入而不是整文件重排
+ * 返回 null = 未找到该字段，调用方应放弃写入，而不是整文件重排
  */
 export function replaceTopLevelField(
   content: string,
@@ -323,7 +323,7 @@ export function utf8ToBase64(input: string): string {
 
 /**
  * 单次读-改-写事务：一次写入完成所有字段改动（每次写入都会触发 daemon 全量热重载，
- * 且 tmp+rename 会产生两个 inotify 事件，绝不做多次写入）临时文件后缀固定为
+ * 且 tmp+rename 会产生两个 inotify 事件，绝不做多次写入）。临时文件后缀固定为
  * `.webui.tmp`，与 daemon 自身的 `<name>.tmp` 区分，避免互踩
  */
 export async function writeMetaFields(

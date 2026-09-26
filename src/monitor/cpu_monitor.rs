@@ -330,7 +330,7 @@ pending_delta = 0;
                         );
                         last_tgid_adj = 0;
                         last_tgid_pid = fg_pid;
-// 同时清空线程级缓存（PID 变了旧 TID 无意义）
+// 同时清空线程级缓存（PID 变了，旧 TID 无意义）
                         last_thread_run.clear();
                     }
 
@@ -449,7 +449,7 @@ pending_delta = 0;
 
 // [snap-procs]
 /// 读进程名：cmdline 首段优先（应用即包名；native 取文件名段），退化 /proc/<pid>/comm（15 字节截断），全失败给 "<pid>"；
-/// 供 snapshot_procs 的 pid→name 缓存填充（命中后不再读 /proc）
+/// 供 `snapshot_procs` 的 pid→name 缓存填充（命中后不再读 /proc）
 fn proc_name(pid: u32) -> String {
     if let Ok(s) = std::fs::read_to_string(format!("/proc/{pid}/cmdline")) {
         if let Some(first) = s.split('\0').find(|s| !s.is_empty()) {
@@ -471,7 +471,7 @@ fn proc_name(pid: u32) -> String {
 struct SnapState {
     /// 上次快照时刻（None = 首帧：只建基线、util 全 0）
     last_at: Option<std::time::Instant>,
-    /// pid → 上轮 TGID 累计运行时间（raw ns），每帧整体滚动重建（死进程条目随之清除）
+    /// pid → 上轮 TGID 累计运行时间（raw ns）。每帧整体滚动重建（死进程条目随之清除）
     base: std::collections::HashMap<u32, u64>,
     /// pid → 进程名缓存（/proc 每进程只读一次；超量整体清空，防长会话无界增长）
     names: std::collections::HashMap<u32, String>,
@@ -492,7 +492,7 @@ pub fn snapshot_procs() -> Vec<ProcSnap> {
 // start_cpu_loop 尚未注册句柄 / map 缺失：无数据可采
         return Vec::new();
     }
-// SAFETY: 指针指向 Box::leak 常驻 Ebpf 内的 Map（见 SNAP_TGID_MAP），生命周期覆盖进程；只构造只读句柄不写入
+// SAFETY: 指针指向 Box::leak 常驻 Ebpf 内的 Map（见 SNAP_TGID_MAP），生命周期覆盖进程；只构造只读句柄，不写入
     let map: &aya::maps::Map = unsafe { &*ptr };
     let Ok(tgid_run_map) = BpfHashMap::<&aya::maps::MapData, u32, u64>::try_from(map) else {
         return Vec::new();

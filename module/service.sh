@@ -59,7 +59,7 @@ if [ -d "$SCRIPTS_DIR" ]; then
   chmod -R 755 "$SCRIPTS_DIR"
 fi
 
-# 调用禁用 boost 脚本（当前注释停用）if [ -f "$SCRIPTS_DIR/disable_boost.sh" ]; then echo "$(date):
+# 调用禁用 boost 脚本（当前注释停用） if [ -f "$SCRIPTS_DIR/disable_boost.sh" ]; then echo "$(date):
 # Executing disable_boost.sh" >> "$LOG_FILE""$SCRIPTS_DIR/disable_boost.sh"else echo "$(date):
 # disable_boost.sh not found" >> "$LOG_FILE"fi
 

@@ -14,7 +14,7 @@
 SELF_DIR=${0%/*}
 MODDIR=${SELF_DIR%/*}
 
-# 模块二进制工具模式：chiri gzip <file> 就地生成 <file>.gz 并删源，语义同 gzip -f（见 src/logger.rs compress_cli）
+# 模块二进制（工具模式：`chiri gzip <file>` 就地生成 <file>.gz 并删源），语义同 `gzip -f（见 src/logger.rs compress_cli）
 CHIRI_BIN=""
 if [ -x "$MODDIR/core/bin/chiri" ]; then
   CHIRI_BIN="$MODDIR/core/bin/chiri"

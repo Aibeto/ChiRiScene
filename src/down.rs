@@ -51,7 +51,7 @@ fn read_down(root: &Path) -> bool {
 }
 
 // [flag]
-/// 停摆中调度循环高频读它，那里不许再去读文件
+/// 停摆中。调度循环高频读它，那里不许再去读文件
 static DOWN_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// 当前是否处于 DOWN 停摆（进程级，读原子量）
@@ -60,7 +60,7 @@ pub fn is_down() -> bool {
 }
 
 // [watch]
-/// 启动期读取一次必须在调度线程起循环之前调用（ChiRi 专属）
+/// 启动期读取一次。必须在调度线程起循环之前调用（ChiRi 专属）
 pub fn on_startup(root: &Path) -> bool {
     let v = read_down(root);
     DOWN_ACTIVE.store(v, Ordering::Release);

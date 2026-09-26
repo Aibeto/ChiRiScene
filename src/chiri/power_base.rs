@@ -20,7 +20,7 @@ use crate::i18n::{t, t_with_args};
 const REWRITE_INTERVAL: Duration = Duration::from_secs(5);
 /// 性能比死区：目标与当前的差小于它就认为「已经到位」不写频率（挡住利用率反馈滞后的抖动，sysfs 写入降到只在真正变化时）
 const PERF_DEADBAND: f32 = 0.05;
-/// 单次降频的最大幅度（性能比）：down_scale 再激进也不越过它，避免一步砍半导致下一 tick util 反弹成振荡
+/// 单次降频的最大幅度（性能比）：`down_scale` 再激进也不越过它，避免一步砍半导致下一 tick util 反弹成振荡
 const MAX_DOWN_STEP: f32 = 0.25;
 
 // [types]
@@ -189,7 +189,7 @@ impl PowerBase {
                 ranges.prime.clone().collect()
             };
 
-            // 起手锁硬件最高频（写序先 max 后 min，保证不出现 min > max）；写成功才把 perf 记为 1.0，失败保持 0.0，下一 tick 按「升频写序」重试，
+            // 起手锁硬件最高频（写序：先 max 后 min，保证不出现 min > max）；写成功才把 perf 记为 1.0，失败保持 0.0，下一 tick 按「升频写序」重试，
             // 不会落进上面说的「降频却先写 max」死局
             let mut perf = 0.0_f32;
             if max_writer.write_value_force(hw_max) && min_writer.write_value_force(hw_max) {
@@ -215,8 +215,8 @@ impl PowerBase {
     }
 
     // [tick]
-    /// 每个负载 tick 调用一次core_utils：各 CPU 利用率（0..1）；power_w：当前功耗（W），
-    /// **None = 未在放电或没有读数**——此时不做功耗限制；touch_active：触摸窗口内，允许短暂突破功率上限
+    /// 每个负载 tick 调用一次。`core_utils`：各 CPU 利用率（0..1）；`power_w`：当前功耗（W），
+    /// **None = 未在放电或没有读数**——此时不做功耗限制；`touch_active`：触摸窗口内，允许短暂突破功率上限
     /// 返回距下次防篡改重写的剩余时间（非激活返回 None）
     pub fn on_load_update(
         &mut self,

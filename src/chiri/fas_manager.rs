@@ -44,16 +44,16 @@ pub struct FasManager {
     governor: GovernorGuard,
     last_temp: f64,
     last_temp_read: Instant,
-    /// FAS 温度源节点路径原始读数刻度因内核而异，每次刷新经 utils::battery_temp_divisor() 取全局预识别结论（与 CLG 热保护同源，避免两处口径漂移）；
+    /// FAS 温度源节点路径。原始读数刻度因内核而异，每次刷新经 `utils::battery_temp_divisor()` 取全局预识别结论（与 CLG 热保护同源），避免两处口径漂移）；
     /// None = 无温度源（引擎侧护栏失效，不影响其余功能）
     temp_path: Option<PathBuf>,
     /// FAS 前台激活信号（monitor 层 fps_monitor 等待消费）：activate 置位、deactivate 清零——fps_monitor 据此推迟/摘除 eBPF uprobe（反偷跑门控），
-    /// 置位瞬间唤醒待机线程（见 crate::monitor::FasSignal）
+    /// 置位瞬间唤醒待机线程（见 `crate::monitor::FasSignal`）
     fas_signal: Arc<FasSignal>,
 }
 
 impl FasManager {
-    /// temp_path：FAS 专用温度源节点看电池不看处理器——电池温度是热安全边界（阈值按 ℃ 配置），处理器长期 95℃ 属正常工作区不作降频依据；None = 内部限温关闭fas_signal 由 main
+    /// temp_path：FAS 专用温度源节点看电池不看处理器——电池温度是热安全边界（阈值按 ℃ 配置），处理器长期 95℃ 属正常工作区，不作降频依据；None = 内部限温关闭fas_signal 由 main
     /// rs 创建、monitor 与 chiri 两层共享
     pub fn new(temp_path: Option<PathBuf>, fas_signal: Arc<FasSignal>) -> Self {
         Self {
@@ -192,14 +192,14 @@ impl FasManager {
     }
 
     // [delayed_exit]
-    /// 失去白名单前台：进入延迟退出期（FAS 仍持有接管，mode 保持 fas）；期间 activate（切回白名单）会取消延迟未活跃时无操作
+    /// 失去白名单前台：进入延迟退出期（FAS 仍持有接管，mode 保持 fas）；期间 activate（切回白名单）会取消延迟。未活跃时无操作
     pub fn request_delayed_exit(&mut self) {
         if self.instance.is_some() {
             self.exit_deadline = Some(Instant::now() + self.exit_delay);
         }
     }
 
-    /// 同包回到前台：取消延迟退出延迟期内切回**同一个**白名单应用不走 activate（PackageSwitch 同包去重 / 1s 巡检同包 no-op），必须由调用方显式续期，
+    /// 同包回到前台：取消延迟退出。延迟期内切回**同一个**白名单应用不走 activate（PackageSwitch 同包去重 / 1s 巡检同包 no-op），必须由调用方显式续期，
     /// 否则到期会把正在前台的游戏拆掉重建（局内卡顿）
     pub fn renew_if_same_pkg(&mut self, pkg: &str) {
         if self.exit_deadline.is_some() && self.instance.as_ref().is_some_and(|i| i.package == pkg)
@@ -208,7 +208,7 @@ impl FasManager {
         }
     }
 
-    /// 1s 周期调用：延迟退出到期则完成退出（恢复频率 + governor 快照）返回 true = 刚完成退出，调用方需按延迟期记住的目标模式重新接管
+    /// 1s 周期调用：延迟退出到期则完成退出（恢复频率 + governor 快照）。返回 true = 刚完成退出，调用方需按延迟期记住的目标模式重新接管
     pub fn tick(&mut self) -> bool {
         match self.exit_deadline {
             Some(deadline) if Instant::now() >= deadline => {
@@ -239,7 +239,7 @@ impl FasManager {
         }
     }
 
-    /// 当前活跃实例的帧率（fps）：FAS 未启动或窗口尚无样本时返回 None——调用方据此在 status.csv 的 fps 列写 "-"只读快照，不推进引擎状态
+    /// 当前活跃实例的帧率（fps）：FAS 未启动或窗口尚无样本时返回 None——调用方据此在 status.csv 的 fps 列写 "-"。只读快照，不推进引擎状态
     pub fn current_fps(&self) -> Option<f32> {
         self.instance.as_ref()?.controller.current_fps()
     }

@@ -45,7 +45,7 @@ pub struct Snapshot<'a> {
 }
 
 // [content]
-/// 模式家族（与 WebUI data/mode.ts 的 ModeKind 对齐）；拉丁字面量与 zh locale 的 mode.family.* 一致，不另做本地化
+/// 模式家族（与 WebUI `data/mode.ts` 的 ModeKind 对齐）；拉丁字面量，与 zh locale 的 `mode.family.*` 一致，不另做本地化
 fn family(mode: &str) -> &'static str {
     match mode {
         "down" => "DOWN",
@@ -159,7 +159,7 @@ enum Msg {
     Cancel { force: bool },
 }
 
-/// 投递线程发送端（懒启动，进程内一条）与通知渠道常量 `CHANNEL` 是两回事
+/// 投递线程发送端（懒启动，进程内一条）。与通知渠道常量 `CHANNEL` 是两回事
 static WORKER_TX: OnceLock<SyncSender<Msg>> = OnceLock::new();
 
 /// 取发送端，首次调用时起线程；线程起不来则 try_send 得 Disconnected，退化成「不投递」，调度线程照旧跑
@@ -227,7 +227,7 @@ fn handle_post(title: &str, text: &str) {
     }
 }
 
-/// 撤销：force 无条件投一条 -d（启动首轮清上一次运行残留），否则仅在本次确实投递过时动手
+/// 撤销：`force` 无条件投一条 `-d`（启动首轮清上一次运行残留），否则仅在本次确实投递过时动手
 fn handle_cancel(force: bool) {
     {
         let mut last = LAST_POSTED.lock().unwrap_or_else(|e| e.into_inner());

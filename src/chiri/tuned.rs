@@ -120,7 +120,7 @@ pub struct TunedGovernor {
     clusters: Vec<ClusterState>,
     /// 各 policy 的 governor/min/max 快照，release 时恢复
     restore: Vec<PolicyRestore>,
-/// 接管前 sched_migration_cost_ns 原值（全局节点，只快照一次）：仅配置了 migration_cost_ns 且写成功才非 None，release 时写回
+/// 接管前 `sched_migration_cost_ns` 原值（全局节点，只快照一次）：仅配置了 `migration_cost_ns` 且写成功才非 None，release 时写回
     migration_cost_restore: Option<String>,
     active: bool,
     /// 调试日志计数，每 25 tick 打一次摘要
@@ -399,7 +399,7 @@ impl TunedGovernor {
         );
     }
 
-    /// 频率表中找「≤ ratio × 硬件最高」的最大档位（floor 对齐）：写的是 scaling_max 上限，落点不得高于计算目标（ceil 会比决策多给一档；目标落两档之间时内核本就把 max 向下 clamp，
+    /// 频率表中找「≤ ratio × 硬件最高」的最大档位（floor 对齐）：写的是 scaling_max 上限），落点不得高于计算目标（ceil 会比决策多给一档；目标落两档之间时内核本就把 max 向下 clamp，
     /// 先对齐再写账实一致、同值去重才有效）
     fn freq_for_ratio(freqs: &[u32], ratio: f32) -> u32 {
         let hw_max = *freqs.last().unwrap_or(&0);
@@ -413,7 +413,7 @@ impl TunedGovernor {
     }
 
     // [dwell] 受控写频（与 CLG write_freq 同口径）：死区由调用方 hysteresis 保证（|target−current| 超死区才调用），
-    // 这里做最小驻留内方向翻摆延迟与写失败防篡改补写豁免；接管初写/恢复不走本函数返回是否写成功：成功才前移 current_max，失败/被延迟由下一 tick 补写 target
+    // 这里做「最小驻留内方向翻摆延迟」与写失败防篡改补写豁免；接管初写/恢复不走本函数。返回是否写成功：成功才前移 current_max，失败/被延迟由下一 tick 补写 target
     fn gated_write(c: &mut ClusterState, target: u32, dwell_ms: u64) -> bool {
         let dir: i8 = if target > c.current_max { 1 } else { -1 };
         if !c.last_failed && c.last_write_dir != 0 && dir != c.last_write_dir {

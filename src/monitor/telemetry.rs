@@ -2,7 +2,7 @@
 
 /// 遥测数据源（ChiRi 专属，1s 轮询）：PSI some avg10（无 PSI 恒 0）、GPU 利用率（高通 kgsl / MTK ged，缺失 None）、电池电流/电压（默认标准 power_supply 节点；
 /// meta oplus_chg 打开时优先 OPlus 私有节点 bcc_parms，读不到才回退）数据写入进程级共享原子量（monitor 层写、chiri 调度层读），不占事件通道；
-/// 消费端为 chiri scheduler_ipc 2s 热循环（telemetry.log CSV 落盘 + 周期 debug 摘要）线程仅在 ChiRi SoC 上由 monitor/mod.rs 启动，
+/// 消费端为 chiri scheduler_ipc 2s 热循环（telemetry.log CSV 落盘 + 周期 debug 摘要）。线程仅在 ChiRi SoC 上由 monitor/mod.rs 启动，
 /// 非 ChiRi 零开销
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 
@@ -73,7 +73,7 @@ static CURRENT_DOUBLE: AtomicBool = AtomicBool::new(false);
 static VOLT_DIVISOR_BITS: AtomicU32 = AtomicU32::new(crate::utils::DEFAULT_UNIT_DIVISOR.to_bits());
 static CURR_DIVISOR_BITS: AtomicU32 = AtomicU32::new(crate::utils::DEFAULT_UNIT_DIVISOR.to_bits());
 
-/// 写入电池读数选项校准值非有限/非正时退回默认值——单项笔误不牵连其它选项
+/// 写入电池读数选项。校准值非有限/非正时退回默认值——单项笔误不牵连其它选项
 pub fn set_battery_options(
     oplus_chg: bool,
     oplus_dual_cell: bool,
@@ -134,7 +134,7 @@ impl Telemetry {
         let v = self.batt_current_raw.load(Ordering::Relaxed);
         (v != UNAVAIL).then(|| v as f32 / current_divisor())
     }
-/// 电池电压（V）；None = 不可用= 节点原始值 ÷ voltage_divisor（口径同电流，见 [`Self::batt_current_ma`]）
+/// 电池电压（V）；None = 不可用。`节点原始值 ÷ voltage_divisor`（口径同电流，见 [`Self::batt_current_ma`]）
     pub fn batt_voltage_v(&self) -> Option<f32> {
         let v = self.batt_voltage_raw.load(Ordering::Relaxed);
         (v != UNAVAIL).then(|| v as f32 / voltage_divisor())
@@ -168,9 +168,9 @@ fn read_i32(path: &str) -> Option<i32> {
         .and_then(|s| s.trim().parse::<i32>().ok())
 }
 
-/// 标准 Android 节点（ABI µV/µA），存**节点原始值**、读取层不换算——由 meta 校准除数（缺省 1000000 = ABI 口径）换算为 V/A不可用返回哨兵 [`UNAVAIL`]
-/// OPlus 标准节点单位/刷新不保证（部分版本 10s 才刷新）只作兜底；OPlus 机型安装脚本把校准值写成 1000（见 customize.sh [battery-detect]），
-/// 两路口径不一致时以私有节点为准（oplus_chg 打开且读到有效值不回退）
+/// 标准 Android 节点（ABI µV/µA），存**节点原始值**、读取层不换算——由 meta 校准除数（缺省 1000000 = ABI 口径）换算为 V/A。 不可用返回哨兵 [`UNAVAIL`]
+/// OPlus 标准节点「单位/刷新不保证」（部分版本 10s 才刷新）只作兜底；OPlus 机型安装脚本把校准值写成 1000（见 customize.sh [battery-detect]），
+/// 两路口径不一致时以私有节点为准（`oplus_chg` 打开且读到有效值不回退）
 fn read_standard_battery() -> (i32, i32) {
     (
         read_i32("/sys/class/power_supply/battery/current_now").unwrap_or(UNAVAIL),
@@ -225,7 +225,7 @@ fn bcc_unusable() -> Option<(i32, i32)> {
 }
 
 // [loop]
-/// 遥测线程主循环：1s 轮询刷新共享快照GPU 路径探测成功后缓存，避免每轮扫描
+/// 遥测线程主循环：1s 轮询刷新共享快照。GPU 路径探测成功后缓存，避免每轮扫描
 pub fn telemetry_loop() {
     let gpu_candidates = [
         "/sys/class/kgsl/kgsl-3d0/gpu_busy_percentage",
@@ -316,7 +316,7 @@ pub fn telemetry_loop() {
         } else {
             read_standard_battery()
         };
-// 倍压/倍流只作用于标准节点路径（私有开关打开时 UI 已强制关闭，这里再判一次，手改 meta 也挡得住）
+// 倍压/倍流：只作用于标准节点路径（私有开关打开时 UI 已强制关闭，这里再判一次，手改 meta 也挡得住）
         if !use_oplus {
             if voltage != UNAVAIL && VOLTAGE_DOUBLE.load(Ordering::Relaxed) {
                 voltage = voltage.saturating_mul(2);

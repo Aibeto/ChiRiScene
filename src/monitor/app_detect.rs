@@ -333,7 +333,7 @@ fn determine_mode(config: &RulesConfig, current_package: &str) -> String {
     global
 }
 
-/// 外部请求重算一次模式（实验室 rhine 套用/还原后调用）规则热重载走 watch_config_file 的force_refresh_arc，实验室在调度线程侧拿不到，
+/// 外部请求重算一次模式（实验室 rhine 套用/还原后调用）。规则热重载走 watch_config_file 的force_refresh_arc，实验室在调度线程侧拿不到，
 /// 故补进程级标志由 app_detection_loop 下一轮swap 消费——用户点启用后模式当场重算（该变才发 ModeChange），不用等下次前台切换
 static FORCE_MODE_REFRESH: AtomicBool = AtomicBool::new(false);
 

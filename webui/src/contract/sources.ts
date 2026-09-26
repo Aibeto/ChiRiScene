@@ -1,4 +1,4 @@
-// sources.ts: [device] [files] [logs] [readMany]各接触点的原始读取入口（不解析，解析见 src/data/*）缺失语义：
+// sources.ts: [device] [files] [logs] [readMany]各接触点的原始读取入口（不解析，解析见 src/data/*）。缺失语义：
 // 白名单类只有 ChiRi 机型会产生（→ chiri-only），日志/快照类是「尚未产生」（→ not-created）；失败一律 failed
 import { REL, absOf, shQuote } from './paths'
 import { listDir, readTail, readText } from './read'

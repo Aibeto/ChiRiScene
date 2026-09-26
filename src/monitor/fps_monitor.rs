@@ -231,7 +231,7 @@ impl FpsManager {
         })
     }
 
-/// 切换到新 PID：detach 旧 + attach 新；new_pid==0 为「纯 detach」：只摘探针并复位状态，用于 FAS 去激活时回到零开销待机（detach 后 has_active_probe()
+/// 切换到新 PID：detach 旧 + attach 新；new_pid==0` 为「纯 detach」：只摘探针并复位状态，用于 FAS 去激活时回到零开销待机（detach 后 has_active_probe()
 /// ==false）
     fn switch_pid(&mut self, new_pid: u32) -> Result<(), anyhow::Error> {
         if new_pid == self.current_pid {
@@ -570,7 +570,7 @@ pub async fn start_fps_loop(
 // 播放态旁路直方图窗口（只在 FAS 未激活时累加，见下方分流）
             let mut play = PlayHist::new();
 
-// 注册 RingBuf fd（只一次）fd 与 attach 无关（attach/detach 前后不变），无条件注册最简单——未注册仅丢事件驱动唤醒，poll 超时兜底仍可处理帧（代价是无谓的 500ms 轮询）
+// 注册 RingBuf fd（只一次）。fd 与 attach 无关（attach/detach 前后不变），无条件注册最简单——未注册仅丢事件驱动唤醒，poll 超时兜底仍可处理帧（代价是无谓的 500ms 轮询）
             let fd = manager.ring_fd;
             let mut source = SourceFd(&fd);
             if let Err(e) =
@@ -683,7 +683,7 @@ pub async fn start_fps_loop(
                         frame_delta_ns: delta_ns,
                     }) {
                         Ok(()) => {}
-// 通道拥塞：丢弃本帧样本绝不能阻塞发送——fps_probe 阻塞会让 eBPF ring buffer 被新事件覆盖，丢更多帧
+// 通道拥塞：丢弃本帧样本。绝不能阻塞发送——fps_probe 阻塞会让 eBPF ring buffer 被新事件覆盖，丢更多帧
                         Err(TrySendError::Full(_)) => {
                             dropped_frames = dropped_frames.saturating_add(1);
                             if dropped_frames % 300 == 1 {

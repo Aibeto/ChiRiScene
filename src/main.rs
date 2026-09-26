@@ -21,7 +21,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::mpsc;
 use std::sync::{Arc, RwLock};
 use std::thread;
-// 注意：fluent_args 由 i18n.rs 的 #[macro_export] 注入 crate 根宏命名空间，main.rs 即 root 模块可直接使用，不能再用 use crate::
+// 注意：fluent_args 由 i18n.rs 的 #[macro_export] 注入 crate 根宏命名空间，main.rs 即 root 模块，可直接使用，不能再用 use crate::
 // fluent_args 重复导入（E0255）
 
 fn main() -> Result<()> {
@@ -107,7 +107,7 @@ fn main() -> Result<()> {
     let (archived_zip, archived_devimp) = logger::archive_on_startup(&root);
     std::fs::create_dir_all(&log_dir)?;
 // devimp/ 不在这里创建（dev_record 关闭时不得产生任何数据，含空目录）：写入路径（logger 的main_open / aff_open）
-// 会自行 create_dir_all 且仅在 diag_active 下走到；此处只对已存在的devimp/ 做容量清理兜底（归档 rename 失败时旧文件仍在原目录）
+// 会自行 create_dir_all 且仅在 diag_active 下走到；此处只对「已存在的devimp/」 做容量清理兜底（归档 rename 失败时旧文件仍在原目录）
     logger::diag_prepare();
 
 // [soc_check] 2. 检测到列表中的特定处理器时启用 Chiri 专用调度器
@@ -181,7 +181,7 @@ fn main() -> Result<()> {
     }
 
 // [rhine] 实验室启动期处理：先按 rhine-back.chr 还原上次改动，再按 rhine.chr 决定要不要重新套用必须排在下面首次 Config::load 之前——还原写的就是 meta.yaml，
-// 晚了本轮读到旧值开机路径：service.sh 已清空 rhine.chr，唯一信号是残留的 rhine-back.chr只有 Chiri 走这条
+// 晚了本轮读到旧值开机路径：service.sh 已清空 rhine.chr，唯一信号是残留的 rhine-back.chr。只有 Chiri 走这条
     let rhine_report = if chiri_active {
         rhine::on_startup(&root, &config_path)
     } else {
@@ -196,7 +196,7 @@ fn main() -> Result<()> {
     load_language(&language);
     logger::init(&loglevel)?;
 
-// [webui_restore] 内嵌 WebUI 资产还原：把编译期嵌入的 webui/dist 覆盖回模块 webroot/，界面文件被改/删的部分每次开机回到出厂内容（与 meta 自愈同属覆盖类操作，nofix:
+// [webui_restore] 内嵌 WebUI 资产还原：把编译期嵌入的 webui/dist 覆盖回模块 webroot/，界面文件被改/删的部分每次开机回到出厂内容（与 meta 自愈同属覆盖类操作」，nofix:
 // true 一并跳过）
     if nofix {
         log::info!("{}", t("main-nofix-skip"));
@@ -337,8 +337,8 @@ fn main() -> Result<()> {
     let ak_active = Arc::new(AtomicBool::new(false));
 
 // FAS 前台激活信号：FasManager 激活/去激活时置位并唤醒等待者，fps_monitor 据此门控 eBPF 探针——FAS 未激活时不建 tokio runtime、不加载 eBPF、
-// 不挂 uprobe（此前 daemon 启动即对前台应用挂 queueBuffer uprobe，非 FAS 会话每帧白付探针开销）由 main 创建、monitor 与chiri 各持克隆；
-// 类型为 FasSignal 而非裸 AtomicBool——见 monitor 的 [fas_signal]
+// 不挂 uprobe（此前 daemon 启动即对前台应用挂 queueBuffer uprobe，非 FAS 会话每帧白付探针开销）。由 main 创建、monitor 与chiri 各持克隆；
+// 类型为 FasSignal 而非裸 AtomicBool）——见 monitor 的 [fas_signal]
     let fas_signal = Arc::new(FasSignal::new(false));
 
 // [scheduler_start] 6. 启动 ChiRi 调度器（Yumi 兜底已移除：非 ChiRi SoC 不接管 CPU，只跑监控/WebUI/日志，事件通道无消费者直接丢弃）
