@@ -41,7 +41,7 @@ torvalds/linux/
 android_kernel_oneplus_sm8550/
 
 # devimp
-# devimpbin/
+devimpbin/
 
 # WebUI（原 webui/.gitignore 合并于此，2026-09-22）
 webui/logs
