@@ -40,7 +40,8 @@ npm test             # vitest
 
 - **存活判据**：`daemon.lock` 的 flock 探测（`flock -n FILE true`，取锁后立刻释放）；不用 `pidof`。
   绝不能删除 `daemon.lock`（flock 是 inode 级，删除会让新实例另起 inode 加锁 → 双实例）。
-- **只读接触点**：`active_config.chr`、`current_mode.chr`、`rules.yaml`、`special_tuned.yaml`、
+- **只读接触点**：`active_config.chr`、`current_mode.chr`、`pf.chr`（CLG 是否启用帕累托前沿落点：
+  `1` = 启用，仅 8550；家族名据此显示 `CLG-PF`）、`rules.yaml`、`special_tuned.yaml`、
   `fas_whitelist.yaml`、`module.prop`、`logs/**`。
 - **可写接触点**：`meta.yaml` 的 6 个字段（language / loglevel / dev_record / fas_enabled /
   scenemode_enabled / thread_bind），`rhine.chr`（实验室状态，写模式 key、空内容或保留字
@@ -73,4 +74,5 @@ URL 参数可切换形态，便于走查空态 / 错误态：
 ?soc=chiri             设备形态（影响白名单与 status.csv 是否存在）
 ?state=normal|empty|error   正常 / 守护进程从未启动 / 读取真实失败
 ?daemon=running|stopped     存活探测结果
+?pf=0                       未启用帕累托前沿落点（家族名显示 CLG）
 ```

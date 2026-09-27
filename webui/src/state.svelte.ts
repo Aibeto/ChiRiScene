@@ -19,6 +19,7 @@ import {
   readFasWhitelistRaw,
   readMany,
   readModulePropRaw,
+  readPfRaw,
   readRulesRaw,
   readSpecialTunedRaw,
   readStatusCsvTail,
@@ -67,6 +68,8 @@ class AppStore {
   configState = $state<FileState>('ok')
   configError = $state('')
   deviceKind = $state<DeviceKind>('unknown')
+  /** 本机 CLG 是否启用帕累托前沿落点（daemon 写的 pf.chr = 1，当前仅 8550）：只决定家族名显示 CLG-PF，不参与调度 */
+  clgPfEnabled = $state(false)
   moduleProp = $state<ModuleProp>(EMPTY_MODULE_PROP)
 
   // [overview]
@@ -240,13 +243,16 @@ class AppStore {
     if (!force && Date.now() - this.staticLoadedAt < STATIC_TTL_MS) return
     this.staticJob = (async () => {
       try {
-      const [kind, propRaw, meta, actionOk] = await Promise.all([
+      const [kind, propRaw, meta, actionOk, pfRaw] = await Promise.all([
         deviceKind(),
         readModulePropRaw(),
         readMeta(),
-        hasActionScript()
+        hasActionScript(),
+        readPfRaw()
       ])
       this.deviceKind = kind
+      // 缺失/非法/非 1 一律按未启用（daemon 启动时写一次，停跑后可能是陈旧值，与 active_config.chr 同口径）
+      this.clgPfEnabled = pfRaw.kind === 'ok' && pfRaw.value.trim() === '1'
       if (propRaw.kind === 'ok') this.moduleProp = parseModuleProp(propRaw.value)
 
       this.actionAvailable = actionOk

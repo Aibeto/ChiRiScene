@@ -177,7 +177,7 @@ clg-perf-clamped = [CLG] 配置 perf_floor > perf_ceil ({ $floor } > { $ceil })�
 clg-restore = [CLG] P{ $pid } 已恢复 | governor={ $governor } min={ $min } kHz max={ $max } kHz
 clg-tick-log = [CLG] P{ $pid } 利用率={ $util }% perf={ $perf } 频率={ $freq }kHz boost={ $boost }kHz decay={ $decay }
 clg-pf-tick-log = [CLG-PF] P{ $pid } 利用率={ $util }% perf={ $perf } 频率={ $freq }kHz decay={ $decay } pf={ $pf_khz }kHz
-clg-pf-enabled = [CLG-PF] P{ $pid } 帕累托前沿查表已启用 | 指纹={ $fp } 桶数={ $buckets }
+clg-pf-enabled = [CLG-PF] 帕累托前沿查表已启用 | 指纹={ $fp } 桶数={ $buckets }
 clg-pf-fallback = [CLG-PF] 前沿表不可用（{ $reason }），回退比例路径（只此一次）
 clg-writer-invalid = [CLG] P{ $pid } sysfs 写入器无效 (max_valid: { $max_valid }, min_valid: { $min_valid })，已跳过
 clg-freq-set = [CLG] P{ $pid } 频率调整: { $old_khz }MHz -> { $new_khz }MHz

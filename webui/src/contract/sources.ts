@@ -48,6 +48,11 @@ export function readFasWhitelistRaw(): Promise<ReadResult<string>> {
   return readText(absOf('fasWhitelist'), 'chiri-only', 256 * 1024)
 }
 
+/** pf.chr：本机 CLG 是否启用帕累托前沿落点（daemon 启动写一次，`1` = 启用，仅 8550）；缺失/非法一律当未启用 */
+export function readPfRaw(): Promise<ReadResult<string>> {
+  return readText(absOf('pf'), 'not-created', 64)
+}
+
 /** module.prop：模块名/版本/作者等 */
 export function readModulePropRaw(): Promise<ReadResult<string>> {
   return readText(absOf('moduleProp'), 'not-created', 8 * 1024)

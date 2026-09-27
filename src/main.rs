@@ -125,6 +125,16 @@ fn main() -> Result<()> {
         root.join("active_config.chr"),
         config_rel.to_string_lossy().as_bytes(),
     );
+// [pf_chr] 写本机 CLG 是否启用帕累托前沿落点（`1` = 启用，仅 8550；`0` = 未启用）：静态资产（soc.yaml 编入二进制、
+// SoC 硬件固定）→ 启动写一次即定，与 active_config.chr 同口径只作 WebUI 只读接触点（家族名显示 CLG-PF，与 daemon 日志前缀一致）
+    let _ = utils::try_write_file(
+        root.join("pf.chr"),
+        if common::soc_frontier_policy().is_some() {
+            b"1"
+        } else {
+            b"0"
+        },
+    );
 
     // meta.yaml 快照自愈：可修改字段的基准是编译期嵌入的 meta.yaml，启动时校验磁盘副本——字段非法用嵌入默认整体覆盖并在文件尾追加警告注释；文件缺失则原子重建（不加注释）「不改」开关（meta
     // yaml 可选字段 nofix）= true 时跳过所有覆盖类操作（meta 自愈 +webui 资产还原），必须在自愈之前读——晚了文件可能已被覆盖、开关本身先丢了

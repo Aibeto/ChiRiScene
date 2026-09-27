@@ -177,7 +177,7 @@ clg-perf-clamped = [CLG] config perf_floor > perf_ceil ({ $floor } > { $ceil }),
 clg-restore = [CLG] P{ $pid } restored | governor={ $governor } min={ $min } kHz max={ $max } kHz
 clg-tick-log = [CLG] P{ $pid } util={ $util }% perf={ $perf } freq={ $freq }kHz boost={ $boost }kHz decay={ $decay }
 clg-pf-tick-log = [CLG-PF] P{ $pid } util={ $util }% perf={ $perf } freq={ $freq }kHz decay={ $decay } pf={ $pf_khz }kHz
-clg-pf-enabled = [CLG-PF] P{ $pid } Pareto frontier lookup enabled | fingerprint={ $fp } buckets={ $buckets }
+clg-pf-enabled = [CLG-PF] Pareto frontier lookup enabled | fingerprint={ $fp } buckets={ $buckets }
 clg-pf-fallback = [CLG-PF] frontier table unavailable ({ $reason }), falling back to ratio path (once)
 clg-writer-invalid = [CLG] P{ $pid } sysfs writer invalid (max_valid: { $max_valid }, min_valid: { $min_valid }), skipping.
 clg-freq-set = [CLG] P{ $pid } freq change: { $old_khz }MHz -> { $new_khz }MHz

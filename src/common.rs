@@ -1,5 +1,5 @@
 //! common.rs: [events] [proc_snap] [paths] [soc_detect] [core_ranges] [soc_config] [special_tuned] [fas_whitelist]
-//! [aff_blacklist] [embedded] [external_meta]
+//! [aff_blacklist] [embedded] [external_meta] [frontier_table]
 
 use crate::monitor::config::RulesConfig;
 use include_dir::{Dir, include_dir};
@@ -7,6 +7,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::env;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -206,8 +207,9 @@ pub fn chiri_core_ranges() -> CoreGroupRanges {
 }
 
 // [soc_config]
-/// CPU 所属核心组（[`core_group_of`] 的返回，供按 CPU/policy 映射 soc.yaml 分段）
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// CPU 所属核心组（[`core_group_of`] 的返回，供按 CPU/policy 映射 soc.yaml 分段；
+/// Hash 供 [`frontier_aligned`] 的「组 + 频率表」缓存作键）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CoreGroup {
     Little,
     Big,
@@ -313,7 +315,8 @@ pub struct SocIdleUs {
 }
 
 // [frontier] 帕累托前沿策略段（8550 专用，soc.yaml 内受控生成块；scripts/frontier_policy.py 产出）
-// 运行期唯一消费方是 CLG 的 PF 落点（cpu_load_governor.rs [frontier_pf]，只允许下调）。
+// 运行期消费方：CLG 的 PF 落点（cpu_load_governor.rs [frontier_pf]，只允许下调；查表经 [frontier_table]
+// 摊平成进程级表，勿在 tick 路径直接扫 demand_buckets）与 FDP 的逐档功耗（chiri/energy_cost.rs）。
 // 字段名与生成脚本 / 定稿 schema 逐字对齐（唯一例外：soc.yaml 桶里的 margin_mdmips_per_w 本版不消费，
 // 靠 serde 忽略未知键通过）；解析失败由 [frontier_lenient] 兜底为 None（不回退他人逻辑、不 panic）。
 
@@ -481,37 +484,117 @@ pub struct FrontierModeMul {
     pub boost: f32,
 }
 
-impl FrontierPolicy {
-    /// 需求（真机容量单位）落在哪个桶：返回 `lo_units <= demand` 的最大桶索引；
-    /// 桶表为空 / demand 非有限 / demand 低于首桶 → None（调用方回退比例路径）
-    /// 假定桶按 `lo_units` 升序（生成脚本的 hull 天然有序）
-    pub fn bucket_for_demand(&self, demand_units: f32) -> Option<usize> {
-        if !demand_units.is_finite() || self.demand_buckets.is_empty() {
+// [frontier_table] 进程级预计算的前沿查表：桶表来自 soc.yaml（编译期嵌入、SoC 硬件固定），
+// 全程只摊平一次——worker 首次接管建表，之后每 tick 只做「二分找桶 + 数组取频点」；
+// 热切换 / 息屏等引起的 worker 重建不再重走结构体、重扫桶表（`frontier_aligned` 另有对齐缓存）
+
+/// 前沿查表（摊平后的桶表）：`lo_units` 升序，三簇目标 kHz 与它逐桶同索引（0 = 表未提供该簇）
+pub struct FrontierTable {
+    lo_units: Box<[f32]>,
+    little: Box<[u32]>,
+    big: Box<[u32]>,
+    prime: Box<[u32]>,
+}
+
+impl FrontierTable {
+    /// 由 `demand_buckets` 摊平；桶表为空 → None（调用方走原比例路径，与段缺失同口径）
+    fn from_policy(policy: &FrontierPolicy) -> Option<Self> {
+        if policy.demand_buckets.is_empty() {
             return None;
         }
-        if demand_units < self.demand_buckets[0].lo_units {
-            return None;
+        let n = policy.demand_buckets.len();
+        let mut lo_units = Vec::with_capacity(n);
+        let mut little = Vec::with_capacity(n);
+        let mut big = Vec::with_capacity(n);
+        let mut prime = Vec::with_capacity(n);
+        for b in &policy.demand_buckets {
+            lo_units.push(b.lo_units);
+            little.push(b.little_khz);
+            big.push(b.big_khz);
+            prime.push(b.prime_khz);
         }
-        let mut idx = 0usize;
-        for (i, b) in self.demand_buckets.iter().enumerate() {
-            if demand_units >= b.lo_units {
-                idx = i;
-            } else {
-                break;
-            }
-        }
-        Some(idx)
+        Some(Self {
+            lo_units: lo_units.into_boxed_slice(),
+            little: little.into_boxed_slice(),
+            big: big.into_boxed_slice(),
+            prime: prime.into_boxed_slice(),
+        })
     }
 
-    /// 该桶下该簇的目标 kHz；越界或表未提供该值（0）→ None
-    pub fn target_khz(&self, cluster: CoreGroup, bucket: usize) -> Option<u32> {
-        let b = self.demand_buckets.get(bucket)?;
-        let khz = match cluster {
-            CoreGroup::Little => b.little_khz,
-            CoreGroup::Big => b.big_khz,
-            CoreGroup::Prime => b.prime_khz,
-        };
-        (khz > 0).then_some(khz)
+    /// 需求（真机容量单位）落在哪个桶：`lo_units <= demand` 的最大桶索引（二分）；
+    /// 桶按 `lo_units` 升序（生成脚本的 hull 天然有序），需求低于首桶 → None（负载极低，几何边界不是表错）
+    pub fn bucket_for_demand(&self, demand_units: f32) -> Option<usize> {
+        if !demand_units.is_finite() {
+            return None;
+        }
+        let idx = self.lo_units.partition_point(|&lo| lo <= demand_units);
+        (idx > 0).then_some(idx - 1)
+    }
+
+    /// 该簇逐桶的**原始**目标 kHz（未 floor 对齐；0 = 表未提供该桶该簇）
+    fn targets(&self, group: CoreGroup) -> &[u32] {
+        match group {
+            CoreGroup::Little => &self.little,
+            CoreGroup::Big => &self.big,
+            CoreGroup::Prime => &self.prime,
+        }
+    }
+}
+
+/// 当前 SoC 的前沿查表（OnceLock 惰性构建）：段缺失 / `enabled != true` / 桶表为空 → None
+pub fn frontier_table() -> Option<&'static FrontierTable> {
+    static TABLE: OnceLock<Option<FrontierTable>> = OnceLock::new();
+    TABLE
+        .get_or_init(|| soc_frontier_policy().and_then(FrontierTable::from_policy))
+        .as_ref()
+}
+
+// [frontier_aligned] 逐桶落点表（已 floor 对齐到**某簇真实频率表**）：进程级缓存，键 = 核心组 + 频率表，
+// 同一频率表下的所有 worker、所有次重建（热切换 / 息屏切换）共用同一份，重建不重算
+/// 缓存条目：(该簇真实频率表, 逐桶落点数组)
+type FrontierAlignedEntry = (Vec<u32>, Arc<Vec<u32>>);
+static FRONTIER_ALIGNED: OnceLock<Mutex<HashMap<CoreGroup, Vec<FrontierAlignedEntry>>>> =
+    OnceLock::new();
+
+/// 该簇的逐桶落点：索引 = 需求桶（与 [`frontier_table`] 桶序一致），值 = 频率表中 `<= 表给目标` 的最大档 kHz，
+/// 0 = 该桶该簇无目标 → 调用方回退比例路径。非 PF SoC（无查表）同样 None（调用方静默走比例路径）
+pub fn frontier_aligned(group: CoreGroup, available_freqs: &[u32]) -> Option<Arc<Vec<u32>>> {
+    let targets = frontier_table()?.targets(group);
+    let mut cache = FRONTIER_ALIGNED
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let slot = cache.entry(group).or_default();
+    if let Some((_, hit)) = slot
+        .iter()
+        .find(|(freqs, _)| freqs.as_slice() == available_freqs)
+    {
+        return Some(Arc::clone(hit));
+    }
+    let aligned: Arc<Vec<u32>> = Arc::new(
+        targets
+            .iter()
+            .map(|&khz| {
+                if khz == 0 {
+                    0
+                } else {
+                    floor_khz(available_freqs, khz)
+                }
+            })
+            .collect(),
+    );
+    slot.push((available_freqs.to_vec(), Arc::clone(&aligned)));
+    Some(aligned)
+}
+
+/// kHz → 频率表中 `<= 目标` 的最大档（floor 对齐，频率表为升序的真实档位）：
+/// 落点不得高于表给目标；目标低于首档时取首档（与比例路径同口径）
+fn floor_khz(available_freqs: &[u32], khz: u32) -> u32 {
+    let idx = available_freqs.partition_point(|&f| f <= khz);
+    if idx == 0 {
+        available_freqs.first().copied().unwrap_or(0)
+    } else {
+        available_freqs[idx - 1]
     }
 }
 

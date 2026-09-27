@@ -18,7 +18,7 @@
 
 ### 文件接触点
 
-`daemon.lock`（单实例锁，WebUI 不读写）· `LiveTime.chr`（只读心跳，15s 写 `MM:SS`，差 >20s 判停止）· `active_config.chr`/`current_mode.chr`/`PowerAVG.chr`（只读）· `config/{rel}`（读写）· `rules.yaml`/`special_tuned.yaml`/`fas_whitelist.yaml`（只读，仅 Chiri 生成）· `logs/daemon.log`（只读，仅本次运行）· `logs/status.csv`(+`.1`) · `logs/watchdog.pid`（读+删）· `rhine.chr`（读写）+`rhine-back.chr`（快照）· `down.chr`（读写，`down`=停摆）。附：`devimp/`（**惰性创建**：仅 dev_record 开启后的首次写入代建，关闭时应不存在）、`logd/`、`config/{soc}/`。
+`daemon.lock`（单实例锁，WebUI 不读写）· `LiveTime.chr`（只读心跳，15s 写 `MM:SS`，差 >20s 判停止）· `active_config.chr`/`current_mode.chr`/`PowerAVG.chr`（只读）· `config/{rel}`（读写）· `rules.yaml`/`special_tuned.yaml`/`fas_whitelist.yaml`（只读，仅 Chiri 生成）· `logs/daemon.log`（只读，仅本次运行）· `logs/status.csv`(+`.1`) · `logs/watchdog.pid`（读+删）· `rhine.chr`（读写）+`rhine-back.chr`（快照）· `down.chr`（读写，`down`=停摆）· `pf.chr`（**只读**，daemon 启动写一次：`1`=本机 CLG 启用帕累托前沿落点，当前仅 8550；WebUI 家族名据此显示 `CLG-PF`）。附：`devimp/`（**惰性创建**：仅 dev_record 开启后的首次写入代建，关闭时应不存在）、`logd/`、`config/{soc}/`。
 
 读取失败三态必须分开：正常空值 / 合法缺失（非 Chiri 无白名单、无 status.csv）/ 读取失败（界面明确报错，不得伪装成空值）。
 
@@ -46,7 +46,7 @@
 ### 模式 id 与命名
 
 - 模式值域：`reduce` `default` `boost` `vector` `fas` + 特调（`akmode`/`playback`）+ `down`。`scenemode` 不产生模式值（独立息屏轴）。daemon 停止后 `current_mode.chr` 是陈旧值。
-- **UI 家族**：clg / special / lab / down / stardust（=scenemode 家族位）/ fas / unknown；同步面 = `data/mode.ts` + 两语 locale + `tests/i18n.test.ts`。
+- **UI 家族**：clg / special / lab / down / stardust（=scenemode 家族位）/ fas / unknown；同步面 = `data/mode.ts` + 两语 locale + `tests/i18n.test.ts`。**CLG 家族名有变体**：`pf.chr`（daemon 启动写 `1`）为真时家族名显示 `CLG-PF`（`data/mode.ts::clgFamilyKey`，与 daemon 日志前缀同口径；**不新增 ModeKind**，`kind` 仍是 `clg`）。
 - **二进制名 chiri（原 yumi）**：Cargo 包名/产物/`core/bin/chiri`/`DAEMON_PATH`/脚本 killall、pidof/WebUI `stopScheduler`/app_detect 黑名单/i18n。**刻意保留**：`yumi-ebpf`、`YUMI_SKIP_EBPF`、设备形态 `'yumi'`、README 上游引用。（Yumi 调度本体已删 2026-09-22，`src/scheduler/` 只剩 FAS 引擎 + policy 工具。）
 - 档位段名与 `feature.yaml` 段名、`chiri/config.rs` 的 `Modes`/`get_mode` 同名（无 deny_unknown_fields，漏改静默忽略整段）；原 Yumi 侧同名结构已随调度本体删除。
 - **feature.yaml 的 CLG 段只归 `chiri::config` 消费**：`smoothing_down / slow_down_scale / down_fast_mult` 是 Yumi 参数，已随 Yumi 调度本体删除并从 root/8745 feature.yaml 移除（2026-09-22），`util_smoothing` 归 chiri。判死键先确认消费方是否已随子系统删除，勿只对现存结构体。
@@ -127,6 +127,7 @@
 - **亲和掩码写去重（A10）记账必须覆盖全部写掩码路径（2026-09-28 审查修）**：`pin_core` 记核号、组绑定记 `MASK_TAG_PERF`、`restore_group_mask` 与 `unpin_core` 记 `MASK_TAG_FULL`；漏记 `unpin_core` 会让解钉后的重钉被 `mask_write_skip` 的 `recent` 判据当成「刚写过同一核」而**整条丢弃**（既不写内核也不更新 `home`）。`restore_group_mask` 命中 A10 跳过时掩码已确为全核，须**一并清 `group_bind`**。该机制**不主动纠偏**内核侧被框架/外部改写的掩码（uclamp 有 60s 重断言，掩码路径没有）。
 - **FDP 降级口径 = 回退原 A3 路径（2026-09-28 用户定）**：`fdp_enabled` 为真但静态数据缺失（无 `capacity`/`per_cluster` 功耗表）时经 `energy_cost::fdp_available()` 判定后回退旧放置逻辑，**不把后台 promote 整段停掉**；FDP 自身的配额/净收益/选核否决仍不回退。CLG-PF 同理回退比例路径，且**触摸窗口内 PF 与 decay 同口径关闭**（否则 `min()` 把触摸 floor 拉回低频桶）。另：某档 `steady_decay_enabled: false` 会让 `steady_streak` 恒 0 → **该档 CLG-PF 一并失效**（共用稳态判据）。
 - **boost 档不主动下探（2026-09-28）**：8550/8475/8998/根兜底的 `boost.cpu_load_governor` 全部显式 `steady_decay_enabled: false`（`up_threshold` 0.55~0.65 时 T 落进常态负载区、削掉响应优势）；scenemode 无需该开关（T≈0.108 < 积分区间下界 0.30，decay 恒 0）。
+- **CLG-PF 查表是进程级资产（2026-09-28）**：桶表由 `common::frontier_table()`（OnceLock）摊平成二分数组，逐桶落点由 `common::frontier_aligned()` 按「核心组 + 频率表」缓存（floor 对齐依赖真机 `scaling_available_frequencies`，故不是纯编译期表）→ worker 重建（息屏 doze / 模式热切换）复用缓存**不重算**，tick 内只做「二分找桶 + 取数组」；`clg-pf-enabled` 加进程级一次性门，只在首次接管打一条。**勿在 tick 路径直接扫 `demand_buckets` 或每 tick 重做 floor 对齐。**
 
 ## 电池读数（遥测）
 

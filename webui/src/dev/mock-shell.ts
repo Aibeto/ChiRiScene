@@ -1,7 +1,7 @@
 // mock-shell.ts: [scenario] [fs] [seed] [exec] [install]
 // 无 KernelSU 环境（浏览器 dev / 自动化走查）下的设备替身：用构建期嵌入的仓库配置 + 生成的假日志
 // 构成内存文件系统，并按契约层实际发出的命令形态回放URL 参数切换设备形态，便于走查空态/错误态：
-// ?soc=chiri（ChiRi 专属，影响白名单与 status.csv） ?state=normal|empty|error（正常/从未启动/读取失败） ?daemon=running|stopped（存活探测）
+// ?soc=chiri（ChiRi 专属，影响白名单与 status.csv） ?state=normal|empty|error（正常/从未启动/读取失败） ?daemon=running|stopped（存活探测） ?pf=0（CLG 未启用帕累托前沿落点，家族名显示 CLG）
 import embedded from 'virtual:chiri-config'
 import { load as loadYaml } from 'js-yaml'
 import { setShell, type ExecResult, type ShellRunner } from '@/kernel/shell'
@@ -22,6 +22,8 @@ function param(name: string, fallback: string): string {
 const soc = param('soc', 'chiri')
 const state = param('state', 'normal')
 const isChiri = soc === 'chiri'
+/** CLG 是否启用帕累托前沿落点（pf.chr）：`?pf=0` 走查未启用机型（家族名 CLG） */
+const pfEnabled = param('pf', '1') !== '0'
 let daemonRunning = param('daemon', 'running') !== 'stopped'
 const readFails = state === 'error'
 const empty = state === 'empty'
@@ -214,6 +216,8 @@ function seed(): void {
   if (empty) return
 
   put('current_mode.chr', 'default')
+  // daemon 启动写一次（1 = 启用帕累托前沿落点，仅 8550）：非 ChiRi 与 ?pf=0 都写 0
+  put('pf.chr', isChiri && pfEnabled ? '1' : '0')
   // 心跳只为「文件存在」播种，内容在读取时动态生成（见 liveTimeText）
   put('LiveTime.chr', '')
   // 看门狗 pid 只在 daemon 运行时存在：?daemon=stopped 不播种（stopScheduler 会删它，否则存活态与 pid 文件互相矛盾）

@@ -34,6 +34,8 @@ export const REL = {
   rhineBack: 'rhine-back.chr',
   /** DOWN 停摆状态（对外暴露，可手改；写了 down = 调度停摆） */
   down: 'down.chr',
+  /** CLG 是否启用帕累托前沿落点（daemon 启动写一次：`1` = 启用，仅 8550；WebUI 只读，用于家族名显示 CLG-PF） */
+  pf: 'pf.chr',
   /** 功耗参考/平均值（daemon 每次 1s 采样更新，WebUI 只读展示） */
   powerAvg: 'PowerAVG.chr',
   /** 存活心跳（daemon 每 15s 写一次本地时间 MM:SS，WebUI 只读、用于判定调度是否在跑） */

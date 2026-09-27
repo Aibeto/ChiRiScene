@@ -27,6 +27,10 @@ pub fn set_clamp_heavy(v: bool) {
 // [frontier_pf] 前沿查表缺数据的一次性告警门（进程级）：表是静态资产、首 tick 即定型，刷日志无意义
 static PF_FALLBACK_WARNED: AtomicBool = AtomicBool::new(false);
 
+// [frontier_pf] 接管提示的一次性门（进程级）：表与指纹都是编译期资产，每个 worker / 每次重建（息屏等
+// 热切换）重复打没有信息量，只在首次接管时报一次
+static PF_ENABLED_LOGGED: AtomicBool = AtomicBool::new(false);
+
 /// 前沿表不可用时打一条 warn（只此一次），说明回退原因（reason = 缺容量/桶越界/该簇无目标）
 fn warn_pf_fallback_once(reason: &str) {
     if !PF_FALLBACK_WARNED.swap(true, Ordering::Relaxed) {
@@ -37,6 +41,23 @@ fn warn_pf_fallback_once(reason: &str) {
                 &fluent_args!("reason" => reason.to_string())
             )
         );
+    }
+}
+
+/// [frontier_pf] 本簇所属核心组（按受影响 CPU 的最小 ID 归属）：spawn 时定一次，用于取该组的逐桶落点表
+fn pf_group_of(
+    affected: &[usize],
+    core_ranges: &crate::common::CoreGroupRanges,
+) -> Option<crate::common::CoreGroup> {
+    let first = *affected.iter().min()?;
+    if core_ranges.little.contains(&first) {
+        Some(crate::common::CoreGroup::Little)
+    } else if core_ranges.big.contains(&first) {
+        Some(crate::common::CoreGroup::Big)
+    } else if core_ranges.prime.contains(&first) {
+        Some(crate::common::CoreGroup::Prime)
+    } else {
+        None
     }
 }
 
@@ -102,17 +123,6 @@ impl ClusterState {
     #[inline]
     fn find_floor_freq(&self, target_ratio: f32) -> u32 {
         let idx = self.cached_ratios.partition_point(|&r| r <= target_ratio);
-        if idx == 0 {
-            self.available_freqs[0]
-        } else {
-            self.available_freqs[idx - 1]
-        }
-    }
-
-    /// [frontier_pf] kHz → 频率表中 **≤ 目标** 的最大档（floor 对齐）：前沿表给的是目标 kHz，落点不得高于它
-    #[inline]
-    fn floor_freq_khz(&self, khz: u32) -> u32 {
-        let idx = self.available_freqs.partition_point(|&f| f <= khz);
         if idx == 0 {
             self.available_freqs[0]
         } else {
@@ -338,6 +348,10 @@ struct CoreGroupWorker {
     /// [frontier_pf] 各 CPU 的容量（真机 cpu_capacity 优先，缺失按核心组回退 soc.yaml [capacity]；再缺 = None）
     /// spawn 时一次性解析并缓存，flush 每 tick 只读；None 项会让 PF 需求折算整段回退比例路径
     core_capacities: Vec<Option<u32>>,
+    /// [frontier_pf] 本簇的逐桶落点（索引 = 需求桶，值 = 已 floor 对齐到 available_freqs 的目标 kHz，0 = 无目标）：
+    /// 键为「核心组 + 频率表」的进程级缓存（`common::frontier_aligned`），跨 worker / 跨重建复用，
+    /// flush 每 tick 只做「二分找桶 + 取数组」；None = 非 PF SoC / 判不出核心组 → 走原比例路径
+    pf_aligned: Option<Arc<Vec<u32>>>,
     load_rx: LoadReceiver,
     stop: Arc<AtomicBool>,
     touch: Arc<AtomicTouchState>,
@@ -724,21 +738,6 @@ impl CoreGroupWorker {
         }
     }
 
-    /// [frontier_pf] 本簇所属核心组（按受影响 CPU 首个 ID 归属）：PF 查表与容量回退都要它
-    fn cluster_group(&self) -> Option<crate::common::CoreGroup> {
-        let first = *self.cluster.affected_cpus.iter().min()?;
-        let r = &self.core_ranges;
-        if r.little.contains(&first) {
-            Some(crate::common::CoreGroup::Little)
-        } else if r.big.contains(&first) {
-            Some(crate::common::CoreGroup::Big)
-        } else if r.prime.contains(&first) {
-            Some(crate::common::CoreGroup::Prime)
-        } else {
-            None
-        }
-    }
-
     /// [frontier_pf] 本 tick 全局需求（真机容量单位）= Σ(各核 util × 该核 capacity)。
     /// 只累加 util > 0 的核（0 贡献无需容量）；任一贡献核容量缺失（真机 cpu_capacity 与 soc.yaml 兜底都没）→ None（整段回退）
     fn demand_units(&self, core_utils: &[f32]) -> Option<f32> {
@@ -757,39 +756,35 @@ impl CoreGroupWorker {
         Some(sum)
     }
 
-    /// [frontier_pf] 前沿目标频点（floor 对齐到 available_freqs），失败一律 None → 调用方回退比例路径。
-    /// 只下调的前提由调用方保证（`ratio_freq.min(pf)`）。缺数据打一次性 warn；非 PF SoC 静默返回 None
+    /// [frontier_pf] 前沿目标频点（spawn 时已 floor 对齐到本簇频率表，tick 内只查索引），
+    /// 失败一律 None → 调用方回退比例路径。只下调的前提由调用方保证（`ratio_freq.min(pf)`）。
+    /// 缺数据打一次性 warn；非 PF SoC（`pf_aligned` 为 None）静默返回 None
     fn frontier_lookup(&self, core_utils: &[f32]) -> Option<u32> {
-        let policy = crate::common::soc_frontier_policy()?;
+        let aligned = self.pf_aligned.as_ref()?;
         // 非稳态：不把落点压向 pf（不算缺数据，不告警）
         if self.cluster.steady_streak < self.cfg.steady_decay_stable_ticks {
             return None;
         }
-        let Some(group) = self.cluster_group() else {
-            warn_pf_fallback_once("unknown-cluster");
-            return None;
-        };
         let Some(demand) = self.demand_units(core_utils) else {
             warn_pf_fallback_once("capacity-missing");
             return None;
         };
-        // 需求低于首桶边界 = 负载极低（几何边界，不是表错）：静默回退，别占用一次性告警
-        if policy
-            .demand_buckets
-            .first()
-            .is_some_and(|b| demand < b.lo_units)
-        {
-            return None;
-        }
-        let Some(bucket) = policy.bucket_for_demand(demand) else {
+        // 查表与 aligned 同源（同一次进程级构建）：取不到 = 表不可用，静默回退
+        let table = crate::common::frontier_table()?;
+        if !demand.is_finite() {
             warn_pf_fallback_once("bucket-out-of-range");
             return None;
-        };
-        let Some(khz) = policy.target_khz(group, bucket) else {
-            warn_pf_fallback_once("cluster-target-missing");
-            return None;
-        };
-        Some(self.cluster.floor_freq_khz(khz))
+        }
+        // 需求低于首桶边界 = 负载极低（几何边界，不是表错）：静默回退，别占用一次性告警
+        let bucket = table.bucket_for_demand(demand)?;
+        match aligned.get(bucket).copied() {
+            // 0 = 表未提供该桶该簇的目标（与越界同口径）：回退比例路径
+            Some(khz) if khz > 0 => Some(khz),
+            _ => {
+                warn_pf_fallback_once("cluster-target-missing");
+                None
+            }
+        }
     }
 
     /// 判定 cluster 是否覆盖当前 SoC 的大核区间：触摸升频只作用于大核
@@ -969,6 +964,22 @@ impl CoreGroupWorker {
             core_capacities.push(cap);
         }
 
+        // [frontier_pf] 逐桶落点表：进程级摊平（soc.yaml 编入二进制，见 common::frontier_table）+ 本簇频率表的
+        // floor 对齐，键 = 核心组 + 频率表 → 同一簇的 worker 重建（息屏/模式热切换）复用同一份、不重算。
+        // 非 PF SoC（`soc_frontier_policy()` = None）恒 None → flush 走原比例路径、行为逐位不变
+        let pf_aligned = if crate::common::soc_frontier_policy().is_some() {
+            match pf_group_of(&affected, &core_ranges) {
+                // 判不出核心组（区间配置与真机不符）：只此一次告警，PF 整段不生效
+                None => {
+                    warn_pf_fallback_once("unknown-cluster");
+                    None
+                }
+                Some(group) => crate::common::frontier_aligned(group, &cluster.available_freqs),
+            }
+        } else {
+            None
+        };
+
         info!(
             "{}",
             t_with_args(
@@ -984,14 +995,17 @@ impl CoreGroupWorker {
             )
         );
 
-        // [frontier_pf] 启用前沿的 SoC（8550）在接管时打一条，确认表已加载并标识指纹/桶数（非 PF 机型不打）
-        if let Some(pol) = crate::common::soc_frontier_policy() {
+        // [frontier_pf] 启用前沿的 SoC（8550）确认一条：表是进程级资产（指纹/桶数与 worker 无关），
+        // 只在首次接管打一次（非 PF 机型不打）——filter 的判据只在 PF SoC 上求值，一次性门也只在此时翻转，
+        // 于是息屏等热切换引起的 worker 重建不再重复刷
+        if let Some(pol) = crate::common::soc_frontier_policy()
+            .filter(|_| !PF_ENABLED_LOGGED.swap(true, Ordering::Relaxed))
+        {
             info!(
                 "{}",
                 t_with_args(
                     "clg-pf-enabled",
                     &fluent_args!(
-                        "pid" => pid.to_string(),
                         "fp" => pol.model_fingerprint.clone().unwrap_or_else(|| "-".to_string()),
                         "buckets" => pol.demand_buckets.len().to_string()
                     )
@@ -1011,6 +1025,7 @@ impl CoreGroupWorker {
             },
             core_ranges,
             core_capacities,
+            pf_aligned,
             load_rx,
             stop: stop.clone(),
             touch,

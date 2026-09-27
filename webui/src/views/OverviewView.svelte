@@ -5,6 +5,7 @@
   import ConfirmSheet from "@/components/ConfirmSheet.svelte";
   import StateBox from "@/components/StateBox.svelte";
   import { t } from "@/i18n/index.svelte";
+  import { clgFamilyKey } from "@/data/mode";
   import { app } from "@/state.svelte";
 
   let confirmOpen = $state(false);
@@ -27,8 +28,13 @@
     : t(app.modeInfo.labelKey),
   );
   // 模式家族（CLG/特调/实验室/停摆/FAS），与详细模式分开显示；未运行/无记录时不显示
+  // 本机启用帕累托前沿落点（daemon 写的 pf.chr）时 CLG 家族名显示 CLG-PF，与 daemon 日志前缀同口径；
+  // PowerBase 接管时家族名仍是 Stardust——PF 是 CLG 内部的落点，不改变「谁在调频」
   const familyLabel = $derived(
-    modeIdle || app.modeMissing ? "" : pbTakesClg ? t("mode.family.stardust") : t(`mode.family.${app.modeInfo.kind}`),
+    modeIdle || app.modeMissing ? ""
+    : pbTakesClg ? t("mode.family.stardust")
+    : app.modeInfo.kind === "clg" ? t(clgFamilyKey(app.clgPfEnabled))
+    : t(`mode.family.${app.modeInfo.kind}`),
   );
   const modeId = $derived(
     modeIdle || app.modeMissing ? "—" : app.modeInfo.id || "—",

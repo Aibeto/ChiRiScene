@@ -279,6 +279,8 @@ export default {
   'mode.unknown.missing': '尚未产生模式记录',
   'mode.unknown.stopped': '调度未运行',
   'mode.family.clg': 'CLG',
+  // 本机启用帕累托前沿落点（pf.chr = 1，仅 8550）时 CLG 家族名：与 daemon 日志前缀 [CLG-PF] 同口径
+  'mode.family.clgpf': 'CLG-PF',
   'mode.family.special': 'Special',
   'mode.family.lab': 'RHINE',
   'mode.family.down': 'DOWN',

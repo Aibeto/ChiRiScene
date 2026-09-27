@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { parseFasWhitelist, parseSpecialTuned, specialModeSet } from '@/data/whitelists'
 import { parseRules } from '@/data/rules'
 import { parseModuleProp } from '@/data/module-info'
-import { CLG_MODE_IDS, describeMode } from '@/data/mode'
+import { CLG_MODE_IDS, clgFamilyKey, describeMode } from '@/data/mode'
 import { buildAppEntries, filterApps } from '@/data/apps'
 
 describe('白名单解析', () => {
@@ -117,6 +117,13 @@ describe('模式派生', () => {
   it('四档信号色互相可区分', () => {
     const signals = CLG_MODE_IDS.map(id => describeMode(id).signal)
     expect(new Set(signals).size).toBe(signals.length)
+  })
+
+  it('CLG 家族名随帕累托前沿落点切换（pf.chr = 1 → CLG-PF），家族归属不变', () => {
+    expect(clgFamilyKey(true)).toBe('mode.family.clgpf')
+    expect(clgFamilyKey(false)).toBe('mode.family.clg')
+    // PF 只是 CLG 内部的落点机制：ModeKind 仍是 clg（PowerBase 接管判定等按 kind 分支的地方不受影响）
+    expect(describeMode('default', special).kind).toBe('clg')
   })
 })
 

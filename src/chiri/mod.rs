@@ -268,7 +268,7 @@ fn clamp_evidence_snapshot(warned: &mut HashSet<String>) -> String {
     /// 缺失节点首见告警一次（key 形如 "smax@policy4"，附完整路径便于排查）
     fn warn_once(warned: &mut HashSet<String>, key: String, path: &str) {
         if warned.insert(key.clone()) {
-            log::warn!(
+            log::info!(
                 "{}",
                 t_with_args(
                     "clampev-node-missing",

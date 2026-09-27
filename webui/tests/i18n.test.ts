@@ -60,6 +60,8 @@ describe('文案完整性', () => {
     for (const family of ['clg', 'special', 'lab', 'down', 'stardust', 'fas', 'unknown']) {
       expect(`mode.family.${family}` in zh).toBe(true)
     }
+    // CLG-PF：启用帕累托前沿落点的机型下的 CLG 家族名（data/mode.ts::clgFamilyKey），不是独立 ModeKind，单独断言
+    expect('mode.family.clgpf' in zh).toBe(true)
   })
 
   it('每个文件都能被遍历到（防止测试自身失效）', () => {
