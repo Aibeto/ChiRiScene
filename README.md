@@ -112,6 +112,12 @@ ChiRi CLG 调度核心，使用白名单适配soc
 | OnePlusOSS/android_kernel_oneplus_sm8550 | GPL v2.0 WITH Linux-syscall-note | [Github](https://github.com/OnePlusOSS/android_kernel_oneplus_sm8550) |
 | AYNTechnologies/linux                    | GPL v2.0 WITH Linux-syscall-note | [Github](https://github.com/AYNTechnologies/linux)                    |
 
+### 参考的补丁
+
+| title                                                         | from                            | record                                                                                                                                              |
+| :------------------------------------------------------------ | :------------------------------ | :-------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [PATCH 07/10] arm64: dts: qcom: sm8550: Update EAS properties | Xilin Wu <wuxilin123@gmail.com> | [Patchew](https://patchew.org/linux/20240424-ayn-odin2-initial-v1-0-e0aa05c991fd@gmail.com/20240424-ayn-odin2-initial-v1-7-e0aa05c991fd@gmail.com/) |
+
 ## 参考与鸣谢
 
 | Project            | License  | Repository                                                   |

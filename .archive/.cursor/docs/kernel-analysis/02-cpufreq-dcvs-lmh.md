@@ -15,9 +15,9 @@ cpufreq_cooling）以 **FREQ_QOS_MAX 请求**参与聚合，是「ChiRi 写入�
 ## 1. qcom-cpufreq-hw 驱动机制
 
 `drivers/cpufreq/qcom-cpufreq-hw.c`，SM8550 匹配 `qcom,epss`（epss_soc_data，:508-519）。
-DT 确认（`mdocs/sm8550.dtsi:5875-5887`）：`cpufreq@17d91000`，compatible
+DT 确认（`mdocs/8550/sm8550.dtsi:5875-5887`）：`cpufreq@17d91000`，compatible
 `qcom,sm8550-cpufreq-epss`，3 个 freq-domain，中断 `dcvsh-irq-0/1/2`。注意 **SM8550 的 DTS 不在本内核树内**
-（`arch/arm64/boot/dts/qcom/` 止于 sm8350，Kalama DTS 由 vendor 分支提供），以上来自仓库根 `mdocs/sm8550.dtsi` 转储。
+（`arch/arm64/boot/dts/qcom/` 止于 sm8350，Kalama DTS 由 vendor 分支提供），以上来自仓库根 `mdocs/8550/sm8550.dtsi` 转储。
 
 - **probe/init**：`qcom_cpufreq_hw_cpu_init`（:596-703）按 CPU 的 `qcom,freq-domain` phandle 归并 policy
   （`qcom_get_related_cpus`，:342），检查 `reg_enable` 后读 LUT 建频表（`qcom_cpufreq_hw_read_lut`，:229-340）。
@@ -49,11 +49,11 @@ DT 确认（`mdocs/sm8550.dtsi:5875-5887`）：`cpufreq@17d91000`，compatible
 
 ## 3. LMh 相关三套驱动
 
-| 驱动 | 作用 | SM8550 状态 |
-|---|---|---|
-| `drivers/thermal/qcom/lmh.c`（QCOM_LMH） | mainline LMh，只支持 cpu0/4（:117-124），仅做 IRQ domain 桥接到 cpufreq-hw 的 dcvsh irq（:30-38） | 本 DT 转储无 lmh 节点；SM8550 dcvsh-irq 直连 cpufreq_hw（dtsi:5886），**大概率未用，未确认** |
-| `msm_lmh_dcvs.c`（QTI_THERMAL_LIMITS_DCVS，kalama_GKI=m） | vendor LMh limits：轮询/中断驱动，读硬件限制，注入 thermal pressure（:116-186），暴露 `lmh_freq_limit`（:415-416），compatible `qcom,msm-hw-limits`（:429-432） | 配置 =m 但本转储 DT 无 `msm-hw-limits` 节点 → 是否 probe 未确认 |
-| `lmh_cpu_vdd_cdev.c` / `cpu_voltage_cooling.c`（QTI_*，kalama_GKI=m） | LMh/电压 cooling device，**直接发 FREQ_QOS_MAX 请求**（cpu_voltage_cooling.c:273-275、:343-344） | =m，thermal 策略触发时参与钳制 |
+| 驱动                                                                    | 作用                                                                                                                                                            | SM8550 状态                                                                                  |
+| ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `drivers/thermal/qcom/lmh.c`（QCOM_LMH）                                | mainline LMh，只支持 cpu0/4（:117-124），仅做 IRQ domain 桥接到 cpufreq-hw 的 dcvsh irq（:30-38）                                                               | 本 DT 转储无 lmh 节点；SM8550 dcvsh-irq 直连 cpufreq_hw（dtsi:5886），**大概率未用，未确认** |
+| `msm_lmh_dcvs.c`（QTI_THERMAL_LIMITS_DCVS，kalama_GKI=m）               | vendor LMh limits：轮询/中断驱动，读硬件限制，注入 thermal pressure（:116-186），暴露 `lmh_freq_limit`（:415-416），compatible `qcom,msm-hw-limits`（:429-432） | 配置 =m 但本转储 DT 无 `msm-hw-limits` 节点 → 是否 probe 未确认                              |
+| `lmh_cpu_vdd_cdev.c` / `cpu_voltage_cooling.c`（QTI\_\*，kalama_GKI=m） | LMh/电压 cooling device，**直接发 FREQ_QOS_MAX 请求**（cpu_voltage_cooling.c:273-275、:343-344）                                                                | =m，thermal 策略触发时参与钳制                                                               |
 
 **软件可见现象**：LMh/DCVS 触发时 scaling_max_freq 不变（除非 voltage/thermal cdev 走 QoS），cur_freq（票值）
 不变，实际频率下降，`/sys/.../cpu*/dcvsh_freq_limit`（或 `lmh_freq_limit`）出现小于 max 的值，调度器容量热压上升。
@@ -72,14 +72,14 @@ DT 确认（`mdocs/sm8550.dtsi:5875-5887`）：`cpufreq@17d91000`，compatible
 
 **会在 ChiRi 写入后压低/改写 policy max 的路径**（按可能性排序）：
 
-| # | 路径 | 证据 |
-|---|---|---|
-| 1 | **thermal cooling → FREQ_QOS_MAX**：qti_cpufreq_cdev（冷却态直接更新 QoS max，qti_cpufreq_cdev.c:61-75、:146）、cpu_voltage_cooling（:60、:273）、通用 cpufreq_cooling.c（drivers/thermal/cpufreq_cooling.c 存在）。thermal zone/cdev 由 vendor DT+用户态 thermal-engine 驱动 | kalama_GKI.config:287/291 |
-| 2 | **vendor hook 改目标频率**：`trace_android_vh_cpufreq_fast_switch`（cpufreq.c:2136）、`android_vh_cpufreq_target`（:2296）、`android_vh_map_util_freq(_new)`（kernel/sched/cpufreq_schedutil.c:163-165；waltgov 同类）——OPLUS frame_boost/wltm 等模块可在下发瞬间改 target | cpufreq.c:2133-2136、2289-2298 |
-| 3 | **OMRG fast-switch 限制**（qcom-cpufreq-hw.c:214-218） | 是否启用未确认 |
-| 4 | **boost 表切换**（cpufreq.c:2705 `freq_qos_update_request(policy->max_freq_req, policy->max)`）：boost 开关会重算 cpuinfo.max/FREQ_QOS_MAX；LUT turbo 段为 BOOST_FREQ（qcom-cpufreq-hw.c:280-283） | 常规不触发 |
-| 5 | resume 后 `cpufreq_update_policy`（:2651-2667）重放 QoS——若 thermal 在 suspend 期间留了 QoS 请求，恢复即钳制 | — |
-| 6 | **LMh/DCVS 硬件压频**：不动 policy->max，压的是硬件实际频率（§2），表现为「max 没变但频上不去」 | qcom-cpufreq-hw.c:385-463 |
+| #   | 路径                                                                                                                                                                                                                                                                          | 证据                           |
+| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
+| 1   | **thermal cooling → FREQ_QOS_MAX**：qti_cpufreq_cdev（冷却态直接更新 QoS max，qti_cpufreq_cdev.c:61-75、:146）、cpu_voltage_cooling（:60、:273）、通用 cpufreq_cooling.c（drivers/thermal/cpufreq_cooling.c 存在）。thermal zone/cdev 由 vendor DT+用户态 thermal-engine 驱动 | kalama_GKI.config:287/291      |
+| 2   | **vendor hook 改目标频率**：`trace_android_vh_cpufreq_fast_switch`（cpufreq.c:2136）、`android_vh_cpufreq_target`（:2296）、`android_vh_map_util_freq(_new)`（kernel/sched/cpufreq_schedutil.c:163-165；waltgov 同类）——OPLUS frame_boost/wltm 等模块可在下发瞬间改 target    | cpufreq.c:2133-2136、2289-2298 |
+| 3   | **OMRG fast-switch 限制**（qcom-cpufreq-hw.c:214-218）                                                                                                                                                                                                                        | 是否启用未确认                 |
+| 4   | **boost 表切换**（cpufreq.c:2705 `freq_qos_update_request(policy->max_freq_req, policy->max)`）：boost 开关会重算 cpuinfo.max/FREQ_QOS_MAX；LUT turbo 段为 BOOST_FREQ（qcom-cpufreq-hw.c:280-283）                                                                            | 常规不触发                     |
+| 5   | resume 后 `cpufreq_update_policy`（:2651-2667）重放 QoS——若 thermal 在 suspend 期间留了 QoS 请求，恢复即钳制                                                                                                                                                                  | —                              |
+| 6   | **LMh/DCVS 硬件压频**：不动 policy->max，压的是硬件实际频率（§2），表现为「max 没变但频上不去」                                                                                                                                                                               | qcom-cpufreq-hw.c:385-463      |
 
 ## 5. governor：schedutil 与 walt（OnePlus 实际用的是 waltgov）
 
@@ -135,4 +135,5 @@ DT 确认（`mdocs/sm8550.dtsi:5875-5887`）：`cpufreq@17d91000`，compatible
   FAS 在息屏恢复瞬间的重写可能与 resume 重放窗口重叠，出现一次性「写后读不一致」。
 
 ---
-*终端调用：3 次（目录清单 + findstr 批量检索 ×2），scratch `devimpbin/tmp_kern_cpufreq.txt` 已删除。*
+
+_终端调用：3 次（目录清单 + findstr 批量检索 ×2），scratch `devimpbin/tmp_kern_cpufreq.txt` 已删除。_

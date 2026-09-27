@@ -23,7 +23,7 @@
 
 框架消费链已验证（即 mainline 数字如果与真机 DT 相同，语义如下）：
 
-- `drivers/cpuidle/dt_idle_states.c:46-71`：逐节点读 `entry-latency-us` / `exit-latency-us` / `min-residency-us`，原样填进 `cpuidle_state`。mainline 参考值（本地副本 `mdocs/sm8550.dtsi:335-386`）：silver 550/750/6700µs，gold 600/1300/8136µs，prime 500/1350/7480µs；簇级两档 750/2350/9144µs、2800/4400/10150µs（`mdocs/sm8550.dtsi:363-379`）。
+- `drivers/cpuidle/dt_idle_states.c:46-71`：逐节点读 `entry-latency-us` / `exit-latency-us` / `min-residency-us`，原样填进 `cpuidle_state`。mainline 参考值（本地副本 `mdocs/8550/sm8550.dtsi:335-386`）：silver 550/750/6700µs，gold 600/1300/8136µs，prime 500/1350/7480µs；簇级两档 750/2350/9144µs、2800/4400/10150µs（`mdocs/8550/sm8550.dtsi:363-379`）。
 - CPU 级状态经 `CONFIG_ARM_PSCI_CPUIDLE`（`gki_defconfig`）走 `drivers/cpuidle/cpuidle-psci.c`；state[0] 被覆写为 exit_latency=1、target_residency=1 的占位 WFI（`cpuidle-psci.c:368-369`）。
 - 簇级 `domain-idle-state` 挂到 genpd，`power_off_latency_ns` / `residency_ns` 由 DT 换算。
 

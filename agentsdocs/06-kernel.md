@@ -15,7 +15,7 @@
 ### DT 对账
 
 - 本内核检出**无任何厂商 DT 源**：`arch/arm64/boot/dts/vendor` 是 symlink→`qcom/proprietary/devicetree`（仓库外、非 gitlink），`dts/qcom` 止于 sm8350；「280/855/1024 出自厂商 dts」在本检出永远无法验证。需厂商 DT 时另拉 `qcom/proprietary/devicetree` repo。
-- mainline `mdocs/sm8550.dtsi` 可依赖块：freq-domain 划分（CPU0-2→domain0 / 3-6→1 / 7→2）、CPU OPP 档位、idle-states；**capacity / dpc / thermal trip 不能当真机基准**。`soc_max` zone 在 mainline 不存在（厂商/Oplus 侧定制）。
+- mainline `mdocs/8550/sm8550.dtsi` 可依赖块：freq-domain 划分（CPU0-2→domain0 / 3-6→1 / 7→2）、CPU OPP 档位、idle-states；**capacity / dpc / thermal trip 不能当真机基准**。`soc_max` zone 在 mainline 不存在（厂商/Oplus 侧定制）。
 - 取证唯一路径：真机 `adb pull /sys/firmware/fdt` + `dtc -I dtb -O dts`（产物放 mdocs/）——见 07 T1。
 
 ### 调频路径与竞争者
@@ -25,7 +25,7 @@
 - 压频六条（按可能性）：thermal cooling QoS、vendor hook（`android_vh_cpufreq_fast_switch/target`、`vh_map_util_freq(_new)`）、OMRG（CONFIG_OPLUS_OMRG 覆盖 fast_switch，是否启用未确认）、boost 表切换、resume QoS 重放、硬件 DCVS（不碰 policy->max）。
 - 实际 governor=**waltgov**（CONFIG_SCHED_WALT=m）；schedutil busy-hold + rate_limit 使 down 落地要等 util 更新。
 - LMh/DCVS：硬件限值读 `reg_domain_state`；`arch_set_thermal_pressure` 注入容量热压（**不改 policy->max**）；`dcvsh_freq_limit` sysfs 可读；三套 LMh 驱动并存（lmh.c 仅 IRQ 桥、msm_lmh_dcvs、cpu_voltage_cooling 直发 FREQ_QOS_MAX）。
-- 盖写锁频排序（防篡改排查序）：thermal（Horae + cpufreq_cooling）> msm_performance > input-boost（FREQ_QOS_MIN 抬升）> 树外 OMRG/frame_boost。防篡改盯节点：scaling_{max,min}_freq、cpu.uclamp.{min,max}、msm_performance cpu_{min,max}_freq、core_ctl enable/min_cpus、`/proc/horae_qmi`；比对用「记账+读回」双校验。
+- 盖写锁频排序（防篡改排查序）：thermal（Horae + cpufreq*cooling）> msm_performance > input-boost（FREQ_QOS_MIN 抬升）> 树外 OMRG/frame_boost。防篡改盯节点：scaling*{max,min}_freq、cpu.uclamp.{min,max}、msm_performance cpu_{min,max}\_freq、core_ctl enable/min_cpus、`/proc/horae_qmi`；比对用「记账+读回」双校验。
 - 真机 0926 定案：msmp 节点不可读（无锁频盖写通道）、horae_qmi 存在（活跃性未知）、dcvsh_freq_limit 常规负载恒满频（硬件 DCVS 归因排除，仅剩真热压时段待采样）。
 
 ### WALT / EAS / 调度
@@ -34,7 +34,7 @@
 - WALT FEEC 要点：many-wakeup 回 prev_cpu、pipeline_cpu fastpath、能量差 ≥prev/32（≈3.1%，注释写 6% 与代码不符）才留 prev；OPLUS 后处理 `set_frame_group_task_to_perfer_cpu` / `set_ux_task_to_prefer_cpu` 可改写结果。
 - capacity 运行时重算：`min(fmax_capacity×cluster.max_freq/max_possible, fmax−thermal_pressure)`，OPLUS FAKE_CAP 再乘 `fake_cap_multiple` → 静态 capacity 会失真。
 - uclamp：rq 级 **max 聚合**（任一高 clamp 任务即顶回）；树内 0 个 uclamp 写入者；tg 钳制 `uclamp_tg_restrict` 是 85 钳可作用的 tg 层（评估未做，见 07 T7）。
-- 有调用点无注册者的 hook（树外 oplus_cpu，`kernel/oplus_cpu` 为占位）：rvh_find_energy_efficient_cpu、rvh_uclamp_eff_get、rvh_effective_cpu_util、vh_em_cpu_energy、vh_map_util_freq(_new)、vh_setscheduler_uclamp；SCHED_TUNE / SCHED_ASSIST / FRAME_BOOST / PIPELINE / FAKE_CAP 源码均不在树。
+- 有调用点无注册者的 hook（树外 oplus_cpu，`kernel/oplus_cpu` 为占位）：rvh_find_energy_efficient_cpu、rvh_uclamp_eff_get、rvh_effective_cpu_util、vh_em_cpu_energy、vh_map_util_freq(\_new)、vh_setscheduler_uclamp；SCHED_TUNE / SCHED_ASSIST / FRAME_BOOST / PIPELINE / FAKE_CAP 源码均不在树。
 - WALT 缓存/恢复 sched_setaffinity（**对 ChiRi 有利**：恢复的就是 ChiRi 最后写的值）；walt_halt 拒绑、walt_lb 迁移、core_ctl 拓扑改变是亲和侧竞争者。
 - FAS 冲突五点：QoS 聚合 min 下重写必失败、thermal pressure 期「不兑现」、vendor hook 改写自证读数、busy-hold 观察窗口应 ≥ rate_limit_us、resume 重放窗口 → `qos_clamped` 状态机（policy_controller.rs）应对。
 
@@ -61,4 +61,4 @@
 - 触摸地板行为级证据：touch=1 决策下限 ≥1651200（touch0 min 729600）；4 个内核 input_boost 节点全 ENOENT，实际挂载点未知（07 T9）。
 - cap85 窗口（0926-162821，n=2217s）：第 15 列 cur_freq_khz（决策）在变、第 16 列 max_freq_khz（上限）恒满档——两列不可混算；free_above 豁免带覆盖 little 5.5 / big 2.3 / prime 3.1%；cap85 2.7844W vs cap100 3.1845W（未场景归一）。clamp_heavy 恒钳已实现、A/B 待做（07 T8）。
 - `handle_cpufreq_transition` eBPF 探针挂载失败（内核无 CONFIG_CPU_FREQ_TRACEPOINTS）→ status/devimp 的 freq_trans 恒 0——「看似频率从未切换」实为无探针；ftrace 候选 `trace_dcvsh_freq`（07 T6）。
-- 检索口径：daemon.log 是 fluent 本地化文案非 key 字面量；Grep/rg 读不动部分 x_*/daemon.log（编码异常），走显式解码脚本（详见 05）。
+- 检索口径：daemon.log 是 fluent 本地化文案非 key 字面量；Grep/rg 读不动部分 x\_\*/daemon.log（编码异常），走显式解码脚本（详见 05）。

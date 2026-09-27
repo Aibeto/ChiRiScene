@@ -154,6 +154,7 @@
 ## 构建与仓库约定
 
 - `cargo xtask build` 先跑 `webui/npm run build` 再拷 `webui/dist` 到模块 `webroot/`；硬约束 `base:'./'`+`type="module"`。CI Node 24。`module.prop` id = `chiri`。dist 由根 `build.rs` 嵌入（`restore_webroot` 启动补齐，缺则降级）。
+- **安装包不含「仅二进制读取」的配置**（`xtask` 组装时删除，磁盘无读取方，缩小可篡改面）：`config/feature.yaml`、`config/normal/{tuned_profiles,scenemode,fas}.yaml`、`config/rhine-init.yaml`、`config/normal/fas/` 整目录，以及逐 SoC 目录下的 `feature.yaml`、`soc.yaml`（2026-09-27 补入）。有 WebUI 读取方的 `meta.yaml`/`rules.yaml`/`special_tuned.yaml`/`fas_whitelist.yaml` 保留。
 - **.gitignore 已合并为根单文件（2026-09-22）**：webui/、module/ 的子 .gitignore 已删除；根内新增 WebUI 段（`webui/` 前缀）与 Magisk 段；根 `/package.json`、`/package-lock.json` 刻意忽略（npm init 残留）。后续新增忽略规则一律进根文件。
 - `mdocs/` 只放项目原有文档；AI 产出放 `.codebuddy/docs/`（已忽略）；`.codebuddy/memory/` 跟踪。
 - **devimp 日志包分析入口 = 命令 `/devimp-log-analysis`（2026-09-23 用户定，同日由 skill 转入）**：正文在 `.cursor/commands/devimp-log-analysis.md`（唯一副本，勿再建 skill 或镜像），聚合脚本在 `scripts/devimp-analyze.py`（git mv 自 skill 目录，用法 `python scripts\devimp-analyze.py <解压目录>`）。`.agents/skills/` 下已无项目 skill，旧「skill 位置/镜像」约定随之作废。

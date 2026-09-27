@@ -16,23 +16,25 @@
 SM8550 = Kalama 平台，tsens IP 是 v2.6。两条驱动路径：
 
 **实际生效路径（msm-tsens / tsens2xxx）**
+
 - 匹配链：`msm-tsens.c:130-131` compatible `"qcom,tsens26xx"` → `data_tsens26xx`（`tsens2xxx.c:922`）→ `tsens2xxx_get_temp`（`tsens2xxx.c:140`）。
 - 读寄存器：`tsens2xxx.c:299` `last_temp = code & TSENS_TM_SN_LAST_TEMP_MASK`（12 bit，mask `0xfff`，符号位 `0x800`，`tsens2xxx.c:49-53`）。
 - 转换：`tsens2xxx.c:79` `*temp = last_temp * TSENS_TM_SCALE_DECI_MILLIDEG`，其中 `TSENS_TM_SCALE_DECI_MILLIDEG = 100`（`tsens2xxx.c:54`）——**寄存器是 deci°C，输出 m°C**，含符号扩展。
 - sysfs 输出：`thermal_sysfs.c:46` 直接 `sprintf("%d", temperature)`，即 `/sys/class/thermal/thermal_zone*/temp` 单位 = **m°C（0.001°C）**。
 
 **主线兼容路径（tsens.c，供对照）**
+
 - `tsens.c:141-171` `tsens_hw_to_mC`：同样 deci°C ×100 → m°C（`sign_extend32(temp, resolution) * 100`）。
 
 **ChiRi 口径**：`/sys/class/thermal/thermal_zone*/temp` 读出的数是 m°C；若 ChiRi 内部以 0.1°C 存，除以 100；以 °C 存则除以 1000。
 
 ## 2. 真机 DT 的 thermal zone 清单与 `soc_max` 出处
 
-- **本内核树没有 SM8550 板级 dts**：`arch/arm64/boot/dts/qcom/` 只有到 sm8350 的主线 dts（Glob 无 sm8550*），OnePlus 设备 dts 不在此树。
+- **本内核树没有 SM8550 板级 dts**：`arch/arm64/boot/dts/qcom/` 只有到 sm8350 的主线 dts（Glob 无 sm8550\*），OnePlus 设备 dts 不在此树。
 - **`soc_max` 全树 0 命中**（drivers + arch 均无）。它的来源只有两种可能：
   1. 真机 DTB（vendor 仓库）里的 **virtual sensor 聚合温区**：`drivers/thermal/qcom/virtual-sensor.c:151-152` 定义 `"qcom,vs-sensor"`，`virtual-sensor.c:42-72` 按 `qcom,logic = VIRT_MAXIMUM` 对若干命名传感器（`sensor-names`）取 **max** 后作为新温区注册——`soc_max` 这类名字典型由此生成。**（未确认具体聚合了哪几个传感器，需真机 `/sys/class/thermal/thermal_zone*/type` + 对应 DTB 验证）**
   2. userspace thermal-engine 的配置文件（JSON）定义的同名逻辑温区——但它不会出现在 `/sys/class/thermal`，既然 ChiRi 真机能看到 `soc_max` zone，virtual-sensor 路径可能性更高。
-- **主线 sm8550.dtsi 的 zone 清单**（对照本仓库 `mdocs/sm8550.dtsi`，它是主线风格提取件）：`aoss0/1/2`、`cpuss0/1/2/3`（`6139-6228`，trip：thermal-engine-config 125°C passive + reset-mon 115°C）、`cpu3..7-top/bottom/middle`（`6229-6492`，90/95/110°C）、`cpu0/1/2-thermal`（`6511-6582`，90/95/110°C，110 是 critical）、`cdsp0-3`、`video`、`mem`、`modem0-3`、`camera0/1`、`gpuss-0..7`（GPU zone 绑 `<&gpu NO_LIMIT>` cooling，`6929-7193`）。
+- **主线 8550/sm8550.dtsi 的 zone 清单**（对照本仓库 `mdocs/8550/sm8550.dtsi`，它是主线风格提取件）：`aoss0/1/2`、`cpuss0/1/2/3`（`6139-6228`，trip：thermal-engine-config 125°C passive + reset-mon 115°C）、`cpu3..7-top/bottom/middle`（`6229-6492`，90/95/110°C）、`cpu0/1/2-thermal`（`6511-6582`，90/95/110°C，110 是 critical）、`cdsp0-3`、`video`、`mem`、`modem0-3`、`camera0/1`、`gpuss-0..7`（GPU zone 绑 `<&gpu NO_LIMIT>` cooling，`6929-7193`）。
 - **对 ChiRi 名单的验证**：
   - `soc_max`：真机存在（ChiRi 实测），聚合温区，**保留且应为首选**——它是整机最热点的保守代表。
   - `mtktscpu`（MTK）、`cpu-1-`、`cpu-0-0-usr`（旧 QCOM/其他设备命名）：与本机无关的兼容条目，保留无妨。
@@ -41,17 +43,20 @@ SM8550 = Kalama 平台，tsens IP 是 v2.6。两条驱动路径：
 ## 3. 谁在压频：governor 与 cooling device
 
 **governor（`drivers/thermal/`）**
+
 - 编译进内核的只有（`arch/arm64/configs/gki_defconfig:426-436`）：`THERMAL=y`、`THERMAL_GOV_USER_SPACE=y`、`THERMAL_GOV_POWER_ALLOCATOR=y`、`CPU_THERMAL=y`、`DEVFREQ_THERMAL=y`。
-- step_wise / fair_share / bang_bang 源码在（`gov_step_wise.c` 等）但 defconfig 未选；Kconfig 默认 choice 是 step_wise（`drivers/thermal/Kconfig:92`），实际 .config 取决于厂商 defconfig（**不在本树，未确认**）。但 DT 里 CPU zone 的 trip 全是 passive 且**无 cooling-maps**（主线 dtsi 的 cpu* zone 无 map 节点），即使 governor 跑起来也没有 CPU cooling 绑定可驱动——**CPU 压频不由内核 governor 完成**。
-- GPU 例外：`gpuss-*` zone 绑定 `<&gpu THERMAL_NO_LIMIT>`（`mdocs/sm8550.dtsi:6937` 等），GPU 热压走内核 power_allocator/devfreq 通道。
+- step_wise / fair_share / bang_bang 源码在（`gov_step_wise.c` 等）但 defconfig 未选；Kconfig 默认 choice 是 step_wise（`drivers/thermal/Kconfig:92`），实际 .config 取决于厂商 defconfig（**不在本树，未确认**）。但 DT 里 CPU zone 的 trip 全是 passive 且**无 cooling-maps**（主线 dtsi 的 cpu\* zone 无 map 节点），即使 governor 跑起来也没有 CPU cooling 绑定可驱动——**CPU 压频不由内核 governor 完成**。
+- GPU 例外：`gpuss-*` zone 绑定 `<&gpu THERMAL_NO_LIMIT>`（`mdocs/8550/sm8550.dtsi:6937` 等），GPU 热压走内核 power_allocator/devfreq 通道。
 
 **CPU cooling device（`drivers/thermal/qcom/`）**
+
 - `qti_cpufreq_cdev.c:149` 注册 cpufreq 类 cooling device（`thermal_cooling_device_register`），供 userspace/policy 驱动。
 - `thermal_pause.c`：CPU pause cooling（`QTI_CPU_PAUSE_COOLING_DEVICE`），可整组暂停 CPU。
 - `cpu_hotplug.c`、`cpu_voltage_cooling.c`、`cx_ipeak_cdev.c`、`ddr_cdev.c`、`qti_devfreq_cdev.c`、`qti_userspace_cdev.c`（userspace 直接控制态 cooling）等，QTI 全家桶齐备，编译与否取决于厂商 defconfig（未确认）。
 - **没有经典 msm_thermal**（老平台每 tick 扫温度写 freq 的那套）；替代物是下面的 LMh DCVS。
 
 **LMh DCVS（`msm_lmh_dcvs.c`，`QTI_THERMAL_LIMITS_DCVS`）**
+
 - 每个 cluster 一个 `limits_dcvs_hw`，`core_map` 绑核，`LIMITS_POLLING_DELAY_MS = 10`（`msm_lmh_dcvs.c:43`）10ms 轮询硬件 freq cap（`LIMITS_FREQ_CAP`，`msm_lmh_dcvs.c:40`；cap 值以 19.2MHz 为基，`msm_lmh_dcvs.c:45-49`），注册 cooling device 并对 cpufreq 设上限；默认温度 `LIMITS_TEMP_DEFAULT = 75000`（`msm_lmh_dcvs.c:41`）。
 
 ## 4. 用户态热控接口
@@ -78,5 +83,5 @@ SM8550 = Kalama 平台，tsens IP 是 v2.6。两条驱动路径：
 ## 未确认项
 
 - 真机 `soc_max` zone 的 DTB 定义与聚合成员（vendor dts 不在本树）。
-- OnePlus 实际 .config（厂商 defconfig 不在本树）：step_wise 是否同时编译、qti_*_cdev 哪些被启用。
+- OnePlus 实际 .config（厂商 defconfig 不在本树）：step*wise 是否同时编译、qti*\*\_cdev 哪些被启用。
 - 真机 `/sys/class/thermal/thermal_zone*/type` 全量名单（建议真机 `ls /sys/class/thermal/*/type` + `cat` 抓一次存档）。
