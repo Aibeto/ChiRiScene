@@ -242,6 +242,7 @@ fn assert_required_configs() {
     let required = [
         "meta.yaml",
         "feature.yaml",
+        "soc.yaml"
         "normal/tuned_profiles.yaml",
         "normal/scenemode.yaml",
         "normal/fas.yaml",

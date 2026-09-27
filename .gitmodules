@@ -10,3 +10,11 @@
 	path = android_kernel_oneplus_sm8550
 	url = https://github.com/OnePlusOSS/android_kernel_oneplus_sm8550.git
 	branch = oneplus/sm8550_b_16.0.0_oneplus_11
+[submodule "torvalds/linux"]
+	path = torvalds/linux
+	url = https://github.com/torvalds/linux.git
+	branch = master
+[submodule "AYNTechnologies/linux"]
+	path = AYNTechnologies/linux
+	url = https://github.com/AYNTechnologies/linux.git
+	branch = ayn/v7.0
