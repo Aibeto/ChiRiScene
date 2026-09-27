@@ -177,6 +177,7 @@ pub mod scheduler;
 pub mod affinity;
 pub mod core_ctl;
 pub mod cpu_load_governor;
+pub mod energy_cost;
 pub mod fas_manager;
 pub mod fast;
 pub mod governor;
@@ -550,18 +551,100 @@ fn apply_mode_takeover(
 }
 
 // [aff_snap]
-/// 长尾线程（线程表里只被扫到、从未被动过的条目）的强制全量刷新间隔（帧，1s/帧 = 30s），兼作长尾热窗长度：每 30 帧（含首帧）全量落行一次——下游按「缺失行 = 与上一帧相同」重建状态，长期省略会累积漂移，
-/// 刷新帧重新锚定；最近 30 帧内 u/core/home/pin/pid/comm 有变化的长尾保持逐帧采样（差分判定需要「本帧 u」），静默满 30 帧后降为刷新帧采样
-const AFF_LONGTAIL_REFRESH_FRAMES: u64 = 30;
+/// 强制全量刷新间隔（帧，1s/帧 = 30s），兼作长尾热窗长度：每 30 帧（含首帧）
+/// 所有存活候选 tid 全量落行一次、帧头打 `full=1`——下游按「缺失行 = 与上次落盘相同」
+/// 重建状态，长期省略会累积漂移，刷新帧重新锚定（**存活集合也以刷新帧为锚**）；
+/// 最近 30 帧内槽有变化的长尾保持逐帧采样（差分判定需要「本帧 u」），静默满 30 帧后
+/// 降为刷新帧采样
+const AFF_SNAP_REFRESH_FRAMES: u64 = 30;
 
-/// 单个 tid 的差分基线 + 上次落盘值（差分省略的对比基准）
+/// `uclamp` 槽的占位值：本版不下钻、恒 -1（预留字段），故除刷新帧外该槽永不落盘
+const AFF_UCLAMP_RESERVED: i32 = -1;
+
+/// 槽真值恰为 `-` 时的替身 token：`-` 已被占用为「与上次落盘相同」，故真值是 `-`
+/// 的槽**改写 `NaN` 落盘**，读者按 `NaN → -` 还原。实际上只有 comm 槽取得到 `-`
+/// （数值槽是整数/`-1`），但没有这条区分，「comm 变成 `-`」会被读成「comm 没变」，
+/// 该线程的 comm 会永久停在旧值
+const AFF_DASH_VALUE: &str = "NaN";
+
+/// `t` 行字段级差分渲染：槽序固定 `comm / u / core / home / pin / uclamp`，
+/// 与上次落盘值相同的槽写 `-`，**尾部连续未变的槽整段省略**（下游按「缺省 = 未变」
+/// 逐槽合并）；真值为 `-` 的槽写 [`AFF_DASH_VALUE`]，与「未变」区分开；`pid`/`tid`
+/// 恒写，是行标识而不是槽。全槽未变时渲染成只含标识的 `t <pid> <tid>`——只在 tid
+/// 被复用、归属变了而各槽恰好未变时出现，用于让下游更新归属；调用方在无任何变化时
+/// **不得**落行（见 `build_aff_snapshot`）
+#[allow(clippy::too_many_arguments)]
+fn render_t_row(
+    pid: u32,
+    tid: u32,
+    comm: Option<&str>,
+    util: Option<i32>,
+    core: Option<i32>,
+    home: Option<i16>,
+    pin: Option<bool>,
+    uclamp: Option<i32>,
+) -> String {
+    use std::fmt::Write as _;
+    let mut out = format!("t {pid} {tid}");
+    // `tail` = 最后一个「有值槽」的字节末尾；收尾按它截断即省掉尾部连续的 `-`
+    let mut tail = out.len();
+    match comm {
+        Some(v) => {
+            out.push(' ');
+            // 真值为 `-` 时换 `NaN`：否则与「未变」占位同形，下游会把这次变化直接吞掉
+            out.push_str(if v == "-" { AFF_DASH_VALUE } else { v });
+            tail = out.len();
+        }
+        None => out.push_str(" -"),
+    }
+    match util {
+        Some(v) => {
+            let _ = write!(out, " u={v}");
+            tail = out.len();
+        }
+        None => out.push_str(" -"),
+    }
+    match core {
+        Some(v) => {
+            let _ = write!(out, " core={v}");
+            tail = out.len();
+        }
+        None => out.push_str(" -"),
+    }
+    match home {
+        Some(v) => {
+            let _ = write!(out, " home={v}");
+            tail = out.len();
+        }
+        None => out.push_str(" -"),
+    }
+    match pin {
+        Some(v) => {
+            let _ = write!(out, " pin={}", u8::from(v));
+            tail = out.len();
+        }
+        None => out.push_str(" -"),
+    }
+    match uclamp {
+        Some(v) => {
+            let _ = write!(out, " uclamp={v}");
+            tail = out.len();
+        }
+        None => out.push_str(" -"),
+    }
+    out.truncate(tail);
+    out
+}
+
+/// 单个 tid 的差分基线 + 上次落盘值（**槽级差分的对比基准**：每槽与本结构比对，
+/// 未变槽写 `-`；任一槽变化即落行并回写本结构，故「本结构 == 上次落盘值」恒成立）
 /// **原地更新**：entry 原地改写 + `retain` 增量清理（旧实现每帧整表新建替换），分配为 0
 struct ThSnap {
     /// 上轮采样的 utime+stime（差分减数）
     ticks: u64,
     /// 上轮采样时刻：本轮 util 的窗口分母（冷长尾跨刷新帧时 = 实际间隔）
     at: Instant,
-    /// 上轮**落盘**值（省行判定只看这六项）
+    /// 上轮**落盘**值（槽级差分基准）
     util: i32,
     core: i32,
     home: i16,
@@ -615,38 +698,40 @@ fn mask_hex(pid: i32) -> String {
 
 /// @S 每秒进程/线程快照帧（`devimp/aff_<ts>.log`）组装：top-N 进程 + 前台树/
 /// 被管进程线程下钻。只在 `diag_active()` 时由 1s 块调用（与 main_snap 同门控，
-/// 关闭路径零采样零写入），行数组交 `logger::aff_snapshot`（帧头计数由行反推）
-/// 落盘集合 = util top-N（N = meta.devimp_top_n）∪ 前台进程+全部线程 ∪ 被管
-/// 进程+被管线程；后两者 rank=0、util=0 也落盘前台子进程无现成枚举手段，
-/// 只落前台进程+线程（不硬造 /proc 遍历）
-/// ── 帧内 `t` 行集合（差分帧，读日志必须按此口径）──
-/// `t` 行 = ① 前台进程**全部**线程（全量每帧写：分析最关键）
-/// ∪ ② `AffinityManager` 线程表里**被动过的条目**（home ≥ 0 或组绑定，
-/// thread_diag 的 pinned 即此集合；全量每帧写：它们是 `@A` 动作帧的
-/// 作用对象，必须与动作流逐帧对齐）
-/// ∪ ③ **变化的长尾线程**（只被扫到、从未动过的条目里，本帧 u/core/home/
-/// pin/pid/comm 任一与上次落盘值不同者；pid/comm 是线程身份——tid 会被
-/// 复用，身份变了必须落行）
-/// **缺失的 `t` 行 = 与上一帧该 tid 完全相同**（省行不丢语义），每
-/// [`AFF_LONGTAIL_REFRESH_FRAMES`] 帧（含首帧）全量刷新一次防漂移；③ 的 `u` 是
-/// 自上次采样（最多 30 帧）窗口的平均值，①② 仍是 1s 窗口值`p` 行不走差分
-/// （每帧全量）代价须知：冷长尾不采样则 u 不可知，首次见到的变化后 30 帧内
-/// 逐帧可见（热窗），一直沉默偶发活跃的最迟下一个刷新帧（≤30s）才被记录，且
-/// 帧窗口内 <30s 的短促占用会被抹平——省的就是「从未动过」的长尾，别拿它做
-/// 短时尖峰归因
+/// 关闭路径零采样零写入），行数组交 `logger::aff_snapshot`（帧头计数由行反推），
+/// 同时返回本帧是否为刷新帧（帧头打 `full=1`，见 [`AFF_SNAP_REFRESH_FRAMES`]）
+/// 候选集 = util top-N（N = meta.devimp_top_n）∪ 前台进程全部线程 ∪ 被管进程
+/// 全部线程；后两者 rank=0、util=0 也落盘（前台子进程无现成枚举手段，只落前台
+/// 进程+线程，不硬造 /proc 遍历）
+/// ── 落行规则（字段级差分，读日志必须按此口径）──
+/// **采样**：前台线程与被管条目每帧采样；长尾（只被扫到、从未动过）按热窗降采样，
+/// 刷新帧全量采样
+/// **落行**：本帧任一槽（comm/u/core/home/pin）与上次落盘值不同才落行；pid 只随
+/// 归属变化（tid 复用）落行；**全槽未变不落行** —— 缺失 tid = 与上次落盘值相同
+/// **槽级省略**（v2026-09-28）：未变槽写 `-`，尾部连续未变的槽整段省略，故整行
+/// 只承载「本次变化的那部分」；下游必须按槽序 `comm/u/core/home/pin/uclamp` 逐槽
+/// 合并，缺省槽 = 沿用上次值，**不能**把 `-` 当字段值。真值恰为 `-` 的槽（只可能是
+/// comm）写 [`AFF_DASH_VALUE`]（`NaN`），下游还原为 `-`，以此与「未变」区分
+/// **刷新帧**（帧头 `full=1`，首帧与每 [`AFF_SNAP_REFRESH_FRAMES`] 帧一次）所有存活
+/// 候选 tid 全量落行：下游据此重建存活集合（连续两次刷新帧都不出现的 tid 视为已
+/// 退出，粒度 = 刷新间隔），长期省略不累积漂移
+/// 长尾的 `u` 是自上次采样（最多一个刷新间隔）窗口的平均值，前台/被管条目仍是 1s
+/// 窗口值。代价须知：冷长尾不采样则 u 不可知，首次见到的变化后一个刷新间隔内逐帧
+/// 可见（热窗），一直沉默偶发活跃的最迟下一个刷新帧才被记录，且窗口内短于刷新间隔
+/// 的短促占用会被抹平——省的就是「从未动过」的长尾，别拿它做短时尖峰归因
 /// 行格式（util 一律整数百分比）：
 /// - 进程：`p <rank> <pid> <pkg|comm> u=<util%> mask=<核占用hex> home=<核|-1>`
-/// - 线程：`t <pid> <tid> <comm> u=<util%> core=<核|-1> home=<核|-1> pin=<0|1> uclamp=-1`
+/// - 线程：`t <pid> <tid> [comm] [u=] [core=] [home=] [pin=] [uclamp=]`（槽序固定，未变槽 `-`，真值 `-` 写 `NaN`）
 /// 数据来源与成本：进程 util 走 `snapshot_procs`（eBPF map 差分）；线程 util 走
 /// `sample_one_tid` stat 差分（只对下钻线程，长尾按热窗/刷新帧降采样）；核掩码
 /// 只对落盘进程查 `read_tid_mask`；home/pin 直取 AffinityManager 状态表；uclamp
-/// 不下钻恒 -1
+/// 不下钻恒 -1（本版永不变化，故差分行里只可能出现在刷新帧）
 fn build_aff_snapshot(
     mgr: &affinity::AffinityManager,
     fg_pid: i32,
     fg_pkg: &str,
     top_n: usize,
-) -> Vec<String> {
+) -> (Vec<String>, bool) {
     use std::collections::{HashMap, HashSet};
 
     // 被管线程状态（home/pin）一次取完；进程级 home 从这里派生
@@ -682,8 +767,10 @@ fn build_aff_snapshot(
     tids.sort_unstable();
 
     // 线程采样：stat 差分（首见/首帧只建基线 util=0）+ comm；core 取 stat 的 processor 字段（读不到 -1）。采样失败（线程已退出）即不落行
-    // 末位 bool = 本帧是否落行（差分的核心：采样了也可能省行）
-    let mut th_rows: Vec<(u32, u32, String, i32, i32, bool)> = Vec::with_capacity(tids.len());
+    // 末位 = 本帧要落的 `t` 行（None = 全槽未变、省行；差分的核心：采样了也可能省行）
+    let mut th_rows: Vec<(u32, u32, String, Option<String>)> = Vec::with_capacity(tids.len());
+    // 本帧是否刷新帧（帧头据此打 `full=1`，下游按它重建存活集合）
+    let refresh;
     {
         let mut st = AFF_TH_STATE
             .get_or_init(|| Mutex::new(AffThState::default()))
@@ -695,10 +782,10 @@ fn build_aff_snapshot(
         st.frame += 1;
         let frame = st.frame;
         // 刷新帧：首帧必全量（全建基线、util 全 0），此后每 30 帧一次（防漂移）
-        let refresh = first || frame % AFF_LONGTAIL_REFRESH_FRAMES == 0;
+        refresh = first || frame % AFF_SNAP_REFRESH_FRAMES == 0;
         for &(pid, tid, full) in &tids {
             let (home, pinned) = th_state.get(&tid).copied().unwrap_or((-1, false));
-            // 长尾且已退冷：本轮**不采样、不落行**（省 stat 读与行；语义由「缺失行 = 与上一帧相同」承载）。刷新帧或热窗内的仍逐帧采样
+            // 长尾且已退冷：本轮**不采样、不落行**（省 stat 读与行；语义由「缺失行 = 与上次落盘相同」承载）。刷新帧或热窗内的仍逐帧采样
             if !full && !refresh && !st.base.get(&tid).is_some_and(|e| e.hot_until >= frame) {
                 continue;
             }
@@ -720,21 +807,25 @@ fn build_aff_snapshot(
                 _ => 0.0,
             };
             let util = util_pct.round() as i32;
-            // 基线**原地更新**（复用 entry），顺带按差分决定本帧是否落行
-            let emit = match st.base.get_mut(&tid) {
+            let comm_tok = crate::logger::aff_token(&s.comm);
+            // 基线**原地更新**（复用 entry），顺带按槽级差分组出本帧要落的行
+            let row = match st.base.get_mut(&tid) {
                 Some(e) => {
-                    // 身份（pid/comm）一并参与差分：冷长尾最长 30 帧才采样一次，期间 tid 复用若不比身份，新线程会沿用旧 pid/comm 的行
-                    let changed = e.util != util
-                        || e.core != s.processor
-                        || e.home != home
-                        || e.pin != pinned
-                        || e.pid != pid
-                        || e.comm != s.comm;
+                    // 槽级差分基准 = 本结构（恒等于上次落盘值）；身份（pid/comm）一并参与：冷长尾最长 30 帧才采样一次，期间 tid 复用若不比身份，新线程会沿用旧 pid/comm 的行
+                    let comm_ch = e.comm != s.comm;
+                    let util_ch = e.util != util;
+                    let core_ch = e.core != s.processor;
+                    let home_ch = e.home != home;
+                    let pin_ch = e.pin != pinned;
+                    // pid 不是槽（行标识恒写），但归属变了也必须落一行，否则下游的 tid→归属映射会一直停在旧值
+                    let pid_ch = e.pid != pid;
+                    let slot_ch = comm_ch || util_ch || core_ch || home_ch || pin_ch;
+                    let any_ch = slot_ch || pid_ch;
                     // 有变化即续热窗 30 帧：之后仍逐帧采样（差分判定要看「本帧 u」）；静默满 30 帧自然退冷，回到 30 帧一次的刷新采样
-                    if changed {
-                        e.hot_until = frame + AFF_LONGTAIL_REFRESH_FRAMES;
+                    if any_ch {
+                        e.hot_until = frame + AFF_SNAP_REFRESH_FRAMES;
                         // comm 只在真变了才改写，复用 String 容量、稳态零分配
-                        if e.comm != s.comm {
+                        if comm_ch {
                             e.comm.clear();
                             e.comm.push_str(&s.comm);
                         }
@@ -746,10 +837,36 @@ fn build_aff_snapshot(
                     e.home = home;
                     e.pin = pinned;
                     e.pid = pid;
-                    full || refresh || changed
+                    if refresh {
+                        // 刷新帧：全量重锚（下游据此重建存活集合），不做槽级省略
+                        Some(render_t_row(
+                            pid,
+                            tid,
+                            Some(&comm_tok),
+                            Some(util),
+                            Some(s.processor),
+                            Some(home),
+                            Some(pinned),
+                            Some(AFF_UCLAMP_RESERVED),
+                        ))
+                    } else if any_ch {
+                        // 常态：只写变化的那部分，未变槽 `-`、尾部未变槽整段省略
+                        Some(render_t_row(
+                            pid,
+                            tid,
+                            comm_ch.then_some(comm_tok.as_str()),
+                            util_ch.then_some(util),
+                            core_ch.then_some(s.processor),
+                            home_ch.then_some(home),
+                            pin_ch.then_some(pinned),
+                            None,
+                        ))
+                    } else {
+                        None
+                    }
                 }
                 None => {
-                    // 首见（新线程 / 新进程线程）：必落行，长尾则进热窗观察 30 帧
+                    // 首见（新线程 / 新进程线程）：无基准可比，六槽全写（全量行），长尾则进热窗观察 30 帧
                     st.base.insert(
                         tid,
                         ThSnap {
@@ -761,13 +878,22 @@ fn build_aff_snapshot(
                             pin: pinned,
                             pid,
                             comm: s.comm.clone(),
-                            hot_until: frame + AFF_LONGTAIL_REFRESH_FRAMES,
+                            hot_until: frame + AFF_SNAP_REFRESH_FRAMES,
                         },
                     );
-                    true
+                    Some(render_t_row(
+                        pid,
+                        tid,
+                        Some(&comm_tok),
+                        Some(util),
+                        Some(s.processor),
+                        Some(home),
+                        Some(pinned),
+                        Some(AFF_UCLAMP_RESERVED),
+                    ))
                 }
             };
-            th_rows.push((pid, tid, crate::logger::aff_token(&s.comm), util, s.processor, emit));
+            th_rows.push((pid, tid, comm_tok, row));
         }
         // 增量清理：只保留本轮候选集内的 tid（线程消亡随候选集消失回收），`retain` 原地收缩零分配注意保留本轮未采样的冷长尾：其基线 `at` 要留到刷新帧才能算出覆盖整段间隔的 util，
         // 删掉会把窗口重置为 0
@@ -775,7 +901,7 @@ fn build_aff_snapshot(
     }
     // 被管进程的 comm 兜底（不在进程快照里时用其任一线程 comm）。取**采样到**（含本帧省行）的线程：省行的线程其进程仍可能在补位 p 行上
     let mut pid_comm: HashMap<u32, &str> = HashMap::new();
-    for (pid, _, comm, _, _, _) in &th_rows {
+    for (pid, _, comm, _) in &th_rows {
         pid_comm.entry(*pid).or_insert(comm.as_str());
     }
 
@@ -850,18 +976,9 @@ fn build_aff_snapshot(
             pid_home.get(&pid).copied().unwrap_or(-1),
         ));
     }
-    for (pid, tid, comm, util_pct, core, emit) in &th_rows {
-        // 差分省行：本帧与上次落盘值相同（长尾冷线程）→ 不落行
-        if !*emit {
-            continue;
-        }
-        let (home, pinned) = th_state.get(tid).copied().unwrap_or((-1, false));
-        rows.push(format!(
-            "t {pid} {tid} {comm} u={util_pct} core={core} home={home} pin={} uclamp=-1",
-            if pinned { 1 } else { 0 }
-        ));
-    }
-    rows
+    // t 行已在上方按槽级差分渲染好：`None` = 全槽未变（省行），`Some` = 本帧要落的差异行
+    rows.extend(th_rows.into_iter().filter_map(|(_, _, _, row)| row));
+    (rows, refresh)
 }
 
 // [affinity]
@@ -1767,15 +1884,16 @@ pub fn start_scheduler_thread(
                         );
                         // @S 每秒进程/线程快照（aff_* 线程流文件）：top-N 进程 + 前台树/被管进程
                         // 线程下钻同 main_snap 的 diag_active 门控（关闭零采样零写入）；开启时为
-                        // getaffinity/stat 读取，冷长尾按 30 帧一次降采样（帧语义见 build_aff_snapshot）
+                        // getaffinity/stat 读取，冷长尾按 30 帧一次降采样（帧语义见 build_aff_snapshot）；
+                        // 第二返回值为刷新帧标记，交由 logger 在帧头打 `full=1`
                         let snap_top_n = config_clone.read().unwrap().meta.devimp_top_n;
-                        let rows = build_aff_snapshot(
+                        let (rows, full) = build_aff_snapshot(
                             &affinity_mgr,
                             crate::monitor::app_detect::get_current_pid(),
                             &fg_package,
                             snap_top_n,
                         );
-                        crate::logger::aff_snapshot(&rows);
+                        crate::logger::aff_snapshot(&rows, full);
                     }
                     if telemetry_log_counter % 20 == 0 && log::log_enabled!(log::Level::Debug) {
                         log::debug!(

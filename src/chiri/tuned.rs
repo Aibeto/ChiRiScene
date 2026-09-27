@@ -80,6 +80,15 @@ struct ClusterState {
     down_target: u32,
     /// 用于决策的负载 EMA（util_smoothing < 1 时启用；-1 = 未初始化）
     ema_util: f32,
+    // [up_confirm] T11 严格升频审批：目标高于当前时需连续 N tick 才抬升（降频路径不变）
+    /// 连续升频意图计数（确认满 up_confirm_ticks 才写）。只在降频分支与「目标落入死区」分支清零，
+    /// 升频连续满足时不复位——与 CLG 的 up_rate_limit_ticks 同口径（写后不清零）
+    up_wait: u32,
+    // [steady_decay] T11 稳态下探状态（只作写侧偏移，不回写已应用状态）
+    /// 当前稳态下探量（比例，0 = 无下探）
+    steady_decay: f32,
+    /// 连续稳定 tick 计数（满 steady_decay_stable_ticks 才启动积分）
+    steady_streak: u32,
     // [dwell] 写频滞回状态（Phase 2，与 CLG 同口径）
 /// 上次**实际写频**成功时刻：dwell 以它计时；None = 接管初写后尚未写过（初写不启动时钟，首次受控写频立即生效）
     last_write_at: Option<Instant>,
@@ -270,6 +279,10 @@ impl TunedGovernor {
                 down_since: None,
                 down_target: 0,
                 ema_util: -1.0,
+                // [up_confirm]/[steady_decay] T11 状态初值：无下探、无确认进度
+                up_wait: 0,
+                steady_decay: 0.0,
+                steady_streak: 0,
                 // [dwell] 写频滞回状态：接管初写不启动 dwell 时钟
                 last_write_at: None,
                 last_write_dir: 0,
@@ -471,6 +484,7 @@ impl TunedGovernor {
                 .fold(0.0_f32, f32::max);
             // 负载平滑（EMA，util_smoothing=1.0 关闭）：噪声型抖动负载（视频/轻载）滤瞬时尖峰，避免上限均值高于带平滑的 CLG；游戏默认 1.0 保持原始 util（瞬时升频是响应性的一部分）
             // 时间常数（α=0.35）≈ 采样间隔 × (1-α)/α，40ms tick ≈ 75ms
+            let prev_util = c.ema_util;
             let util = if p.util_smoothing >= 0.999 || c.ema_util < 0.0 {
                 group_util
             } else {
@@ -482,19 +496,62 @@ impl TunedGovernor {
             // perf_ceil 是天花板（默认 1.0 = 与加该字段前完全一致）；[thermal_ceil] 热态再压一层
             let ceil = thermal_ceiling(p.perf_ceil).max(p.perf_floor);
             let target_ratio = (util * p.headroom).clamp(p.perf_floor, ceil);
-            let target_max = Self::freq_for_ratio(&c.available_freqs, target_ratio);
+
+            // [steady_decay] T11 稳态下探 = 对写侧比例的**限幅积分控制**（与 CLG 同构，被控量是本簇平滑 util）：
+            // 目标水位 T = up_ref × target_ratio，up_ref = 目标比例顶到 ceil 时的 util = ceil / headroom；
+            // util 高于 T 回收（步长 ×2 防过冲）、低于 T 加深、死区内保持 → 回路自带稳态，无自由累加造成的锯齿；
+            // 限幅 [0, max] = 抗积分饱和。必须用**更新前的** util 算差量
+            let delta = util - prev_util;
+            let stable = delta.abs() <= cfg.steady_decay_band;
+            if !cfg.steady_decay_enabled
+                || util * p.headroom >= ceil
+                || util <= p.perf_floor
+                || prev_util < 0.0
+                || delta > cfg.steady_decay_band
+            {
+                c.steady_decay = 0.0;
+                c.steady_streak = 0;
+            } else if stable {
+                c.steady_streak = c.steady_streak.saturating_add(1);
+                if c.steady_streak >= cfg.steady_decay_stable_ticks {
+                    let up_ref = (ceil / p.headroom.max(1e-6)).clamp(0.0, 1.0);
+                    let target = up_ref * cfg.steady_decay_target_ratio;
+                    if util > target + cfg.steady_decay_band {
+                        c.steady_decay = (c.steady_decay - cfg.steady_decay_step * 2.0).max(0.0);
+                    } else if util < target - cfg.steady_decay_band {
+                        c.steady_decay =
+                            (c.steady_decay + cfg.steady_decay_step).min(cfg.steady_decay_max);
+                    }
+                    // 死区内保持不变 → 消除抖动
+                }
+            } else {
+                // 抖动只清进度，**不清**已建立的下探量（噪声不得反复打回）
+                c.steady_streak = 0;
+            }
+
+            // 下探只改「目标档」的计算输入：tuned 没有 CLG 那种独立的决策比例，比较量就是 freq 本身，
+            // 所以减过 decay 的 target_max 同时是目标档与 up/down 的比较量 —— 这是本架构的必然（与 CLG
+            // 「下探不回写决策量」的口径不同）；hysteresis / down_hold_ms / up_wait 的判据结构不受影响。
+            let write_ratio = (target_ratio - c.steady_decay).max(p.perf_floor);
+            let target_max = Self::freq_for_ratio(&c.available_freqs, write_ratio);
             let hyst_freq = (hw_max as f32 * p.hysteresis) as u32;
 
             let decision;
             if target_max > c.current_max + hyst_freq {
-                // 升频：立即执行（响应性优先）并取消进行中的降频等待；写成功才前移状态，失败时下一 tick target 仍超死区 → up 重试（与 CLG 对齐）[dwell] 经写频滞回（同 CLG）：
-                // 翻摆延迟、写失败补写豁免
-                Self::gated_write(c, target_max, cfg.write_dwell_ms);
+                // 升频：[up_confirm] 严格审批——目标比当前更高须连续 up_confirm_ticks tick 满足才抬升（0/1 = 关闭确认）；
+                // 写成功才前移状态，失败时下一 tick target 仍超死区 → 重试（与 CLG 对齐）[dwell] 经写频滞回（同 CLG）
                 c.down_since = None;
+                c.up_wait = c.up_wait.saturating_add(1);
+                if c.up_wait >= cfg.up_confirm_ticks {
+                Self::gated_write(c, target_max, cfg.write_dwell_ms);
                 decision = "up";
+                } else {
+                    decision = "up_wait";
+                }
             } else if target_max < c.current_max.saturating_sub(hyst_freq) {
                 // 降频：目标须持续 down_hold_ms；计时重置只在目标明显回升（> down_target + hyst）时发生——相邻档位小幅跳动不重置，
                 // 否则上限卡在高位降不下来（连续控制退化成只升不降）；目标继续下探只更新 down_target（执行用最新档），不重置计时
+                c.up_wait = 0;
                 match c.down_since {
                     None => {
                         c.down_since = Some(now);
@@ -521,8 +578,9 @@ impl TunedGovernor {
                     }
                 }
             } else {
-                // 死区内：目标与当前上限一致，取消进行中的降频等待
+                // 死区内：目标与当前上限一致，取消进行中的降频等待与升频确认
                 c.down_since = None;
+                c.up_wait = 0;
                 // [dwell] 目标收敛进死区：上次写失败的补写诉求消失，清标记防悬挂（否则任意久之后的下一次真实写频会白豁免滞回一次）
                 c.last_failed = false;
                 decision = "hold";

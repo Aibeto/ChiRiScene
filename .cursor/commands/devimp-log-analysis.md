@@ -1,5 +1,5 @@
 ---
-description: 解析与判定 ChiRi 设备的 devimp 日志包（devimpbin 下 logd_*.tar.gz），做功耗/调度回归分析、FAS 与热限频验证、场景画像、调参 A/B
+description: 解析与判定 ChiRi 设备的 devimp 日志包（devimpbin 下 logd_*.tar.gz），做功耗/调度回归分析、FAS 与热限频验证、场景画像（**不做 A/B 对照实验，2026-09-28 口径**）
 argument-hint: [日志包/解压目录，或要分析的问题]
 ---
 
@@ -92,6 +92,7 @@ python scripts\devimp-analyze.py <解压目录> [--since MMDD-HHMMSS] [--min-n 3
 ### 5. 判定与对比
 
 - 先答「与什么比」：**同场景、同版本、同 dev_record 状态、同亮度/音量**；跨包必须先核对版本与设备
+- **不做对照实验（2026-09-28 口径）**：本项目**永不再新增 A/B**——允许的是**观察**（同版本、同场景、不并行对照、不控制变量，只记录现象与指标）；不允许的是**对照实验**（并行/交错对比两版本或两配置、以差值做判据，含"关/开某配置比功耗"）。替代手段：离线重放、模型折算、构造性自检（详见 `agentsdocs/04-hard-lessons.md` 的 `[hard]` 首条）
 - **先看温度带**：batt ≥40℃ / cpu ≥60℃ 的段属热态，功耗与凉机不可直接比
 - **FAS 验证要交叉两处**：`daemon.log` 的 `fas-gear-switch`/`gear_state`/`policy_controller`，与
   `status.csv` 的 `fps` 列（**只有 FAS 激活的秒有值**，其余是 `-`）
@@ -107,7 +108,7 @@ python scripts\devimp-analyze.py <解压目录> [--since MMDD-HHMMSS] [--min-n 3
 | `dvrun.py`     | **单命令全流程**：解压 → 聚合表 → 四探针（main/aff/status/power）→ `report.md`                                                   | `python scripts\devimp\dvrun.py <logd_*.tar.gz 或已解压目录>`                         |
 | `dvextract.py` | 解压（递归容忍 + 内容嗅探 + 完整性闸门 + `inventory.txt`）                                                                       | `python scripts\devimp\dvextract.py <logd_*.tar.gz> [--tag T] [--out-root devimpbin]` |
 | `dvmain.py`    | `main_*.log`：定版 / mode×package / decide-vs-actual / 热压制带 / snap 侧                                                        | `python scripts\devimp\dvmain.py <解压目录> [--since MMDD-HHMMSS] [--min-n 30]`       |
-| `dvaff.py`     | `aff_*.log`：`@A` 动作与 bulk、`@S` 差分帧累积、绑定轨迹、`t` 行核分布（`--groups` 按机型分簇）                                   | `python scripts\devimp\dvaff.py <解压目录> [--since MMDD-HHMMSS] [--groups "0-2,3-6,7"]` |
+| `dvaff.py`     | `aff_*.log`：`@A` 动作与 bulk、`@S` 差分帧累积（按 `full=1` 收敛存活集合、tid 复用作废）、绑定轨迹、`t` 行核分布与存活集合合并态（`--groups` 按机型分簇） | `python scripts\devimp\dvaff.py <解压目录> [--since MMDD-HHMMSS] [--groups "0-2,3-6,7"] [--core-top 8]` |
 | `dvstatus.py`  | `status.csv` + `daemon.log`：charge / 放电功率 / fps / FAS 证据 / 重启界标                                                       | `python scripts\devimp\dvstatus.py <解压目录>`                                        |
 | `dvpower.py`   | **按包功耗归因**：`status.csv` 权威（`charge` + `batt_power_w`，按 mode×package 与按包）+ 热档秒数 + devimp 侧 `batt_p` 交叉验证 | `python scripts\devimp\dvpower.py <解压目录> [--since MMDD-HHMMSS]`                   |
 | `dvlz4.py`     | 纯 python LZ4 解码（供 dvextract 用；有 `--selftest`）                                                                           | `python scripts\devimp\dvlz4.py --selftest`                                           |
@@ -122,8 +123,16 @@ python scripts\devimp-analyze.py <解压目录> [--since MMDD-HHMMSS] [--min-n 3
 - **每个脚本自己写 UTF-8 结果文件，stdout 只打几行摘要 + 路径**——PowerShell 重定向会把
   python stdout 按控制台代码页重编码、中文必乱码（已知坑 16），**禁止依赖 shell 重定向取全文**。
 - `dvaff.py` 的「`t` 行核分布」段回答「某个核/簇上活跃的是谁」：**行数是采样行数不是并发线程数**
-  （`@S` 是差分集），`u` 均值里长尾行是 ≤30s 窗口均值（短促占用被抹平）；簇分界不猜、按机型 DT 显式给
-  （8550 `--groups "0-2,3-6,7"`，8475 分界不同，见 `06-kernel.md` 平台基准）。
+  ——2026-09-28 起 `t` 行改为槽级差分，行数口径变成「**有变化的行 + 每 30 帧的刷新行**」，
+  **不可跨新旧格式直接比**；`u` 均值里长尾行是 ≤30s 窗口均值（短促占用被抹平）。要「某一刻谁在哪核」
+  看「**存活集合合并态**」段（逐槽合并结果，不受省略影响）。簇分界不猜、按机型 DT 显式给
+  （8550 `--groups "0-2,3-6,7"`，8475 分界不同，见 `06-kernel.md` 平台基准）；`--core-top` 限 1..64。
+- **存活集合与 tid 复用口径**（与写入端契约对齐）：按帧头 `full=1` 的刷新帧收敛——连续两次刷新帧
+  都没出现的 tid 视为已退出并移出统计（旧包无 `full=1` 则不收敛，行为与旧版一致）；`t` 行 **`pid`
+  变化 = tid 被别的进程复用**，该 tid 的逐槽合并态整条作废重建，不沿用旧进程的 comm/core/pin；
+  **无法解析的 `t` 行**计入报告与摘要的「无法解析丢弃 N」（槽名/槽序与写入端不一致时整行丢弃，
+  N 突然变大先查帧格式，不要解读数据）。`--groups` 非法（非数字 / 端点倒置）与 `--core-top` 越界
+  直接报错退出 2，不再静默产出空簇或反向切片。
 - 判读口径一律以本文档「判定要点」为准，脚本只做读数与统计，不另立解释。
 
 ## 二、列索引速查
@@ -156,9 +165,11 @@ python scripts\devimp-analyze.py <解压目录> [--since MMDD-HHMMSS] [--min-n 3
 - **FAS 模式段没有 tick 行**（FAS 接管期间 CLG/tuned 都不写 tick），该段只有 `snap` + `event`
 - `event` 行：`mode_change` / `thermal_change`（带 `batt=… cpu=… cap=… free=…`）/`activate`/
   `overload_hold`（FAS 亲和候选，带 `tid=… home=… cand=… score_…`）
-- aff 文件（`AFF_HEADER`）：`@A` 动作帧（`act=pin|restore|move_group|cpuset_cpus|uclamp|corectl|bind_release|self_pin|self_unpin`，
-  `result=ok|e{errno}`）、`@S` 每秒快照帧（帧头 `ntop`=进程行数、`nfg`=线程行数，后跟 `p`/`t` 行块）、
-  `t` 行 `pid=0` 表示归属未知、`uclamp` 本版恒 `-1`
+- aff 文件（`AFF_HEADER`）：`@A` 动作帧（`act=pin|restore|move_group|cpuset_cpus|uclamp|corectl|bind_release|self_pin|self_unpin|elf32`，
+  `result=ok|e{errno}`）、`@S` 每秒快照帧（帧头 `ntop`=进程行数、`nfg`=线程行数，刷新帧另带 `full=1`，
+  后跟 `p`/`t` 行块）、`t` 行 `pid=0` 表示归属未知、`uclamp` 槽本版恒不变（预留字段）。
+  **`t` 行 2026-09-28 起是槽级差分**（`t <pid> <tid>[ comm][ u=][ core=][ home=][ pin=][ uclamp=]`，
+  未变槽写 `-`、尾部未变槽省略、全未变不落行）：**读时必须逐槽合并，缺省槽 = 沿用上次值**
 
 ## 三、判定要点（最易读错的地方）
 
@@ -273,7 +284,7 @@ python scripts\devimp-analyze.py <解压目录> [--since MMDD-HHMMSS] [--min-n 3
 4. **统计输出勿截断后计数**——`Select-Object -Last N` 会让「文件数/总改动」失真（踩过）
 5. PowerShell 内嵌 python 易被引号/`$` 转义吃掉——**一律写成 .py 文件再跑**；
    pyyaml 在部分环境损坏 → 校验 yaml 用 `node` + `webui/node_modules/js-yaml`
-6. 热态日志（battT 长期 40+℃）会整体抬高功耗——评估调参需凉机对照
+6. 热态日志（battT 长期 40+℃）会整体抬高功耗——**只作状态描述**；不做凉机/热机对照实验（2026-09-28 口径：不新增 A/B）
 7. 对功耗结论保持怀疑：先确认「是不是同一台设备、同一个版本、同一类场景」
 8. **PowerShell 会吞掉 python 的长 stdout**（本次 200 行以上被截断）→ 让脚本把结果写进
    `<tmp>/probe*.txt` 再用 read_file 分段读；控制台里 `Get-Content` 中文会显示成乱码，但文件本身是好的。
@@ -295,11 +306,23 @@ python scripts\devimp-analyze.py <解压目录> [--since MMDD-HHMMSS] [--min-n 3
     （pin/move_group/restore 等）；「只被扫到、从未动手」的条目清理时汇成一条
     `<场景>_bulk`（`stale_bulk`/`gone_bulk`/`departed_bulk`/`release_bulk`/`disabled_bulk`，`value`=本次条数）。
     统计清理规模要读 bulk 帧累加，别再按逐条 `bind_release` 计数
-14. **`@S` 帧 2026-09-24 起是差分集**：前台进程线程与被管条目每帧全量，长尾线程只在
-    `u/core/home/pin` 变化时落行——**缺失行 = 与上一帧相同**，每 30 帧一次全量刷新。离线重建状态
-    不能假设「行数 = 线程数」，要跨帧累积并留意帧头 `nfg`；刷新帧内长尾 `u` 是 ≤30s 均值。
-    另：`t` 行 `pid` 已由 `/proc/<tid>/status` 的 Tgid 补全（旧包的 54% `pid=0` 属老版本行为）。
-    诊断开关重开后首帧必为全量（新会话重新建档）
+14. **`@S` 帧的 `t` 行是差分的，2026-09-28 起进一步收到「槽级」**（压 devimp 体积，实测 `t` 行
+    降到旧格式的 26~32%）。两代口径都要认识，读包先看有没有 `-` 占位 / `full=1`：
+    - **2026-09-24 起（行级差分）**：前台线程与被管条目每帧全量，长尾只在变化时落行。
+    - **2026-09-28 起（槽级差分）**：`t` 行只写本次变化的槽，未变槽写 `-`、**尾部未变槽整段省略**，
+      整行全未变则不落行；`p` 行仍每帧全量。**缺省槽 = 沿用上次值，绝不能把 `-` 当字段值**；
+      **槽真值为 `-` 时写入端写 `NaN`**（只有 `comm` 取得到 `-`），读者还原为 `-`，否则
+      「comm 变成 `-`」会被当成「comm 没变」而永久吞掉。
+      帧头带 `full=1` 的是刷新帧（首帧 + 每 30 帧，t 行全量），据此重建存活集合；连续两次刷新帧
+      都不出现的 tid 才算已退出（粒度 = 刷新间隔）。`dvaff.py` 已按此实现（按 `full=1` 收敛 + `pid`
+      变化即作废该 tid 的合并态 + 「无法解析丢弃 N」计数）。
+    - 共同点：**「行数 ≠ 线程数」**，必须跨帧累积（`dvaff.py` 已按逐槽合并实现，新旧包同一套解析）；
+      刷新帧内长尾 `u` 是 ≤30s 均值。另：`t` 行 `pid` 已由 `/proc/<tid>/status` 的 Tgid 补全
+      （旧包的 54% `pid=0` 属老版本行为）；诊断开关重开后首帧必为全量（新会话重新建档）。
+    - **别从半截开始读**：刷新帧节奏跟着**进程内帧号**走，`aff_` 文件写满 128 MB 会换新文件继续写，
+      所以**新文件的开头不保证是刷新帧**（且旧文件可能已被预算清理掉）。从会话中段（或其后的轮转文件）
+      开始读，头 ≤30 s 只能拿到残缺状态——`final_bound`/末态直方图不受影响（它们在文件末尾），
+      要完整重建就等下一个刷新帧或从会话第一个 `aff_` 文件读起。
 15. **内层归档 2026-09-25 起可能是 `.tar.lz4`**（`pack.sh` 的 `archive` 分支 `lz4 -f`；
     设备无 lz4 时回落 `.tar`）：外层包内层成员四种形态都可能出现，且**扩展名可能骗人**
     （实测 LZ4 负载叫 `.tar`）。一律**按前 4 字节内容嗅探**，别按文件名判；本机没装 `lz4`

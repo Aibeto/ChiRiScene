@@ -1379,17 +1379,21 @@ pub fn main_event(kind: &str, pkg: &str, reason: &str) {
 
 // [aff_writer]
 /// aff_ 帧格式说明（文件头 schema，`#` 注释行解析跳过；正文按行首字符定界，帧格式详见下方 AFF_HEADER 字符串：@A 单行动作帧、@S 快照帧按帧头计数定界）
-const AFF_HEADER: &str = "# aff_ 线程数据文件（帧式文本，2026-09-22 拆分版）\n\
-# @A ts=<MMDD-HHmmss> act=<pin|restore|move_group|cpuset_cpus|uclamp|corectl|bind_release|self_pin|self_unpin> pid=<i32> tid=<i32> pkg=<str> comm=<str> dst=<str> value=<str> result=<ok|e{errno}> reason=<str>\n\
-# @S ts=<MMDD-HHmmss> ntop=<进程行数> nfg=<线程行数>\n\
+const AFF_HEADER: &str = "# aff_ 线程数据文件（帧式文本，2026-09-28 字段级差分版）\n\
+# @A ts=<MMDD-HHmmss> act=<pin|restore|move_group|cpuset_cpus|uclamp|corectl|bind_release|self_pin|self_unpin|elf32> pid=<i32> tid=<i32> pkg=<str> comm=<str> dst=<str> value=<str> result=<ok|e{errno}> reason=<str>\n\
+# @S ts=<MMDD-HHmmss> ntop=<进程行数> nfg=<线程行数>[ full=1]\n\
 # p <rank> <pid> <pkg|comm> u=<整数util%> mask=<允许核hex> home=<核|-1>\n\
-# t <pid> <tid> <comm> u=<整数util%> core=<核|-1> home=<核|-1> pin=<0|1> uclamp=<值|-1>\n\
-# t 行为差分集（2026-09-24）：缺失 tid = 与上一帧完全相同（每 30 帧全量刷新一次）；\n\
-#   常驻写全量的只有前台进程线程与被管线程表里动过的条目，长尾线程只在变化帧/刷新帧出现。\n\
+# t <pid> <tid>[ comm][ u=][ core=][ home=][ pin=][ uclamp=]\n\
+# t 行槽序固定 comm/u/core/home/pin/uclamp，pid/tid 是行标识恒写：与上次落盘值相同的槽写 -，\n\
+#   尾部连续未变的槽整段省略 —— 只承载「本次变化的那部分」，缺省槽 = 沿用上次值（勿把 - 当字段值）。\n\
+#   槽真值本身就是 - 时改写 NaN（只有 comm 取得到 -；数值槽是整数），读者还原为 -。\n\
+# t 行级差分：任一槽变化才落行，**整行全未变则不落该行**（缺失 tid = 与上次落盘值完全相同）。\n\
+# 刷新帧：@S 帧头带 full=1（首帧与每 30 帧一次）——所有存活候选 tid 全量落行，\n\
+#   下游据此重建存活集合（连续两次刷新帧都不出现的 tid 视为已退出，粒度 = 刷新间隔）。\n\
 #   长尾行的 u 是自上次落盘（最多 30s）窗口的平均 util%，其余行仍是 1s 窗口值。\n\
 # 帧边界：@A 单行自帧；@S 按帧头 ntop+nfg 计数定界，末尾截断帧直接丢弃。\n\
 # 行首字符 \\x01 保留给将来的二进制帧（本版不实现）。全字段空白/控制字符净化为 _。\n\
-# t 行 pid=0 表示归属未知（后台候选建档线程）；uclamp 本版恒 -1（预留字段）。";
+# t 行 pid=0 表示归属未知（后台候选建档线程）；uclamp 槽本版恒不变（预留字段），故除刷新帧外不出现。";
 
 struct AffWriter {
     file: Option<fs::File>,
@@ -1562,11 +1566,15 @@ pub fn aff_action(
 
 /// `@S` 每秒快照帧：帧头计数由 `rows` 实际行反推（首字符 `p`/`t` 分别计入
 /// ntop/nfg，帧头与行数恒等）；rows 为调用方拼好的 p/t 行（不含换行）
-/// **`t` 行是差分集**（见 `chiri::build_aff_snapshot` 文档）：只有前台进程线程、
-/// 被动过的被管条目、值有变化的长尾线程出现在帧内，**缺失的 tid = 与上一帧完全相同**
-/// （调用方每 30 帧全量刷新一次防漂移）；非 p/t 行不写入
-pub fn aff_snapshot(rows: &[String]) {
-    if !diag_active() || rows.is_empty() {
+/// **`t` 行是槽级差分行**（见 `chiri::build_aff_snapshot` 文档）：只含本次变化的槽，
+/// 未变槽 `-`、尾部未变槽省略；**整行全未变则不落行**（缺失 tid = 与上次落盘相同）
+/// `full` 为刷新帧标记（首帧与每 30 帧一次，由调用方给）：帧头追加 ` full=1`，
+/// 下游据此重建存活集合并全量合并该帧的 t 行
+/// 帧头**每秒恒落**（即使本秒一行都没变化，`ntop=0 nfg=0`）：34 B/帧换「1 帧 = 1 秒」
+/// 这个既有假设不破——帧号不再等于秒数会让离线轨迹与帧距判读全部漂移，不值那点字节。
+/// 非 p/t 行不写入
+pub fn aff_snapshot(rows: &[String], full: bool) {
+    if !diag_active() {
         return;
     }
     let mut ntop = 0u64;
@@ -1578,7 +1586,11 @@ pub fn aff_snapshot(rows: &[String]) {
             _ => {}
         }
     }
-    let mut block = format!("@S ts={} ntop={ntop} nfg={nfg}\n", filename_ts());
+    let mut block = if full {
+        format!("@S ts={} ntop={ntop} nfg={nfg} full=1\n", filename_ts())
+    } else {
+        format!("@S ts={} ntop={ntop} nfg={nfg}\n", filename_ts())
+    };
     for r in rows {
         // 非 p/t 行（调用方错误）不写入：保持帧头计数与实际行数恒等
         if !matches!(r.as_bytes().first(), Some(b'p') | Some(b't')) {

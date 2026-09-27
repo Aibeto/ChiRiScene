@@ -126,10 +126,13 @@ fn build(sh: &Shell, no_pack: bool) -> Result<()> {
     }
     // normal/fas/ 目录（每应用 FAS 调优）整体只进二进制
     let _ = fs::remove_dir_all(temp_dir.join("config/normal/fas"));
+    // 每 SoC 目录：feature.yaml 与 soc.yaml（硬件基线，仅作 sysfs 兜底基准）同样只进二进制。
+    // 遍历到的 normal/i18n 子目录下无这两个文件，remove_file 失败忽略即可，无需特判目录名
     if let Ok(rd) = fs::read_dir(temp_dir.join("config")) {
         for e in rd.flatten() {
             if e.path().is_dir() {
                 let _ = fs::remove_file(e.path().join("feature.yaml"));
+                let _ = fs::remove_file(e.path().join("soc.yaml"));
             }
         }
     }

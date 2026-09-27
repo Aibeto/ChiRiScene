@@ -271,6 +271,26 @@ pub struct CpuLoadGovernorConfig {
     /// 需要更保守就调高本值（每档死区 = write_deadzone × 硬件最高频）
     #[serde(default = "d_clg_write_deadzone")]
     pub write_deadzone: f32,
+    // [steady_decay] T11 稳态下探：对「写侧性能偏移」做**限幅积分控制**（被控量是 util，见 cpu_load_governor.rs）。
+    // 目标水位 T = up_threshold × target_ratio：util 高于 T 就回收下探、低于就加深、死区内保持 → 回路自带稳态，无锯齿
+    /// 稳态下探总开关（缺省 true）
+    #[serde(default = "crate::utils::default_true")]
+    pub steady_decay_enabled: bool,
+    /// 目标水位系数：T = up_threshold × 本值（缺省 0.90）
+    #[serde(default = "d_clg_steady_target_ratio")]
+    pub steady_decay_target_ratio: f32,
+    /// 稳定带 + T 的保持死区：|Δsmoothed| ≤ 本值视为稳定；|smoothed − T| ≤ 本值保持不变
+    #[serde(default = "d_clg_steady_band")]
+    pub steady_decay_band: f32,
+    /// 连续稳定 tick 数阈值：满 N tick 才启动积分（8550 约 160ms/tick → 12 tick ≈ 2s）
+    #[serde(default = "d_clg_steady_ticks")]
+    pub steady_decay_stable_ticks: u32,
+    /// 每次加深的性能比步长（回收步长 = 本值 × 2，防过冲）
+    #[serde(default = "d_clg_steady_step")]
+    pub steady_decay_step: f32,
+    /// 下探量幅值上限（性能比，抗积分饱和）
+    #[serde(default = "d_clg_steady_max")]
+    pub steady_decay_max: f32,
 }
 
 // CLG 各参数缺省值：feature.yaml 省略字段时回退到此处（与 normalize 的兜底默认一致）
@@ -335,6 +355,22 @@ fn d_clg_write_dwell_ms() -> u64 {
 /// [dwell] 写频死区缺省：硬件最高频的 3%（与 tuned hysteresis 同口径）
 fn d_clg_write_deadzone() -> f32 {
     0.03
+}
+// [steady_decay] T11 稳态下探缺省值（CLG）
+fn d_clg_steady_target_ratio() -> f32 {
+    0.90
+}
+fn d_clg_steady_band() -> f32 {
+    0.05
+}
+fn d_clg_steady_ticks() -> u32 {
+    12
+}
+fn d_clg_steady_step() -> f32 {
+    0.01
+}
+fn d_clg_steady_max() -> f32 {
+    0.20
 }
 
 /// 按核心组的参数覆盖（CLG `per_cluster` 段的元素）：只覆盖最常用的五个量（阈值 / 余量 / 上下限），其余沿用模式级
@@ -404,6 +440,12 @@ impl Default for CpuLoadGovernorConfig {
             touch_boost_tiers: d_clg_touch_boost_tiers(),
             write_dwell_ms: d_clg_write_dwell_ms(),
             write_deadzone: d_clg_write_deadzone(),
+            steady_decay_enabled: true,
+            steady_decay_target_ratio: d_clg_steady_target_ratio(),
+            steady_decay_band: d_clg_steady_band(),
+            steady_decay_stable_ticks: d_clg_steady_ticks(),
+            steady_decay_step: d_clg_steady_step(),
+            steady_decay_max: d_clg_steady_max(),
         }
     }
 }
@@ -489,6 +531,25 @@ impl CpuLoadGovernorConfig {
             self.write_deadzone = d_clg_write_deadzone();
         }
         self.write_deadzone = self.write_deadzone.clamp(0.0, 0.2);
+
+        // [steady_decay] 稳态下探参数钳制（限幅积分控制）：非有限值回退默认，范围限制
+        if !self.steady_decay_target_ratio.is_finite() {
+            self.steady_decay_target_ratio = d_clg_steady_target_ratio();
+        }
+        self.steady_decay_target_ratio = self.steady_decay_target_ratio.clamp(0.5, 1.0);
+        if !self.steady_decay_band.is_finite() {
+            self.steady_decay_band = d_clg_steady_band();
+        }
+        self.steady_decay_band = self.steady_decay_band.clamp(0.0, 0.3);
+        self.steady_decay_stable_ticks = self.steady_decay_stable_ticks.clamp(1, 600);
+        if !self.steady_decay_step.is_finite() {
+            self.steady_decay_step = d_clg_steady_step();
+        }
+        self.steady_decay_step = self.steady_decay_step.clamp(0.0, 0.1);
+        if !self.steady_decay_max.is_finite() {
+            self.steady_decay_max = d_clg_steady_max();
+        }
+        self.steady_decay_max = self.steady_decay_max.clamp(0.0, 0.5);
 
         // 交叉约束（顺序保证 clamp 边界合法）
         if self.perf_floor > self.perf_ceil {
@@ -655,6 +716,29 @@ pub struct SpecialTunedConfig {
     /// 接管初写/恢复与写失败补写不经滞回
     #[serde(default = "d_ak_write_dwell_ms")]
     pub write_dwell_ms: u64,
+    // [up_confirm] T11 严格升频审批：目标比当前更高时须连续 N tick 满足才抬升（0/1 = 关闭确认）；下降路径不变
+    /// 升频确认 tick 数（缺省 2）
+    #[serde(default = "d_ak_up_confirm")]
+    pub up_confirm_ticks: u32,
+    // [steady_decay] T11 稳态下探（与 CLG 同款**限幅积分控制**，作用在「将要写入的比例」上，不回写已应用状态）
+    /// 稳态下探总开关（缺省 true）
+    #[serde(default = "crate::utils::default_true")]
+    pub steady_decay_enabled: bool,
+    /// 目标水位系数：T = up_ref × 本值，up_ref = 目标比例顶到 ceil 时的 util（缺省 0.90）
+    #[serde(default = "d_ak_steady_target_ratio")]
+    pub steady_decay_target_ratio: f32,
+    /// 稳定带 + T 的保持死区：|Δutil| ≤ 本值视为稳定；|util − T| ≤ 本值保持不变
+    #[serde(default = "d_ak_steady_band")]
+    pub steady_decay_band: f32,
+    /// 连续稳定 tick 数阈值：满 N tick 才启动积分
+    #[serde(default = "d_ak_steady_ticks")]
+    pub steady_decay_stable_ticks: u32,
+    /// 每次加深的比例步长（回收步长 = 本值 × 2，防过冲）
+    #[serde(default = "d_ak_steady_step")]
+    pub steady_decay_step: f32,
+    /// 下探量幅值上限（比例，抗积分饱和）
+    #[serde(default = "d_ak_steady_max")]
+    pub steady_decay_max: f32,
 }
 
 /// 按核心组的参数覆盖（`per_cluster` 段的元素）：**全部字段可选**，
@@ -735,6 +819,25 @@ fn d_ak_perf_ceil() -> f32 {
 fn d_ak_write_dwell_ms() -> u64 {
     80
 }
+// [up_confirm]/[steady_decay] 特调侧缺省值（与 CLG 同口径）
+fn d_ak_up_confirm() -> u32 {
+    2
+}
+fn d_ak_steady_target_ratio() -> f32 {
+    0.90
+}
+fn d_ak_steady_band() -> f32 {
+    0.05
+}
+fn d_ak_steady_ticks() -> u32 {
+    12
+}
+fn d_ak_steady_step() -> f32 {
+    0.01
+}
+fn d_ak_steady_max() -> f32 {
+    0.20
+}
 
 impl Default for SpecialTunedConfig {
     fn default() -> Self {
@@ -749,6 +852,13 @@ impl Default for SpecialTunedConfig {
             per_cluster: HashMap::new(),
             migration_cost_ns: None,
             write_dwell_ms: d_ak_write_dwell_ms(),
+            up_confirm_ticks: d_ak_up_confirm(),
+            steady_decay_enabled: true,
+            steady_decay_target_ratio: d_ak_steady_target_ratio(),
+            steady_decay_band: d_ak_steady_band(),
+            steady_decay_stable_ticks: d_ak_steady_ticks(),
+            steady_decay_step: d_ak_steady_step(),
+            steady_decay_max: d_ak_steady_max(),
         }
     }
 }
@@ -784,6 +894,25 @@ impl SpecialTunedConfig {
         }
         // [dwell] 写频驻留钳制（ms）：0 = 关闭翻摆延迟
         self.write_dwell_ms = self.write_dwell_ms.min(5_000);
+        // [up_confirm] 升频确认 tick 数上限；[steady_decay] 稳态下探参数钳制（与 CLG 同口径）
+        self.up_confirm_ticks = self.up_confirm_ticks.min(20);
+        if !self.steady_decay_target_ratio.is_finite() {
+            self.steady_decay_target_ratio = d_ak_steady_target_ratio();
+        }
+        self.steady_decay_target_ratio = self.steady_decay_target_ratio.clamp(0.5, 1.0);
+        if !self.steady_decay_band.is_finite() {
+            self.steady_decay_band = d_ak_steady_band();
+        }
+        self.steady_decay_band = self.steady_decay_band.clamp(0.0, 0.3);
+        self.steady_decay_stable_ticks = self.steady_decay_stable_ticks.clamp(1, 600);
+        if !self.steady_decay_step.is_finite() {
+            self.steady_decay_step = d_ak_steady_step();
+        }
+        self.steady_decay_step = self.steady_decay_step.clamp(0.0, 0.1);
+        if !self.steady_decay_max.is_finite() {
+            self.steady_decay_max = d_ak_steady_max();
+        }
+        self.steady_decay_max = self.steady_decay_max.clamp(0.0, 0.5);
         for ov in self.per_cluster.values_mut() {
             ov.normalize();
         }
@@ -1134,6 +1263,162 @@ pub struct AffinityConfig {
     /// TODO: 待内核信息（32 位核位图 / A710 核位）针对化后决定开启
     #[serde(default)]
     pub normal_fg_exclude_little: bool,
+    /// 后台 promote 的核池只允许 big（不溢出 prime），且选核失败即放弃 promote、不 move_group：
+    /// 依据 prime 冲顶段边际能效最差（2092800→3187200 只剩 600 Mdmips/W），可并行的批处理
+    /// （HTTP 池/下载/软解）不需要 X3。false = 回到原路径（big 满溢 prime、先移组后选核）
+    #[serde(default = "crate::utils::default_true")]
+    pub bg_promote_exclude_prime: bool,
+    /// big 饱和保护是否对所有会 promote 的模式生效：true = 亮屏任意模式（非 boost 也生效）；
+    /// false = 仅 boost 态（旧行为）。判据保持「big 簇最大 util > big_high_water」
+    #[serde(default = "crate::utils::default_true")]
+    pub big_pressure_any_mode: bool,
+    /// 支持 AArch32 的核心组名（**缺省为空 = 不限制**）：只有显式列出时才把 32 位线程的落点限制在这些簇内。
+    /// 缺省留空是因为主流系统都带转译层，32 位程序实际能跑全核；只有确认无转译的机型才需要填。
+    #[serde(default = "d_aff_aarch32_clusters")]
+    pub aarch32_clusters: Vec<String>,
+    /// 位宽感知总开关：true = 判位宽（落 `elf32` 观测帧，并按 `aarch32_clusters` 过滤落点）；
+    /// false = 完全不判（旧行为）。注意：`aarch32_clusters` 为空时即使本项为 true 也不拦截。
+    #[serde(default = "crate::utils::default_true")]
+    pub bitwidth_aware: bool,
+    /// 写去重：目标掩码已生效、或同 tid 同目标在 repin_debounce 内已写过时跳过写入与 @A 帧；false = 旧行为
+    #[serde(default = "crate::utils::default_true")]
+    pub write_dedup: bool,
+    /// FDP（前沿主导的放置内核）总开关：true 时后台/批处理线程 promote 的**目的簇**由边际能耗成本
+    /// （等算力下更低功耗）决定，取代「big 优先、钉满溢出 prime」；**默认 false**（8550 的
+    /// feature.yaml 显式写 true）。false = 逐位回到既有 bg_promote_exclude_prime → big_pool 路径
+    #[serde(default)]
+    pub fdp_enabled: bool,
+    /// FDP 迁移最小净收益（W，缺省 20 mW）：只有该次搬迁能省 ≥ 该值才动（差小于一个频档等效时不动作）
+    #[serde(default = "d_aff_fdp_cost_hysteresis_w")]
+    pub fdp_cost_hysteresis_w: f32,
+    /// FDP 每轮每个目的簇的迁入条数硬上限（缺省 2）：同轮防 burst 靠它；**0 视为 1**（防误配成无上限）
+    #[serde(default = "d_aff_fdp_max_inserts_per_round")]
+    pub fdp_max_inserts_per_round: u32,
+    /// FDP 目的簇落点频率上限比例（缺省 0.85，钳 0.3..=1.0）：迁入后该簇模型工作频率不得高于
+    /// `该值 × 该簇最高频`——P-a「任何簇贴顶都不行」的落点
+    #[serde(default = "d_aff_fdp_dst_freq_cap_ratio")]
+    pub fdp_dst_freq_cap_ratio: f32,
+    /// 亲和调优参数（可配化）：缺省值与原 const 逐位相等，不写 yaml 时行为与加本段前完全一致
+    #[serde(default)]
+    pub tuning: AffinityTuningConfig,
+}
+
+/// 亲和调优参数（feature.yaml `Affinity.tuning` 段）：所有字段缺省值取自 affinity.rs 的同名 const
+/// （const 是缺省值唯一来源，避免两份数字漂移）；运行路径一律读本结构，不再直接用 const
+#[derive(Debug, Deserialize, Clone)]
+pub struct AffinityTuningConfig {
+    /// 后台 promote util 门槛（%）
+    #[serde(default = "d_aff_promote_util_pct")]
+    pub promote_util_pct: f32,
+    /// 小核高水位（比例 0..1）：超此值视为小核饱和、启用关键线程绑定与低升核门槛
+    #[serde(default = "d_aff_little_high_water")]
+    pub little_high_water: f32,
+    /// 关键线程组绑定解除水位（比例 0..1，迟滞下沿）
+    #[serde(default = "d_aff_key_bind_release_water")]
+    pub key_bind_release_water: f32,
+    /// default 小核高水位时非关键前台线程「忙」阈值（%）
+    #[serde(default = "d_aff_fg_busy_util_pct")]
+    pub fg_busy_util_pct: f32,
+    /// normal_busy 释放水位（%）
+    #[serde(default = "d_aff_fg_busy_release_util_pct")]
+    pub fg_busy_release_util_pct: f32,
+    /// 小核高水位时的后台 promote util 门槛（%）
+    #[serde(default = "d_aff_little_promote_util_pct")]
+    pub little_promote_util_pct: f32,
+    /// big 簇高水位（比例 0..1）：超此值判定 big 饱和、暂停 promote
+    #[serde(default = "d_aff_big_high_water")]
+    pub big_high_water: f32,
+    /// demote util 门槛（%）
+    #[serde(default = "d_aff_demote_util_pct")]
+    pub demote_util_pct: f32,
+    /// demote 连续低 util 复查次数
+    #[serde(default = "d_aff_demote_streak")]
+    pub demote_streak: u32,
+    /// 已钉线程对 score 的保守负载基准
+    #[serde(default = "d_aff_pinned_weight")]
+    pub pinned_weight: f32,
+    /// 单核钉定上限
+    #[serde(default = "d_aff_max_pins_per_core")]
+    pub max_pins_per_core: u32,
+    /// 过载重钉分数滞回
+    #[serde(default = "d_aff_overload_margin")]
+    pub overload_margin: f32,
+    /// 核心过载阈值（比例 0..1）
+    #[serde(default = "d_aff_core_overload_util")]
+    pub core_overload_util: f32,
+    /// 线程迁移最小间隔（ms）：R6 硬口径，钳制下界 = 现值 4000，不得改小/绕过
+    #[serde(default = "d_aff_min_migrate_interval_ms")]
+    pub min_migrate_interval_ms: u64,
+    /// 过载重钉防抖（ms）：R6 硬口径，钳制下界 = 现值 8000
+    #[serde(default = "d_aff_repin_debounce_ms")]
+    pub repin_debounce_ms: u64,
+    /// 反跳回冷却（ms）：R6 硬口径，钳制下界 = 现值 16000
+    #[serde(default = "d_aff_return_cooldown_ms")]
+    pub return_cooldown_ms: u64,
+    /// 线程失联清理时长（s）
+    #[serde(default = "d_aff_thread_stale_secs")]
+    pub thread_stale_secs: u64,
+}
+
+impl Default for AffinityTuningConfig {
+    fn default() -> Self {
+        Self {
+            promote_util_pct: d_aff_promote_util_pct(),
+            little_high_water: d_aff_little_high_water(),
+            key_bind_release_water: d_aff_key_bind_release_water(),
+            fg_busy_util_pct: d_aff_fg_busy_util_pct(),
+            fg_busy_release_util_pct: d_aff_fg_busy_release_util_pct(),
+            little_promote_util_pct: d_aff_little_promote_util_pct(),
+            big_high_water: d_aff_big_high_water(),
+            demote_util_pct: d_aff_demote_util_pct(),
+            demote_streak: d_aff_demote_streak(),
+            pinned_weight: d_aff_pinned_weight(),
+            max_pins_per_core: d_aff_max_pins_per_core(),
+            overload_margin: d_aff_overload_margin(),
+            core_overload_util: d_aff_core_overload_util(),
+            min_migrate_interval_ms: d_aff_min_migrate_interval_ms(),
+            repin_debounce_ms: d_aff_repin_debounce_ms(),
+            return_cooldown_ms: d_aff_return_cooldown_ms(),
+            thread_stale_secs: d_aff_thread_stale_secs(),
+        }
+    }
+}
+
+impl AffinityTuningConfig {
+    /// 范围钳制：百分比 0..=100、比例 0..=1、pinned_weight 0..=2、max_pins_per_core 1..=16、
+    /// demote_streak 1..=20；三道时间闸（min_migrate/repin/return）下界恒为现值（R6：不得改小/绕过）
+    pub fn normalize(&mut self) {
+        self.promote_util_pct = self.promote_util_pct.clamp(0.0, 100.0);
+        self.fg_busy_util_pct = self.fg_busy_util_pct.clamp(0.0, 100.0);
+        self.fg_busy_release_util_pct = self.fg_busy_release_util_pct.clamp(0.0, 100.0);
+        self.little_promote_util_pct = self.little_promote_util_pct.clamp(0.0, 100.0);
+        self.demote_util_pct = self.demote_util_pct.clamp(0.0, 100.0);
+        self.little_high_water = self.little_high_water.clamp(0.0, 1.0);
+        self.key_bind_release_water = self.key_bind_release_water.clamp(0.0, 1.0);
+        self.big_high_water = self.big_high_water.clamp(0.0, 1.0);
+        self.core_overload_util = self.core_overload_util.clamp(0.0, 1.0);
+        self.overload_margin = self.overload_margin.clamp(0.0, 1.0);
+        self.pinned_weight = self.pinned_weight.clamp(0.0, 2.0);
+        self.max_pins_per_core = self.max_pins_per_core.clamp(1, 16);
+        self.demote_streak = self.demote_streak.clamp(1, 20);
+        self.min_migrate_interval_ms = self.min_migrate_interval_ms.clamp(4_000, 60_000);
+        self.repin_debounce_ms = self.repin_debounce_ms.clamp(8_000, 60_000);
+        self.return_cooldown_ms = self.return_cooldown_ms.clamp(16_000, 60_000);
+        self.thread_stale_secs = self.thread_stale_secs.clamp(1, 600);
+    }
+
+    pub fn min_migrate_interval(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.min_migrate_interval_ms)
+    }
+    pub fn repin_debounce(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.repin_debounce_ms)
+    }
+    pub fn return_cooldown(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.return_cooldown_ms)
+    }
+    pub fn thread_stale(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.thread_stale_secs)
+    }
 }
 
 fn d_aff_uclamp_min() -> u32 {
@@ -1145,6 +1430,73 @@ fn d_aff_uclamp_max() -> u32 {
 fn d_aff_bg_uclamp_max() -> u32 {
     50
 }
+/// `aarch32_clusters` 缺省 = **空**（不限制）：主流系统带转译层，32 位程序可跑全核；
+/// 无转译的机型需显式列出支持 AArch32 的簇（如 `["little"]`）才恢复「32 位只上小核」的约束
+fn d_aff_aarch32_clusters() -> Vec<String> {
+    Vec::new()
+}
+/// FDP 阈值缺省（缺省值唯一来源 = affinity.rs 的同名 const）
+fn d_aff_fdp_cost_hysteresis_w() -> f32 {
+    crate::chiri::affinity::FDP_COST_HYSTERESIS_W
+}
+fn d_aff_fdp_max_inserts_per_round() -> u32 {
+    crate::chiri::affinity::FDP_MAX_INSERTS_PER_ROUND
+}
+fn d_aff_fdp_dst_freq_cap_ratio() -> f32 {
+    crate::chiri::affinity::FDP_DST_FREQ_CAP_RATIO
+}
+// 缺省值唯一来源 = affinity.rs 的同名 const（改 const 即改缺省，不在两处写数字）
+fn d_aff_promote_util_pct() -> f32 {
+    crate::chiri::affinity::PROMOTE_UTIL_PCT
+}
+fn d_aff_little_high_water() -> f32 {
+    crate::chiri::affinity::LITTLE_HIGH_WATER
+}
+fn d_aff_key_bind_release_water() -> f32 {
+    crate::chiri::affinity::KEY_BIND_RELEASE_WATER
+}
+fn d_aff_fg_busy_util_pct() -> f32 {
+    crate::chiri::affinity::FG_BUSY_UTIL_PCT
+}
+fn d_aff_fg_busy_release_util_pct() -> f32 {
+    crate::chiri::affinity::FG_BUSY_RELEASE_UTIL_PCT
+}
+fn d_aff_little_promote_util_pct() -> f32 {
+    crate::chiri::affinity::LITTLE_PROMOTE_UTIL_PCT
+}
+fn d_aff_big_high_water() -> f32 {
+    crate::chiri::affinity::BIG_HIGH_WATER
+}
+fn d_aff_demote_util_pct() -> f32 {
+    crate::chiri::affinity::DEMOTE_UTIL_PCT
+}
+fn d_aff_demote_streak() -> u32 {
+    crate::chiri::affinity::DEMOTE_STREAK
+}
+fn d_aff_pinned_weight() -> f32 {
+    crate::chiri::affinity::PINNED_WEIGHT
+}
+fn d_aff_max_pins_per_core() -> u32 {
+    crate::chiri::affinity::MAX_PINS_PER_CORE
+}
+fn d_aff_overload_margin() -> f32 {
+    crate::chiri::affinity::OVERLOAD_MARGIN
+}
+fn d_aff_core_overload_util() -> f32 {
+    crate::chiri::affinity::CORE_OVERLOAD_UTIL
+}
+fn d_aff_min_migrate_interval_ms() -> u64 {
+    crate::chiri::affinity::MIN_MIGRATE_INTERVAL.as_millis() as u64
+}
+fn d_aff_repin_debounce_ms() -> u64 {
+    crate::chiri::affinity::REPIN_DEBOUNCE.as_millis() as u64
+}
+fn d_aff_return_cooldown_ms() -> u64 {
+    crate::chiri::affinity::RETURN_COOLDOWN.as_millis() as u64
+}
+fn d_aff_thread_stale_secs() -> u64 {
+    crate::chiri::affinity::THREAD_STALE.as_secs()
+}
 
 impl Default for AffinityConfig {
     fn default() -> Self {
@@ -1155,16 +1507,38 @@ impl Default for AffinityConfig {
             pin_foreground_threads: true,
             background_uclamp_max_pct: d_aff_bg_uclamp_max(),
             normal_fg_exclude_little: false,
+            bg_promote_exclude_prime: true,
+            big_pressure_any_mode: true,
+            aarch32_clusters: d_aff_aarch32_clusters(),
+            bitwidth_aware: true,
+            write_dedup: true,
+            fdp_enabled: false,
+            fdp_cost_hysteresis_w: d_aff_fdp_cost_hysteresis_w(),
+            fdp_max_inserts_per_round: d_aff_fdp_max_inserts_per_round(),
+            fdp_dst_freq_cap_ratio: d_aff_fdp_dst_freq_cap_ratio(),
+            tuning: AffinityTuningConfig::default(),
         }
     }
 }
 
 impl AffinityConfig {
-    /// 校验：uclamp 百分比限制在 0..=100
+    /// 校验：uclamp 百分比限制在 0..=100；tuning 各字段范围钳制
     pub fn normalize(&mut self) {
         self.top_app_uclamp_min_pct = self.top_app_uclamp_min_pct.clamp(0, 100);
         self.top_app_uclamp_max_pct = self.top_app_uclamp_max_pct.clamp(0, 100);
         self.background_uclamp_max_pct = self.background_uclamp_max_pct.clamp(0, 100);
+        // FDP 阈值：非有限回退默认；滞回钳 0..=1、迁入条数钳 1..=16（0 视为 1，不设上限是误配）、
+        // 落点频率上限比例钳 0.3..=1.0
+        if !self.fdp_cost_hysteresis_w.is_finite() {
+            self.fdp_cost_hysteresis_w = d_aff_fdp_cost_hysteresis_w();
+        }
+        self.fdp_cost_hysteresis_w = self.fdp_cost_hysteresis_w.clamp(0.0, 1.0);
+        self.fdp_max_inserts_per_round = self.fdp_max_inserts_per_round.clamp(1, 16);
+        if !self.fdp_dst_freq_cap_ratio.is_finite() {
+            self.fdp_dst_freq_cap_ratio = d_aff_fdp_dst_freq_cap_ratio();
+        }
+        self.fdp_dst_freq_cap_ratio = self.fdp_dst_freq_cap_ratio.clamp(0.3, 1.0);
+        self.tuning.normalize();
     }
 }
 

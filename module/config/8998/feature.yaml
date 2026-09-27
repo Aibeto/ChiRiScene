@@ -82,7 +82,7 @@ reduce:
     headroom_factor: 1.05
     headroom_ramp: 0.12
     perf_floor: 0.05
-    perf_ceil: 0.60
+    perf_ceil: 1.0
     perf_init: 0.20
     up_jump_threshold: 0.35
     slow_up_scale: 0.02
@@ -105,10 +105,9 @@ default:
     headroom_factor: 1.05
     headroom_ramp: 0.12
     perf_floor: 0.05
-    # 2026-09-22：SoC 覆盖会盖掉根 feature.yaml，这里同步加日常天花板 0.80
-    # （原 1.0）。交互响应靠 touch_boost_ms 兜，别只降 ceil。
-    # 本机型暂无 per_cluster 实测数据，故不写覆盖（写了也无依据）。
-    perf_ceil: 0.80
+    # 原 0.80（2026-09-22 为省视频功耗所加）属天花板，2026-09-28 按「天花板一律拆除」撤回。
+    # 交互响应仍靠 touch_boost_ms 兜；稳态降功耗改由 steady_decay_* 承担。
+    perf_ceil: 1.0
     perf_init: 0.25
     up_jump_threshold: 0.30
     slow_up_scale: 0.03
@@ -131,6 +130,9 @@ boost:
     headroom_ramp: 0.12
     perf_floor: 0.40
     perf_ceil: 1.0
+    # 稳态下探关闭：与 8550 boost 同口径——本档 up_threshold 0.55 时 T = (1.0/1.25)×0.90 = 0.72，
+    # 高于「下探积分区间」的上界 0.55，开启会让整个常态区间持续加深下探、削掉 boost 响应优势
+    steady_decay_enabled: false
     perf_init: 0.60
     up_jump_threshold: 0.25
     slow_up_scale: 0.05

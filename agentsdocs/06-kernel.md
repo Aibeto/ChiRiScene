@@ -51,6 +51,7 @@
 - 真机选态 governor = **qcom-cpu-lpm**（rating 50 压过 menu）；`lpm_select` 三道闸：PM QOS latency_req、`target_residency > duration` 即弃、预测器压制 + WALT `sched_lpm_disallowed_time` 强制 last_idx=0 + bias timer——**prime 深睡是下限非充分条件**，深睡率明显低于 menu 语义推算（验证看 `trace_lpm_gov_select` reason 位）。
 - 簇级 sleep：domain_governor `next_wakeup_allows_state`；qcom-cluster-lpm 取簇内最小 next_wakeup 写 genpd；offline/halt 的 CPU 不参与聚合。
 - core_ctl sysfs：min_cpus/max_cpus/busy_up_thres/busy_down_thres/task_thres/offline_delay_ms/enable；`eval_need` 用 `sched_get_nr_running_avg`；默认 min_cpus=1；OPLUS pipeline scene 锁 max_cpus、`oplus_core_ctl_set_boost` 导出。
+- **`enable` 的准确语义（2026-09-28 依源码核实，勿再用旧口径）**：`store_min_cpus` / `store_max_cpus` **都接受写入**（无 enable 检查），但 `apply_limits()` 开头就是 `if (!cluster->enable) return cluster->num_cpus;`——**`enable=0` 时 core_ctl 不执行任何压制，整簇保持全在线**。所以「enable=0 时内核不受理 min/max_cpus 写入」是**错的口径**（写入被接受但不生效）。ChiRi 侧跳过无效写是对的，但注释与日志必须按此说；对 boost 保核而言 `enable=0` 反而**已经满足**目标状态（全在线）。`enable` 逐 cluster、快照期只读一次。
 - walt_halt：stop_machine + drain RQ；选核掩码全剔 halted；`is_active = cpu_active && !cpu_halted`；系统首核禁 hotplug。
 - ChiRi 含义：scenemode 整簇压制走 core_ctl sysfs，**勿硬写 cpu_down**（与 OPLUS boost/halt 状态机互踩）；钉核前应读 `cpu_halt` 状态；诊断可用 `trace_sched_compute_energy` / `trace_sched_task_util`。
 
@@ -59,6 +60,6 @@
 - core_ctl 快照（Alpha07-02）：policy0 min/max/enable=1/3/0；policy3=3/4/1；policy7=0/1/0——**仅 big enable=1**，little/prime 压核时 core_ctl 不可用（已接 enable 感知，见 03）。
 - cpu_temp 两路读数：main snap 41.8-90.7℃ vs status.csv 恒 85-100 饱和——两路取自不同 zone，语义未定（07 T2）。
 - 触摸地板行为级证据：touch=1 决策下限 ≥1651200（touch0 min 729600）；4 个内核 input_boost 节点全 ENOENT，实际挂载点未知（07 T9）。
-- cap85 窗口（0926-162821，n=2217s）：第 15 列 cur_freq_khz（决策）在变、第 16 列 max_freq_khz（上限）恒满档——两列不可混算；free_above 豁免带覆盖 little 5.5 / big 2.3 / prime 3.1%；cap85 2.7844W vs cap100 3.1845W（未场景归一）。clamp_heavy 恒钳已实现、A/B 待做（07 T8）。
+- cap85 窗口（0926-162821，n=2217s）：第 15 列 cur_freq_khz（决策）在变、第 16 列 max_freq_khz（上限）恒满档——两列不可混算；free_above 豁免带覆盖 little 5.5 / big 2.3 / prime 3.1%；cap85 2.7844W vs cap100 3.1845W（未场景归一）。clamp_heavy 恒钳已实现、对照实验已停做（07 T8 按 2026-09-28 口径作废）。
 - `handle_cpufreq_transition` eBPF 探针挂载失败（内核无 CONFIG_CPU_FREQ_TRACEPOINTS）→ status/devimp 的 freq_trans 恒 0——「看似频率从未切换」实为无探针；ftrace 候选 `trace_dcvsh_freq`（07 T6）。
 - 检索口径：daemon.log 是 fluent 本地化文案非 key 字面量；Grep/rg 读不动部分 x\_\*/daemon.log（编码异常），走显式解码脚本（详见 05）。

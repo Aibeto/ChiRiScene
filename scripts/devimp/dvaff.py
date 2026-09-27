@@ -11,10 +11,12 @@
   `raw_os_error().unwrap_or(0)`，拿不到 errno 时写 e0）。
 - `<场景>_bulk` 汇总帧**单独统计**：它们才是清理规模的正解；逐条 `bind_release`
   只代表「真有内核动作」的条目（pin/move_group/restore 等）。
-- `@S` 帧是**差分集**：前台线程与被管（pinned）条目每帧全量，长尾线程只在
-  `u/core/home/pin` 变化时落行，每 30 帧一次全量刷新。**缺失行 = 与上一帧相同**。
-  必须跨帧累积重建状态，**不能**把「行数」当线程数。本探测流式累积 tid→(pin,home)，
-  不建逐帧对象图（本包 aff_ 单个 ~116MB，占归档 94%）。
+- `@S` 帧的 `t` 行是**槽级差分**（2026-09-28 起；旧包是每帧全量六槽行，同一套位置解析）：
+  行内只写本次变化的槽，**未变槽写 `-`、尾部连续未变的槽整段省略**，整行全未变则不落行
+  →「缺失 tid = 与上次落盘相同」；槽真值为 `-` 时写入端写 `NaN`（只有 comm 取得到），
+  本脚本还原为 `-`。**必须逐槽合并，不能把 `-` 当字段值**，也不能把「行数」当线程数。
+  帧头带 `full=1` 的是刷新帧（首帧 + 每 30 帧，其 t 行全量），存活集合以它为锚。
+  本探测流式累积 tid→槽值，不建逐帧对象图（每个 aff_ 可达 100MB+，是归档的绝对主体）。
 - 绑定轨迹：累计 `pin=1 且 home=-1`（组掩码绑定且未钉核）的前台线程数，逐帧输出
   first/last/max + 单调性 + 采样时间戳——用来发现**只绑不解**的泄漏。
 - `p` 行不参与差分（每帧全量），但本探针只统计 `t` 行（pin/home 状态在 t 行）。
@@ -32,10 +34,49 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import dvcommon as dc  # noqa: E402
 
-# t 行：t <pid> <tid> <comm> u=<util> core=<核|-1> home=<核|-1> pin=<0|1> uclamp=<值|-1>
-T_LINE = re.compile(r"^t (\d+) (\d+) (\S+) u=(\d+) core=(-?\d+) home=(-?\d+) pin=(\d+) uclamp=(-?\d+)$")
+# t 行：`t <pid> <tid>[ comm][ u=][ core=][ home=][ pin=][ uclamp=]`，槽序固定（T_SLOTS）。
+# 2026-09-28 起为**字段级差分**：只写本次变化的槽，未变槽为 `-`、尾部未变槽整段省略；
+# 旧包（全量 t 行）用同一套位置解析即可覆盖——旧格式六槽全有值。
+T_PREFIX = re.compile(r"^t (\d+) (\d+)(?: (.*))?$")
+T_SLOTS = ("comm", "u", "core", "home", "pin", "uclamp")
+T_KEYED = {"u": "u=", "core": "core=", "home": "home=", "pin": "pin=", "uclamp": "uclamp="}
+T_NUM = re.compile(r"-?\d+")
+# 槽真值为 `-` 时写入端改写这个 token（只有 comm 取得到 `-`），读端还原为 `-`
+DASH_VALUE = "NaN"
 A_LINE = re.compile(r"^@A ts=(\S+) act=(\S+) pid=(-?\d+) tid=(-?\d+) pkg=(\S+) comm=(\S+) "
                     r"dst=(\S+) value=(\S+) result=(\S+) reason=(\S+)$")
+
+
+def parse_t_line(line):
+    """`t` 行 → (pid, tid, {槽: 值})；槽值为 None = 本次未变（`-` 或尾部省略）。
+
+    位置解析对新旧格式通用：旧格式六槽全有值，新格式未变槽写 `-`、尾部未变槽直接省略。
+    真值是 `-` 的槽由写入端写成 `DASH_VALUE`（`NaN`），这里还原成 `-`——不还原就会被
+    当成「未变」而把这次变化吞掉。数值槽非整数、或槽位错位的行判为格式不符，返回 None
+    由调用方丢行（旧实现靠整行正则兜住这层校验，换成位置解析后必须自己做，否则后面的
+    `int()` 会直接抛）。
+    """
+    m = T_PREFIX.match(line)
+    if not m:
+        return None
+    raw = m.group(3).split() if m.group(3) else []
+    vals = {}
+    for i, name in enumerate(T_SLOTS):
+        if i >= len(raw) or raw[i] == "-":
+            vals[name] = None
+            continue
+        tok = raw[i]
+        if name == "comm":
+            vals[name] = "-" if tok == DASH_VALUE else tok
+            continue
+        key = T_KEYED[name]
+        if not tok.startswith(key):
+            return None
+        tok = tok[len(key):]
+        if not T_NUM.fullmatch(tok):
+            return None
+        vals[name] = tok
+    return int(m.group(1)), int(m.group(2)), vals
 
 
 def classify(result):
@@ -55,7 +96,8 @@ def scan(fn):
     """流式扫一个 aff_ 文件，返回统计字典（不建逐帧对象图）。"""
     # 计数容器：acts=(act,reason,result) 计数；act_ok/act_tot=reason→ok/总数；
     # bulk/bulk_frames=bulk 帧（reason 以 _bulk 结尾）的 Σvalue/帧数；bulk_by_act=act→帧数（bulk 帧）；
-    # state=tid→(pin,home,comm)；traj=(frame,ts,bound) 绑定轨迹采样
+    # state=tid→(pin,home,comm) 已合并态；last=tid→槽级合并态（含 core/u，供末帧直方图）；
+    # traj=(frame,ts,bound) 绑定轨迹采样
     acts = collections.Counter()
     act_ok = collections.Counter()
     act_tot = collections.Counter()
@@ -63,7 +105,14 @@ def scan(fn):
     bulk_frames = collections.Counter()
     bulk_by_act = collections.Counter()
     state = {}
+    last = {}                                  # tid → {槽: 值}（槽级差分合并结果）
+    tpid = {}                                  # tid → 最近一次的进程 id（tid 复用判定）
+    last_seen_full = {}                        # tid → 最近出现过的刷新帧序号（存活集合收敛用）
+    full_index = 0                             # 刷新帧（帧头 full=1）序号，从 1 开始
+    dropped_t = 0                              # 无法解析的 t 行数（槽名/槽序与写入端不一致时整行丢弃）
     frames = 0
+    full_frames = 0                            # 帧头带 full=1 的刷新帧数
+    partial_rows = 0                           # 含 `-`/尾部省略的 t 行数（>0 = 新格式）
     traj = []
     monotonic = True
     prev_bound = None
@@ -87,6 +136,17 @@ def scan(fn):
                     ts = m.group(1) if m else "?"
                     if m:
                         nfg_hdr.append(int(m.group(3)))
+                    if " full=1" in ln:
+                        full_frames += 1
+                        # 存活集合收敛（口径见 HEADER）：写入端刷新帧对**所有存活候选**全量落行，
+                        # 故「连续两次刷新帧都没出现」= 已退出 → 从 state/last 删除，否则已退出线程
+                        # 会被永久计入绑定轨迹与合并态统计（旧包无 full 帧则 full_index=0，不收敛）
+                        full_index += 1
+                        for t in [x for x, f in last_seen_full.items() if f <= full_index - 3]:
+                            last_seen_full.pop(t, None)
+                            state.pop(t, None)
+                            last.pop(t, None)
+                            tpid.pop(t, None)
                     bound = 0
                     for pin, home, _cm in state.values():
                         if pin == 1 and home == -1:
@@ -115,21 +175,48 @@ def scan(fn):
                         bulk_frames[reason] += 1
                         bulk_by_act[act] += 1
             elif c == "t":
-                m = T_LINE.match(ln.rstrip("\n"))
-                if not m:
+                parsed = parse_t_line(ln.rstrip("\n"))
+                if parsed is None:
+                    dropped_t += 1
                     continue
-                tid = int(m.group(2))
-                comm = m.group(3)
-                pin, home = int(m.group(7)), int(m.group(6))
-                state[tid] = (pin, home, comm)
-                if pin == 1:
-                    comm_bound[comm] += 1
-                core, u = int(m.group(5)), int(m.group(4))
-                core_rows[core] += 1
-                core_comm[(core, comm)] += 1
-                core_util[(core, comm)] += u
+                tid = parsed[1]
+                pid = parsed[0]
+                # pid 变化 = tid 被其它进程复用：写入端只为该情形落一条零槽标识行，本行只作归属更新，
+                # 必须作废该 tid 的合并态（否则新线程沿用旧进程的 comm/core/pin，统计张冠李戴）
+                if tpid.get(tid, pid) != pid:
+                    tpid[tid] = pid
+                    last.pop(tid, None)
+                    state.pop(tid, None)
+                    last_seen_full[tid] = full_index
+                    continue
+                tpid[tid] = pid
+                last_seen_full[tid] = full_index
+                # 槽级合并：本次有值的槽覆盖旧值；None（`-` 或尾部省略）= 沿用上次值。
+                # 不做合并就取槽值会把 `-` 当字段值，正是新格式最容易读错的地方。
+                merged = last.setdefault(tid, {})
+                dash = 0
+                for k, v in parsed[2].items():
+                    if v is None:
+                        dash += 1
+                        continue
+                    merged[k] = v
+                if dash:
+                    partial_rows += 1
+                # 身份齐备（pin/home/comm 都见过）才进 state：与旧口径一致，截断首帧的残缺行不入
+                if all(k in merged for k in ("pin", "home", "comm")):
+                    state[tid] = (int(merged["pin"]), int(merged["home"]), merged["comm"])
+                if int(merged.get("pin", 0)) == 1 and "comm" in merged:
+                    comm_bound[merged["comm"]] += 1
+                # 核分布按**合并后**的 core/comm/u 计数：行数 = 该线程本次有变化的采样行
+                if "core" in merged and "comm" in merged:
+                    core = int(merged["core"])
+                    comm = merged["comm"]
+                    core_rows[core] += 1
+                    core_comm[(core, comm)] += 1
+                    core_util[(core, comm)] += int(merged.get("u", 0))
     return dict(acts=acts, act_ok=act_ok, act_tot=act_tot, bulk=bulk, bulk_frames=bulk_frames,
-                bulk_by_act=bulk_by_act, state=state, frames=frames, traj=traj,
+                bulk_by_act=bulk_by_act, state=state, last=last, frames=frames,
+                full_frames=full_frames, partial_rows=partial_rows, dropped_t=dropped_t, traj=traj,
                 monotonic=monotonic, peak=peak, peak_ts=peak_ts, nfg_hdr=nfg_hdr,
                 comm_bound=comm_bound, first_bound_frame=first_bound_frame,
                 final_bound=prev_bound or 0,
@@ -138,14 +225,19 @@ def scan(fn):
 
 HEADER = """\
 # ───────────────────────── 判读校准（务必先读）─────────────────────────
-# 1. `@S` 帧是**差分集**：前台线程与被管（pinned）条目每帧全量，长尾线程只在
-#    `u/core/home/pin` 变化时落行，每 30 帧一次全量刷新。**缺失行 = 与上一帧相同**。
-#    因此「行数 ≠ 线程数」；下表所有状态都是跨帧累积重建的结果。
+# 1. `@S` 帧是**槽级差分**（2026-09-28 起）：`t` 行只写本次变化的槽，未变槽写 `-`、
+#    尾部未变槽整段省略（**缺省槽 = 沿用上次值，不能把 `-` 当字段值**）；整行全未变
+#    则不落行。槽真值本身就是 `-` 时写入端写 `NaN`（只有 comm 取得到），本脚本还原成
+#    `-`——不还原就会被当成「未变」而吞掉这次变化。因此「行数 ≠ 线程数」，下表所有
+#    状态都是跨帧**逐槽合并**重建的结果。存活集合以帧头带 `full=1` 的刷新帧为锚
+#    （首帧 + 每 30 帧一次，其 t 行是全量）；连续两次刷新帧都没出现的 tid 才算已退出
+#    （粒度 = 刷新间隔）。旧包（2026-09-27 及以前）是每帧全量六槽行，同一套位置解析，
+#    本脚本自动兼容。
 # 2. `<场景>_bulk` 是**清理规模的正解**（value = 本次条数）；逐条 `bind_release`
 #    只代表真有内核动作的条目。
 # 3. `result=e0` 不是成功：`io_result_tag` 拿不到 errno 时写 e0。e3=ESRCH（线程已退出，
 #    正常）、e22=EINVAL（偶发）。
-# 4. 绑定轨迹统计的是累计 `pin=1 且 home=-1` 的线程数（组掩码绑定、未钉核），
+# 4. 绑定轨迹统计的是存活集合里 `pin=1 且 home=-1` 的线程数（组掩码绑定、未钉核），
 #    单调上升到高位不回落 = 只绑不解的疑似泄漏。
 # ─────────────────────────────────────────────────────────────────────
 """
@@ -155,6 +247,13 @@ def report(fn, st, groups=None, top=8):
     out = [f"## {fn}", HEADER]
     out.append(f"@S 帧数: {st['frames']}   nfg 帧头值: min={min(st['nfg_hdr']) if st['nfg_hdr'] else 0} "
                f"max={max(st['nfg_hdr']) if st['nfg_hdr'] else 0}")
+    # 新旧判别：`full=1` 帧头是新格式独有的，故即便一行 `-` 都没出现（极端情况下每行都恰好是全量行）
+    # 也要按新格式报——否则会把新包说成旧包，读者按「每行全量」去解释会漏掉整个合并语义
+    fmt = ("槽级差分（2026-09-28 起）"
+           if (st["partial_rows"] or st["full_frames"]) else "全量 t 行（旧格式）")
+    out.append(f"t 行格式: {fmt}   含 `-` 或尾部省略的行 {st['partial_rows']}   "
+               f"刷新帧(full=1) {st['full_frames']}   合并态 tid 数 {len(st['last'])}   "
+               f"无法解析丢弃 {st['dropped_t']}")
     out.append("")
 
     out.append("### @A 动作计数 (act, reason, result)  —— result 归类见头部校准")
@@ -181,8 +280,8 @@ def report(fn, st, groups=None, top=8):
         out.append("  （本文件无 bulk 帧）")
     out.append("")
 
-    out.append("### 绑定线程轨迹：累计 `pin=1 且 home=-1` 的前台线程数（逐帧累积重建）")
-    out.append(f"  首帧出现于第 {st['first_bound_frame']} 帧；final={st['final_bound']} "
+    out.append("### 绑定线程轨迹：存活集合里 `pin=1 且 home=-1` 的前台线程数（逐帧重建）")
+    out.append(f"  首次出现于第 {st['first_bound_frame'] or '-'} 帧；final={st['final_bound']} "
                f"peak={st['peak']}（@ {st['peak_ts']}）  单调不降={st['monotonic']}")
     if not st["monotonic"]:
         out.append("  [i] 非单调：存在释放（正常亦可能）；重点看 final 是否随会话上行。")
@@ -191,7 +290,7 @@ def report(fn, st, groups=None, top=8):
         out.append(f"  {f:6d} {ts:>14s} {b:7d}")
     out.append("")
 
-    out.append("### 末帧 pin / home 直方图（累积状态快照）")
+    out.append("### pin / home 直方图（当前存活集合的合并态）")
     pin_h = collections.Counter()
     home_h = collections.Counter()
     for _tid, (pin, home, _cm) in st["state"].items():
@@ -207,8 +306,9 @@ def report(fn, st, groups=None, top=8):
     out.append("")
 
     out.append("### t 行核分布（core → 出现最多的 comm）")
-    out.append("  行数 = 该核上的采样**行数**（`@S` 是差分集，不是并发线程数）；u_avg 是这些行的")
-    out.append("  `u` 均值——长尾行的 u 是 ≤30s 窗口均值，短促占用会被抹平。")
+    out.append("  行数 = 该核上的采样**行数**（新格式下 = 本次有变化的行 + 每 30 帧的刷新行，")
+    out.append("  不是并发线程数，也**不可跨新旧格式直接比**）；u_avg 是这些行的 `u` 均值——")
+    out.append("  长尾行的 u 是 ≤30s 窗口均值，短促占用会被抹平。想要的「某一刻谁在哪核」看下一节。")
     out.append("  簇归属按机型 DT 定，勿照搬：8550 little=0-2 / big=3-6 / prime=7（8475 分界不同）；")
     out.append("  `--groups \"0-2,3-6,7\"` 可让脚本按当前机型分簇汇总。")
     out.append(f"  逐核 t 行数: {dict(sorted(st['core_rows'].items()))}")
@@ -229,11 +329,45 @@ def report(fn, st, groups=None, top=8):
         for cm, n in com.most_common(top):
             out.append(f"      {cm[:36]:36s} {n:8d}  u_avg={util[cm] / n:6.1f}")
     out.append("")
+
+    # 槽级差分下「行数」不再等于「驻留时长」，用合并态补一份「谁在哪核」——
+    # 只反映存活集合的**最后已知**位置（已退出 tid 在两次刷新帧缺席后移出），
+    # 不是并发峰值，也不能当驻留时长用
+    out.append("### 存活集合合并态：core → 唯一 tid 数（逐槽合并结果，不受差分省略影响）")
+    end_core = collections.Counter()
+    end_core_comm = collections.Counter()
+    for cm in st["last"].values():
+        if "core" not in cm:
+            continue
+        core = int(cm["core"])
+        end_core[core] += 1
+        if "comm" in cm:
+            end_core_comm[(core, cm["comm"])] += 1
+    out.append(f"  逐核唯一 tid 数: {dict(sorted(end_core.items()))}")
+    for core in sorted(end_core):
+        keys = sorted((k for k in end_core_comm if k[0] == core),
+                      key=lambda k: -end_core_comm[k])
+        out.append(f"  core={core:<3d} tid {end_core[core]:6d}")
+        for k in keys[:top]:
+            out.append(f"      {k[1][:36]:36s} {end_core_comm[k]:6d}")
+    out.append("")
     return out
 
 
+def positive_int(s):
+    """`--core-top` 取值校验：1..64（<=0 会让切片语义反转/失去意义）"""
+    v = int(s)
+    if v < 1 or v > 64:
+        raise argparse.ArgumentTypeError(f"需在 1..64，收到 {s}")
+    return v
+
+
 def parse_groups(s):
-    """`"0-2,3-6,7"` → [{0,1,2},{3,4,5,6},{7}]（簇分界按机型 DT 给，脚本不猜拓扑）。"""
+    """`"0-2,3-6,7"` → [{0,1,2},{3,4,5,6},{7}]（簇分界按机型 DT 给，脚本不猜拓扑）。
+
+    非法输入（非数字 / 端点倒置）抛 ValueError，由调用方转 argparse 错误：静默产出空簇
+    会让报告显示成「该簇没数据」，与真实的解析失败无法区分。
+    """
     out = []
     for part in (s or "").split(","):
         part = part.strip()
@@ -241,8 +375,15 @@ def parse_groups(s):
             continue
         if "-" in part:
             lo, hi = part.split("-", 1)
-            out.append(set(range(int(lo), int(hi) + 1)))
+            if not (lo.isdigit() and hi.isdigit()):
+                raise ValueError(f"非法的簇区间 '{part}'（应为 a-b）")
+            a, b = int(lo), int(hi)
+            if a > b:
+                raise ValueError(f"簇区间端点倒置 '{part}'")
+            out.append(set(range(a, b + 1)))
         else:
+            if not part.isdigit():
+                raise ValueError(f"非法的核号 '{part}'")
             out.append({int(part)})
     return out
 
@@ -254,9 +395,13 @@ def main(argv=None):
     ap.add_argument("--since", default="0000-000000")
     ap.add_argument("--out", default=None)
     ap.add_argument("--groups", default=None, help='簇分界，如 "0-2,3-6,7"（8550 用这个）')
-    ap.add_argument("--core-top", type=int, default=8, help="每核/每簇列出的 comm 条数")
+    ap.add_argument("--core-top", type=positive_int, default=8,
+                    help="每核/每簇列出的 comm 条数（1..64）")
     a = ap.parse_args(argv)
-    groups = parse_groups(a.groups)
+    try:
+        groups = parse_groups(a.groups)
+    except ValueError as e:
+        ap.error(str(e))
 
     root = os.path.abspath(a.dir)
     files = dc.list_files(root, ("aff_",), a.since)
@@ -274,7 +419,7 @@ def main(argv=None):
         summary.append(f"{os.path.basename(fn)}: @S {st['frames']} 帧, "
                        f"final_bound={st['final_bound']}, peak={st['peak']} (单调={st['monotonic']}), "
                        f"@A 行 {sum(st['acts'].values())}, bulkΣ={sum(st['bulk'].values())}, "
-                       f"core 行数 top3 {hot}")
+                       f"丢弃 t 行 {st['dropped_t']}, core 行数 top3 {hot}")
     workdir = a.out or root
     path = dc.write_report(workdir, "aff.txt", out)
     dc.announce("dvaff", path, summary)

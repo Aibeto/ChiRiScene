@@ -61,16 +61,22 @@ akmode:
 # special_tuned.yaml 的模式列表里注册的模式名，与本节键同名即自动生效；
 # 未注册的模式回退上面的 akmode 段。机制完全共用，差异只在参数倾向。
 # 示例两款（2026-09-17）：
-#   playback：视频播放稳态（在用）——headroom 0.95 收紧（省电方向，<1.0 即收紧），
-#             util_smoothing 0.25 滤噪声尖峰（平滑是唯一能把上限压到 CLG 以下的路径）；
-#             per_cluster 给 little/prime 单独收紧 + 压天花板（三簇形态不同，别一刀切）；
-#             migration_cost_ns 调高以减少稳态场景的无谓跨核搬迁。
+#   playback：视频播放稳态（在用）——util_smoothing 0.25 滤噪声尖峰、migration_cost_ns
+#             调高以减少稳态场景的无谓跨核搬迁；稳态降功耗走 steady_decay_*（见下）。
+#             **2026-09-28 天花板全拆**：原 headroom < 1 与 per_cluster 三簇 perf_ceil 已删。
 #   daily：日常轻载交互（已从白名单移除，保留作参数组示例）——floor 0.10
 #             保底、平滑 0.5 保跟手。
 #
 # 字段补充（都是可选，不写即回退）：
-#   perf_ceil      目标比例的**天花板**（0.1~1.0，默认 1.0 = 不设限）。CLG 有同名参数，
-#                  tuned 原本只有 floor——缺它无法单独压某个核心组的频率上限。
+#   perf_ceil      目标比例的**天花板**（0.1~1.0，默认 1.0 = 不设限）。**除 SceneMode 外不许设 < 1.0**：
+#                  省电靠下方 steady_decay_*，不靠砍上限（砍了就等于持续满负载也到不了硬件最高频）。
+#   up_confirm_ticks  严格升频审批（0..20，默认 2；0/1 = 关闭确认）：目标比当前更高须连续 N tick
+#                  满足才抬升，堵住「尖峰立刻写进上限」；下降路径不变。
+#   steady_decay_*  稳态下探（默认开启），天花板拆掉后的稳态降功耗手段。语义 = 对「写侧比例」的
+#                  限幅积分控制，被控量是本簇平滑 util：T = (ceil / headroom) × steady_decay_target_ratio，
+#                  util > T + band 回收（步长 ×2 防过冲）、util < T − band 加深、死区内保持；
+#                  只在连续稳定 steady_decay_stable_ticks 后才启动，负载上行 / 目标顶到 ceil 立即清零。
+#                  偏移只作用于「将要写入的比例」，不回写已应用状态 → 自限、不振荡。
 #   per_cluster    按核心组覆盖（键 little / big / prime），字段同模式级且全部可选：
 #                  headroom / perf_floor / perf_ceil / hysteresis / down_hold_ms /
 #                  util_smoothing。未列出的组与字段回退模式级——不配置即与旧行为一致。
@@ -78,20 +84,15 @@ akmode:
 #                  退出按快照恢复。稳态负载调高可省搬迁开销；响应型负载别设。
 tuned_profiles:
   playback:
-    headroom: 0.95
+    headroom: 1.0
     perf_floor: 0.0
     perf_ceil: 1.0
     hysteresis: 0.04
     down_hold_ms: 100
     util_smoothing: 0.25
     boost_affinity: false
-    per_cluster:
-      little:
-        headroom: 0.90
-        perf_ceil: 0.65
-      prime:
-        headroom: 0.80
-        perf_ceil: 0.50
+    # 原 per_cluster 三簇 headroom / perf_ceil 天花板 2026-09-28 拆除：
+    # 拆掉后三簇都保留随时到硬件最高频的能力，稳态降功耗交给 steady_decay_*。
     migration_cost_ns: 400000
   daily:
     headroom: 1.0

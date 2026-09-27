@@ -22,7 +22,8 @@ CpuIdle:
 
 # [reduce]
 # 省电模式（CLG 家族）：较 default 升频更保守（up 0.85>0.80）、降频更激进
-# （down 0.60>0.50、rate_limit 2），频率上限压到 0.70
+# （down 0.60>0.50、rate_limit 2）。省电只走门槛 + 升频速率 + 稳态下探，
+# 不砍上限：持续满负载仍要能写到硬件最高频（除 SceneMode）。
 reduce:
   cpu_load_governor:
     up_threshold: 0.85
@@ -34,7 +35,7 @@ reduce:
     headroom_factor: 1.10
     headroom_ramp: 0.15
     perf_floor: 0.10
-    perf_ceil: 0.70
+    perf_ceil: 1.0
     perf_init: 0.30
     up_jump_threshold: 0.35
     slow_up_scale: 0.02
@@ -58,12 +59,11 @@ default:
     headroom_factor: 1.25
     headroom_ramp: 0.15
     perf_floor: 0.15
-    # 2026-09-22 双机型实测调整：日常/均衡档原本没有天花板（1.0 = 与无限制等价），
-    # 尖峰一来就把上限顶到硬件最高（8550 实测：util 才 0.5 左右，cap p95 却是 100%）。
-    # 压到 0.80 省的是「频率高于负载所需」的那部分——视频场景按同一思路已实测降 26.5%。
-    # **交互响应由 touch_boost 兜**（下方 touch_boost_enabled/ms）：稳态降频、触摸即升，
-    # 切勿只降 perf_ceil 而不动 touch_boost。
-    perf_ceil: 0.80
+    # 不设上限：省电靠门槛 + 升频速率 + 稳态下探（steady_decay_*），不靠砍 perf_ceil——
+    # 砍了就等于持续满负载也到不了硬件最高频。2026-09-22 曾压到 0.80（视频场景省 26.5%），
+    # 2026-09-28 按「天花板一律拆除」撤回，稳态降功耗改由下探承担、交互响应仍由
+    # touch_boost 兜（下探会在负载回升时立即停止并回到正常升频路径）。
+    perf_ceil: 1.0
     perf_init: 0.50
     up_jump_threshold: 0.35
     slow_up_scale: 0.02
@@ -85,6 +85,9 @@ boost:
     headroom_ramp: 0.15
     perf_floor: 0.35
     perf_ceil: 1.0
+    # 稳态下探关闭：与 8550 boost 同口径——boost 是对功耗宽松档。本档 up_threshold 0.65 时
+    # T = (1.0/1.40)×0.90 ≈ 0.64，开启下探会让常态负载（0.10~0.64）持续被削，损失响应优势
+    steady_decay_enabled: false
     perf_init: 0.60
     up_jump_threshold: 0.35
     slow_up_scale: 0.02

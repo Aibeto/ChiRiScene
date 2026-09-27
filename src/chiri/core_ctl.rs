@@ -1,4 +1,4 @@
-//! core_ctl.rs: [types] [helpers] [state] [max_cpus] [scenemode] [online_reader] [restore]
+//! core_ctl.rs: [types] [helpers] [state] [boost] [max_cpus] [scenemode] [online_reader] [restore]
 
 /// 核心在线控制器接管（ChiRi 专属）。三态状态机（互斥，按「最近一次 apply」切换，内部去重）：
 /// - **Boost**（boost/vector/特调）：各 cluster 的 core_ctl `min_cpus` 抬到全组常在线，防止低负载时
@@ -50,7 +50,8 @@ struct CoreCtlCluster {
     min_cpus: String,
 /// 快照的原始 max_cpus；None = 节点不可读，该簇走逐核 offline 兜底
     max_cpus: Option<String>,
-/// 快照的 core_ctl enable；Some(false) = 内核不受理 max_cpus 写入，跳过无效写走兜底（仅快照期读一次，不做周期重读——厂商可能动态改 enable）
+    /// 快照的 core_ctl enable；Some(false) = core_ctl 不执行压制——apply_limits() 直接 `return cluster->num_cpus`
+    /// （见 kernel/sched/walt/core_ctl.c），min_cpus / max_cpus 写入虽被接受但不生效，跳过无效写走兜底（仅快照期读一次，不做周期重读——厂商可能动态改 enable）
     enable: Option<bool>,
 }
 
@@ -68,6 +69,8 @@ pub struct CoreCtlManager {
     max_cpus_applied: Option<usize>,
     /// max_cpus 节点不可用/被厂商改写的 warn 一次性标记（防 2s 周期纠偏刷屏）
     max_cpus_warned: bool,
+    /// boost 期遇到 enable=0 簇的 warn 一次性标记（core_ctl 不执行压制、整簇本就常在线，跳过写入并打 e0）
+    boost_enable_warned: bool,
 /// 上次 max_cpus 纠偏（重写 "0"）时刻：冷却内不重复，防与厂商 pipeline 逐周期拉锯
     max_cpus_reassert_at: Option<Instant>,
     /// scenemode 下守护进程自身线程是否已**全部**钉到专用小核（部分失败为 false，下次触发重试钉定）
@@ -118,6 +121,7 @@ impl CoreCtlManager {
             offlined: Vec::new(),
             max_cpus_applied: None,
             max_cpus_warned: false,
+            boost_enable_warned: false,
             max_cpus_reassert_at: None,
             self_pinned: false,
             self_pinned_tids: Vec::new(),
@@ -200,20 +204,15 @@ impl CoreCtlManager {
                         } else {
                             warn!(
                                 "{}",
-                                t_with_args(
-                                    "corectl-write-failed",
-                                    &fluent_args!("path" => path)
-                                )
+                                t_with_args("corectl-write-failed", &fluent_args!("path" => path))
                             );
                             None
                         };
                     }
                 }
-// enable 快照（读失败记 None = 保持原有 max_cpus 压制尝试）：enable=0 时内核不受理 max_cpus 写入，
-// 记 false 供 scenemode 省掉无效写（见 shrink_prime_via_max_cpus）
-                let enable = fs::read_to_string(format!("{dir}/enable"))
-                    .ok()
-                    .map(|v| {
+                // enable 快照（读失败记 None = 保持原有 max_cpus 压制尝试）：enable=0 时 core_ctl 不执行压制
+                // （apply_limits 直接返回整簇核数，写入虽被接受但不生效），记 false 供 scenemode 省掉无效写（见 shrink_prime_via_max_cpus）
+                let enable = fs::read_to_string(format!("{dir}/enable")).ok().map(|v| {
                         let v = v.trim();
                         v == "1" || v.eq_ignore_ascii_case("true")
                     });
@@ -267,11 +266,35 @@ impl CoreCtlManager {
 
         // 进入目标状态
         match target {
+            // [boost]
             STATE_BOOST => {
                 self.discover();
-                for c in &self.clusters {
-                    let path = format!("{}/min_cpus", c.dir);
-                    let val = c.cluster_size.to_string();
+                for i in 0..self.clusters.len() {
+                    let path = format!("{}/min_cpus", self.clusters[i].dir);
+                    let val = self.clusters[i].cluster_size.to_string();
+                    // enable=0（快照期读一次）时 core_ctl 的 apply_limits() 直接 return num_cpus——
+                    // 见 kernel/sched/walt/core_ctl.c 的 `if (!cluster->enable) return cluster->num_cpus;`：
+                    // min_cpus 写入虽被接受但不参与压制，且整簇本就常在线（正是 boost 保核想要的目标状态），
+                    // 故不写、按「该簇实际未生效」记 e0；原来无脑 fs::write 会把这种静默失效的 Ok 记成 ok，
+                    // 打点与真实能力分叉
+                    if self.clusters[i].enable == Some(false) {
+                        if crate::logger::diag_active() {
+                            crate::logger::aff_action(
+                                "corectl", 0, 0, "-", "-", "min_cpus", &val, "e0", &path,
+                            );
+                        }
+                        if !self.boost_enable_warned {
+                            self.boost_enable_warned = true;
+                            warn!(
+                                "{}",
+                                t_with_args(
+                                    "corectl-enable-off-boost",
+                                    &fluent_args!("path" => format!("{}/enable", self.clusters[i].dir))
+                                )
+                            );
+                        }
+                        continue;
+                    }
                     let res = fs::write(&path, &val);
                     if crate::logger::diag_active() {
                         crate::logger::aff_action(
@@ -317,7 +340,7 @@ impl CoreCtlManager {
     // [max_cpus]
 // [max_cpus] scenemode 首选压制路径：写 prime 簇 WALT core_ctl `max_cpus=0`，
 // 内核 walt_halt_cpus 整簇停摆（被 halt 的核 getaffinity 自动扣掉、选核避开，与 ChiRi 亲和互不踩）；事件驱动单次写 + 记账防重复写返回 false = core_ctl 路径不可用，
-// 调用方降级逐核 online 兜底：无 prime 簇 / 无 max_cpus 节点、enable=0 （内核不受理写，跳过无效写）、写失败、读回非 0（厂商并发改写）——均首次 warn 一次，不重试不拉锯；
+    // 调用方降级逐核 online 兜底：无 prime 簇 / 无 max_cpus 节点、enable=0 （core_ctl 不执行压制，跳过无效写）、写失败、读回非 0（厂商并发改写）——均首次 warn 一次，不重试不拉锯；
 // 读回失败按「写已发出」记账 Some 防恢复漏记，交维持期 reassert 纠偏
     fn shrink_prime_via_max_cpus(&mut self) -> bool {
         // 已走 core_ctl 路径且未恢复（恢复失败残留重入）：不重复写
@@ -349,7 +372,7 @@ impl CoreCtlManager {
             }
             return false;
         }
-// enable 感知（快照期读一次，仅省写优化）：enable=0 时内核不受理 max_cpus 写入，直接降级兜底（warn 复用 max_cpus_warned 去重）；enable == None（读不到）保持现行为
+        // enable 感知（快照期读一次，仅省写优化）：enable=0 时 core_ctl 不执行压制（写入被接受但不生效），直接降级兜底（warn 复用 max_cpus_warned 去重）；enable == None（读不到）保持现行为
         if self.clusters[idx].enable == Some(false) {
             if !self.max_cpus_warned {
                 self.max_cpus_warned = true;
@@ -654,7 +677,10 @@ impl CoreCtlManager {
             // 三态口径不变：读失败/节点缺失（None）跳过该核，读到原文才比较
             let tampered = matches!(reader.read_raw(), Some(v) if v.trim() != "0");
             if tampered {
-                items.push((reader.path().to_string_lossy().into_owned(), "0".to_string()));
+                items.push((
+                    reader.path().to_string_lossy().into_owned(),
+                    "0".to_string(),
+                ));
             }
         }
         let written = crate::utils::write_nodes(&items, "corectl-reassert-offline");
@@ -679,7 +705,8 @@ impl CoreCtlManager {
                 .map(|s| s.trim().to_string())
                 .map(|v| v != "0")
                 .unwrap_or(false);
-            if tampered && self
+            if tampered
+                && self
                 .max_cpus_reassert_at
                 .map(|t| t.elapsed() >= MAX_CPUS_REASSERT_COOLDOWN)
                 .unwrap_or(true)
@@ -885,9 +912,27 @@ impl CoreCtlManager {
     }
 
     /// 恢复各 cluster 的 min_cpus 快照（boost 退出）
+    // [boost]
     fn restore_min_cpus(&mut self) {
         for c in &self.clusters {
             let path = format!("{}/min_cpus", c.dir);
+            // enable=0 的簇 boost 期就没写过（core_ctl 不执行压制），恢复自然无需写；按「未生效」记 e0，与 boost 期口径一致
+            if c.enable == Some(false) {
+                if crate::logger::diag_active() {
+                    crate::logger::aff_action(
+                        "corectl",
+                        0,
+                        0,
+                        "-",
+                        "-",
+                        "min_cpus",
+                        &c.min_cpus,
+                        "e0",
+                        &path,
+                    );
+                }
+                continue;
+            }
             let res = fs::write(&path, &c.min_cpus);
             if crate::logger::diag_active() {
                 crate::logger::aff_action(

@@ -12,6 +12,8 @@
 
 - 所有任务除例外外都需要调用 /token-efficient-coding 这个SKILL，如果找不到这个SKILL则终止任务并提示
 
+- **永不再新增 A/B 测试（2026-09-28 用户定，长期口径）**：判据只有三类——「**逻辑必然 + 模型折算 + 功能回归观察**」。**观察**＝同版本、同场景、不并行对照、不控制变量，只记录现象与指标；**对照实验**＝并行或交错对比两个版本/两个配置、以差值做判据——一律不做（"关/开某配置比功耗"属对照实验）。替代手段：离线重放（把日志帧当输入重跑决策）、模型折算、构造性自检。
+
 ## [lessons] 经验教训
 
 - 含 `std::ops::Range<usize>` 字段的结构体别 `derive(Copy)`：CI（`-Z build-std` + nightly）编译 `common::CoreGroupRanges` 时报 E0204（字段不实现 Copy），即便标准库中 `Range<usize>` 实现了 Copy。按值 move 或显式 `clone()` 即可，用 `#[derive(Debug, Clone)]` 够了，不要加 Copy。
@@ -74,8 +76,10 @@
 
 - **git 尾注与历史改写（2026-09-26 实录）**：commit message 尾注 `Co-authored-by:` 会被 GitHub 解析计入 Contributors（本地 shortlog/log --author 查不到）；`git filter-branch --msg-filter` 改写后**全部 commit hash 作废**（tree/parent/作者/日期不变），其他克隆需重 clone 或 reset --hard，dependabot 旧链等其自行 rebase。
 
-- **A/B 纪律（2026-09-22/24）**：采集态自身开销不可忽略（logd 待机占 launcher 场景 ~18%、视频 ~14%）——任何功耗 A/B 必须同 dev_record 状态；devimp 无 charge 列只能 `batt_i<0` 滤充电，不滤 39W 快充直接进均值；跨批次（不同日/固件/机型）数据不可比。
+- **A/B 纪律（2026-09-22/24，历史条目 → 已被 2026-09-28 口径取代）**：原条目预设"要做 A/B"，现**禁止新增 A/B**（见 `[hard]` 首条）。仍有效的是"**采集态自身开销不可忽略**"，但**原始口径必须改**：那是 8745 上 `tgtop` 的**负载占比**（待机 logd 17.44% / launcher 15.82% / 游戏 9%；8550 另有一处 launcher 19.9%），**不是功耗占比**——"视频 ~14%"在仓库里**查无出处**，属转述漂移，**勿再引用**。正确说法：带采集采到的功耗含采集开销，**跨 dev_record 状态不可比**。实测写口量级：devimp 20–28 kB/s（其中 aff 的每秒 `@S` 帧占 88%），logd 侧仅 ~0.13 kB/s；devimp 无 charge 列只能 `batt_i<0` 滤充电，不滤 39W 快充直接进均值；跨批次（不同日/固件/机型）数据不可比。
 
 - **文档里的数字必须从常量定义核对**，不能凭印象写（CLG_STALE_MAX 实为 5s，初稿误写 30s；TUNED_COOLDOWN=300s 已核）。
 
 - **未提交的工作区改动（尤其注释掉的代码）可能是用户重构中间态（2026-09-16）**：报错指向用户正在编辑的文件时只报告、不动手；顺手修之前区分「我改的/工作区已有的」，评估 ≠ 批准开工。
+
+- **子代理会顺手重排无关行（2026-09-28，一次会话内实际发生两次）**：让它改 A，它把整份文件的注释重新缩进/重排 → `core_ctl` / `cpu_load_governor` / `tuned` / `common` / `fps_monitor` 合计约 250 行**只差空白**的假改动，把真实改动的 diff 淹没。派工必须写明「只改必要行、禁止格式化与重排无关行」；收工时用 `git diff` 与 `git diff -w` 的 numstat 对比做验收（两者不一致即有空白噪声）。还原办法：按「只差空白取 HEAD、实质改动取工作区」逐行合并（忽略空白比对），**不要**用 `git checkout` / `git restore` 批量回滚——会误伤用户 WIP，且该做法已被明确拒绝一次（见 `.codebuddy/memory/feedback_fix_scope.md`）。前置条件：动手前先确认这批文件在本次会话开始时与 HEAD 一致（否则 HEAD 内容不可作为还原基线）。

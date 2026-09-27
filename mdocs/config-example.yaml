@@ -99,6 +99,63 @@ Affinity:
   top_app_uclamp_max_pct: 85
   # 线程层总开关：前台线程按核钉定 + 后台动态 promote/demote（仅亮屏）
   pin_foreground_threads: true
+  # 后台降权（background / restricted 的 cpu.uclamp.max 百分比，0=关闭）：把后台任务
+  # 的 util 需求钳低，EAS 放置与 schedutil 频率随之回落；**不禁止使用大核**。
+  # 刻意不含 system-background（媒体/音频等可感知的系统后台）。
+  background_uclamp_max_pct: 50
+  # normal（非 boost）下 top-app/foreground 组掩码剔除 little 的预置开关（默认关闭）
+  normal_fg_exclude_little: false
+
+  # ---- 放置与亲和线（2026-09-28 新增；全部可选，不写 = 代码缺省 = 原行为逐位一致）----
+  # 后台/批处理线程 promote 时禁止溢出到 prime（prime 冲顶段边际能效最差）
+  bg_promote_exclude_prime: true
+  # big 饱和保护推广到所有会 promote 的模式（false = 回到「仅 boost 态」旧行为）
+  big_pressure_any_mode: true
+  # AArch32 簇白名单：**留空 = 不限制落点 = 不做 32/64 区分**（主流系统带转译层，32 位程序
+  # 实际可跑全核；留空时位宽判定仍生效，但只用于落 `elf32` 观测帧、不拦截任何落点）。
+  # 只有确认系统无转译层时才填 ["little"] 之类，届时才在写掩码前拦截「32 位 → 无 AArch32 的簇」
+  aarch32_clusters: []
+  # 位宽感知总开关（false = 连 32 位判定与 elf32 观测帧都关掉）
+  bitwidth_aware: true
+  # 掩码写去重 + 同 tid 同目标最短重写间隔（false = 逐位回旧行为）。
+  # 注意去重只在「本层再次决定写同一目标」时生效，内核侧被框架/外部改写的掩码不会周期性纠偏
+  write_dedup: true
+  # ---- FDP：帕累托前沿主导的放置内核（默认关闭；只有已适配前沿表的机型才有数据）----
+  # 用逐档簇功耗（由 scripts/frontier_policy.py 从 mdocs/8550/sm8550-freq-power.md §3 生成进
+  # soc.yaml 的 frontier_policy 段）做**双边净收益**比较：只有
+  #   [源簇让出后 − 现状] + [目标簇承接后 − 现状] < 0（且超阈值）
+  # 才迁移——等价于「等算力下把算力放到边际 mW/Mdmips 更低的地方」。
+  # 现状取实测（最忙核 util + scaling_cur_freq），之后按单核落位 + schedutil util→freq 映射估。
+  # 只作用于**后台/批处理线程 promote**（成本模型不含延迟项，前台路径不动）。
+  # ⚠️ 表是纯动态项、不含漏电与 idle-exit，只做相对排序；无 frontier_policy 段的机型整段不动作。
+  fdp_enabled: false
+  # 只在该次搬迁能省 ≥ 该值(W) 时才动（防噪声上的反复搬）
+  fdp_cost_hysteresis_w: 0.02
+  # 每轮每个目的簇的迁入条数硬上限（0 视为 1）
+  fdp_max_inserts_per_round: 2
+  # 迁入后目标簇模型工作频率不得高于该值 × 该簇最高频（0.3..1.0）
+  fdp_dst_freq_cap_ratio: 0.85
+  # 放置类阈值可配化：缺省值 = src/chiri/affinity.rs consts 段的原常量（唯一数字源），
+  # 故整段可省略。⚠️ min_migrate_interval_ms / repin_debounce_ms / return_cooldown_ms
+  # 三道时间闸是防 A→B→A 乒乓的护栏，钳制下界就是现值，**不得改小**。
+  tuning:
+    promote_util_pct: 25
+    little_high_water: 0.70
+    key_bind_release_water: 0.50
+    fg_busy_util_pct: 30
+    fg_busy_release_util_pct: 15
+    little_promote_util_pct: 10
+    big_high_water: 0.90
+    demote_util_pct: 5
+    demote_streak: 3
+    pinned_weight: 0.4
+    max_pins_per_core: 3
+    overload_margin: 0.15
+    core_overload_util: 0.70
+    min_migrate_interval_ms: 4000
+    repin_debounce_ms: 8000
+    return_cooldown_ms: 16000
+    thread_stale_secs: 30
 
 # [corectl]
 # core_ctl 核心在线接管（ChiRi 专属）
@@ -214,9 +271,27 @@ reduce:
     # 保底频率，调高卡顿少但功耗大。必须 <= perf_ceil
     perf_floor: 0.10
 
-    # 性能上限（0..1）：目标性能永不高于此值
-    # 1.0 = 允许跑硬件最高频。必须 >= perf_floor
-    perf_ceil: 0.70
+    # 性能上限（0..1）：目标性能永不高于此值。**除 SceneMode 外不许设 < 1.0**
+    # （天花板全拆口径：省电靠门槛 + 升频速率 + 下方 steady_decay_*，不靠砍上限——
+    #   砍了就等于持续满负载也到不了硬件最高频）。必须 >= perf_floor
+    perf_ceil: 1.0
+
+    # ---- 稳态下探（T11）：天花板拆掉后的稳态降功耗手段，缺省开启 ----
+    # 语义 = 对「写侧性能偏移」的限幅积分控制，被控量是 util：
+    #   T = up_threshold × steady_decay_target_ratio
+    #   util > T + band → 回收下探（步长 ×2，防过冲）
+    #   util < T − band → 加深下探（步长 steady_decay_step）
+    #   死区内保持不变（消除抖动）
+    # 只在连续稳定 steady_decay_stable_ticks 后才开始；负载上行 / util ≥ up_threshold /
+    # 极低负载立即清零。偏移只作用于「将要写入的上限」，不回写决策状态 → 自限、不振荡。
+    # 取点提示：boost（对功耗宽松的档）应显式 false——其 up_threshold 偏低（0.55~0.65），
+    # T 会落进常态负载区间、把常态负载一起下探、削掉响应优势（8550/8475/8998/根兜底均已显式关闭）。
+    steady_decay_enabled: true # 总开关
+    steady_decay_target_ratio: 0.90 # 目标水位系数（0.5..1.0）
+    steady_decay_band: 0.05 # 稳定带 + 目标水位保持死区（0..0.3）
+    steady_decay_stable_ticks: 12 # 连续稳定多少 tick 才启动（1..600；8550 ≈160ms/tick → 约 2s）
+    steady_decay_step: 0.01 # 每次加深的步长（0..0.1）
+    steady_decay_max: 0.20 # 下探量上限（0..0.5，抗积分饱和）
 
     # 初始性能（0..1）：CLG 接管瞬间的起点
     # 避免从 0 爬升导致开机卡。必须在 [perf_floor, perf_ceil] 内

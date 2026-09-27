@@ -94,6 +94,7 @@ fps-monitor-symbol-scan = [FPS Monitor] libgui symbol scan: { $count } queueBuff
 fps-monitor-frame-source-missing = [FPS Monitor] frame source unavailable: no Surface::queueBuffer symbol in { $lib }, FAS gear control stalled (retry in { $secs }s)
 fps-monitor-frame-summary = [FPS Monitor] frame summary | pid={ $pid } window={ $window } latest={ $latest_ms }ms avg={ $avg_ms }ms
 fps-monitor-frames-dropped = [FPS Monitor] event channel congested, { $count } frame samples dropped (scheduler consuming too slowly)
+fps-monitor-attach-stats = [FPS Monitor] attach failed { $count } time(s) in total, last error: { $error }
 
 # --- Scheduler ---
 scheduler-ipc-started = [Scheduler] IPC Channel listener started.
@@ -174,7 +175,10 @@ clg-deactivated = [CLG] CPU Load Governor deactivated
 clg-config-reloaded = [CLG] config hot-reloaded | up={ $up } down={ $down } floor={ $floor } ceil={ $ceil }
 clg-perf-clamped = [CLG] config perf_floor > perf_ceil ({ $floor } > { $ceil }), clamped perf_floor to perf_ceil
 clg-restore = [CLG] P{ $pid } restored | governor={ $governor } min={ $min } kHz max={ $max } kHz
-clg-tick-log = [CLG] P{ $pid } util={ $util }% perf={ $perf } freq={ $freq }kHz boost={ $boost }kHz
+clg-tick-log = [CLG] P{ $pid } util={ $util }% perf={ $perf } freq={ $freq }kHz boost={ $boost }kHz decay={ $decay }
+clg-pf-tick-log = [CLG-PF] P{ $pid } util={ $util }% perf={ $perf } freq={ $freq }kHz decay={ $decay } pf={ $pf_khz }kHz
+clg-pf-enabled = [CLG-PF] P{ $pid } Pareto frontier lookup enabled | fingerprint={ $fp } buckets={ $buckets }
+clg-pf-fallback = [CLG-PF] frontier table unavailable ({ $reason }), falling back to ratio path (once)
 clg-writer-invalid = [CLG] P{ $pid } sysfs writer invalid (max_valid: { $max_valid }, min_valid: { $min_valid }), skipping.
 clg-freq-set = [CLG] P{ $pid } freq change: { $old_khz }MHz -> { $new_khz }MHz
 clg-freq-write-failed-cached = [CLG] P{ $pid } freq write failed, keeping cached { $cached_khz }MHz (target { $target_khz }MHz)
@@ -290,7 +294,9 @@ rhine-watch-error = [Rhine] rhine.chr watch failed: { $error }
 affinity-boost-applied = [Affinity] boost layout applied: top-app/foreground → { $big }, background groups → { $little }
 affinity-normal-restore = [Affinity] normal affinity layout restored (background kept on little cores)
 affinity-promoted = [Affinity] background thread { $tid } promoted to big core (util { $util }%)
-affinity-demoted = [Affinity] background thread { $tid } demoted back to little group (util { $util }%)
+affinity-fdp-promoted = [Affinity] FDP: background thread { $tid } migrated to { $dst } (net benefit { $net_mw } mW)
+affinity-demoted = [Affinity] background thread { $tid } demoted back to the little cluster (util { $util }%)
+affinity-write-fail-summary = [Affinity] affinity write failures in this 25-tick window: mask={ $mask } cpuset={ $cpuset } uclamp={ $uclamp }
 affinity-uclamp-unavailable = [Affinity] top_app_uclamp_max_pct unavailable, auto-corrected (kernel { $version }, reason: { $reason }; uclamp requires kernel >= 5.3 with a writable node)
 affinity-released = [Affinity] takeover released, system affinity config restored
 
@@ -304,7 +310,8 @@ corectl-self-pinned = [CoreCtl] scheduler service pinned to dedicated little cor
 corectl-unavailable = [CoreCtl] no usable core_ctl node found, takeover skipped
 corectl-write-failed = [CoreCtl] core_ctl write failed: { $path }
 corectl-node-missing = [CoreCtl] core_ctl node missing/unreadable: { $path } (cluster falls back to per-core offline)
-corectl-enable-off = [CoreCtl] core_ctl enable=0 (kernel ignores max_cpus writes): { $path }; skipping the no-op write and falling back to per-core offline
+corectl-enable-off = [CoreCtl] core_ctl enable=0 (core_ctl does not enforce limits; writes have no effect): { $path }; skipping the no-op write and falling back to per-core offline
+corectl-enable-off-boost = [CoreCtl] core_ctl enable=0 (core_ctl does not enforce limits; the whole cluster is already online): { $path }; boost keeps-online skipped for this cluster
 corectl-vendor-override = [CoreCtl] core_ctl node overridden by vendor (non-zero read-back): { $path }; not fighting vendor, restored from snapshot on exit
 corectl-verify-failed = [CoreCtl] core_ctl node read-back failed (write issued, accounted as applied): { $path }
 corectl-scenemode-halt = [CoreCtl] scenemode prime cluster halted via core_ctl max_cpus

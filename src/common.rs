@@ -252,6 +252,10 @@ pub struct SocConfig {
     #[serde(default)]
     #[allow(dead_code)]
     pub dpc: Option<SocTriValues>,
+    /// 帕累托前沿查表段（仅 8550 具备采用条件；其它 SoC 的 soc.yaml 无本段 → 天然 None → 走原比例路径）
+    /// [frontier_lenient] 用宽松反序列化：本段损坏不得拖垮整份 soc.yaml（topology/capacity/freq 兜底是更贵的资产）
+    #[serde(default, deserialize_with = "deserialize_frontier_lenient")]
+    pub frontier_policy: Option<FrontierPolicy>,
 }
 
 /// 核心组 CPU ID 区间（左闭右开）
@@ -306,6 +310,234 @@ pub struct SocIdleUs {
     pub min_residency: Option<SocTriValues>,
     #[serde(default)]
     pub cluster_exit_latency: Vec<u32>,
+}
+
+// [frontier] 帕累托前沿策略段（8550 专用，soc.yaml 内受控生成块；scripts/frontier_policy.py 产出）
+// 运行期唯一消费方是 CLG 的 PF 落点（cpu_load_governor.rs [frontier_pf]，只允许下调）。
+// 字段名与生成脚本 / 定稿 schema 逐字对齐（唯一例外：soc.yaml 桶里的 margin_mdmips_per_w 本版不消费，
+// 靠 serde 忽略未知键通过）；解析失败由 [frontier_lenient] 兜底为 None（不回退他人逻辑、不 panic）。
+
+/// 前沿策略段。段缺失或 `enabled` 非 true → `soc_frontier_policy()` 返回 None → 原比例路径
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct FrontierPolicy {
+    /// 运行期开关（在块内）：false / 缺失 = 不启用
+    #[serde(default)]
+    pub enabled: bool,
+    /// 输入内容哈希（生成脚本产出，运行期仅用于日志标识）
+    #[serde(default)]
+    pub model_fingerprint: Option<String>,
+    /// 复算对账锚点（运行期不消费，落表自检留痕）
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub anchors: Vec<FrontierAnchor>,
+    /// 前沿点（DT 口径，运行期不消费）
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub frontier: Vec<FrontierPoint>,
+    /// 各簇硬件基线与频表（与 soc.yaml 其余段同源，仅作参照）
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub per_cluster: Option<FrontierPerCluster>,
+    /// 需求桶（真机容量单位边界 + 该前沿点的三簇目标 kHz）：PF 查表的唯一数据源
+    #[serde(default)]
+    pub demand_buckets: Vec<FrontierBucket>,
+    /// 三模式结果向量（预判带；本版运行期未消费，留待后续）
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub modes: HashMap<String, FrontierMode>,
+    /// 预判参数（本版运行期未消费）
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub anticipate: Option<FrontierAnticipate>,
+}
+
+/// 复算对账锚点（运行期不消费）
+#[derive(Debug, Clone, Default, Deserialize)]
+#[allow(dead_code)]
+pub struct FrontierAnchor {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub got: f32,
+    #[serde(default)]
+    pub want: f32,
+    #[serde(default)]
+    pub ok: bool,
+}
+
+/// 前沿点（DT 口径 Mdmips / W，运行期不消费）
+#[derive(Debug, Clone, Default, Deserialize)]
+#[allow(dead_code)]
+pub struct FrontierPoint {
+    #[serde(default)]
+    pub compute: f32,
+    #[serde(default)]
+    pub power_w: f32,
+}
+
+/// 各簇硬件基线（参照，运行期不消费）
+#[derive(Debug, Clone, Default, Deserialize)]
+#[allow(dead_code)]
+pub struct FrontierPerCluster {
+    #[serde(default)]
+    pub little: FrontierClusterBase,
+    #[serde(default)]
+    pub big: FrontierClusterBase,
+    #[serde(default)]
+    pub prime: FrontierClusterBase,
+}
+
+/// 单簇基线：capacity、频率表（kHz 升序）与**逐档簇功耗**（W，与 `freq_khz` 逐档同下标对齐）
+#[derive(Debug, Clone, Default, Deserialize)]
+#[allow(dead_code)]
+pub struct FrontierClusterBase {
+    #[serde(default)]
+    pub capacity: Option<u32>,
+    #[serde(default)]
+    pub freq_khz: Vec<u32>,
+    /// 逐档簇功耗 W（文档 §3 簇级表，只含动态项、不含漏电）：放置成本模型（FDP）的边际比较输入；
+    /// 长度与 `freq_khz` 对齐，缺省为空 = 该簇无成本数据（FDP 对该簇回退、不动作）
+    #[serde(default)]
+    pub power_w: Vec<f32>,
+}
+
+/// 需求桶：`lo_units`/`hi_units` 为**真机容量单位**边界；`*_khz` 为该前沿点的三簇目标频点
+/// （收到后仍须 floor 对齐到 `available_freqs`；0 = 表未提供 → 回退比例路径）
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct FrontierBucket {
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub point: u32,
+    #[serde(default)]
+    pub lo_units: f32,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub hi_units: f32,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub target_compute: f32,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub target_power_w: f32,
+    #[serde(default)]
+    pub little_khz: u32,
+    #[serde(default)]
+    pub big_khz: u32,
+    #[serde(default)]
+    pub prime_khz: u32,
+}
+
+/// 单模式结果向量（运行期未消费）
+#[derive(Debug, Clone, Default, Deserialize)]
+#[allow(dead_code)]
+pub struct FrontierMode {
+    #[serde(default)]
+    pub lead_mult: f32,
+    #[serde(default)]
+    pub lead_frac: f32,
+    #[serde(default)]
+    pub reserve_pct: f32,
+    #[serde(default)]
+    pub buckets: Vec<FrontierModeBucket>,
+}
+
+/// 单模式单桶（运行期未消费）
+#[derive(Debug, Clone, Default, Deserialize)]
+#[allow(dead_code)]
+pub struct FrontierModeBucket {
+    #[serde(default)]
+    pub point: u32,
+    #[serde(default)]
+    pub target_compute: f32,
+    #[serde(default)]
+    pub target_power_w: f32,
+    #[serde(default)]
+    pub enter_units: f32,
+    #[serde(default)]
+    pub exit_units: f32,
+}
+
+/// 预判参数（运行期未消费）：`mode_mul` 为 reduce/default/boost 三模式乘子
+#[derive(Debug, Clone, Default, Deserialize)]
+#[allow(dead_code)]
+pub struct FrontierAnticipate {
+    #[serde(default)]
+    pub min_dwell_ticks: u32,
+    #[serde(default)]
+    pub adjacent_only: bool,
+    #[serde(default)]
+    pub mode_mul: Option<FrontierModeMul>,
+}
+
+/// 预判模式乘子（reduce/default/boost 三模式）
+#[derive(Debug, Clone, Default, Deserialize)]
+#[allow(dead_code)]
+pub struct FrontierModeMul {
+    #[serde(default)]
+    pub reduce: f32,
+    #[serde(default)]
+    pub default: f32,
+    #[serde(default)]
+    pub boost: f32,
+}
+
+impl FrontierPolicy {
+    /// 需求（真机容量单位）落在哪个桶：返回 `lo_units <= demand` 的最大桶索引；
+    /// 桶表为空 / demand 非有限 / demand 低于首桶 → None（调用方回退比例路径）
+    /// 假定桶按 `lo_units` 升序（生成脚本的 hull 天然有序）
+    pub fn bucket_for_demand(&self, demand_units: f32) -> Option<usize> {
+        if !demand_units.is_finite() || self.demand_buckets.is_empty() {
+            return None;
+        }
+        if demand_units < self.demand_buckets[0].lo_units {
+            return None;
+        }
+        let mut idx = 0usize;
+        for (i, b) in self.demand_buckets.iter().enumerate() {
+            if demand_units >= b.lo_units {
+                idx = i;
+            } else {
+                break;
+            }
+        }
+        Some(idx)
+    }
+
+    /// 该桶下该簇的目标 kHz；越界或表未提供该值（0）→ None
+    pub fn target_khz(&self, cluster: CoreGroup, bucket: usize) -> Option<u32> {
+        let b = self.demand_buckets.get(bucket)?;
+        let khz = match cluster {
+            CoreGroup::Little => b.little_khz,
+            CoreGroup::Big => b.big_khz,
+            CoreGroup::Prime => b.prime_khz,
+        };
+        (khz > 0).then_some(khz)
+    }
+}
+
+/// [frontier_lenient] 前沿段解析失败不得拖垮整份 soc.yaml：单字段兜底为 None + warn 一次
+/// （topology/capacity/freq 兜底是更贵资产，误配必须自愈）
+fn deserialize_frontier_lenient<'de, D>(d: D) -> Result<Option<FrontierPolicy>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Option::<serde_yaml::Value>::deserialize(d)?;
+    match raw {
+        None => Ok(None),
+        Some(v) => match serde_yaml::from_value::<FrontierPolicy>(v) {
+            Ok(p) => Ok(Some(p)),
+            Err(e) => {
+                log::warn!("frontier-policy-parse-failed: {e}");
+                Ok(None)
+            }
+        },
+    }
+}
+
+/// 当前 SoC 的帕累托前沿策略：仅当 soc.yaml 存在 `frontier_policy` 段且 `enabled == true` 时返回 Some；
+/// 其它 SoC（无本段）天然 None → CLG 走原比例路径，行为逐位不变
+pub fn soc_frontier_policy() -> Option<&'static FrontierPolicy> {
+    soc_config()?.frontier_policy.as_ref().filter(|p| p.enabled)
 }
 
 /// 命中 SoC 的硬件基线（{soc}/soc.yaml），OnceLock 惰性解析一次

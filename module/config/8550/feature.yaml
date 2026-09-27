@@ -29,13 +29,70 @@ Affinity:
   # 后台任务的 util 需求被钳低 → EAS 放置与 schedutil 频率回落、优先落小核，
   # 给 UI/视频等视觉可感的线程让路；不禁止使用大核（空闲时仍会被调度上去）。
   # 刻意不含 system-background（媒体/音频等可感知的系统后台）。
-  # TODO: 实机复核 35（看后台同步/消息推送是否受影响）。
-  background_uclamp_max_pct: 35
+  # A1（2026-09-28）：35 → 25，把后台实际工作点压到更低频段（等算力下总功耗下移）。
+  # TODO: 实机复核后台同步/消息推送时延；回退 = 改回 35。
+  background_uclamp_max_pct: 25
   # normal（非 boost）下 top-app/foreground 组掩码剔除 little 的预置开关（默认关闭）：
   # A510 能效差且 DT 能耗模型低估其真实能耗，EAS 会把 64 位前台线程吸进 little；
   # 收窄后 32 位任务的允许核交集由内核兜底（big 内 A710 仍在掩码内），每 2s 纠偏。
   # TODO: 待内核信息（32 位核位图 / A710 核位，读 /sys/.../midr_el1 可核）针对化后决定开启。
   normal_fg_exclude_little: false
+  # ---- 2026-09-28 新增（放置与亲和线）。全部字段可选，但**缺省值不等于旧行为**：
+  # bg_promote_exclude_prime / big_pressure_any_mode / bitwidth_aware / write_dedup 的代码缺省是
+  # true = 新逻辑默认开启，要回旧行为必须显式写 false——没写这些键的档位/机型都已按新行为运行。
+  # 后台/批处理线程 promote 时禁止溢出到 prime：prime 冲顶段边际能效最差
+  # （2092800→3187200 只剩 600 Mdmips/W），可并行的批处理（HTTP 池/下载/软解）不需要 X3。
+  bg_promote_exclude_prime: true
+  # big 饱和保护推广到所有会 promote 的模式（原来只在 boost 态生效）：
+  # false = 回到「仅 boost 态判 big 高水位」的旧行为。
+  big_pressure_any_mode: true
+  # AArch32 簇白名单：**留空 = 不限制**（主流系统带转译层，32 位程序实际可跑全核，故缺省不限制落点）。
+  # 只有确认系统无转译层时才填（如 `["little"]`），届时 32 位线程的落点被限制在这些簇内、写掩码前先拦截
+  # （不发起必然被内核拒的调用）；留空时位宽判定仍生效，只用于落 `elf32` 观测帧。
+  aarch32_clusters: []
+  # 位宽感知总开关（false = 不做 32 位判定，逐位回旧行为）。
+  bitwidth_aware: true
+  # 掩码写去重 + 同 tid 同目标最短重写间隔（去掉「写了也没变化」的冗余写；
+  # false = 逐位回旧行为）。注意：去重只在「本层再次决定写同一目标」时才可能重写，
+  # 内核侧被框架/外部改写掩码不会周期性纠偏（uclamp 有 60s 重断言，掩码路径没有）。
+  write_dedup: true
+  # ---- FDP：帕累托前沿主导的放置内核（2026-09-28，仅 8550 有数据）----
+  # 用 mdocs/8550/sm8550-freq-power.md §3 的**逐档簇功耗**做双边净收益比较：把线程从源簇搬到目标簇，
+  # 只有 [源簇让出后−现状] + [目标簇承接后−现状] < 0（且超阈值）才迁 —— 等价于「等算力下把这份算力
+  # 放到边际 mW/Mdmips 更低的地方」。现状取**实测**（该簇最忙核 util + scaling_cur_freq），
+  # 之后按「单核落位 + schedutil util→freq 映射」估；P(f) 超线性，故把目标簇推向高位会自动变贵。
+  # 数据来自 soc.yaml 的 frontier_policy 段；非 8550 无该段 → 整段不动作（自动回退原逻辑）。
+  # 只作用于**后台/批处理线程 promote**（成本模型不含延迟项，前台路径一律不动）。
+  fdp_enabled: true
+  # 只在该次搬迁能省 ≥ 该值(W) 时才动：防在噪声上反复搬（0.02 = 20 mW）
+  fdp_cost_hysteresis_w: 0.02
+  # 每轮每个目的簇的迁入条数硬上限：成本项只在跨轮生效，同轮几十条线程会一起判「big 最便宜」，
+  # 必须靠配额兜住同向涌入（0 视为 1，不允许「无上限」）
+  fdp_max_inserts_per_round: 2
+  # 迁入后目标簇的模型工作频率不得高于「该值 × 该簇最高频」——
+  # P-a「任何簇贴顶都不行」在代码里的落点
+  fdp_dst_freq_cap_ratio: 0.85
+  # 放置类阈值的可配化：缺省值 = `src/chiri/affinity.rs` consts 段的原常量（那里是缺省值唯一来源），
+  # 本段整体可省略；但**写出来就会覆盖 const**，改 const 时必须同步本段，否则两者静默分叉。
+  # ⚠️ 三道时间闸是防 A→B→A 乒乓的护栏，钳制下界就是现值（4000/8000/16000），**不得改小**。
+  tuning:
+    promote_util_pct: 25
+    little_high_water: 0.70
+    key_bind_release_water: 0.50
+    fg_busy_util_pct: 30
+    fg_busy_release_util_pct: 15
+    little_promote_util_pct: 10
+    big_high_water: 0.90
+    demote_util_pct: 5
+    demote_streak: 3
+    pinned_weight: 0.4
+    max_pins_per_core: 3
+    overload_margin: 0.15
+    core_overload_util: 0.70
+    min_migrate_interval_ms: 4000
+    repin_debounce_ms: 8000
+    return_cooldown_ms: 16000
+    thread_stale_secs: 30
 
 # [corectl]
 CoreCtl:
@@ -96,9 +153,10 @@ Thermal:
   # 给中档 0.60，不必压到 42；45↔43 的 2°C 带回滞已足够吃掉 0.1°C 级抖动。
   hysteresis_hard_c: 2
   # 热态 tuned 响应（P0-3）：cap 同时下发 tuned（playback/akmode 不走 CLG，原本对温度
-  # 零响应）。有效上限 = min(档位天花板, max(cap, tuned_thermal_floor))——只看 cap 是否
-  # 低于天花板：播放态天花板 little 0.55 / big 0.75 / prime 0.50，软限 0.85 对它是 no-op，
-  # 真正会咬住的是中档 0.60（big 0.75→0.60）与硬档（→floor）。
+  # 零响应）。有效上限 = min(档位天花板, max(cap, tuned_thermal_floor))。2026-09-28 三簇
+  # 天花板全部拆除（tuned_profiles.yaml 的 per_cluster 与 headroom 已按 R2 撤回），playback
+  # 各簇天花板现为 1.0，软限 0.85 因此会真实咬住 big（原被 0.75 掩盖）；中档 0.60 与硬档
+  # （→floor）的压制关系不变。
   tuned_resp_enabled: true
   # 性能下限：不把硬档 0.40 直接套到播放态（掉帧风险实打实；播放态帧信号 2026-09-27 起有，
   # 但只是离线直方图 `event` 行 decision=playback_fps，在线无判据）。normalize 保证 >= hard_perf_cap。
@@ -126,7 +184,13 @@ reduce:
     headroom_factor: 1.05
     headroom_ramp: 0.12
     perf_floor: 0.05
-    perf_ceil: 0.60
+    # 原 0.60 属天花板，2026-09-28 拆除（R2）：省电改走门槛 + 升频速率 + 稳态下探。
+    perf_ceil: 1.00
+    # 稳态下探的取点（R7：模式差异靠取点/到达速度表达，不靠封顶）。天花板拆掉后 reduce 与 default
+    # 的其余参数已很接近，故刻意把目标水位压低以保留省电档差异：
+    # T = up_threshold(0.90) × 0.80 = 0.72（缺省 0.90，即 default 的取点）。
+    # TODO: 实机复核（看省电档流畅度是否仍可接受；回退 = 删掉本行回到 0.90）。
+    steady_decay_target_ratio: 0.80
     perf_init: 0.20
     up_jump_threshold: 0.35
     slow_up_scale: 0.02
@@ -165,11 +229,14 @@ default:
     # 控功耗靠「升频门槛 + 升频速率」（up_threshold / rate limit / smoothing / jump），
     # 不靠砍上限；需要单独收紧的簇走 per_cluster 覆盖（本档不覆盖任何簇）。
     perf_ceil: 1.00
+    # 稳态下探取点：T = up_threshold(0.88) × 0.90 = 0.79。与代码缺省一致，显式写出便于与 reduce/boost 对照。
+    steady_decay_target_ratio: 0.90
     # 接管起始性能，同时是触摸升频地板的基线（floor = perf_init + tiers × 0.05）
     perf_init: 0.35
     # 按核心组再收紧（8550 实测日常 util：little 0.55 / big 0.36 / prime 0.32，
     # 但三簇上限都被尖峰顶到 100%）——三簇一刀切只能取「最松那簇」能接受的值：
-    # little 最热压到 0.70，prime 空转多压到 0.65，big 不覆盖、继承 0.80。
+    # 历史上 little 压到 0.70、prime 空转压到 0.65、big 不覆盖（继承当年的 0.80）；
+    # 2026-09-28 天花板一律拆除后本档只保留 little 的升频门槛覆盖，上限继承模式级 1.00。
     # [A/B 结论 2026-09-22] 迁移率异常与 per_cluster 无关：0922-1306 包（更旧的
     # 40 列版本、无任何天花板）亮屏 UI 场景迁移同样 ~2500-5000/s——高迁移是
     # surfaceflinger/system_server 主导的亮屏 UI 固有形态，视频稳态才是 ~300/s。
@@ -218,6 +285,10 @@ boost:
     headroom_ramp: 0.12
     perf_floor: 0.40
     perf_ceil: 1.0
+    # 稳态下探关闭（R7 取点：boost 是对功耗宽松档，不主动下探）。boost 的 perf_ceil 拆前拆后都是 1.0，
+    # 且 up_threshold 只有 0.55 → 若开启下探，T = 0.55×0.90 = 0.50 会让常态负载也被下探、削掉 boost 的响应优势，
+    # 故此处关闭；关闭后 boost 行为与天花板拆除前逐位一致。
+    steady_decay_enabled: false
     perf_init: 0.60
     up_jump_threshold: 0.25
     slow_up_scale: 0.05

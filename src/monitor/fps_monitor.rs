@@ -1,4 +1,4 @@
-//! fps_monitor.rs: [consts] [probe] [manager] [loop] [gate] [pid-switch] [poll]
+//! fps_monitor.rs: [consts] [probe] [manager] [loop] [attach_stats] [gate] [pid-switch] [poll]
 
 use std::collections::{HashMap, VecDeque};
 use std::mem::size_of;
@@ -41,6 +41,9 @@ const RETRY_BACKOFF_SECS: &[u64] = &[1, 2, 5];
 const RETRY_BACKOFF_NO_SYMBOL_SECS: u64 = 60;
 /// 无探针时的 poll 超时上限（退避窗口内按此周期醒来，不做 attach）
 const IDLE_POLL_MAX_MS: u64 = 1_000;
+/// [attach_stats] attach 失败摘要的最小间隔：主循环按事件驱动（有帧即刻唤醒，迭代间隔不固定），
+/// 节流基准必须是墙钟而不是迭代计数（计数会随帧率变化，密集时可远快于预期）
+const ATTACH_STATS_INTERVAL: Duration = Duration::from_secs(4);
 
 /// RingBuf 输出的帧时间戳事件（与 yumi-ebpf 的 FrameTimestampEvent 内存布局一致）
 #[repr(C)]
@@ -183,6 +186,11 @@ struct FpsManager {
     symbol_candidates: Vec<String>,
     /// attach 连续失败次数（退避档位与 warn 降频共用）
     attach_fail_count: u32,
+    /// attach 累计失败次数（单调累加，仅会话边界 switch_pid(0) 清零）：attach_fail_count 是「当前连续失败档位」且只在
+    /// 首次/每 10 次 warn、消息不带总数，真实故障总量无从观测，据此补可见性
+    attach_fail_total: u64,
+    /// 最后一次 attach 失败原因（与 attach_fail_total 同步更新），供周期摘要诊断
+    last_attach_error: Option<String>,
 /// 下次允许重试 attach 的时刻（退避窗口内不解析 libgui）
     attach_retry_at: Instant,
 }
@@ -227,6 +235,8 @@ impl FpsManager {
             current_pid: 0,
             symbol_candidates,
             attach_fail_count: 0,
+            attach_fail_total: 0,
+            last_attach_error: None,
             attach_retry_at: Instant::now(),
         })
     }
@@ -252,6 +262,8 @@ impl FpsManager {
         if new_pid == 0 {
             self.current_pid = 0;
             self.attach_fail_count = 0;
+            self.attach_fail_total = 0;
+            self.last_attach_error = None;
             self.attach_retry_at = Instant::now();
             debug!("{}", t("fps-monitor-detached"));
             return Ok(());
@@ -313,6 +325,9 @@ impl FpsManager {
         };
 
         self.attach_fail_count = 0;
+        // 一并清「最后一次失败原因」：不清则 attach 恢复后摘要会一直复读已失效的旧错误
+        // （attach_fail_total 保留作会话累计，供「本次会话共失败多少次」观测）
+        self.last_attach_error = None;
         self.attach_retry_at = Instant::now();
         debug!(
             "{}",
@@ -385,13 +400,21 @@ impl FpsManager {
 /// 无探针时的 poll 超时：睡到下次可重试时刻，上限 1s（退避窗口内一次空转 poll，不 attach/不解析）上限理由：前台 PID 走 mpsc、不注册进 poll，超时返回是其唯一消费窗口，
 /// 睡满退避会把 PID 切换拖到退避结束后
     fn idle_poll_timeout(&self) -> Duration {
-        let left = self.attach_retry_at.saturating_duration_since(Instant::now());
-        left.clamp(Duration::from_millis(100), Duration::from_millis(IDLE_POLL_MAX_MS))
+        let left = self
+            .attach_retry_at
+            .saturating_duration_since(Instant::now());
+        left.clamp(
+            Duration::from_millis(100),
+            Duration::from_millis(IDLE_POLL_MAX_MS),
+        )
     }
 
 /// 记录一次 attach 失败：推进退避窗口并降频打日志——首次与每 10 次打 warn，其余 debug （此前每次 warn，一个游戏会话能刷数千行，日志写入本身成了负担）
     fn report_attach_failure(&mut self, err: &anyhow::Error) {
         self.attach_fail_count = self.attach_fail_count.saturating_add(1);
+        // 累计计数 + 最后原因：供 [attach_stats] 周期摘要观测真实故障总量（warn 降频后总量不可见）
+        self.attach_fail_total = self.attach_fail_total.saturating_add(1);
+        self.last_attach_error = Some(err.to_string());
         let no_symbol = self.symbol_candidates.is_empty();
         let backoff = if no_symbol {
             RETRY_BACKOFF_NO_SYMBOL_SECS
@@ -565,6 +588,8 @@ pub async fn start_fps_loop(
             let mut events = Events::with_capacity(64);
             let token = Token(0);
             let mut frame_counter: u32 = 0;
+// [attach_stats] 摘要节流基准（上次落摘要的时刻；None = 本轮循环还没落过）
+            let mut last_stats_at: Option<Instant> = None;
 // 事件通道拥塞丢弃的帧样本数（仅计数，EMA 平滑可容忍少量丢失）
             let mut dropped_frames: u64 = 0;
 // 播放态旁路直方图窗口（只在 FAS 未激活时累加，见下方分流）
@@ -587,6 +612,25 @@ pub async fn start_fps_loop(
             }
 
             loop {
+// [attach_stats] attach 失败可见性：失败只在「首次 + 每 10 次」warn 且消息不带总数，长尾偶发与持续故障
+// 无从区分；距上次摘要满 ATTACH_STATS_INTERVAL 落一行，log_enabled! 门控省掉 INFO 级别下的 format!
+                let stats_due = last_stats_at.map_or(true, |t| t.elapsed() >= ATTACH_STATS_INTERVAL);
+                if manager.attach_fail_total > 0
+                    && stats_due
+                    && log::log_enabled!(log::Level::Debug)
+                {
+                    last_stats_at = Some(Instant::now());
+                    debug!(
+                        "{}",
+                        t_with_args(
+                            "fps-monitor-attach-stats",
+                            &fluent_args!(
+                                "count" => manager.attach_fail_total.to_string(),
+                                "error" => manager.last_attach_error.clone().unwrap_or_default()
+                            )
+                        )
+                    );
+                }
 // [gate]
 // FAS 激活门控（反偷跑核心）：未激活不消费 PID/不投喂帧；旧会话 uprobe 仍挂着则先 detach 回零开销待机，
 // 再阻塞等激活信号（事件驱动，稳态 0 周期唤醒，改造前是 500ms 轮询）唤醒后不在此补挂、回循环顶部，

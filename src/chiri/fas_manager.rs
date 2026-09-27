@@ -4,7 +4,9 @@
 //! 失去前台不立即退出：request_delayed_exit 进入延迟期（时长来自应用配置 deactivate_delay_secs，夹 1..=600s），
 //! 期间仍持有接管（mode 保持 fas、频率停在最后状态）；切回白名单 activate 即取消延迟无缝续期；
 //! 超时由 tick()（1s 周期）真正退出：恢复频率 + governor 快照，返回 true 让调用方按延迟期记住的目标模式重新接管
-//! governor（performance）归 GovernorGuard 管、频率归 FasController 管，两套快照互不踩踏（引擎 load_policies 只快照 min/max/频点表，不碰 governor）
+//! governor（performance）归 GovernorGuard 管、频率归 FasController 管：GovernorGuard 必须**先于**引擎 load_policies 快照——
+//! 引擎自身也会快照 governor 再写 performance，本层若在其后快照会拿到 performance，退出时「引擎 reset_all_freqs 先写 performance、
+//! 本层 release 后写快照」的终值就成了 performance（残留）；perfmgr_enable 由引擎写成 0，本层按同款快照/恢复兜住
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -25,12 +27,21 @@ const FAS_TEMP_REFRESH: Duration = Duration::from_secs(3);
 // TODO: 实机复核接管期写入与退出恢复（退出后该节点应回到接管前的值）
 const MIGRATION_COST_PATH: &str = "/proc/sys/kernel/sched_migration_cost_ns";
 
+/// 接管期间被 FAS 引擎 `load_policies` 无条件写成 0 的厂商 perfmgr 使能节点（与 `scheduler/fas/policy_mgmt.rs` 的写点同源）。
+/// 引擎侧只写不恢复，故接管前必须快照原值、退出时写回，否则厂商默认被永久改写
+const PERFMGR_ENABLE_PATHS: [&str; 2] = [
+    "/sys/module/perfmgr/parameters/perfmgr_enable",
+    "/sys/module/mtk_fpsgo/parameters/perfmgr_enable",
+];
+
 // [types]
 struct FasInstance {
     package: String,
     controller: FasController,
     /// 接管前 `sched_migration_cost_ns` 原值，deactivate 写回（None = 未写或读不到）
     migration_cost_restore: Option<String>,
+    /// 接管前 perfmgr 使能节点原值快照（路径, 原值；缺失机型跳过）：引擎 load_policies 会写成 0，deactivate 逐条写回
+    perfmgr_restore: Vec<(String, String)>,
 }
 
 pub struct FasManager {
@@ -98,18 +109,24 @@ impl FasManager {
             return true;
         }
 
+        // [perfmgr] 快照必须在 load_policies 之前：引擎会把两个 perfmgr_enable 无条件写成 0，先读原值才能退出写回
+        let perfmgr_restore = snapshot_perfmgr_enable();
+        // [governor] 快照也必须先于 load_policies：引擎自身会「先快照 governor 再写 performance」，本层若在其后快照，
+        // 拿到的就是引擎写的 performance 而非系统原值；退出时序为「引擎 reset_all_freqs 先写回它的快照（=performance）、
+        // 本层 release 后写回本层快照」，终值由后写者决定——必须让持有真值的本层收尾，否则残留 performance
+        self.governor.activate();
+
         let mut controller = FasController::new();
         controller.load_policies(rules);
         if controller.policies.is_empty() {
+            // 早退：不建实例、退出路径不会再来恢复，而 load_policies 已写 perfmgr=0、并把各 policy 的 governor 改成
+            // performance；必须就地原路撤回，否则残留泄漏（这是 activate 唯一「已写但无实例」的路径）
+            restore_perfmgr_enable(&perfmgr_restore);
+            self.governor.release();
             return false;
         }
-        // governor 先切 performance：本层快照在写入前完成，与引擎的频率快照互不干扰
-        self.governor.activate();
         // 迁移成本：读不到原值就不写，保证退出能恢复
-        let migration_cost_restore = rules
-            .migration_cost_ns
-            .filter(|v| *v > 0)
-            .and_then(|want| {
+        let migration_cost_restore = rules.migration_cost_ns.filter(|v| *v > 0).and_then(|want| {
                 let orig = std::fs::read_to_string(MIGRATION_COST_PATH).ok()?;
                 let orig = orig.trim().to_string();
                 crate::utils::try_write_file(MIGRATION_COST_PATH, &want.to_string()).ok()?;
@@ -122,6 +139,7 @@ impl FasManager {
             package: pkg.to_string(),
             controller,
             migration_cost_restore,
+            perfmgr_restore,
         });
         self.exit_deadline = None;
         self.fas_signal.set(true);
@@ -154,10 +172,12 @@ impl FasManager {
         };
         self.exit_deadline = None;
         self.fas_signal.set(false);
-        // 迁移成本先于频率恢复，让后续 governor 快照到系统原状
+        // 迁移成本与 perfmgr 先于频率恢复，让后续 governor 快照到系统原状
         if let Some(orig) = inst.migration_cost_restore.take() {
             let _ = crate::utils::try_write_file(MIGRATION_COST_PATH, &orig);
         }
+        // perfmgr_enable 恢复：引擎接管前写成 0，按快照写回厂商原值（失败只记日志，不中断收尾）
+        restore_perfmgr_enable(&inst.perfmgr_restore);
         // 先恢复频率再清状态：调用方随后 init 其他 governor（CLG/akmode/fast）时，对方才能快照到真实的系统状态
         inst.controller.reset_all_freqs();
         inst.controller.clear_game();
@@ -264,5 +284,25 @@ impl FasManager {
         if let Some(inst) = self.instance.as_mut() {
             inst.controller.set_temperature(temp);
         }
+    }
+}
+
+// [perfmgr]
+/// 探测并快照厂商 perfmgr 使能节点原值（存在且可读才记，缺失机型跳过）：FAS 引擎 `load_policies` 会把这两个节点
+/// 无条件写成 0（关闭厂商 perfmgr 的频率干预），本层不先快照则退出后无从恢复，厂商默认被永久改写
+fn snapshot_perfmgr_enable() -> Vec<(String, String)> {
+    let mut snap = Vec::new();
+    for path in PERFMGR_ENABLE_PATHS {
+        if let Ok(v) = std::fs::read_to_string(path) {
+            snap.push((path.to_string(), v.trim().to_string()));
+        }
+    }
+    snap
+}
+
+/// 按快照逐条写回 perfmgr 使能节点。用 `try_write_file`：失败只记日志不 panic——收尾路径不能因单点失败中断
+fn restore_perfmgr_enable(snap: &[(String, String)]) {
+    for (path, val) in snap {
+        let _ = crate::utils::try_write_file(path, val);
     }
 }

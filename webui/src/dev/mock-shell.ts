@@ -135,17 +135,23 @@ function fakeStatusCsv(): string {
   return rows.join('\n') + '\n'
 }
 
-/** aff_ 线程流样例：3 行 @A 动作帧（含失败观测 e3）+ 一帧 @S 快照（帧头 ntop/nfg 计数与随后 p/t 行数严格一致），帧格式见 agentsdocs/02-convention.md。 */
+/** aff_ 线程流样例：3 行 @A 动作帧（含失败观测 e3）+ 两帧 @S 快照（帧头 ntop/nfg 计数与随后 p/t 行数严格一致；
+ * 首帧是刷新帧 `full=1`、t 行六槽全量，次帧是槽级差分——只 `u` 变了，其余槽写 `-`。本样例只供 dev 模式播种
+ * 文件名给日志页展示，WebUI 不解析帧内容），帧格式见 agentsdocs/02-convention.md。 */
 function fakeAffLog(): string {
   return [
     '# ts-column=local format_now',
     '@A ts=0913-120001 act=pin pid=12345 tid=12361 pkg=com.tencent.tmgp.sgame comm=RenderThread dst=7 value=- result=ok reason=fg_pin',
     '@A ts=0913-120002 act=pin pid=12345 tid=12408 pkg=com.tencent.tmgp.sgame comm=UnityGfxDeviceW dst=3 value=- result=e3 reason=home_overload',
     '@A ts=0913-120003 act=uclamp pid=0 tid=0 pkg=- comm=- dst=/dev/cpuctl/top-app/cpu.uclamp.max value=85.00 result=ok reason=override',
-    '@S ts=0913-120004 ntop=2 nfg=1',
+    '@S ts=0913-120004 ntop=2 nfg=1 full=1',
     'p 1 12345 com.tencent.tmgp.sgame u=62 mask=ff home=7',
     'p 2 2104 com.android.systemui u=18 mask=38 home=3',
     't 12345 12361 RenderThread u=41 core=7 home=7 pin=1 uclamp=-1',
+    '@S ts=0913-120005 ntop=2 nfg=1',
+    'p 1 12345 com.tencent.tmgp.sgame u=64 mask=ff home=7',
+    'p 2 2104 com.android.systemui u=16 mask=38 home=3',
+    't 12345 12361 - u=44',
     ''
   ].join('\n')
 }
@@ -251,13 +257,28 @@ const TAIL_CMD = /^tail -c (\d+) (.+)$/
 const LS_CMD = /^ls -1 (.+)$/
 const WRITE_CMD = /^printf '%s' (\S+) \| base64 -d > (.+) && mv -f (.+) (.+) \|\| \{ rm -f (.+); exit 1; \}$/
 const KILL_CMD = /killall -9 chiri/
-// 导出历史日志：启动命令与轮询探测mock 直接回「gzip 回退产物已生成」，预览里免等轮询超时
-const EXPORT_START_CMD = /^nohup sh -c /
+// 导出历史日志：启动与轮询探测 mock。启动命令形态必须与 contract/export.ts 发出的一致（`nohup sh <pack.sh> export ...`），
+// 正则写成 `nohup sh -c` 会 mismatch → 预览里点「导出历史日志」直接报「启动导出失败」，进度条根本不会出现
+const EXPORT_START_CMD = /^nohup sh .*pack\.sh'? export /
 const EXPORT_POLL_CMD = /\/sdcard\/Download\/logd_\d{4}-\d{6}\.tar\.gz/
+/** 轮询次数：前几轮先回进度态，最后才回完成——一上来就回完成会让进度条一闪而过，预览里看不到进度形态 */
+let exportPolls = 0
 
 function handle(cmd: string): ExecResult | null {
-  if (EXPORT_START_CMD.test(cmd)) return ok('started\n')
-  if (EXPORT_POLL_CMD.test(cmd)) return ok('s:gz\nb:2097152\nd:1\nt:1\n')
+  if (EXPORT_START_CMD.test(cmd)) {
+    exportPolls = 0
+    return ok('started\n')
+  }
+  if (EXPORT_POLL_CMD.test(cmd)) {
+    exportPolls++
+    // 按真实三段形态依次回：1-2 轮打包（.part 200MB / 源 300MB）、3-4 轮压缩（已读入 150MB / .tar 300MB）、
+    // 5-8 轮压缩但读不到 rchar（内核未计 io 的降级形态 → 界面走不定态）、第 9 轮起完成
+    if (exportPolls <= 2) return ok('p:209715200\ns:0\ng:0\nt:314572800\nr:0\n')
+    if (exportPolls <= 4)
+      return ok('p:0\ns:314572800\ng:157286400\nt:314572800\nr:157286400\n')
+    if (exportPolls <= 8) return ok('p:0\ns:314572800\ng:52428800\nt:314572800\nr:0\n')
+    return ok('s:gz\np:0\ns:0\ng:94371840\nt:314572800\nr:314572800\n')
+  }
 
   const exists = EXISTS_CMD.exec(cmd)
   if (exists) {

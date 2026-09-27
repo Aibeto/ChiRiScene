@@ -14,10 +14,9 @@ akmode:
   # 2026-09-22 8475（原注释误写 8745）明日方舟实测调整（全局生效，游戏场景各 SoC 同向受益）：
   # 该场景 7.06 W、big 上限中位数 100%、gpu 74%——原本 headroom 1.15 且无天花板，
   # util 尖峰一来就是 1.0×1.15 → clamp 1.0 直接满频。
-  # perf_ceil 0.95：留 5% 余量即可，不再让尖峰顶到 100%；
   # util_smoothing 0.85：只滤最陡的尖峰（游戏仍以响应优先，不做到 0.3 那种强平滑）。
-  # **掉帧/操作变粘即回退**：先把 util_smoothing 回 1.0，仍不行再回 perf_ceil 1.0。
-  perf_ceil: 0.95
+  # 原 perf_ceil 0.95 属天花板，2026-09-28 拆除：省电改走升频审批 + 稳态下探。
+  perf_ceil: 1.0
   hysteresis: 0.03
   down_hold_ms: 100
   util_smoothing: 0.85
@@ -42,11 +41,12 @@ tuned_profiles:
   #     big（util 30~39%）不覆盖，跟随模式级 0.95；
   # - migration_cost_ns 400000：稳态下调高迁移成本，减少无谓跨核搬迁（实测 ≈557 次/s），
   #   接管期生效、退出按快照恢复（feature.yaml 的一次性 200000 不受影响）。
-  # **未列 per_cluster 的 big、以及所有组的未列字段都回退上面的模式级值。**
+  # 2026-09-28：headroom（模式级 0.85 / per_cluster）与三簇 perf_ceil 全部拆除（R2 天花板），
+  #   稳态降功耗改由 steady_decay_* 承担；未列 per_cluster 的簇与字段一律回退模式级值。
   playback:
-    # target = util × headroom（贴负载）
-    # TODO: 实机复核 0.85（看视频功耗与弹幕/滚动掉帧）。
-    headroom: 0.85
+    # target = util × headroom。原 0.85 是天花板（util 满也只能到 0.85×硬件上限），
+    # 2026-09-28 拆除 → 1.0（贴负载，尖峰不再被 0.85 按住）。
+    headroom: 1.0
     perf_floor: 0.0
     perf_ceil: 1.0
     # 死区 = hw_max × hysteresis，须 ≥ 频表相邻档步长，否则上限会在相邻两档间往复；
@@ -56,15 +56,6 @@ tuned_profiles:
     down_hold_ms: 150
     util_smoothing: 0.25
     boost_affinity: false
-    per_cluster:
-      little:
-        headroom: 0.90
-        perf_ceil: 0.55
-      # big 组天花板 0.75（≈2102 MHz）
-      # TODO: 实机复核（弹幕/滚动掉帧则回退）。
-      big:
-        perf_ceil: 0.75
-      prime:
-        headroom: 0.80
-        perf_ceil: 0.50
+    # per_cluster 三簇天花板（little 0.90/0.55、big 0.75、prime 0.80/0.50）2026-09-28 整段拆除；
+    # 未列簇/字段本就回退模式级值，删段与「不覆盖」等价。
     migration_cost_ns: 400000

@@ -94,6 +94,7 @@ fps-monitor-symbol-scan = [FPS Monitor] libgui 符号扫描：命中 { $count } 
 fps-monitor-frame-source-missing = [FPS Monitor] 帧源不可用：{ $lib } 内无 Surface::queueBuffer 符号，FAS 档位控制停摆（退避 { $secs }s 后重试）
 fps-monitor-frame-summary = [FPS Monitor] 帧摘要 | pid={ $pid } 窗口={ $window } 最新={ $latest_ms }ms 平均={ $avg_ms }ms
 fps-monitor-frames-dropped = [FPS Monitor] 事件通道拥塞，已丢弃 { $count } 个帧样本（调度层消费不及时）
+fps-monitor-attach-stats = [FPS Monitor] attach 累计失败 { $count } 次，最后原因: { $error }
 
 # --- Scheduler ---
 scheduler-ipc-started = [Scheduler] IPC 通道监听器已启动
@@ -174,7 +175,10 @@ clg-deactivated = [CLG] CPU 负载调频器已停用
 clg-config-reloaded = [CLG] 配置已热重载 | 升频={ $up } 降频={ $down } 地板={ $floor } 天花板={ $ceil }
 clg-perf-clamped = [CLG] 配置 perf_floor > perf_ceil ({ $floor } > { $ceil })，已将 perf_floor 限制为 perf_ceil
 clg-restore = [CLG] P{ $pid } 已恢复 | governor={ $governor } min={ $min } kHz max={ $max } kHz
-clg-tick-log = [CLG] P{ $pid } 利用率={ $util }% perf={ $perf } 频率={ $freq }kHz boost={ $boost }kHz
+clg-tick-log = [CLG] P{ $pid } 利用率={ $util }% perf={ $perf } 频率={ $freq }kHz boost={ $boost }kHz decay={ $decay }
+clg-pf-tick-log = [CLG-PF] P{ $pid } 利用率={ $util }% perf={ $perf } 频率={ $freq }kHz decay={ $decay } pf={ $pf_khz }kHz
+clg-pf-enabled = [CLG-PF] P{ $pid } 帕累托前沿查表已启用 | 指纹={ $fp } 桶数={ $buckets }
+clg-pf-fallback = [CLG-PF] 前沿表不可用（{ $reason }），回退比例路径（只此一次）
 clg-writer-invalid = [CLG] P{ $pid } sysfs 写入器无效 (max_valid: { $max_valid }, min_valid: { $min_valid })，已跳过
 clg-freq-set = [CLG] P{ $pid } 频率调整: { $old_khz }MHz -> { $new_khz }MHz
 clg-freq-write-failed-cached = [CLG] P{ $pid } 频率写入失败，保持缓存值 { $cached_khz }MHz (目标 { $target_khz }MHz)
@@ -290,7 +294,9 @@ rhine-lock-note-no-backup = rhine-back.chr 缺失（上次启用时的原始状�
 affinity-boost-applied = [Affinity] boost 布局已应用: top-app/foreground → { $big }，后台分组 → { $little }
 affinity-normal-restore = [Affinity] 已恢复正常亲和布局（后台保持压小核）
 affinity-promoted = [Affinity] 后台线程 { $tid } 已提升到大核（util { $util }%）
+affinity-fdp-promoted = [Affinity] FDP：后台线程 { $tid } 迁至 { $dst }（净收益 { $net_mw } mW）
 affinity-demoted = [Affinity] 后台线程 { $tid } 已降回小核组（util { $util }%）
+affinity-write-fail-summary = [Affinity] 亲和写失败汇总（本 25 tick）mask={ $mask } cpuset={ $cpuset } uclamp={ $uclamp }
 affinity-uclamp-unavailable = [Affinity] top_app_uclamp_max_pct 不可用已自动纠正（内核 { $version }，原因: { $reason }；uclamp 需内核 >= 5.3 且节点可写）
 affinity-released = [Affinity] 已释放接管，恢复系统原始亲和配置
 
@@ -304,7 +310,8 @@ corectl-self-pinned = [CoreCtl] 调度服务已钉到专用小核 cpu{ $core }
 corectl-unavailable = [CoreCtl] 未发现可用的 core_ctl 节点，接管跳过
 corectl-write-failed = [CoreCtl] core_ctl 写入失败: { $path }
 corectl-node-missing = [CoreCtl] core_ctl 节点缺失/不可读: { $path }（该簇降级逐核 offline 兜底）
-corectl-enable-off = [CoreCtl] core_ctl enable=0（内核不受理 max_cpus 写入）: { $path }，跳过无效写直接降级逐核 offline
+corectl-enable-off = [CoreCtl] core_ctl enable=0（core_ctl 不执行压制、写入不生效）: { $path }，跳过无效写直接降级逐核 offline
+corectl-enable-off-boost = [CoreCtl] core_ctl enable=0（core_ctl 不执行压制、整簇本就常在线）: { $path }，boost 保核跳过该簇
 corectl-vendor-override = [CoreCtl] core_ctl 节点被厂商改写（写后读回非 0）: { $path }，不与厂商拉锯，退出按快照恢复
 corectl-verify-failed = [CoreCtl] core_ctl 节点读回失败（写已发出，按已生效记账）: { $path }
 corectl-scenemode-halt = [CoreCtl] scenemode prime 簇已经 core_ctl max_cpus 整簇 halt

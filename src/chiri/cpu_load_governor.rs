@@ -24,6 +24,22 @@ pub fn set_clamp_heavy(v: bool) {
     CLAMP_HEAVY.store(v, Ordering::Relaxed);
 }
 
+// [frontier_pf] 前沿查表缺数据的一次性告警门（进程级）：表是静态资产、首 tick 即定型，刷日志无意义
+static PF_FALLBACK_WARNED: AtomicBool = AtomicBool::new(false);
+
+/// 前沿表不可用时打一条 warn（只此一次），说明回退原因（reason = 缺容量/桶越界/该簇无目标）
+fn warn_pf_fallback_once(reason: &str) {
+    if !PF_FALLBACK_WARNED.swap(true, Ordering::Relaxed) {
+        warn!(
+            "{}",
+            t_with_args(
+                "clg-pf-fallback",
+                &fluent_args!("reason" => reason.to_string())
+            )
+        );
+    }
+}
+
 // [cluster] PolicyRestore — CLG 接管前的系统状态快照，release 时恢复
 
 struct PolicyRestore {
@@ -60,6 +76,11 @@ struct ClusterState {
     down_wait: u32,
     /// 升频确认计数：连续满 up_rate_limit_ticks 才执行升频
     up_wait: u32,
+    // [steady_decay] T11 稳态下探状态（只作写侧偏移，绝不回写 current_perf）
+    /// 当前稳态下探量（性能比，0 = 无下探）
+    steady_decay: f32,
+    /// 连续稳定 tick 计数（满 steady_decay_stable_ticks 才开始下探）
+    steady_streak: u32,
     /// 上一 tick 的 max_util（平滑后），用于尖峰跳升检测
     last_util: f32,
     /// 决策负载 EMA 状态（util_smoothing < 1 时启用；-1 = 未初始化），语义同 tuned
@@ -81,6 +102,17 @@ impl ClusterState {
     #[inline]
     fn find_floor_freq(&self, target_ratio: f32) -> u32 {
         let idx = self.cached_ratios.partition_point(|&r| r <= target_ratio);
+        if idx == 0 {
+            self.available_freqs[0]
+        } else {
+            self.available_freqs[idx - 1]
+        }
+    }
+
+    /// [frontier_pf] kHz → 频率表中 **≤ 目标** 的最大档（floor 对齐）：前沿表给的是目标 kHz，落点不得高于它
+    #[inline]
+    fn floor_freq_khz(&self, khz: u32) -> u32 {
+        let idx = self.available_freqs.partition_point(|&f| f <= khz);
         if idx == 0 {
             self.available_freqs[0]
         } else {
@@ -303,6 +335,9 @@ struct CoreGroupWorker {
     cfg: CpuLoadGovernorConfig,
     restore: PolicyRestore,
     core_ranges: crate::common::CoreGroupRanges,
+    /// [frontier_pf] 各 CPU 的容量（真机 cpu_capacity 优先，缺失按核心组回退 soc.yaml [capacity]；再缺 = None）
+    /// spawn 时一次性解析并缓存，flush 每 tick 只读；None 项会让 PF 需求折算整段回退比例路径
+    core_capacities: Vec<Option<u32>>,
     load_rx: LoadReceiver,
     stop: Arc<AtomicBool>,
     touch: Arc<AtomicTouchState>,
@@ -386,6 +421,40 @@ impl CoreGroupWorker {
                 + (1.0 - self.cfg.util_smoothing) * self.cluster.ema_util
         };
         self.cluster.ema_util = smoothed;
+
+        // [steady_decay] T11 稳态下探 = 对「写侧性能偏移」的**限幅积分控制**（被控量是 util）：
+        // 下探会抬高实际 util，故以目标水位 T = up_threshold × target_ratio 为均衡点——util 高于 T 就回收下探（步长 ×2 防过冲）、
+        // 低于 T 就加深、死区内保持 → 回路自带稳态，不会像「稳态就无脑累加」那样形成 2~4s 频率锯齿（R6 要防的震荡）；
+        // 限幅 [0, max] = 抗积分饱和。必须用**更新前的** last_util 算差量（下行会把 last_util 覆盖成 smoothed）
+        let prev_smoothed = self.cluster.last_util;
+        let delta = smoothed - prev_smoothed;
+        let stable = delta.abs() <= self.cfg.steady_decay_band;
+        if !self.cfg.steady_decay_enabled
+            || smoothed >= self.cfg.up_threshold
+            || smoothed < self.cfg.down_fast_threshold
+            || delta > self.cfg.steady_decay_band
+        {
+            // 负载上行 / 极低负载 / 关闭开关：立即放弃下探（安全优先，回到正常升频路径）
+            self.cluster.steady_decay = 0.0;
+            self.cluster.steady_streak = 0;
+        } else if stable {
+            self.cluster.steady_streak = self.cluster.steady_streak.saturating_add(1);
+            if self.cluster.steady_streak >= self.cfg.steady_decay_stable_ticks {
+                let target = self.cfg.up_threshold * self.cfg.steady_decay_target_ratio;
+                if smoothed > target + self.cfg.steady_decay_band {
+                    self.cluster.steady_decay =
+                        (self.cluster.steady_decay - self.cfg.steady_decay_step * 2.0).max(0.0);
+                } else if smoothed < target - self.cfg.steady_decay_band {
+                    self.cluster.steady_decay = (self.cluster.steady_decay
+                        + self.cfg.steady_decay_step)
+                        .min(self.cfg.steady_decay_max);
+                }
+                // 死区内保持不变 → 消除抖动
+            }
+        } else {
+            // 抖动只清进度，**不清**已建立的下探量（噪声不得反复打回）
+            self.cluster.steady_streak = 0;
+        }
 
         // 尖峰抑制：单 tick 跳升超过阈值时衰减其增量
         let util = if smoothed > self.cluster.last_util + self.cfg.spike_jump_threshold {
@@ -519,7 +588,30 @@ impl CoreGroupWorker {
         } else {
             self.cluster.current_perf
         };
-        let target_freq = self.cluster.find_floor_freq(eff_perf);
+        // [steady_decay] T11 下探只作「写侧偏移」，绝不回写 current_perf：压下去后真实 util 被反馈抬高，
+        // 一旦 util >= up_threshold 立即清零（见 on_load_update），自限且不与升频分支的 target_perf 比较打架。
+        // **触摸窗口内不叠加下探**：上方已把 current_perf 抬到 touch floor，再减 decay 会把落点压到地板之下，
+        // 与「触摸升频兜交互响应」的口径打架（只影响本次写入，已积分的 decay 状态保留、窗口结束自动恢复）
+        let decay = if touch_active {
+            0.0
+        } else {
+            self.cluster.steady_decay
+        };
+        let write_perf = (eff_perf - decay).max(self.cfg.perf_floor);
+        let ratio_freq = self.cluster.find_floor_freq(write_perf);
+        // [frontier_pf] 前沿落点**只允许下调**：target = min(比例路径落点, PF 目标)；非稳态/缺数据/PF 未启用一律 = ratio_freq。
+        // 不变式：PF 结果严格劣于等于「比例路径 + T11 下探」的功耗，绝不可能比不加 PF 更激进；触摸 floor / 热钳 /
+        // perf_floor / perf_ceil 已在上方生效，PF 只替换「比例→频点」这一步的落点。
+        // 触摸窗口内与 decay 同口径关闭：min() 否则会把上面刚抬到触摸 floor 的落点拉回低频桶，抵消触摸升频
+        let pf_target = if touch_active {
+            None
+        } else {
+            self.frontier_lookup(core_utils)
+        };
+        let target_freq = match pf_target {
+            Some(pf) => ratio_freq.min(pf),
+            None => ratio_freq,
+        };
 // [thermal_clamp] 钳制「生效/解除」跃迁记一条 event（值未变不写，零分配）；生效判据 = 写频目标被 cap 压到 current_perf 之下
         let clamp_binds = eff_perf < self.cluster.current_perf;
         if clamp_binds != self.dev_clamp_binds {
@@ -548,7 +640,8 @@ impl CoreGroupWorker {
             || self.cluster.last_failed;
         let dwell_ms = self.cfg.write_dwell_ms;
         let deadzone = self.cfg.write_deadzone;
-        self.cluster.write_freq(target_freq, dwell_ms, deadzone, exempt);
+        self.cluster
+            .write_freq(target_freq, dwell_ms, deadzone, exempt);
 
         // main_ tick 行：仅决策 tick（core_utils 非空）且开发记录开启时写
         if !core_utils.is_empty() && crate::logger::diag_active() {
@@ -589,22 +682,114 @@ impl CoreGroupWorker {
         }
 
 // 日志摘要：每 25 tick 输出一次；format! 在宏外求值，log_enabled! 门控省掉 INFO 级别下的分配
+        // [frontier_pf] 启用前沿的 SoC（8550）日志前缀用 CLG-PF 区分；非 PF 机型仍打 CLG
         *log_counter += 1;
         if *log_counter % 25 == 0 && log::log_enabled!(log::Level::Debug) {
+            let pid = self.cluster.policy_id.to_string();
+            let util = format!("{:.0}", self.cluster.max_util(core_utils) * 100.0);
+            let perf = format!("{:.2}", self.cluster.current_perf);
+            let freq = (self.cluster.current_freq / 1000).to_string();
+            let decay = format!("{:.2}", self.cluster.steady_decay);
+            if crate::common::soc_frontier_policy().is_some() {
+                debug!(
+                    "{}",
+                    t_with_args(
+                        "clg-pf-tick-log",
+                        &fluent_args!(
+                            "pid" => pid,
+                            "util" => util,
+                            "perf" => perf,
+                            "freq" => freq,
+                            "decay" => decay,
+                            "pf_khz" => pf_target.map(|f| f / 1000).unwrap_or(0).to_string()
+                        )
+                    )
+                );
+            } else {
             debug!(
                 "{}",
                 t_with_args(
                     "clg-tick-log",
                     &fluent_args!(
-                        "pid" => self.cluster.policy_id.to_string(),
-                        "util" => format!("{:.0}", self.cluster.max_util(core_utils) * 100.0),
-                        "perf" => format!("{:.2}", self.cluster.current_perf),
-                        "freq" => (self.cluster.current_freq / 1000).to_string(),
-                        "boost" => format!("{:.0}", self.cluster.boost_max as f32 / 1000.0)
+                            "pid" => pid,
+                            "util" => util,
+                            "perf" => perf,
+                            "freq" => freq,
+                            "boost" => format!("{:.0}", self.cluster.boost_max as f32 / 1000.0),
+                            "decay" => decay
                     )
                 )
             );
         }
+        }
+    }
+
+    /// [frontier_pf] 本簇所属核心组（按受影响 CPU 首个 ID 归属）：PF 查表与容量回退都要它
+    fn cluster_group(&self) -> Option<crate::common::CoreGroup> {
+        let first = *self.cluster.affected_cpus.iter().min()?;
+        let r = &self.core_ranges;
+        if r.little.contains(&first) {
+            Some(crate::common::CoreGroup::Little)
+        } else if r.big.contains(&first) {
+            Some(crate::common::CoreGroup::Big)
+        } else if r.prime.contains(&first) {
+            Some(crate::common::CoreGroup::Prime)
+        } else {
+            None
+        }
+    }
+
+    /// [frontier_pf] 本 tick 全局需求（真机容量单位）= Σ(各核 util × 该核 capacity)。
+    /// 只累加 util > 0 的核（0 贡献无需容量）；任一贡献核容量缺失（真机 cpu_capacity 与 soc.yaml 兜底都没）→ None（整段回退）
+    fn demand_units(&self, core_utils: &[f32]) -> Option<f32> {
+        // 空切片 = 负载超时 flush（无观测），不是「缺容量」：静默回退，不占用一次性告警
+        if core_utils.is_empty() {
+            return None;
+        }
+        let mut sum = 0.0f32;
+        for (cpu, &u) in core_utils.iter().enumerate() {
+            if u <= 0.0 {
+                continue;
+            }
+            let cap = self.core_capacities.get(cpu).copied().flatten()?;
+            sum += u * cap as f32;
+        }
+        Some(sum)
+    }
+
+    /// [frontier_pf] 前沿目标频点（floor 对齐到 available_freqs），失败一律 None → 调用方回退比例路径。
+    /// 只下调的前提由调用方保证（`ratio_freq.min(pf)`）。缺数据打一次性 warn；非 PF SoC 静默返回 None
+    fn frontier_lookup(&self, core_utils: &[f32]) -> Option<u32> {
+        let policy = crate::common::soc_frontier_policy()?;
+        // 非稳态：不把落点压向 pf（不算缺数据，不告警）
+        if self.cluster.steady_streak < self.cfg.steady_decay_stable_ticks {
+            return None;
+        }
+        let Some(group) = self.cluster_group() else {
+            warn_pf_fallback_once("unknown-cluster");
+            return None;
+        };
+        let Some(demand) = self.demand_units(core_utils) else {
+            warn_pf_fallback_once("capacity-missing");
+            return None;
+        };
+        // 需求低于首桶边界 = 负载极低（几何边界，不是表错）：静默回退，别占用一次性告警
+        if policy
+            .demand_buckets
+            .first()
+            .is_some_and(|b| demand < b.lo_units)
+        {
+            return None;
+        }
+        let Some(bucket) = policy.bucket_for_demand(demand) else {
+            warn_pf_fallback_once("bucket-out-of-range");
+            return None;
+        };
+        let Some(khz) = policy.target_khz(group, bucket) else {
+            warn_pf_fallback_once("cluster-target-missing");
+            return None;
+        };
+        Some(self.cluster.floor_freq_khz(khz))
     }
 
     /// 判定 cluster 是否覆盖当前 SoC 的大核区间：触摸升频只作用于大核
@@ -745,6 +930,9 @@ impl CoreGroupWorker {
             current_freq: 0,
             down_wait: 0,
             up_wait: 0,
+            // [steady_decay] 稳态下探状态初值：0 = 无下探
+            steady_decay: 0.0,
+            steady_streak: 0,
             ema_util: -1.0,
             last_util: 0.0,
             // [dwell] 写频滞回状态：接管初写不走 write_freq、不启动 dwell 时钟
@@ -763,6 +951,24 @@ impl CoreGroupWorker {
 
         let (load_tx, load_rx) = mpsc::sync_channel::<Arc<Vec<f32>>>(1);
 
+        // [frontier_pf] 各 CPU 容量：真机 cpu_capacity 优先，缺失按核心组回退 soc.yaml [capacity]，再缺 = None（PF 需求折算整段回退）
+        let total_cpus = core_ranges
+            .little
+            .end
+            .max(core_ranges.big.end)
+            .max(core_ranges.prime.end);
+        let mut core_capacities: Vec<Option<u32>> = Vec::with_capacity(total_cpus);
+        for cpu in 0..total_cpus {
+            let cap = fs::read_to_string(format!("/sys/devices/system/cpu/cpu{cpu}/cpu_capacity"))
+                .ok()
+                .and_then(|s| s.trim().parse::<u32>().ok())
+                .or_else(|| {
+                    crate::common::core_group_of(cpu as u32)
+                        .and_then(crate::common::soc_capacity_for_group)
+                });
+            core_capacities.push(cap);
+        }
+
         info!(
             "{}",
             t_with_args(
@@ -778,6 +984,21 @@ impl CoreGroupWorker {
             )
         );
 
+        // [frontier_pf] 启用前沿的 SoC（8550）在接管时打一条，确认表已加载并标识指纹/桶数（非 PF 机型不打）
+        if let Some(pol) = crate::common::soc_frontier_policy() {
+            info!(
+                "{}",
+                t_with_args(
+                    "clg-pf-enabled",
+                    &fluent_args!(
+                        "pid" => pid.to_string(),
+                        "fp" => pol.model_fingerprint.clone().unwrap_or_else(|| "-".to_string()),
+                        "buckets" => pol.demand_buckets.len().to_string()
+                    )
+                )
+            );
+        }
+
         let worker = CoreGroupWorker {
             cluster,
             cfg,
@@ -789,6 +1010,7 @@ impl CoreGroupWorker {
                 hw_max: restore.hw_max,
             },
             core_ranges,
+            core_capacities,
             load_rx,
             stop: stop.clone(),
             touch,

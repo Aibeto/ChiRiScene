@@ -97,7 +97,10 @@ fn write_ebpf_stub() -> Result<PathBuf, Box<dyn std::error::Error>> {
 
 /// 构建 yumi-ebpf BPF 程序，参照 frame-analyzer 的 build_ebpf()
 fn build_ebpf() -> Result<PathBuf, Box<dyn std::error::Error>> {
-// YUMI_SKIP_EBPF=1：跳过 eBPF 编译，仅写占位产物供 include_bytes! 解析（CI/发布不设置该变量，行为不变）
+    // 必须声明 rerun-if-env-changed：本脚本已打印多条 rerun-if-changed，cargo 只按路径判定重跑，
+    // 取消该变量后占位产物会残留（运行期 Ebpf::load 失败 → fps 探针没有帧源）
+    println!("cargo:rerun-if-env-changed=YUMI_SKIP_EBPF");
+    // YUMI_SKIP_EBPF：跳过 eBPF 编译，仅写占位产物供 include_bytes! 解析（CI/发布不设置该变量，行为不变）
     if std::env::var_os("YUMI_SKIP_EBPF").is_some() {
         println!("cargo:warning=YUMI_SKIP_EBPF=1: skipping eBPF build (check-only stub)");
         return write_ebpf_stub();
@@ -115,7 +118,7 @@ fn build_ebpf() -> Result<PathBuf, Box<dyn std::error::Error>> {
     );
     println!("cargo:rerun-if-changed={}", ebpf_dir.join("src").display());
 
-// 1. 安装 bpf-linker（严格校验）；Windows 本机无 bpf-linker 时回退占位产物，保证本地 rust-analyzer / cargo check 不阻塞（CI 不受影响）
+    // 1. 安装 bpf-linker（严格校验）；Windows 本机无 bpf-linker 时回退占位产物，保证本地 rust-analyzer / cargo check 不阻塞（CI 不受影响）
     let linker_bin = match ensure_bpf_linker(&tools_dir) {
         Ok(l) => l,
         Err(e) if cfg!(windows) => {
@@ -171,11 +174,14 @@ fn build_ebpf() -> Result<PathBuf, Box<dyn std::error::Error>> {
 
 fn add_path(add: &std::path::Path) -> Result<String, std::env::VarError> {
     let path = env::var("PATH")?;
-    Ok(format!("{}:{}", add.display(), path))
+    // 用平台分隔符（Windows `;` / Unix `:`）把 linker 目录拼到最前：手写 ':' 会在 Windows 上把 PATH 拼坏
+    let joined = env::join_paths(std::iter::once(add.to_path_buf()).chain(env::split_paths(&path)))
+        .expect("PATH 拼接失败：路径中含非法字符");
+    Ok(joined.to_string_lossy().into_owned())
 }
 
 fn main() {
-// module/config 目录整体 include_dir! 嵌入：目录内新增/删除 yaml 需触发本包重编译（已有文件改动由 rustc 依赖跟踪覆盖）
+    // module/config 目录整体 include_dir! 嵌入：目录内新增/删除 yaml 需触发本包重编译（已有文件改动由 rustc 依赖跟踪覆盖）
     println!("cargo:rerun-if-changed=module/config");
     assert_required_configs();
     match build_ebpf() {
@@ -208,7 +214,10 @@ fn write_webui_assets() {
     }
 
     let mut code = String::from("// 由 build.rs 生成：webui/dist 资产清单（相对路径 -> 内容）\n");
-    code.push_str(&format!("pub const EMBEDDED: bool = {};\n", !files.is_empty()));
+    code.push_str(&format!(
+        "pub const EMBEDDED: bool = {};\n",
+        !files.is_empty()
+    ));
     code.push_str("pub const FILES: &[(&str, &[u8])] = &[\n");
     for (rel, abs) in &files {
         code.push_str(&format!(
@@ -236,13 +245,14 @@ fn collect_webui_dist(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>)
     }
 }
 
-/// 必需配置文件缺失直接 panic（include_dir 嵌入内容是运行时唯一来源，不允许静默回退默认值）；并校验处理器子目录 meta.yaml/feature.yaml 成对出现
+/// 必需配置文件缺失直接 panic（include_dir 嵌入内容是运行时唯一来源，不允许静默回退默认值）；并校验处理器子目录 meta.yaml/feature.yaml/soc.yaml 三件套齐全
 fn assert_required_configs() {
     let cfg_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("module/config");
     let required = [
         "meta.yaml",
         "feature.yaml",
-        "soc.yaml"
+        // 顶层无 soc.yaml（每 SoC 一份，见下方 handler 目录检查），故不列入必需项
+        // "soc.yaml",
         "normal/tuned_profiles.yaml",
         "normal/scenemode.yaml",
         "normal/fas.yaml",
@@ -262,14 +272,17 @@ fn assert_required_configs() {
             if p.is_dir() {
                 let has_meta = p.join("meta.yaml").is_file();
                 let has_feature = p.join("feature.yaml").is_file();
-                if has_meta != has_feature {
+                let has_soc = p.join("soc.yaml").is_file();
+                // soc.yaml 每 SoC 一份（顶层那份已取消），handler 目录必须三件套齐全
+                if has_meta != has_feature || (has_meta && !has_soc) {
                     unpaired.push(format!(
-                        "{}（meta.yaml={} feature.yaml={}）",
+                        "{}（meta.yaml={} feature.yaml={} soc.yaml={}）",
                         p.file_name()
                             .map(|s| s.to_string_lossy().to_string())
                             .unwrap_or_default(),
                         has_meta,
-                        has_feature
+                        has_feature,
+                        has_soc
                     ));
                 }
             }
@@ -277,7 +290,7 @@ fn assert_required_configs() {
     }
     if !missing.is_empty() || !unpaired.is_empty() {
         panic!(
-            "必需配置文件缺失或 meta/feature 不成对，拒绝编译（嵌入内容是运行时唯一来源）:\n  missing: {:?}\n  unpaired: {:?}",
+            "必需配置文件缺失或 handler 目录 meta/feature/soc 不齐，拒绝编译（嵌入内容是运行时唯一来源）:\n  missing: {:?}\n  unpaired: {:?}",
             missing, unpaired
         );
     }

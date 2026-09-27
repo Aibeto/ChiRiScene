@@ -315,35 +315,44 @@
       <div class="ak-progress u-mt-3">
         <div class="ak-progress__header">
           <span>
-            {app.exportTotal > 0 ?
+            {app.exportBlind ?
+              t("overview.export.processed", { mb: app.exportWrittenMb })
+            : app.exportPlanned > 0 ?
               t("overview.export.progress", {
-                mb: app.exportMb,
-                done: app.exportDone,
-                total: app.exportTotal,
+                mb: app.exportReadMb,
+                total: app.exportPlannedMb,
               })
             : t("overview.export.preparing")}
           </span>
-          <span class="ak-progress__value">{app.exportPercent}%</span>
+          <span class="ak-progress__value">
+            {app.exportBlind ? t("overview.export.compressing") : `${app.exportPercent}%`}
+          </span>
         </div>
         <div
           class="ak-progress__track"
           role="progressbar"
           aria-valuemin="0"
           aria-valuemax="100"
-          aria-valuenow={app.exportPercent}
+          aria-valuenow={app.exportBlind ? undefined : app.exportPercent}
         >
-          <!-- 同功耗条：宽度直接内联，不依赖上游变量继承 -->
-          <span class="ak-progress__fill" style={`width: ${app.exportPercent}%`}
-          ></span>
+          {#if app.exportBlind}
+            <!-- 压缩段读不到已读入字节：真值算不出，用宽度固定的滑动块表示「在动」 -->
+            <span class="ak-progress__fill export__fill--indet"></span>
+          {:else}
+            <!-- 同功耗条：宽度直接内联，不依赖上游变量继承 -->
+            <span class="ak-progress__fill" style={`width: ${app.exportPercent}%`}
+            ></span>
+          {/if}
         </div>
       </div>
     {/if}
 
-    <!-- 历史归档清理：导出之外的另一半，删 logd/ 与 devimp/（二次确认） -->
+    <!-- 历史归档清理：导出之外的另一半，只删 logd/（devimp/ 是当前诊断现场，保留）。打包期间一并置灰：
+         导出正在 tar logd/，此时 rm 会把半删的目录打进归档 -->
     <button
       type="button"
       class="ak-button btn btn--danger btn--block u-mt-3"
-      disabled={app.archivePending}
+      disabled={app.archivePending || app.exportPhase === "running"}
       onclick={() => (deleteOpen = true)}
     >
       {app.archivePending ? t("state.loading") : t("overview.delete.action")}
@@ -512,5 +521,23 @@
 
   .export__done {
     color: var(--ak-signal-success);
+  }
+
+  /* 不定态填充（压缩段拿不到已读入字节时）：宽度 25% + 左移 0~75%，右缘始终不越过轨道，无需依赖轨道 overflow */
+  .ak-progress__fill.export__fill--indet {
+    width: 25%;
+    animation: export-indet 1.4s ease-in-out infinite;
+  }
+
+  @keyframes export-indet {
+    0% {
+      margin-left: 0;
+    }
+    50% {
+      margin-left: 75%;
+    }
+    100% {
+      margin-left: 0;
+    }
   }
 </style>
