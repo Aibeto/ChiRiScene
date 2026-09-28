@@ -96,9 +96,8 @@ export default {
   'config.language': 'Log language',
   'config.loglevel': 'Log level',
   'config.writable': 'Editable',
-  'config.devRecord': 'Dev record',
-  // commented out: dev record subtitle hidden per request 'config.devRecord.hint':
-  // 'Keep default values normally, no modification required.',
+  'config.devRecord': 'Cloud AI inference record consent',
+  'config.devRecord.hint': 'When enabled, optional telemetry is collected (nothing is uploaded proactively); maintainers use the data to improve scheduling',
   'config.fasEnabled': 'FAS frame-aware scheduling',
   'config.fasEnabled.hint': 'Frame-interval-aware scheduling',
   'config.scenemodeEnabled': 'SceneMode',

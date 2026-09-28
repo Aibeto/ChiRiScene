@@ -125,7 +125,10 @@ vector:
 #   down_scale          降频激进度：目标性能乘以它（越小降得越狠；与功耗无关，恒生效）
 #   overload_cores_pct  功耗已达上限时仍允许升频的门槛：满占用（100%）核心占比 %
 #   overload_hold_ms    且需持续这么久才放行升频
-#   touch_break_ms      触摸事件时允许短暂突破功率上限的窗口
+#   touch_break_ms      触摸事件时允许短暂突破功率上限的窗口（档位体系启用时同时是触摸升档窗口）
+#   tier_standard       频率上限档 / 触摸升档档位 / 绝对上限档（能效前沿表 demand_buckets 桶号）。
+#   tier_touch          标准 → 触摸一级 → 触摸二级：触摸事件沿阶梯逐级放开、已在最高档则忽略本次
+#   tier_max            调频，窗口过期回落标准档；任一为 0 / 非 PF SoC / 桶越界 → 不启用档位体系
 powerbase:
   target_power_w: 3.0
   up_headroom_below: 1.15
@@ -133,3 +136,6 @@ powerbase:
   overload_cores_pct: 50
   overload_hold_ms: 3000
   touch_break_ms: 400
+  tier_standard: 0
+  tier_touch: 0
+  tier_max: 0

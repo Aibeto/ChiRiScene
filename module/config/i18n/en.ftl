@@ -137,6 +137,7 @@ config-special-parse-failed = [Config] Failed to parse special-tuned config: { $
 config-special-merged = [Config] Merged special-tuned config: { $path }
 
 # --- Governor (performance take-over, FAS/contingency) ---
+governor-selected = [Governor] default governor pick: { $policies }
 governor-switched = [Governor] P{ $pid } governor { $from } -> performance
 governor-restored = [Governor] P{ $pid } governor performance -> { $to }
 governor-switch-failed = [Governor] failed to switch governor on policy { $pid }
@@ -170,6 +171,7 @@ clg-activated = [CLG] CPU Load Governor activated, taking over { $count } cluste
 powerbase-activated = [PowerBase] power-based governor took over (CLG released)
 powerbase-deactivated = [PowerBase] power-based governor released
 powerbase-writer-invalid = [PowerBase] P{ $pid } frequency writer unavailable, cluster skipped
+powerbase-touch-tier = [PowerBase] Touch raise to frontier bucket #{ $tier } ceiling (falls back to standard tier when the window expires)
 clg-no-clusters = [CLG] CPU Load Governor: no valid clusters found, staying inactive
 clg-deactivated = [CLG] CPU Load Governor deactivated
 clg-config-reloaded = [CLG] config hot-reloaded | up={ $up } down={ $down } floor={ $floor } ceil={ $ceil }

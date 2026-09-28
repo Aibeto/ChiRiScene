@@ -125,6 +125,7 @@
 
       <ToggleField
         label={t('config.devRecord')}
+        hint={hint('dev_record', t('config.devRecord.hint'))}
         checked={devRecord}
         pending={app.draft.dev_record !== undefined}
         disabled={!app.metaValid}

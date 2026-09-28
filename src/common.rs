@@ -1,6 +1,7 @@
-//! common.rs: [events] [proc_snap] [paths] [soc_detect] [core_ranges] [soc_config] [special_tuned] [fas_whitelist]
+//! common.rs: [events] [proc_snap] [paths] [soc_detect] [core_ranges] [soc_config] [governor] [special_tuned] [fas_whitelist]
 //! [aff_blacklist] [embedded] [external_meta] [frontier_table]
 
+use crate::chiri::config::PowerBaseConfig;
 use crate::monitor::config::RulesConfig;
 use include_dir::{Dir, include_dir};
 use serde::Deserialize;
@@ -258,6 +259,9 @@ pub struct SocConfig {
     /// [frontier_lenient] 用宽松反序列化：本段损坏不得拖垮整份 soc.yaml（topology/capacity/freq 兜底是更贵的资产）
     #[serde(default, deserialize_with = "deserialize_frontier_lenient")]
     pub frontier_policy: Option<FrontierPolicy>,
+    /// cpufreq 调速器优先级表（[governor]，从左到右优先；与真机 scaling_available_governors 求交后取首个）
+    #[serde(default)]
+    pub cpu_governors: Option<Vec<String>>,
 }
 
 /// 核心组 CPU ID 区间（左闭右开）
@@ -679,6 +683,74 @@ pub(crate) fn soc_freq_fallback_for_policy(policy_id: i32) -> Option<Vec<u32>> {
     (!v.is_empty()).then(|| v.to_vec())
 }
 
+// [governor]
+/// 兜底调速器：soc.yaml 无 [cpu_governors] / 该 policy 一个都没匹配上时沿用（与历史写死值同）
+const DEFAULT_CPU_GOVERNOR: &str = "schedutil";
+
+/// 各 policy 选定的调速器：启动时 [`select_cpu_governors`] 批量算定，此后只读。
+/// 用 Mutex 而非纯 OnceLock 是为了**缺谁补谁**：批量算定跑在 `force_online_all` 之前，
+/// 启动期离线的簇那时还没有 cpufreq 目录、进不了表，取值时按同一口径补算（此时核已上线）
+static POLICY_GOVERNORS: OnceLock<Mutex<HashMap<i32, String>>> = OnceLock::new();
+
+fn governor_map() -> &'static Mutex<HashMap<i32, String>> {
+    POLICY_GOVERNORS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// soc.yaml [cpu_governors] 优先级表（去空白、丢空串）；无该段 → 空表（全落兜底值）
+fn governor_prefs() -> Vec<String> {
+    soc_config()
+        .and_then(|c| c.cpu_governors.as_ref())
+        .map(|v| {
+            v.iter()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// 单 policy 选型：优先级表从左到右，取第一个出现在 `scaling_available_governors` 里的；
+/// 读不到列表（含 /sys 不可访问）或全不匹配 → 兜底值，行为与改造前逐位一致
+fn pick_governor(policy_id: i32, prefs: &[String]) -> String {
+    let available: Vec<String> = std::fs::read_to_string(format!(
+        "/sys/devices/system/cpu/cpufreq/policy{}/scaling_available_governors",
+        policy_id
+    ))
+    .map(|s| s.split_whitespace().map(|w| w.to_string()).collect())
+    .unwrap_or_default();
+    prefs
+        .iter()
+        .find(|g| available.iter().any(|a| a == *g))
+        .cloned()
+        .unwrap_or_else(|| DEFAULT_CPU_GOVERNOR.to_string())
+}
+
+/// 调度启动（及每次热重载）时调用：批量算定当前可见的 policy 并回填表，返回全表副本（供日志）。
+/// 已在表内则不重复读 sysfs。所有「默认调速器」写入点（CLG / 特调 / PowerBase / FastLock /
+/// 残留清理）都按这里的值写，不再各自写死 schedutil
+pub fn select_cpu_governors() -> HashMap<i32, String> {
+    let mut m = governor_map().lock().unwrap_or_else(|e| e.into_inner());
+    if m.is_empty() {
+        let prefs = governor_prefs();
+        for p in crate::chiri::get_cpu_policies() {
+            m.insert(p.id, pick_governor(p.id, &prefs));
+        }
+    }
+    m.clone()
+}
+
+/// 该 policy 应写入的默认调速器。表里没有的（批量算定时该簇离线、或选型被 DOWN 跳过）
+/// 当场按同一口径补算一次并回填；补算结果不进 `governor-selected` 日志
+pub fn cpu_governor_for_policy(policy_id: i32) -> String {
+    let mut m = governor_map().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(g) = m.get(&policy_id) {
+        return g.clone();
+    }
+    let g = pick_governor(policy_id, &governor_prefs());
+    m.insert(policy_id, g.clone());
+    g
+}
+
 /// 特调可用性共享标志：chiri Config 合并 tuned_profiles.yaml 成功后置 true，缺失/损坏置 false
 /// determine_mode 据此决定白名单应用进入特调还是回退 CLG（缺 tuned_profiles.yaml 的机型按普通模式调度）
 static SPECIAL_TUNED_AVAILABLE: AtomicBool = AtomicBool::new(false);
@@ -708,6 +780,40 @@ pub fn set_powerbase_enabled(enabled: bool) {
 /// PowerBase 是否开启（powerbase_enabled，缺省 false）：高频路径（determine_mode 模式替换、affinity promote 阈值）只读原子量，不读磁盘与锁
 pub fn powerbase_enabled() -> bool {
     POWERBASE_ENABLED.load(Ordering::Acquire)
+}
+
+/// PowerBase 参数（feature.yaml `powerbase` 段，Config::load 下发）：CLG 的接管入口在 Cluster 那一刻
+/// 才读一次（选中它当后端时才会用到），不在负载 tick 路径取锁
+static POWERBASE_CFG: OnceLock<Mutex<PowerBaseConfig>> = OnceLock::new();
+
+/// 下发 PowerBase 参数（Config::load 时与总开关同步调用）
+pub fn set_powerbase_config(cfg: PowerBaseConfig) {
+    let lock = POWERBASE_CFG.get_or_init(|| Mutex::new(PowerBaseConfig::default()));
+    if let Ok(mut g) = lock.lock() {
+        *g = cfg;
+    }
+}
+
+/// 取 PowerBase 参数副本（未下发过则代码默认值）
+pub fn powerbase_config() -> PowerBaseConfig {
+    match POWERBASE_CFG.get() {
+        Some(l) => l.lock().map(|g| g.clone()).unwrap_or_default(),
+        None => PowerBaseConfig::default(),
+    }
+}
+
+/// 当前是否亮屏（屏幕事件同步，缺省 true）：接管判决需要在 CLG 内部取值——PowerBase 是它的后端之一，
+/// 息屏必须交 doze（息屏接管会把夜间功耗抬高），而屏幕事件的处理在调度循环而不在 CLG 内部
+static SCREEN_ON: AtomicBool = AtomicBool::new(true);
+
+/// 同步亮屏状态（ScreenStateChange 事件与启动时各同步一次）
+pub fn set_screen_on(on: bool) {
+    SCREEN_ON.store(on, Ordering::Release);
+}
+
+/// 当前是否亮屏
+pub fn screen_on() -> bool {
+    SCREEN_ON.load(Ordering::Acquire)
 }
 
 /// 息屏判定值（screen_off_value`，缺省 1）：debug.tracing.screen_state 等于该值视为息屏，其余数字视为亮屏。Config::load 同步原子量，

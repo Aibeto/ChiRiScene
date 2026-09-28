@@ -41,7 +41,7 @@ const THERMAL_UNPRESS_STEP: f32 = 0.15;
 
 // [thermal]
 /// 读电池充放电状态（1s snap 处消费）：归一为小写短词；节点缺失或未知值返回"-"（与 CSV 缺失占位一致）。电流符号因厂商节点方向不一，不可靠，故读 status 字符串
-fn read_battery_charge_state() -> String {
+pub(crate) fn read_battery_charge_state() -> String {
     let state = match std::fs::read_to_string(BATT_STATUS_PATH) {
         Ok(s) => {
             let raw = s.trim();
@@ -515,7 +515,6 @@ fn apply_mode_takeover(
     cpu_governor: &mut crate::chiri::cpu_load_governor::CpuLoadGovernor,
     ak_governor: &mut crate::chiri::tuned::TunedGovernor,
     fast_lock: &mut crate::chiri::fast::FastLock,
-    power_base: &mut crate::chiri::power_base::PowerBase,
 ) {
     if crate::common::is_special_mode(mode) {
         let ak_cfg = config.get_tuned_profile(mode);
@@ -534,21 +533,15 @@ fn apply_mode_takeover(
         ak_governor.release();
         fast_lock.release();
         let clg_cfg = clg_cfg_for(config, mode);
-        if clg_cfg.enabled && crate::common::powerbase_enabled() {
-            // PowerBase 开启：**原本该 CLG 上场的场合**改由 PowerBase 接管。模式名、current_mode.chr、规则与界面等外部接口一律不变，只替换「谁来调频」这一段实现
-            // CLG 必须先释放，否则两个调频器同时写 scaling_max_freq 会互相踩
-            cpu_governor.release();
-            power_base.init(&config.powerbase);
-        } else if clg_cfg.enabled {
-            // PowerBase 关闭时它可能还持着频率：先交还，再让 CLG 上场
-            power_base.release();
+        // CLG 角色的接管交给它自己：内部会在 Worker 与 PowerBase 之间二选一（见 cpu_load_governor [backend]），
+        // 这里不再替它决定谁来接管
+        if clg_cfg.enabled {
             if cpu_governor.is_active() {
                 cpu_governor.reload_config(&clg_cfg);
             } else {
                 cpu_governor.init_policies(&clg_cfg);
             }
         } else {
-            power_base.release();
             cpu_governor.release();
         }
     }
@@ -1346,10 +1339,6 @@ pub fn start_scheduler_thread(
             // 极速模式（fast）专属锁频器：与 CLG 完全独立、不读 yaml 参数，锁所有cluster 的 min=max=硬件最高频，每 5s 重写兜底（节点被改写属异常态）
             let mut fast_lock = crate::chiri::fast::FastLock::new();
 
-            // PowerBase（Stardust 家族，meta.yaml `powerbase_enabled` 控制，默认关）：开启时**替换 CLG 的调频实现**（以放电功耗为指标），
-            // 模式名与所有外部接口不变
-            let mut power_base = crate::chiri::power_base::PowerBase::new();
-
             // governor/GPU 接管层（contingency/babel 用；FAS 的 governor 在 FasManager 内部）。GpuGuard::
             // new 启动探测一次 devfreq 节点并缓存结果
             let mut governor_guard = governor::GovernorGuard::new();
@@ -1390,6 +1379,8 @@ pub fn start_scheduler_thread(
 
             // 屏幕状态标记
             let mut is_screen_on = true;
+            // 初值同步到进程级原子量（缺省也是 true）：CLG 选 PowerBase 后端时只读这个原子量
+            crate::common::set_screen_on(is_screen_on);
             // 息屏计时：屏幕熄灭时记录，超过 scene_mode_delay_secs 后切到 scenemode 低功耗
             let mut screen_off_at: Option<Instant> = None;
             // 是否已进入 scenemode（一次性切换，亮屏/模式变更时复位）
@@ -1449,7 +1440,7 @@ pub fn start_scheduler_thread(
                 if !halted {
                     corectl_mgr.force_online_all();
                 }
-                // 调速器残留清理：SIGKILL 等异常退出会把 performance 留在节点上（收尾 release 不会执行），启动时一律恢复 schedutil
+                // 调速器残留清理：SIGKILL 等异常退出会把 performance 留在节点上（收尾 release 不会执行），启动时一律恢复该 policy 的默认调速器（选型见 common.rs [governor]）
                 // **停摆期只报不写**——停摆要记录系统原状，进程无从区分残留与厂商默认
                 if halted {
                     crate::chiri::governor::GovernorGuard::report_residue();
@@ -1528,8 +1519,6 @@ pub fn start_scheduler_thread(
                         cpu_governor.release();
                         ak_governor.release();
                         fast_lock.release();
-                        // PowerBase 也要在停摆清单里：兜底块虽会在下一轮收掉，但停摆语义是「立刻交回系统」，靠兜底等于留一个仍在写频率的窗口
-                        power_base.release();
                         fas_mgr.deactivate_all();
                         affinity_mgr.release();
                         affinity_mgr.lab_static_deactivate();
@@ -1690,8 +1679,13 @@ pub fn start_scheduler_thread(
                         // fas 模式下 CLG fallback 不参与热重载（FAS 配置编译期嵌入静态）
                         let clg_cfg = get_clg_cfg(&config_lock, &current_mode);
                         if clg_cfg.enabled {
-                            if cpu_governor.is_active() { cpu_governor.reload_config(&clg_cfg); }
-                            else { cpu_governor.init_policies(&clg_cfg); }
+                            // 热重载也走 CLG 自己的入口：后端要不要换（Worker↔PowerBase）由它在新配置下
+                            // 自行判定，这里不再替它判断「谁在接管」
+                            if cpu_governor.is_active() {
+                                cpu_governor.reload_config(&clg_cfg);
+                            } else {
+                                cpu_governor.init_policies(&clg_cfg);
+                            }
                         } else if cpu_governor.is_active() {
                             cpu_governor.release();
                         }
@@ -1929,7 +1923,7 @@ pub fn start_scheduler_thread(
                             sync_lab_governor_gpu(&mode, &mut governor_guard, &mut gpu_guard, &mut fast_lock);
                             fas_affinity_hook(&mut affinity_mgr, &mut corectl_mgr, false, 0);
                             if mode == "contingency" || mode == "babel" {
-                                // 进入 lab 静态模式：先释放全部其它调频接管——CLG/特调的 tick/防篡改会持续压频、release 会恢复 schedutil，
+                                // 进入 lab 静态模式：先释放全部其它调频接管——CLG/特调的 tick/防篡改会持续压频、release 会恢复接管前快照，
                                 // 全部释放后再 sync 才是终值
                                 cpu_governor.release();
                                 ak_governor.release();
@@ -1956,7 +1950,6 @@ pub fn start_scheduler_thread(
                                     &mut cpu_governor,
                                     &mut ak_governor,
                                     &mut fast_lock,
-                                    &mut power_base,
                                 );
                             } else {
                                 // 息屏：FAS 退出后交 CLG doze（同款低功耗配置），避免延迟期结束到亮屏间零接管
@@ -2214,7 +2207,8 @@ pub fn start_scheduler_thread(
                 }
 
                 // 触摸事件（事件驱动）：on_touch 更新共享触摸状态并唤醒全部 Worker 立即 flush 写频（大核直接应用触摸升频地板，不等 160ms tick）；
-                // 持续触摸刷新截止时间（FastWriter 去重）
+                // 持续触摸刷新截止时间（FastWriter 去重）。PowerBase 接管时走同一条链路（档位沿阶梯瞬时升档），
+                // 分流在 CLG 内部完成
                 while touch_rx.try_recv().is_ok() {
                     if !halted && cpu_governor.is_active() {
                         cpu_governor.on_touch();
@@ -2226,29 +2220,6 @@ pub fn start_scheduler_thread(
                 // 停摆期显式断开不碰任何节点——tick 内部虽有 is_active 早退，防将来给 FastLock 加的开关绕过这道防线
                 let fast_next = if halted { None } else { fast_lock.tick() };
 
-                // PowerBase 兜底纠正：开关与「谁在接管」不一致时拉齐主路径外几条直接 init CLG 的旁路（启动块/ConfigReload/亮屏恢复/lab 分组重建）
-                // 不会自动换 PowerBase，在此兜一次防「双写 scaling_max_freq」或「切换后无人接管」；停摆期一律交还
-                {
-                    // 先取模式再读配置：保持「mode → config」取锁顺序，不制造反向持有窗口
-                    let cur_mode = mode_clone.lock().unwrap().clone();
-                    let cfg = config_clone.read().unwrap();
-                    // 三条排除缺一不可：
-                    // - !is_fast_lock：vector/frozen 走硬锁且 vector 段在 feature.yaml 存在且 enabled，
-                    // 不排除会让 PowerBase 与 fast_lock 抢写 min/max；
-                    // - is_screen_on：PowerBase 目标功耗是亮屏口径，息屏交 doze，接管会放宽升频抬高夜间功耗；
-                    // - clg_cfg.enabled：特调/FAS 下 get_mode 返回 None，天然排除（优先级更高）
-                    let want = !halted
-                        && is_screen_on
-                        && !is_fast_lock(&cur_mode)
-                        && crate::common::powerbase_enabled()
-                        && clg_cfg_for(&cfg, &cur_mode).enabled;
-                    if want && !power_base.is_active() {
-                        cpu_governor.release();
-                        power_base.init(&cfg.powerbase);
-                    } else if !want && power_base.is_active() {
-                        power_base.release();
-                    }
-                }
 
                 // 动态超时：阻塞到最近周期任务 deadline 或事件到达（先到者打断）周期任务（telemetry 1s /thermal+亲和 2s / mode file 5s / fast 重写
                 // 5s）取最小值；负载/模式/触摸等推送事件随时打断、响应零延迟；空闲稳态从每秒 10 次空转降为 ~1 次
@@ -2313,6 +2284,7 @@ pub fn start_scheduler_thread(
                 if halted {
                     if let DaemonEvent::ScreenStateChange(on) = &msg {
                         is_screen_on = *on;
+                        crate::common::set_screen_on(is_screen_on);
                         screen_off_at = if *on { None } else { Some(Instant::now()) };
                         scene_mode_active = false;
                     }
@@ -2335,6 +2307,9 @@ pub fn start_scheduler_thread(
                             "last" => is_screen_on.to_string()
                         )));
                         is_screen_on = screen_on;
+                        // 同步到进程级原子量：CLG 在接管那一刻要靠它判断能不能选 PowerBase 后端
+                        // （它没有别的渠道拿到屏幕状态），必须与本地变量同点更新
+                        crate::common::set_screen_on(is_screen_on);
                         // 息屏/亮屏 info 打点：uevent 直推绕过 app_detect 的变更日志，统一保证触发点可见
                         if screen_on {
                             log::info!("{}", t("scheduler-screen-on"));
@@ -2349,7 +2324,7 @@ pub fn start_scheduler_thread(
                             screen_off_at = Some(Instant::now());
                             scene_mode_active = false;
 
-                            // 特调息屏保持 akmode 接管不切 CLG doze：akmode 已统一 schedutil，息屏随负载自然降频，
+                            // 特调息屏保持 akmode 接管不切 CLG doze：akmode 已统一默认调速器，息屏随负载自然降频，
                             // 避免 release + 亮屏 re-init 的 governor 反复切换
                             if crate::common::is_special_mode(&current_mode) {
                                 // akmode 继续运行，CLG 保持释放状态
@@ -2626,27 +2601,22 @@ pub fn start_scheduler_thread(
                                         cpu_governor.release();
                                         fast_lock.init(mode == "frozen");
                                     } else {
-                                        // 退出特调/极速模式：停止 akmode/fast_lock 交回 CLG（PowerBase 开启时交回它）
+                                        // 退出特调/极速模式：停止 akmode/fast_lock 交回 CLG（后端由它自己选）
                                         ak_governor.release();
                                         fast_lock.release();
                                         let clg_cfg = get_clg_cfg(&config_lock, &mode);
-                                        if clg_cfg.enabled && crate::common::powerbase_enabled() {
-                                            cpu_governor.release();
-                                            power_base.init(&config_lock.powerbase);
-                                        } else if clg_cfg.enabled {
-                                            power_base.release();
+                                        if clg_cfg.enabled {
                                             // CLG 已激活时热切换配置，避免同模式反复切换全量重建
                                             if cpu_governor.is_active() { cpu_governor.reload_config(&clg_cfg); }
                                             else { cpu_governor.init_policies(&clg_cfg); }
                                         } else {
-                                            power_base.release();
                                             cpu_governor.release();
                                         }
                                     }
                                 }
 
                                 // 进入 lab 静态模式：governor 写 performance / GPU 锁最高频 / contingency 极速锁频（sync 内做）
-                                // 必须在旧 governor 释放之后——先写会被 CLG release 恢复的 schedutil 覆盖，且 CLG tick/防篡改会持续压频；
+                                // 必须在旧 governor 释放之后——先写会被 CLG release 恢复的快照调速器覆盖，且 CLG tick/防篡改会持续压频；
                                 // 息屏路径在此兜底（幂等）
                                 if mode == "contingency" || mode == "babel" {
                                     cpu_governor.release();
@@ -2721,23 +2691,8 @@ pub fn start_scheduler_thread(
                             fas_mgr.on_load_update(foreground_max_util, &core_utils);
                         } else if ak_governor.is_active() {
                             ak_governor.on_load_update(&core_utils);
-                        } else if power_base.is_active() {
-                            // PowerBase 接管中（替换 CLG 的位置）：以**放电功耗**为指标；非放电或无读数
-                            // 传 None（语义「不做功耗限制」，只按利用率调，与 CLG 类似）
-                            // TODO: touch_active 目前恒 false——CLG 的触摸窗口（AtomicTouchState）是它的
-                            // 私有字段，这里拿不到；等触摸事件接上共享标志后再传，否则「触摸时允许突破
-                            // 功率上限」这条不会生效
-                            let tm_now = crate::monitor::telemetry::telemetry();
-                            // 放电判定**不能看电流正负**（厂商节点方向不一，部分设备充放皆正），与 PowerAVG 同口径读 status；
-                            // 非放电传 None = 不做功耗限制（充电功率压频无意义）
-                            let power_w = if read_battery_charge_state() == "discharging" {
-                                tm_now.batt_power_w()
-                            } else {
-                                None
-                            };
-                            power_base.on_load_update(&core_utils, power_w, false);
                         } else if cpu_governor.is_active() {
-                            // Worker 架构：on_load_update 广播给各核心组 Worker，线程内自主决策+写频
+                            // CLG 角色优先级链终点：内部再分流到 Worker 或 PowerBase 后端
                             cpu_governor.on_load_update(&core_utils);
                         }
 
@@ -2993,6 +2948,7 @@ pub fn start_scheduler_thread(
                                 fast_lock.release();
                                 let clg_cfg = get_clg_cfg(&config_lock, &current_mode);
                                 if clg_cfg.enabled {
+                                    // 后端是否要换（Worker↔PowerBase）由 CLG 在新配置下自行判定
                                     if cpu_governor.is_active() { cpu_governor.reload_config(&clg_cfg); }
                                     else { cpu_governor.init_policies(&clg_cfg); }
                                 } else if cpu_governor.is_active() {
@@ -3057,6 +3013,7 @@ pub fn start_scheduler_thread(
                 }
                 // 重置状态机到亮屏安全态：真实屏幕状态由下一个 ScreenStateChange 事件纠正（必被处理）
                 is_screen_on = true;
+                crate::common::set_screen_on(true);
                 screen_off_at = None;
                 scene_mode_active = false;
                 scene_hold_logged = false;

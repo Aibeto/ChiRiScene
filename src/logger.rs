@@ -1380,7 +1380,7 @@ pub fn main_event(kind: &str, pkg: &str, reason: &str) {
 // [aff_writer]
 /// aff_ 帧格式说明（文件头 schema，`#` 注释行解析跳过；正文按行首字符定界，帧格式详见下方 AFF_HEADER 字符串：@A 单行动作帧、@S 快照帧按帧头计数定界）
 const AFF_HEADER: &str = "# aff_ 线程数据文件（帧式文本，2026-09-28 字段级差分版）\n\
-# @A ts=<MMDD-HHmmss> act=<pin|restore|move_group|cpuset_cpus|uclamp|corectl|bind_release|self_pin|self_unpin|elf32> pid=<i32> tid=<i32> pkg=<str> comm=<str> dst=<str> value=<str> result=<ok|e{errno}> reason=<str>\n\
+# @A ts=<MMDD-HHmmss> act=<pin|restore|move_group|cpuset_cpus|uclamp|corectl|bind_release|self_pin|self_unpin|elf32|fdp> pid=<i32> tid=<i32> pkg=<str> comm=<str> dst=<str> value=<str> result=<ok|e{errno}> reason=<str>\n\
 # @S ts=<MMDD-HHmmss> ntop=<进程行数> nfg=<线程行数>[ full=1]\n\
 # p <rank> <pid> <pkg|comm> u=<整数util%> mask=<允许核hex> home=<核|-1>\n\
 # t <pid> <tid>[ comm][ u=][ core=][ home=][ pin=][ uclamp=]\n\

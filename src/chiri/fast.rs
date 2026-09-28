@@ -1,7 +1,7 @@
 //! fast.rs: [types] [init] [release_tick]
 
 /// 极速模式（fast）专属锁频器：与 CLG 完全独立、不读 yaml 调频参数。接管时把所有 cluster 的 scaling_min_freq / scaling_max_freq
-/// 一起锁到目标频率（vector=硬件最高、frozen=硬件最低，min=max 时 schedutil 无调频空间），release 恢复系统原状每 5 秒重写一次频率兜底收敛：默认无竞争者，
+/// 一起锁到目标频率（vector=硬件最高、frozen=硬件最低，min=max 时内核调速器无调频空间），release 恢复系统原状每 5 秒重写一次频率兜底收敛：默认无竞争者，
 /// 锁频值被改写属异常态（残留旧模块/手动调试/内核异常），周期重写是兜底，不是常态对抗
 use crate::utils::FastWriter;
 use log::{debug, info, warn};
@@ -56,7 +56,7 @@ impl FastLock {
     }
 
     // [init]
-    /// 接管全部 cpufreq policy：读可用频率、快照原始状态、写 schedutil，再把 min 与 max 一起锁到目标频率，`lock_min=true` 锁**硬件最低频**（frozen：最低功耗、最冷，
+    /// 接管全部 cpufreq policy：读可用频率、快照原始状态、写默认调速器（选型见 common.rs [governor]），再把 min 与 max 一起锁到目标频率，`lock_min=true` 锁**硬件最低频**（frozen：最低功耗、最冷，
     /// 完全没有性能），`false` 锁硬件最高频（vector：极速档）差别只在目标值与写序：升频先抬 max 再抬 min，降频先压 min 再压 max」（否则出现 min > max 非法中间态被内核拒绝）
     pub fn init(&mut self, lock_min: bool) {
         self.release();
@@ -127,7 +127,7 @@ impl FastLock {
                 hw_max,
             });
 
-            let _ = crate::utils::try_write_file(&gov_path, "schedutil");
+            let _ = crate::utils::try_write_file(&gov_path, crate::common::cpu_governor_for_policy(pid));
 
             let max_writer = FastWriter::new(format!(
                 "/sys/devices/system/cpu/cpufreq/policy{}/scaling_max_freq",

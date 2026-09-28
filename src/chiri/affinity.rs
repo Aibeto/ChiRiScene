@@ -1927,15 +1927,18 @@ impl AffinityManager {
                     // false = 回到仅 boost 态旧行为。判据只用排序/门槛，不引入新数值
                     let big_pressure = (self.big_pressure_any_mode || boost)
                         && big_max > self.tuning.big_high_water;
-                    // FDP 开启时不让 big_pressure 一票否决 promote：FDP 自己的「迁入后模型频率 ≤ 0.85×该簇最高频」
+                    // FDP 数据面就绪 = 开关 + 本 SoC 具备 capacity 与逐档功耗表：**与下方准入同源**，勿只看开关——
+                    // 数据缺失时 FDP 整段回退，若 big 饱和保护已按「FDP 会兜住」让位，两重保护会同时失效
+                    let fdp_ready = self.fdp_enabled && energy_cost::fdp_available();
+                    // FDP 就绪时不让 big_pressure 一票否决 promote：FDP 自己的「迁入后模型频率 ≤ 0.85×该簇最高频」
                     // 护栏已经覆盖「别往已热的簇塞」；否则 bg_promote_exclude_prime=false 想把后台分流到 prime 时，
                     // 恰好在「big 已热」这个最该分流的场景被整体闸掉，prime 分支近乎不可达（独立审查发现）。
                     // 取局部量是为了在下方 `self.threads.get_mut` 的借用期内不再借 self。
-                    let fdp_handles_big_pressure = self.fdp_enabled;
+                    let fdp_handles_big_pressure = fdp_ready;
                     let clk = clk_tck();
                     let n = bg.len();
                     // FDP 工作点快照：本候选刷新轮读一次三簇实际频率（口径 = FREQ_QOS 聚合值，非 CLG 决策上限）
-                    let fdp_freqs = if self.fdp_enabled {
+                    let fdp_freqs = if fdp_ready {
                         energy_cost::read_cluster_freqs()
                     } else {
                         [None, None, None]
@@ -2040,10 +2043,9 @@ impl AffinityManager {
                             // 一律不动——FDP 成本模型不含延迟项，前台是延迟敏感。
                             // prime 候选资格仍由 bg_promote_exclude_prime 把关（A3 在 FDP 下仍是硬规则：静态表是纯动态项、
                             // 不含 prime 独核 rail-collapse 的漏电/idle-exit，判不出 P-b 的 >2600 Mdmips 门槛，会低估 prime 成本）。
-                            // fdp_enabled=false 时整段跳过，逐位回旧下方 A3 路径。
-                            // 静态数据缺失（本 SoC 无 capacity/frontier 段）同样回退 A3：FDP 判不出目的簇，
-                            // 不该把后台 promote 整段停掉——「不支持的 SoC 回退原逻辑」是既定口径
-                            if self.fdp_enabled && energy_cost::fdp_available() {
+                            // fdp_ready=false（开关关 / 本 SoC 无 capacity 或逐档表）时整段跳过，逐位回旧下方 A3 路径：
+                            // FDP 判不出目的簇，不该把后台 promote 整段停掉——「不支持的 SoC 回退原逻辑」是既定口径
+                            if fdp_ready {
                                 let pid = self.threads.get(tid).map(|st| st.pid).unwrap_or(0);
                                 let move_plan = match energy_cost::fdp_destination(
                                     util,

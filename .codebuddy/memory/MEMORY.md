@@ -42,6 +42,7 @@
 - 链路：事件 → `sync_meta_snapshot` → `Config::load` → `update_level` → 语言变更 `load_language` → `apply_system_tweaks`（DOWN 期间跳过）+ 置 config_dirty。
 - **多节点/周期性写入**一律走 `utils::write_nodes(items, what)`：逐节点失败 debug、全失败才 warn、成功复位；**告警键按操作切分**；不做 `Path::exists()` 预判。
 - 外部命令（`Command::new`）一律 `Stdio::null()`，否则用法文本灌进 daemon.log。
+- **CLG 与 PowerBase 互斥靠「后端二选一」（2026-09-29 改）**：PowerBase 是 `CpuLoadGovernor` 的**备用后端**（内部字段，不再是并列的第二个 owner），接管入口（`init_policies` / `reload_config`）在那一刻按「CLG 段启用 + 总开关 + 亮屏 + 未停摆」二选一，之后全程只有一个 owner 写这批节点，主循环兜底纠正块已删。热重载走 reload = 整段重建（perf 回 1.0、档位回落标准档、触摸窗口清空）。2026-09-28 记的「热重载不旁路拉起 CLG / 主循环兜底块」写法已作废。
 
 ### 模式 id 与命名
 
@@ -128,7 +129,8 @@
 - **亲和掩码写去重（A10）记账必须覆盖全部写掩码路径（2026-09-28 审查修）**：`pin_core` 记核号、组绑定记 `MASK_TAG_PERF`、`restore_group_mask` 与 `unpin_core` 记 `MASK_TAG_FULL`；漏记 `unpin_core` 会让解钉后的重钉被 `mask_write_skip` 的 `recent` 判据当成「刚写过同一核」而**整条丢弃**（既不写内核也不更新 `home`）。`restore_group_mask` 命中 A10 跳过时掩码已确为全核，须**一并清 `group_bind`**。该机制**不主动纠偏**内核侧被框架/外部改写的掩码（uclamp 有 60s 重断言，掩码路径没有）。
 - **FDP 降级口径 = 回退原 A3 路径（2026-09-28 用户定）**：`fdp_enabled` 为真但静态数据缺失（无 `capacity`/`per_cluster` 功耗表）时经 `energy_cost::fdp_available()` 判定后回退旧放置逻辑，**不把后台 promote 整段停掉**；FDP 自身的配额/净收益/选核否决仍不回退。CLG-PF 同理回退比例路径，且**触摸窗口内 PF 与 decay 同口径关闭**（否则 `min()` 把触摸 floor 拉回低频桶）。另：某档 `steady_decay_enabled: false` 会让 `steady_streak` 恒 0 → **该档 CLG-PF 一并失效**（共用稳态判据）。
 - **boost 档不主动下探（2026-09-28）**：8550/8475/8998/根兜底的 `boost.cpu_load_governor` 全部显式 `steady_decay_enabled: false`（`up_threshold` 0.55~0.65 时 T 落进常态负载区、削掉响应优势）；scenemode 无需该开关（T≈0.108 < 积分区间下界 0.30，decay 恒 0）。
-- **CLG-PF 查表是进程级资产（2026-09-28）**：桶表由 `common::frontier_table()`（OnceLock）摊平成二分数组，逐桶落点由 `common::frontier_aligned()` 按「核心组 + 频率表」缓存（floor 对齐依赖真机 `scaling_available_frequencies`，故不是纯编译期表）→ worker 重建（息屏 doze / 模式热切换）复用缓存**不重算**，tick 内只做「二分找桶 + 取数组」；`clg-pf-enabled` 加进程级一次性门，只在首次接管打一条。**勿在 tick 路径直接扫 `demand_buckets` 或每 tick 重做 floor 对齐。**
+- **CLG-PF 查表是进程级资产（2026-09-28）**：桶表由 `common::frontier_table()`（OnceLock）摊平成二分数组，逐桶落点由 `common::frontier_aligned()` 按「核心组 + 频率表」缓存（floor 对齐依赖真机 `scaling_available_frequencies`，故不是纯编译期表）→ worker 重建（息屏 doze / 模式热切换）复用缓存**不重算**，tick 内只做「二分找桶 + 取数组」；`clg-pf-enabled` 加进程级一次性门，只在首次接管打一条。**勿在 tick 路径直接扫 `demand_buckets` 或每 tick 重做 floor 对齐。**回退告警带缺失核编号（`capacity-missing(cpu=N)`，2026-09-28 起）：真机日志可直接定位是哪个核的 capacity 取不到（A08-04/8550 实证曾"启用即回退"，根因待设备侧确认，见 07）。
+- **PowerBase 档位体系与触摸升档（2026-09-28，8550 启用=标准 #13 / 触摸 #20 / 上限 #25）**：`powerbase` 段的 `tier_standard/tier_touch/tier_max` 是能效前沿表 `demand_buckets` 桶号，运行期经 `frontier_aligned` 按真机频表 floor 对齐后把频率上界钉在桶落点；**标准档工作**，触摸事件沿阶梯**瞬时升档**（事件驱动，与 CLG 共用 `touch_detect` → `sync_channel` 链路；已在最高档忽略本次调频、只续窗口；窗口内锁当前档落点，负载决策不得把刚抬起的档位压回），`touch_break_ms` 窗口过期由 tick 回落标准档；起手锁标准档（不是硬件最高）。非 PF SoC / 桶号任一为 0 / 越界一律回退 `hw_max`（与不启用逐位一致）。该窗口同时是「允许突破 `target_power_w`」的判据——原恒 false 的死参已接上。
 
 ## 电池读数（遥测）
 

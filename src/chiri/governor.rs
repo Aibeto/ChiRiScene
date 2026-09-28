@@ -8,9 +8,6 @@ use std::fs;
 use crate::fluent_args;
 use crate::i18n::t_with_args;
 
-/// 非 performance 的兜底值：残留清理与恢复失败时写回它（各模式默认调速器）
-const FALLBACK_GOVERNOR: &str = "schedutil";
-
 /// 调速器写入（区分成败，日志精简）。**不用 `try_write_file`**：内部吞错恒返回 Ok， 无法判断成败，且收尾会把文件 chmod 0444——对之后还要恢复的 sysfs 节点是毒药
 ///
 /// 写前 `enable_perm` + 失败读回校验（2026-09-28 统一写路径）：走 `utils::write_sysfs`（与 FAS
@@ -172,10 +169,11 @@ impl GovernorGuard {
     }
 
     /// 启动残留清理：SIGKILL 等异常退出会把 `performance` 留在节点上（收尾 release 不执行）performance` 不是任何厂商的默认调速器，启动时见到它必然是残留，
-    /// 一律写回 schedutil；正常值（schedutil / walt / pelt 等）不动
+    /// 一律写回该 policy 的默认调速器（选型见 common.rs [governor]）；正常值不动
     pub fn cleanup_residue() {
         Self::each_residue_policy(&mut |pid, path| {
-            if write_governor(path, FALLBACK_GOVERNOR) {
+            let target = crate::common::cpu_governor_for_policy(pid);
+            if write_governor(path, &target) {
                 warn!(
                     "{}",
                     t_with_args(

@@ -1,6 +1,7 @@
-# 8550/soc.yaml: [topology] [capacity] [freq] [idle] [dpc] [frontier_policy]
+# 8550/soc.yaml: [topology] [capacity] [freq] [idle] [dpc] [cpu_governors] [frontier_policy]
 # SoC 硬件基线：编译期嵌入（同 feature.yaml，防篡改、磁盘不落盘）。
 # [topology]~[dpc] 定位 = 运行时 sysfs 探测的兜底与校准基准，不是调优输入；改动需重编。
+# [cpu_governors] 例外之一：它是**选择偏好**（见下注释），其余段是硬件基线。
 # [frontier_policy] 是例外：它是**策略表**（帕累托前沿结果向量），由
 # scripts/frontier_policy.py 离线生成、受控块替换（块外内容勿手改本块）。
 # 8550 是唯一具备采用条件的机型（有逐档能效模型 + 真机 capacity）；其它 SoC 无本段 →
@@ -110,6 +111,14 @@ idle_us:
 # [dpc] dynamic-power-coefficient（mainline DT；校准基准，暂无运行时消费方）。
 # 用于内核 EAS 能量模型推算动态功耗，ChiRi 侧仅留作校准参照。
 dpc: { little: 251, big: 447, prime: 1057 }
+
+# [cpu_governors] cpufreq 调速器优先级（从左到右）：启动时逐 policy 读
+# scaling_available_governors，取本表中第一个该 policy 可用的，作为「默认调速器」写点
+# （CLG / 特调 / PowerBase / FastLock / 残留清理统一用它，不再写死 schedutil）。
+# 不写本段、或本段一个都不可用时沿用 schedutil（改造前后逐位一致）。
+# 注意：performance 是兜底，放在最后一位防止前面所有调速器均不可用
+# 显式接管并在退出时按快照还原。
+cpu_governors: [uag, walt, schedutil, performance]
 
 # >>> frontier_policy (generated) >>>
 # 由 scripts/frontier_policy.py 生成；受控块替换，块外内容请勿手改本块

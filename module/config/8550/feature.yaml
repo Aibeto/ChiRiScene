@@ -310,7 +310,13 @@ boost:
 
 # [powerbase]
 # PowerBase（Stardust 家族，开关在 meta.yaml `powerbase_enabled`，默认关闭）：
-# 8550 实测日常/视频放电功耗在 2~3W 区间，目标取 2.5W——低于它放宽升频，达到即守住。
+# 8550 实测日常/视频放电功耗在 2~3W 区间，目标取 2.0W——低于它放宽升频，达到即守住。
 # 字段含义见根 config/feature.yaml 的同名段。
+# 档位体系（桶号 = soc.yaml [frontier_policy] 的 demand_buckets，运行期按真机频表 floor 对齐）：
+#   标准 #13（日常甜点上沿）→ 触摸 #20 → 触摸二级 #25（绝对上限）；触摸升档是事件驱动
+#   （evdev，与 CLG 同链路），窗口过期回落 #13。
 powerbase:
   target_power_w: 2.0
+  tier_standard: 13
+  tier_touch: 20
+  tier_max: 25

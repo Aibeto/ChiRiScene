@@ -106,7 +106,9 @@ Affinity:
   # normal（非 boost）下 top-app/foreground 组掩码剔除 little 的预置开关（默认关闭）
   normal_fg_exclude_little: false
 
-  # ---- 放置与亲和线（2026-09-28 新增；全部可选，不写 = 代码缺省 = 原行为逐位一致）----
+  # ---- 放置与亲和线（2026-09-28 新增；全部可选，不写 = 代码缺省）----
+  # ⚠️ 本组多数开关的**代码缺省 = 新行为**（bg_promote_exclude_prime / big_pressure_any_mode /
+  # bitwidth_aware / write_dedup 缺省 true）：要逐位回旧行为必须显式写 false。
   # 后台/批处理线程 promote 时禁止溢出到 prime（prime 冲顶段边际能效最差）
   bg_promote_exclude_prime: true
   # big 饱和保护推广到所有会 promote 的模式（false = 回到「仅 boost 态」旧行为）
@@ -326,3 +328,29 @@ reduce:
     touch_boost_ms: 400
     # 触摸升频档数：在可用频率表中向上移动的档数
     touch_boost_tiers: 1
+
+# [powerbase]
+# PowerBase（Stardust 家族）：以**放电功耗**为指标的调频器，开启后接管原本由 CLG
+# 接管的场合（reduce/default/boost）；FAS / 特调 / DOWN 停摆 / 实验室判据不受影响。
+# 它是 `CpuLoadGovernor` 的**备用后端**（接管那一刻与 Worker 二选一），不额外占 owner。
+# 总开关在 meta.yaml `powerbase_enabled`（默认关），本段只是它的参数。
+# ⚠️ 热重载会整段重建它：perf 回 1.0、档位回落标准档、触摸窗口清空。
+powerbase:
+  # 放电目标功耗（W）：低于它放宽升频，达到或超过时守住不升（过载判定除外）；各 SoC 覆盖
+  target_power_w: 3.0
+  # 功耗低于目标时的升频宽松度（>1 = 放宽）
+  up_headroom_below: 1.15
+  # 降频激进度：目标性能乘以它（越小降得越狠；与功耗无关，恒生效）
+  down_scale: 0.5
+  # 功耗已达标时仍允许升频的门槛：满占用（100%）核心占比 %
+  overload_cores_pct: 50
+  # 且需持续这么久（ms）才放行升频
+  overload_hold_ms: 3000
+  # 触摸事件时允许突破功率上限的窗口（ms）；档位体系启用时同时是触摸升档窗口
+  touch_break_ms: 400
+  # 档位体系：能效前沿表 demand_buckets 的桶号（标准 / 触摸一级 / 触摸二级 = 绝对上限）。
+  # 标准档工作，触摸沿阶梯瞬时升档、已在最高档忽略本次调频，窗口过期回落标准档。
+  # 三者须全非 0 且严格递增，否则整段不启用；非 PF SoC / 桶越界 → 回退 hw_max
+  tier_standard: 0
+  tier_touch: 0
+  tier_max: 0

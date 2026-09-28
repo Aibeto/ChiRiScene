@@ -1,4 +1,4 @@
-//! scheduler.rs: [tweaks] [snapshot] [sched] [cpu_idle] [io] [touch_boost]
+//! scheduler.rs: [tweaks] [governor] [snapshot] [sched] [cpu_idle] [io] [touch_boost]
 
 use super::config::Config;
 use anyhow::Result;
@@ -37,6 +37,7 @@ impl CpuScheduler {
             log::info!("{}", t("system-tweaks-skipped-down"));
             return Ok(());
         }
+        self.apply_cpu_governors()?;
         self.apply_cpu_idle_governor()?;
         self.apply_io_settings()?;
         self.apply_disable_touch_boost()?;
@@ -166,6 +167,32 @@ impl CpuScheduler {
             t_with_args(
                 "sched-tuning-applied",
                 &fluent_args!("count" => applied.to_string())
+            )
+        );
+        Ok(())
+    }
+
+    // [governor]
+    /// 启动（及每次热重载）时算定各 policy 的目标 cpufreq 调速器：表内已有时只取副本、不重复读 sysfs。
+    /// 停摆期本函数随 apply_system_tweaks 一起跳过，缺的 policy 由写入点惰性补算（见 common.rs [governor]）
+    fn apply_cpu_governors(&self) -> Result<()> {
+        let mut picked: Vec<(i32, String)> = crate::common::select_cpu_governors()
+            .iter()
+            .map(|(&pid, g)| (pid, g.clone()))
+            .collect();
+        picked.sort_by_key(|&(pid, _)| pid);
+        if picked.is_empty() {
+            return Ok(());
+        }
+        log::info!(
+            "{}",
+            t_with_args(
+                "governor-selected",
+                &fluent_args!("policies" => picked
+                    .iter()
+                    .map(|(pid, g)| format!("policy{pid}:{g}"))
+                    .collect::<Vec<_>>()
+                    .join(" "))
             )
         );
         Ok(())

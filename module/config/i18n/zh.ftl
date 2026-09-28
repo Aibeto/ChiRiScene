@@ -137,6 +137,7 @@ config-special-parse-failed = [Config] 特调配置文件解析失败: { $path }
 config-special-merged = [Config] 已合并特调配置文件: { $path }
 
 # --- Governor (performance 接管，FAS/contingency) ---
+governor-selected = [Governor] 默认调速器选型: { $policies }
 governor-switched = [Governor] P{ $pid } 调速器 { $from } -> performance
 governor-restored = [Governor] P{ $pid } 调速器 performance -> { $to }
 governor-switch-failed = [Governor] policy { $pid } 切换调速器失败
@@ -170,6 +171,7 @@ clg-activated = [CLG] CPU 负载调频器已激活，共接管 { $count } 个集
 powerbase-activated = [PowerBase] 功耗基准调频器已接管（CLG 已释放）
 powerbase-deactivated = [PowerBase] 功耗基准调频器已释放
 powerbase-writer-invalid = [PowerBase] P{ $pid } 频率写入器不可用，跳过该集群
+powerbase-touch-tier = [PowerBase] 触摸升档至前沿 #{ $tier } 桶上限（窗口过期回落标准档）
 clg-no-clusters = [CLG] CPU 负载调频器: 未找到有效集群，保持未激活状态
 clg-deactivated = [CLG] CPU 负载调频器已停用
 clg-config-reloaded = [CLG] 配置已热重载 | 升频={ $up } 降频={ $down } 地板={ $floor } 天花板={ $ceil }

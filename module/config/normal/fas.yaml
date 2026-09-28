@@ -17,3 +17,5 @@ fas:
     # 首刷后看 devimp fps 列是否贴合 target 档（玩家若开 90 帧需调 target_fps）。
     com.tencent.tmgp.speedmobile: speedmobile
     com.tencent.lolm: lolm
+    # 三角洲行动（UE4 战术射击）
+    com.tencent.tmgp.dfm: dfm

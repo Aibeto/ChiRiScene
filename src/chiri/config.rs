@@ -670,7 +670,7 @@ pub struct FunctionToggles {
 
 /// 明日方舟特调（akmode）配置，与 CLG 完全解耦
 /// **无档位**：不做模式分档，按各核心组实时负载直接移动 scaling_max_freq 上限
-/// （FAS 式连续控制）机制：激活时统一内核调速器为 schedutil、min 压到硬件最低；
+/// （FAS 式连续控制）机制：激活时统一内核调速器为默认调速器（选型见 common.rs [governor]）、min 压到硬件最低；
 /// 之后每个负载 tick 目标上限比例 = clamp(组内最大核心占用率 × headroom, perf_floor, 1.0)：
 /// 升：目标 > 当前上限 + hysteresis → 立即上调（schedutil 在新上限内自由取频）；
 /// 降：目标 < 当前上限 − hysteresis 且持续 down_hold_ms → 上限收到目标档位
@@ -1609,10 +1609,15 @@ impl Default for CoreCtlConfig {
     }
 }
 
+/// 档位桶号的防御性上限（真机前沿表只有几十个桶；越界由查表回退 hw_max，不在这里判错）
+const MAX_TIER_BUCKET: usize = 4096;
+
 /// PowerBase 配置（feature.yaml `powerbase` 段）：以功耗为指标的调频参数
 /// 与 CLG 的根本区别：CLG 只看「利用率够不够」，PowerBase 看「功耗超没超目标」——
 /// 放电状态下以 `target_power_w` 为闸门，超了就不再升频（除非确实压不住：满占用核心
-/// 占比达 `overload_cores_pct` 且持续 `overload_hold_ms`）。降频**恒激进**，不看功耗
+/// 占比达 `overload_cores_pct` 且持续 `overload_hold_ms`）。降频**恒激进**，不看功耗。
+/// 档位体系（`tier_*`）把频率上界钉在能效前沿表的固定桶上：标准档工作、触摸事件沿
+/// 阶梯瞬时放开（含功耗豁免窗口），见 `power_base.rs`
 #[derive(Debug, Deserialize, Clone)]
 pub struct PowerBaseConfig {
     /// 放电状态下的目标功耗（W）：功耗低于它时按 `up_headroom_below` 放宽升频，达到或超过它时守住不升（过载判定除外）。各 SoC 在自己的 feature.yaml 里覆盖
@@ -1630,9 +1635,18 @@ pub struct PowerBaseConfig {
     /// 上面那个占比需持续这么久（ms）才放行升频
     #[serde(default = "d_pb_overload_hold")]
     pub overload_hold_ms: u64,
-    /// 触摸事件时允许短暂突破功率上限的窗口（ms）
+    /// 触摸事件时允许短暂突破功率上限的窗口（ms）；档位体系启用时同时是**触摸升档窗口**
     #[serde(default = "d_pb_touch_break")]
     pub touch_break_ms: u64,
+    /// 频率上限档（真机能效前沿表 `demand_buckets` 的桶号，0 = 不启用档位体系 → 沿用 hw_max 满频行为）：
+    /// 标准上限 / 触摸一级 / 触摸二级（绝对上限）。三者任一为 0 即整体不启用；
+    /// 非 PF SoC（无前沿表）或桶号越界同样静默回退 hw_max，行为与不启用一致
+    #[serde(default)]
+    pub tier_standard: usize,
+    #[serde(default)]
+    pub tier_touch: usize,
+    #[serde(default)]
+    pub tier_max: usize,
 }
 
 fn d_pb_target_power() -> f32 {
@@ -1663,6 +1677,9 @@ impl Default for PowerBaseConfig {
             overload_cores_pct: d_pb_overload_cores(),
             overload_hold_ms: d_pb_overload_hold(),
             touch_break_ms: d_pb_touch_break(),
+            tier_standard: 0,
+            tier_touch: 0,
+            tier_max: 0,
         }
     }
 }
@@ -1688,6 +1705,18 @@ impl PowerBaseConfig {
         self.overload_cores_pct = self.overload_cores_pct.clamp(1.0, 100.0);
         self.overload_hold_ms = self.overload_hold_ms.clamp(0, 30_000);
         self.touch_break_ms = self.touch_break_ms.clamp(0, 5_000);
+        // 档位桶号：仅做防御性上限（表只有几十个桶；越界由查表回退 hw_max，不在这里判错）
+        self.tier_standard = self.tier_standard.min(MAX_TIER_BUCKET);
+        self.tier_touch = self.tier_touch.min(MAX_TIER_BUCKET);
+        self.tier_max = self.tier_max.min(MAX_TIER_BUCKET);
+        // 阶梯必须全非 0 且严格递增，否则「触摸升档」会变成降频：不猜配置意图（不重排），
+        // 整段置 0 = 不启用档位体系，逐位回退 hw_max 满频行为
+        let (a, b, c) = (self.tier_standard, self.tier_touch, self.tier_max);
+        if a == 0 || b == 0 || c == 0 || !(a < b && b < c) {
+            self.tier_standard = 0;
+            self.tier_touch = 0;
+            self.tier_max = 0;
+        }
     }
 }
 
@@ -1810,6 +1839,8 @@ impl Config {
         config.affinity.normalize();
         // PowerBase 参数同样在加载处钳制（各段统一口径，别等 init 时才钳）
         config.powerbase.normalize();
+        // 参数下发到进程级副本：PowerBase 是 CLG 的备用后端，接管那一刻从这里取值（与总开关同一处同步）
+        crate::common::set_powerbase_config(config.powerbase.clone());
         // 电池读数选项同步到遥测层（原子量，热重载即时生效）。倍电压/倍电流与私有节点互斥：私有开关打开时这里强制关掉它们——UI 侧同时置灰并清值，手改 meta 也兜得住
         crate::monitor::telemetry::set_battery_options(
             config.meta.oplus_chg,

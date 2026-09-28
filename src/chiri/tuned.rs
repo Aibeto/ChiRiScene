@@ -160,7 +160,7 @@ impl TunedGovernor {
     }
 
     /// 接管全部 cpufreq policy：1) 先 release 清上次状态；2) 逐 policy 读可用频率与 affected_cpus 判定核心组；
-    /// 3) 快照 governor/min/max，写 schedutil、min 压硬件最低（与 CLG 同构，只调 max）；4) 初始 max = 硬件最高（接管瞬间多为场景切换，先给满上限由负载回落）
+    /// 3) 快照 governor/min/max，写默认调速器（选型见 common.rs [governor]）、min 压硬件最低（与 CLG 同构，只调 max）；4) 初始 max = 硬件最高（接管瞬间多为场景切换，先给满上限由负载回落）
     /// 返回 true = 成功接管；false = 无可用 cluster（配置错误或硬件不支持）
     // [init_release]
     pub fn init_policies(&mut self, mode: &str, cfg: &SpecialTunedConfig) -> bool {
@@ -263,8 +263,8 @@ impl TunedGovernor {
                 max_freq,
             });
 
-            // 统一 schedutil + min 压到硬件最低（避免设备出厂高 min 导致频率降不下去）
-            let _ = crate::utils::try_write_file(&gov_path, "schedutil");
+            // 统一默认调速器（选型见 common.rs [governor]）+ min 压到硬件最低（避免设备出厂高 min 导致频率降不下去）
+            let _ = crate::utils::try_write_file(&gov_path, crate::common::cpu_governor_for_policy(pid));
             let min_hw = freqs[0];
             let _ = crate::utils::try_write_file(&min_path, min_hw.to_string());
 
