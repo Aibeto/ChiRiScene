@@ -47,6 +47,8 @@ pub struct FasController {
     pub(super) gear_dampen_frames: u32,
     pub(super) consecutive_downgrade_count: u32,
     pub(super) last_downgrade_from_fps: f32,
+    /// 上次降档时刻：退避计数的时间衰减依据（距上次超过 `DOWNGRADE_BACKOFF_RESET` 视为新一轮降档，计数归 1）
+    pub(super) last_downgrade_at: Option<Instant>,
     pub(super) stable_gear_frames: u32,
 
     // 降档 Boost
@@ -125,6 +127,7 @@ impl FasController {
             gear_dampen_frames: 0,
             consecutive_downgrade_count: 0,
             last_downgrade_from_fps: 0.0,
+            last_downgrade_at: None,
             stable_gear_frames: 0,
             downgrade_boost_active: false,
             downgrade_boost_remaining: 0,
@@ -357,6 +360,7 @@ impl FasController {
         self.gear_dampen_frames = 0;
         self.consecutive_downgrade_count = 0;
         self.last_downgrade_from_fps = 0.0;
+        self.last_downgrade_at = None;
         self.stable_gear_frames = 0;
         self.downgrade_boost_active = false;
         self.downgrade_boost_remaining = 0;

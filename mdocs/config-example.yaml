@@ -210,10 +210,13 @@ Thermal:
   hard_perf_cap: 0.40
   # 豁免档：当前性能比已超过此值时不压制。默认 0.80
   free_above: 0.80
-  # 软/中档回滞（°C）：退档要降到「该级阈值 - hysteresis」以下才解除压制
+  # 软档回滞（°C）：退档要降到「软限 - hysteresis_c」以下才解除软限压制
   hysteresis_c: 3
-  # 硬档专用回滞（°C）：硬限退到 硬限 - hysteresis_hard 以下才退档（默认与 hysteresis_c 同值）
-  hysteresis_hard_c: 3
+  # 中档专用回滞（°C）：退档要降到「中限 - hysteresis_mid_c」以下才从中档退到软档。
+  # normalize 强制不变量「本级解除点不得低于下一档跳闸点」→ 本值 > 中限-软限 时被钳到该上限并 warn
+  hysteresis_mid_c: 2
+  # 硬档专用回滞（°C）：退到「硬限 - hysteresis_hard_c」以下才从硬档退到中档；同受上条不变量约束
+  hysteresis_hard_c: 2
 
 # [modes]
 # 性能模式（CLG 调频参数）

@@ -17,6 +17,8 @@
   `free_above` 是性能豁免档，不是温度带；tuned 段 cap 列为 `-`）
 - snap 侧：每 policy 的 `cpu_cur_khz` vs `cpu_max_khz`、`cpu_governor`，
   `wakeups`/`migrations` **÷2**（2s 增量）；附迁移率量级带供对照
+- **播放态帧间隔直方图**（`event` 行 `decision=playback_fps`）：只统计活跃窗口（n ≥
+  `PLAY_ACTIVE_MIN`），给占优簇 + 超基线长尾率（>52ms / >100ms）；伪影窗口单独计数
 - 不假设存在 `tgtop` 行（44 列拆分版没有）
 
 口径一律以 `.cursor/commands/devimp-log-analysis.md` 为准；本脚本只做读数与统计。
@@ -36,6 +38,14 @@ MIG_BANDS = [
     ("亮屏 UI（launcher/kernelsu）", 3000, 6000),
     ("MOBA（王者）FAS", 9000, 16000),
 ]
+
+# [play_hist] 播放态直方图判读门槛（帧数）：低于此视为暂停/静态页伪影窗口，只计数不进长尾率；
+# 长尾档界（ms）分别是 3 个 120Hz 周期与 2 个 24fps 周期
+PLAY_ACTIVE_MIN = 15
+PLAY_TAIL_LONG_MS = 52
+PLAY_TAIL_HARD_MS = 100
+# 直方图档数上限（写入端 `src/monitor/fps_monitor.rs::PLAY_HIST_BINS`）：越界档号一律丢弃
+PLAY_HIST_BINS = 256
 
 
 def build(files, min_n):
@@ -284,6 +294,95 @@ def snap_side(files, cols):
     return out
 
 
+def _play_reason(reason):
+    """`n=31;b2=5;b8=10;b10=16` → (帧数, {档号: 计数})；`None` = 缺 `n=`。
+
+    缺 `n=` 说明这一行的窗口口径不明（写入端不落 `n` 即非本格式），**整行丢弃**而不是当 0 帧窗口——
+    否则会被算进「伪影窗」，把格式异常伪装成「暂停」。
+    档号越界（>= `PLAY_HIST_BINS`，写入端 `fps_monitor.rs` 的 256 档上限）同样丢弃：
+    坏档号（如 `b300`）会被长尾统计当成真掉帧、把长尾率抬高。
+    """
+    n = None
+    hist = collections.Counter()
+    for kv in (reason or "").split(";"):
+        if "=" not in kv:
+            continue
+        k, v = kv.split("=", 1)
+        if k == "n":
+            n = int(dc.num(v) or 0)
+        elif k.startswith("b"):
+            b, c = dc.num(k[1:]), dc.num(v)
+            if b is None or c is None or not 0 <= int(b) < PLAY_HIST_BINS:
+                continue
+            hist[int(b)] += int(c)
+    if n is None:
+        return None
+    return n, hist
+
+
+def play_hist(files, cols):
+    """[7] 播放态帧间隔直方图汇总（`event` 行 `decision=playback_fps`）。
+
+    口径见命令文档「播放态帧信号」：一行一秒、**混流**（视频层 + 弹幕层 + 同 app 多进程）、
+    窗口内无帧不落行；判读只能「占优簇反推内容基线 + 超基线长尾（真掉帧）」，不要对 n 求均值当 fps。
+    本段只统计 **n >= PLAY_ACTIVE_MIN 的活跃窗口**：暂停/静态页/切场景会产出低帧率伪影窗口
+    （实测出现 ~124ms 占优簇），它们单独计数、不进长尾率（否则伪影会被读成"掉帧"）。
+    """
+    I = dc.index_map(cols)
+    out = ["# [7] 播放态帧间隔直方图（`event` 行 `decision=playback_fps`；档宽 4ms）",
+           f"#     只统计 n >= {PLAY_ACTIVE_MIN} 的**活跃窗口**；伪影窗（n < {PLAY_ACTIVE_MIN}，暂停/静态页）"
+           "只计数、不进长尾率。",
+           "#     长尾判据：> 52ms（≥3 个 120Hz 周期）/ > 100ms（≥2 个 24fps 周期）；"
+           "占优簇要与**同内容基线**比，禁止跨场景下结论。",
+           "#     覆盖上限 200ms：写入端只收 [1ms, 200ms] 的帧间隔，>200ms 整帧丢弃（连 n 都不计）"
+           "→ 长尾率的分子分母都不含 >200ms 的严重卡顿，「无长尾」≠「无卡顿」"]
+    need = ("decision", "reason", "mode", "package")
+    if any(k not in I for k in need):
+        out.append("#     本 schema 缺列，跳过")
+        out.append("")
+        return out
+    agg = collections.defaultdict(lambda: [collections.Counter(), 0, 0, 0, 0])
+    bad = 0
+    for fn in files:
+        for p, t in dc.iter_rows(fn):
+            if t != "event" or p[I["decision"]] != "playback_fps":
+                continue
+            parsed = _play_reason(p[I["reason"]])
+            if parsed is None:
+                bad += 1
+                continue
+            n, hist = parsed
+            a = agg[(p[I["mode"]], p[I["package"]])]
+            if n < PLAY_ACTIVE_MIN:
+                a[3] += 1
+                a[4] += n
+                continue
+            a[0].update(hist)
+            a[1] += n
+            a[2] += 1
+    if not agg:
+        out.append("  （本包无 playback_fps 行：未走 playback 特调 / 诊断总闸未开 / FAS 会话不产出该行）")
+        out.append("")
+        return out
+    out.append(f"  {'mode':9s} {'package':22s} {'活跃窗':>6s} {'活跃帧':>8s} "
+               f"{'占优簇（档×4ms）':34s} {'>52ms':>7s} {'>100ms':>7s} {'伪影窗':>6s}")
+    for (mode, pkg), (hist, frames, wins, skip_w, _skip_n) in sorted(
+            agg.items(), key=lambda kv: -kv[1][1]):
+        if frames <= 0:
+            out.append(f"  {mode:9s} {pkg:22s} {wins:>6d} {frames:>8d} {'（无活跃窗口）':34s} "
+                       f"{'-':>7s} {'-':>7s} {skip_w:>6d}")
+            continue
+        top = " ".join(f"b{b}({b * 4}ms){c / frames * 100:.0f}%" for b, c in hist.most_common(3))
+        tail52 = sum(c for b, c in hist.items() if b * 4 >= PLAY_TAIL_LONG_MS) / frames * 100
+        tail100 = sum(c for b, c in hist.items() if b * 4 >= PLAY_TAIL_HARD_MS) / frames * 100
+        out.append(f"  {mode:9s} {pkg:22s} {wins:>6d} {frames:>8d} {top:34s} "
+                   f"{tail52:6.1f}% {tail100:6.1f}% {skip_w:>6d}")
+    if bad:
+        out.append(f"  [!] 无法解析丢弃 {bad} 行（缺 `n=` 或档号越界）——先查帧格式，勿解读这些行")
+    out.append("")
+    return out
+
+
 def main(argv=None):
     dc.setup_console()
     ap = argparse.ArgumentParser()
@@ -312,6 +411,7 @@ def main(argv=None):
     out += mode_package(files, cols, a.min_n)
     out += thermal(files, cols)
     out += snap_side(files, cols)
+    out += play_hist(files, cols)
 
     workdir = a.out or root
     path = dc.write_report(workdir, "main.txt", out)

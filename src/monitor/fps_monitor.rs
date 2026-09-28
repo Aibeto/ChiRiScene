@@ -61,7 +61,11 @@ const FRAMETIME_WINDOW: usize = 144;
 //（视频层 24/30fps + 弹幕层 120Hz）——在线判 jank、判 fps 列都无从谈起，故只按秒落帧间隔直方图，由离线按
 //「占优簇反推基线 + 相对劣化」判读（口径见 `.cursor/commands/devimp-log-analysis.md` 播放态小节）。
 // 落点复用 main_ 通道的 event 行（decision=playback_fps、reason=直方图），不新建 devimp 文件/目录
-/// 直方图档数：每档 4ms，覆盖 4ms–1020ms（<4ms 归 0 档、>=1020ms 归末档）
+/// 直方图档数：每档 4ms。**实际覆盖上限 = `MAX_FRAME_NS`(200ms)**（探针侧只让 `[MIN_FRAME_NS,
+/// MAX_FRAME_NS]` 的间隔进来，>200ms 的帧整帧丢弃、既不进直方图也不进 `n`）→ 档号 50 以后恒为空，
+/// 离线长尾率的**分母不含** >200ms 的严重卡顿（2026-09-28 审查发现注释原写"覆盖 4ms–1020ms"与
+/// 过滤范围不符）。若日后要让直方图覆盖到 1020ms，需给直方图单列上限而**不能**抬高 `MAX_FRAME_NS`
+/// ——后者同时喂 FAS 的 `frametimes`（把 >200ms 的极端间隔算进窗口会拉低 avg_fps、引发过度降档）
 const PLAY_HIST_BINS: usize = 256;
 /// 单档宽度（ns）
 const PLAY_HIST_BIN_NS: u64 = 4_000_000;

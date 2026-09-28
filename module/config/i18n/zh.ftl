@@ -303,18 +303,19 @@ affinity-released = [Affinity] 已释放接管，恢复系统原始亲和配置
 # --- CoreCtl（core_ctl 核心在线接管）---
 corectl-boost-on = [CoreCtl] boost: { $count } 个 cluster 的 min_cpus 已抬到全组常在线
 corectl-boost-off = [CoreCtl] 已恢复 core_ctl min_cpus 快照
-corectl-scenemode-on = [CoreCtl] scenemode 离线核：已下线 { $count } 个核心（小核+大核常驻低频，prime 断电，专用小核独占给调度服务）
+corectl-scenemode-on = [CoreCtl] scenemode 离线核：已下线 { $count } 个小核（big/prime 常驻低频，编号最大的大核独占给调度服务）
 corectl-scenemode-off = [CoreCtl] 已恢复 { $count } 个被下线的核心
 corectl-restore-pending = [CoreCtl] { $count } 个核心恢复上线失败，将每 2 秒重试
-corectl-self-pinned = [CoreCtl] 调度服务已钉到专用小核 cpu{ $core }
+corectl-self-pinned = [CoreCtl] 调度服务已钉到专用大核 cpu{ $core }
 corectl-unavailable = [CoreCtl] 未发现可用的 core_ctl 节点，接管跳过
 corectl-write-failed = [CoreCtl] core_ctl 写入失败: { $path }
 corectl-node-missing = [CoreCtl] core_ctl 节点缺失/不可读: { $path }（该簇降级逐核 offline 兜底）
 corectl-enable-off = [CoreCtl] core_ctl enable=0（core_ctl 不执行压制、写入不生效）: { $path }，跳过无效写直接降级逐核 offline
 corectl-enable-off-boost = [CoreCtl] core_ctl enable=0（core_ctl 不执行压制、整簇本就常在线）: { $path }，boost 保核跳过该簇
-corectl-vendor-override = [CoreCtl] core_ctl 节点被厂商改写（写后读回非 0）: { $path }，不与厂商拉锯，退出按快照恢复
+corectl-vendor-override = [CoreCtl] core_ctl 节点被厂商改写（写后读回与目标值不符）: { $path }，不与厂商拉锯，退出按快照恢复
 corectl-verify-failed = [CoreCtl] core_ctl 节点读回失败（写已发出，按已生效记账）: { $path }
-corectl-scenemode-halt = [CoreCtl] scenemode prime 簇已经 core_ctl max_cpus 整簇 halt
+corectl-scenemode-halt = [CoreCtl] scenemode 目标簇已由 core_ctl max_cpus 收敛到保留核数
+corectl-reserved-core-halted = [CoreCtl] 写 core_ctl 保留档后引导核 CPU0 掉线（该内核把保留档当停摆档），已回滚 max_cpus 并放弃 core_ctl 压制
 clampev-node-missing = [Diag] clamp-evidence 佐证节点不可用: { $key } ({ $path })
 
 # --- Notify（常驻状态通知）---

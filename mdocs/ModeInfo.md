@@ -107,7 +107,7 @@ FAS（帧感知调度）面向白名单游戏：帧事件驱动 per-policy 锁�
 
 - `fas`：FAS 会话进行中的当前模式（见上）
 - `down`：DOWN 停摆。调度全部释放、只留采集与日志，由 `down.chr` 控制；用于记录「ChiRi 不工作时」设备自身的调度情况。退出停摆按进入前的模式重新接管
-- `scenemode` 不是模式值：独立的息屏调度轴。息屏超过 `scene_mode_delay_secs`（8550 为 300 秒）后进入：频率上限压到 15%，core_ctl 可下线 prime 簇省漏电；亮屏按快照恢复。总闸是 `meta.yaml` 的 `scenemode_enabled`
+- `scenemode` 不是模式值：独立的息屏调度轴。息屏超过 `scene_mode_delay_secs`（8550 为 300 秒）后进入：频率上限压到 12%，**下线 little 簇（除引导核）省漏电**（big / prime 常驻低频，另独占一颗大核给调度服务）；亮屏按快照恢复。总闸是 `meta.yaml` 的 `scenemode_enabled`
 
 ## 相关文件 / Files
 

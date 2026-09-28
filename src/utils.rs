@@ -50,6 +50,18 @@ pub fn try_write_file<P: AsRef<Path>, C: AsRef<[u8]>>(path: P, content: C) -> Re
 }
 
 // [nodes]
+/// sysfs 结点写入的**统一入口**：先 `enable_perm`（已存在则 0644→0664）再写，**不**在收尾改权限。
+/// 与 `write_to_file` 的唯一区别就是收尾那一步——它会 chmod 0444，而 sysfs 结点的权限是**进程间共享**的：
+/// 写一次就等于把「别人」挡在外面（本进程裸写、内核/厂商服务的恢复写都会被 EACCES）。
+/// 实例（2026-09-28 定位）：FAS 引擎用 `write_to_file` 写 `scaling_governor` 后，GovernorGuard 对同一
+/// 节点的裸 `fs::write` 全部失败（跨全部已收 daemon.log 成功行 0 次）——**凡 sysfs 结点一律走本函数**。
+/// 返回写入结果（不吞错）：调用方据此决定是否记快照/重试
+pub fn write_sysfs<P: AsRef<Path>, C: AsRef<[u8]>>(path: P, content: C) -> Result<()> {
+    let path = path.as_ref();
+    let _ = enable_perm(path);
+    Ok(fs::write(path, content)?)
+}
+
 /// 多节点写入的失效告警去重表：`what` 进入「全部节点不可用」态记一条，任一节点写成功即移除（重新武装），防 1~2s 热路径刷屏
 static NODE_FAIL_WARNED: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
 

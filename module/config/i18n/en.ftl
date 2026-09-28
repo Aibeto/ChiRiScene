@@ -303,18 +303,19 @@ affinity-released = [Affinity] takeover released, system affinity config restore
 # --- CoreCtl (core_ctl online control) ---
 corectl-boost-on = [CoreCtl] boost: min_cpus raised to keep all { $count } clusters fully online
 corectl-boost-off = [CoreCtl] core_ctl min_cpus snapshot restored
-corectl-scenemode-on = [CoreCtl] scenemode core offline: { $count } cores taken offline (little+big kept at low freq, prime powered down, one little core reserved for scheduler)
+corectl-scenemode-on = [CoreCtl] scenemode core offline: { $count } little cores taken offline (big/prime kept at low freq, highest big core reserved for scheduler)
 corectl-scenemode-off = [CoreCtl] { $count } offlined cores restored online
 corectl-restore-pending = [CoreCtl] { $count } cores failed to come back online, retrying every 2s
-corectl-self-pinned = [CoreCtl] scheduler service pinned to dedicated little core cpu{ $core }
+corectl-self-pinned = [CoreCtl] scheduler service pinned to dedicated big core cpu{ $core }
 corectl-unavailable = [CoreCtl] no usable core_ctl node found, takeover skipped
 corectl-write-failed = [CoreCtl] core_ctl write failed: { $path }
 corectl-node-missing = [CoreCtl] core_ctl node missing/unreadable: { $path } (cluster falls back to per-core offline)
 corectl-enable-off = [CoreCtl] core_ctl enable=0 (core_ctl does not enforce limits; writes have no effect): { $path }; skipping the no-op write and falling back to per-core offline
 corectl-enable-off-boost = [CoreCtl] core_ctl enable=0 (core_ctl does not enforce limits; the whole cluster is already online): { $path }; boost keeps-online skipped for this cluster
-corectl-vendor-override = [CoreCtl] core_ctl node overridden by vendor (non-zero read-back): { $path }; not fighting vendor, restored from snapshot on exit
+corectl-vendor-override = [CoreCtl] core_ctl node overridden by vendor (read-back differs from target): { $path }; not fighting vendor, restored from snapshot on exit
 corectl-verify-failed = [CoreCtl] core_ctl node read-back failed (write issued, accounted as applied): { $path }
-corectl-scenemode-halt = [CoreCtl] scenemode prime cluster halted via core_ctl max_cpus
+corectl-scenemode-halt = [CoreCtl] scenemode target cluster converged by core_ctl max_cpus
+corectl-reserved-core-halted = [CoreCtl] boot core CPU0 went offline after the core_ctl keep value was written (kernel treats it as halt); max_cpus rolled back, core_ctl clamp abandoned
 clampev-node-missing = [Diag] clamp-evidence node unavailable: { $key } ({ $path })
 
 # --- Notify (ongoing status notification) ---

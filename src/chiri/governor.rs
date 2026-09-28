@@ -2,7 +2,7 @@
 //! 激活时快照各 policy 的 `scaling_governor` 原值并写 `performance`，release 逐 policy 恢复。与 FastLock 同构：对象归调度线程独占、无内部锁；
 //! 快照读不到原值的 policy 直接跳过（宁可不管它，也不留下恢复不回去的残留）。健壮性边界：release 覆盖 FAS 退出 / contingency 退出 / DOWN 进入 / panic 自愈收尾 / 进程收尾；
 //! SIGKILL 场景收尾不执行，残留由 [residue] 启动清理兜底
-use log::{info, warn};
+use log::{debug, info, warn};
 use std::fs;
 
 use crate::fluent_args;
@@ -12,10 +12,24 @@ use crate::i18n::t_with_args;
 const FALLBACK_GOVERNOR: &str = "schedutil";
 
 /// 调速器写入（区分成败，日志精简）。**不用 `try_write_file`**：内部吞错恒返回 Ok， 无法判断成败，且收尾会把文件 chmod 0444——对之后还要恢复的 sysfs 节点是毒药
+///
+/// 写前 `enable_perm` + 失败读回校验（2026-09-28 统一写路径）：走 `utils::write_sysfs`（与 FAS
+/// 引擎同款，不做收尾 chmod），**不再裸 `fs::write`**——引擎侧 `write_to_file`/`try_write_file`
+/// 写完会把同一节点 chmod 0444，裸写在它写过一次之后就必然 `EACCES`（跨全部已收 daemon.log，
+/// 本函数成功行 `governor-switched` **0 次**、失败行成批出现，FAS 期的 performance 实际由引擎兜住）。
+/// 万一仍失败：**读回等于目标值就按成功计**（典型场景：引擎刚写过同一节点），只记 debug，
+/// 免得把「别人已经写好了」继续报成失败、污染判读（详见命令文档「`scaling_governor` 写入」条）
 fn write_governor(path: &str, value: &str) -> bool {
-    match fs::write(path, value) {
+    match crate::utils::write_sysfs(path, value) {
         Ok(()) => true,
         Err(e) => {
+            let already = fs::read_to_string(path)
+                .map(|s| s.trim() == value)
+                .unwrap_or(false);
+            if already {
+                debug!("governor write rejected but readback is already '{value}': {path}");
+                return true;
+            }
             warn!(
                 "{}",
                 t_with_args(

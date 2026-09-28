@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::common::DaemonEvent;
 use crate::fluent_args;
@@ -19,10 +19,25 @@ use crate::i18n::{t, t_with_args};
 /// 更新共享屏幕状态，返回是否发生状态变化变化转发：uevent 线程直推 DaemonEvent::ScreenStateChange （零轮询延迟），verify 自愈路径的变化由 app_detect 主循环兜底转发
 /// [PAUSED] 原「亮→息翻转先全节点投票（多数票）再确认」的仲裁已暂停，现役判定源是 debug.tracing.screen_state 属性（见 [prop]）；
 /// 恢复投票 = 解开 [source]/[select]/[read] 区块并还原本函数投票块与 VETO_WARNED
+/// 两次状态翻转之间的最小间隔：任何来源（属性轮询 / verify 自愈 / 未来的 uevent）在此时长内提出的
+/// 第二次翻转一律**延后**（不是丢弃——下一次轮询/verify 会再次尝试）。人手按电源键不可能快于 200ms，
+/// 故真实操作不受影响，但能吃掉「同一秒内息屏→亮屏」这类抖动（每次抖动都要走一整轮 doze 切换 +
+/// CLG 重建）。2026-09-28 加：属性轮询线程的去抖挡不住 verify 路径（它每秒独立采样并直写共享状态）
+const SCREEN_MIN_FLIP_INTERVAL: Duration = Duration::from_millis(200);
+static LAST_FLIP_AT: Mutex<Option<Instant>> = Mutex::new(None);
+
 fn update_state_if_changed(state_arc: &Arc<Mutex<bool>>, new_state: bool, source: &str) -> bool {
     let mut state_lock = state_arc.lock().unwrap();
     if *state_lock == new_state {
         return false;
+    }
+    // 锁序：state_arc → LAST_FLIP_AT（全仓只有此处同时持两把，无反向嵌套）
+    {
+        let mut last = LAST_FLIP_AT.lock().unwrap_or_else(|e| e.into_inner());
+        if last.map(|t| t.elapsed() < SCREEN_MIN_FLIP_INTERVAL).unwrap_or(false) {
+            return false;
+        }
+        *last = Some(Instant::now());
     }
     debug!(
         "{}",
@@ -369,16 +384,46 @@ fn read_screen_prop() -> bool {
     state
 }
 
-/// 属性轮询周期：单次属性读取开销极小，500ms 在感知延迟与线程空转间取衡
-const SCREEN_PROP_POLL_MS: u64 = 500;
+/// 属性轮询周期：单次属性读是 bionic 共享内存读（`libc::__system_property_get`，µs 级、不起子进程），
+/// 故压到 150ms——**亮屏→退出 scenemode（恢复在线核 + 恢复 CLG 配置）的感知延迟 ≤450ms**
+/// （最坏：150ms 轮询 × 2 次去抖确认 + 被 `SCREEN_MIN_FLIP_INTERVAL` 再挡一轮 150ms；2026-09-28
+/// 加快退出速度。原 500ms 时点亮屏幕最长要等半秒才恢复，手感上就是「亮屏后性能恢复慢」）
+const SCREEN_PROP_POLL_MS: u64 = 150;
 
-/// 屏幕状态属性轮询线程（现役）：每 500ms 读一次 debug.tracing.screen_state，变化即更新共享状态并直推 `ScreenStateChange` 事件（与原 uevent 直推同管道）
+/// 去抖：同一新状态需连续读到该次数（150ms × 2 ≈ 300ms 稳定窗口）才上报。
+/// 必要性：抬手亮屏/通知会写出「息屏 → 1s 后亮屏」这类秒级抖动对（0927 包实测多处），每次抖动都会走
+/// 一整轮 doze 切换 + CLG 重建；周期缩短后更容易抓到瞬时值，单靠缩短周期反而会放大抖动代价。
+/// 副作用（正向）：属性单次读失败（缺失→按亮屏）不再能翻转状态
+const SCREEN_PROP_DEBOUNCE: u32 = 2;
+
+/// 屏幕状态属性轮询线程（现役）：每 `SCREEN_PROP_POLL_MS` 读一次 debug.tracing.screen_state，
+/// 变化**且稳定 `SCREEN_PROP_DEBOUNCE` 个周期**才更新共享状态并直推 `ScreenStateChange` 事件
+/// （与原 uevent 直推同管道）
 pub fn monitor_screen_state_property(state_arc: Arc<Mutex<bool>>, tx: SyncSender<DaemonEvent>) {
+    let mut candidate = *state_arc.lock().unwrap();
+    let mut hits = 0u32;
     loop {
         thread::sleep(Duration::from_millis(SCREEN_PROP_POLL_MS));
         let state = read_screen_prop();
-        if update_state_if_changed(&state_arc, state, "prop") {
-            let _ = tx.send(DaemonEvent::ScreenStateChange(state));
+        // 以共享状态为比较基准（verify 自愈路径与 uevent 也会写它），避免去抖计数与真实状态错位
+        let current = *state_arc.lock().unwrap();
+        if state == current {
+            candidate = state;
+            hits = 0;
+            continue;
+        }
+        if state == candidate {
+            hits += 1;
+        } else {
+            candidate = state;
+            hits = 1;
+        }
+        if hits >= SCREEN_PROP_DEBOUNCE {
+            if update_state_if_changed(&state_arc, state, "prop") {
+                let _ = tx.send(DaemonEvent::ScreenStateChange(state));
+            }
+            candidate = state;
+            hits = 0;
         }
     }
 }

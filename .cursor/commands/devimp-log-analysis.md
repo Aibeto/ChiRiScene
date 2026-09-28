@@ -107,10 +107,10 @@ python scripts\devimp-analyze.py <解压目录> [--since MMDD-HHMMSS] [--min-n 3
 | -------------- | -------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
 | `dvrun.py`     | **单命令全流程**：解压 → 聚合表 → 四探针（main/aff/status/power）→ `report.md`                                                   | `python scripts\devimp\dvrun.py <logd_*.tar.gz 或已解压目录>`                         |
 | `dvextract.py` | 解压（递归容忍 + 内容嗅探 + 完整性闸门 + `inventory.txt`）                                                                       | `python scripts\devimp\dvextract.py <logd_*.tar.gz> [--tag T] [--out-root devimpbin]` |
-| `dvmain.py`    | `main_*.log`：定版 / mode×package / decide-vs-actual / 热压制带 / snap 侧                                                        | `python scripts\devimp\dvmain.py <解压目录> [--since MMDD-HHMMSS] [--min-n 30]`       |
+| `dvmain.py`    | `main_*.log`：定版 / mode×package / decide-vs-actual / 热压制带 / snap 侧 / **播放态帧间隔直方图（`[7]`，活跃窗口 + 长尾率）** | `python scripts\devimp\dvmain.py <解压目录> [--since MMDD-HHMMSS] [--min-n 30]`       |
 | `dvaff.py`     | `aff_*.log`：`@A` 动作与 bulk、`@S` 差分帧累积（按 `full=1` 收敛存活集合、tid 复用作废）、绑定轨迹、`t` 行核分布与存活集合合并态（`--groups` 按机型分簇） | `python scripts\devimp\dvaff.py <解压目录> [--since MMDD-HHMMSS] [--groups "0-2,3-6,7"] [--core-top 8]` |
 | `dvstatus.py`  | `status.csv` + `daemon.log`：charge / 放电功率 / fps / FAS 证据 / 重启界标                                                       | `python scripts\devimp\dvstatus.py <解压目录>`                                        |
-| `dvpower.py`   | **按包功耗归因**：`status.csv` 权威（`charge` + `batt_power_w`，按 mode×package 与按包）+ 热档秒数 + devimp 侧 `batt_p` 交叉验证 | `python scripts\devimp\dvpower.py <解压目录> [--since MMDD-HHMMSS]`                   |
+| `dvpower.py`   | **按包功耗归因**：`status.csv` 权威（按 mode×package / 按包 / **按 mode 能量汇总 `[7]`**）+ 热档秒数 `[4]` + **档位迁移时间线 `[5]` / 档位温度区间 `[6]`** + devimp 侧交叉验证 `[8]` | `python scripts\devimp\dvpower.py <解压目录> [--since MMDD-HHMMSS]`                   |
 | `dvlz4.py`     | 纯 python LZ4 解码（供 dvextract 用；有 `--selftest`）                                                                           | `python scripts\devimp\dvlz4.py --selftest`                                           |
 | `dvcommon.py`  | 共享工具（列定义、文件头解析、切行、统计、UTF-8 输出）                                                                           | （库，不直接跑）                                                                      |
 
@@ -209,7 +209,7 @@ python scripts\devimp-analyze.py <解压目录> [--since MMDD-HHMMSS] [--min-n 3
   - 早期记录的「视频稳态 ≈300/s」只在**无弹幕/网页面板、无滚动**的纯视频稳态下出现；
     本次包内 `@S` 帧显示 `tv.danmaku.bili:web` 与 `surfaceflinger` 同时活跃 → 属 UI 量级。
     **判定异常前先确认是否有弹幕/网页/滚动**，禁止拿一个数跨场景下结论
-- `thermal_cap_pct`：对照 feature.yaml 的 `soft_perf_cap`（8550=0.85、8475/8998=0.70）；41℃ 触发、38℃ 解除（hysteresis 3）
+- `thermal_cap_pct`：对照 feature.yaml 的 `soft_perf_cap`（8550=0.85、8475/8998=0.70）；电池软限 41℃ 触发 / 38℃ 解除（`hysteresis_c=3`），中限 43℃ 触发 / **8550 41.5℃ 解除**（`hysteresis_mid_c=1.5`，其余机型 2）、硬限 45℃ 触发 / 43℃ 退回中档（`hysteresis_hard_c=2`）。**判读「热是否常态」时同时看档位迁移时间线**：中档与软档在 normalize 里受不变量「本级解除点不得低于下一档跳闸点」约束（`中限 − hysteresis_mid_c >= 软限`），2026-09-28 前中档解除点 40℃ < 软限 41℃，会造成「中档咬住后整段跳过 0.85 档」——见到 cap=60 长时间贴在中限以下 1~3℃ 的桶里，先核对当时的 `hysteresis_mid_c`
   - **`free_above` 是性能豁免档、不是温度带**：压制只落在 `(soft_perf_cap, free_above)` 区间，`>= free_above` 不钳制。**`cap=85` ≠ 已压制**——`free_above == soft_perf_cap` 时压制带为空、软限档完全空转（8550 曾如此，2026-09-23 修为 0.95），日志表现 = `cap=85` 期间写频仍可到 hw_max；热压制只作用于 CLG，tuned 段 cap 列 `-`
   - **实测**：batt 42.1℃ 触发 → `cap=85`（`thermal_change batt=42.1 cpu=56.4 cap=85 free=85`）
   - **daemon 重启会把热状态重置回 100**（新会话从零升温）→ 跨重启的 cap 序列不可直接连读。
@@ -238,22 +238,39 @@ python scripts\devimp-analyze.py <解压目录> [--since MMDD-HHMMSS] [--min-n 3
   全部 = 旧档、近旁 snap 的 `cur==max`、帧率达标）；已改为写后延迟 200ms、下一次写入前抽查。
   **判读顺序**：先看同一时刻 snap 的 `cur==max` 与 fps，再看告警——三者一致且 fps 达标时，
   不要把告警解释成「被 thermal/QoS 压制」（修复前的老包仍会看到 6%~26% 的『偏低』）
-- **`scaling_governor` 写入 EPERM**：本机每轮启动都报
-  `[SysFS] 写入 …/policyX/scaling_governor 失败: Permission denied (os error 13)`（3 个 policy 各一次），
-  FAS 激活时再各报一次。snap 的 `cpu_governor` 显示内核本来就是 `schedutil`，所以意图已满足；
-  但**若 OEM 把 governor 换成别的，ChiRi 切不回来**——这是一条待查的环境约束，不是本轮回归
+- **`scaling_governor` 写入失败（`os error 13`）已于 2026-09-28 定案并修复**：原判读「内核本就是
+  schedutil、意图已满足」**不成立于 FAS 路径**——2026-09-28 包实测 FAS 段 snap 的 `cpu_governor`
+  就是 `performance`（`cur==max` 100%），而 `GovernorGuard` 的成功行 `governor-switched` 在**全部已收
+  daemon.log 里 0 次**。根因：FAS 引擎用 `utils::try_write_file` 写同一节点，它会先 chmod 0664、
+  **写完 chmod 0444**，而 guard 侧是裸 `fs::write` → 引擎写过一次后 guard 必然 EACCES（FAS 期的
+  performance 全靠引擎兜住）。现统一走 `utils::write_sysfs`（写前 `enable_perm`、不收尾改权限、失败读回
+  校验），引擎侧 3 处写入一并换用。判读：改造后应看到 `P{pid} 调速器 schedutil -> performance` 成功行；
+  若仍失败，日志会带出「读回已是目标值」的 debug 而不是 warn
 - FAS 验证看 `daemon.log` 的 `fas-gear-switch` / `fas-low-perf-upgrade` 与 snap 的 `mode=fas`；
   `status.csv` 的 `fps` 列是 eBPF uprobe（`Surface::queueBuffer`）帧间隔，只在 FAS 段有值
   （播放态不填该列，改走下面的 `playback_fps` 行）
 - **播放态帧信号（2026-09-27 起）：看 `event` 行的 `decision=playback_fps`**
   （只在该包里特调 `playback` 接管、且 `dev_record` 开启时才有；FAS 会话不产出——那一路走 FAS 自己的 fps）。口径：
-  - `reason` = `n=<帧数>;b<档号>=<计数>;…`：档宽 **4ms**、档 0 = <4ms、档 255 = ≥1020ms，
-    只落非零档（档号稀疏，按 `bin × 4ms` 还原帧间隔）
+  - `reason` = `n=<帧数>;b<档号>=<计数>;…`：档宽 **4ms**、档 0 = <4ms，只落非零档
+    （档号稀疏，按 `bin × 4ms` 还原帧间隔）。**实际覆盖上限只有 200ms**（`fps_monitor.rs` 的
+    `MAX_FRAME_NS`）：>200ms 的帧间隔被**整帧丢弃**、既不进直方图也不进 `n`（2026-09-28 审查发现
+    写入端档表虽到 1020ms，但过滤在更前面）→ 档号 51+ 恒空，长尾率的**分子分母都不含 >200ms 的
+    严重卡顿**；故「无长尾」只能读作「无 52~200ms 级卡顿」
   - **1 秒一行，窗口内无帧则整行不落**（暂停/静态页 = 无帧）→ 行数 ≈ 播放秒数，可直接当「在播时长」用
   - **同一行是混流的**：探针挂在进程级 `Surface::queueBuffer`，视频层（24/30fps）+ 弹幕层（120Hz）
     的帧间隔落在同一个直方图里。判读先找**占优簇**反推内容基线（bilibili ≈ 档 10 一堆 + 档 0/1 一堆），
     再看是否出现超出基线的长尾档（真掉帧）。**不要对 n 求均值当 fps**
   - 本质是离线判据（在线不判 jank、不写 fps 列）：`n` 只用于交叉验证「这一秒确实在出帧」
+  - **汇总看 `dvmain.py` 的 `[7]`**（2026-09-28 起）：只统计 `n >= 15` 的**活跃窗口**，给占优簇 +
+    长尾率（>52ms / >100ms）；伪影窗（暂停/静态页/切场景）只计数、不进判据。判「热压制是否伤播放」
+    必须**按时间窗切分再比占优簇**（`[7]` 是整包聚合，跨内容不可比）
+  - **本探针的存续条件（2026-09-28 评估）**：它的唯一产物是这份离线直方图。立项理由「热压制是否伤
+    播放」已在 `logd_0928-170828` 上答完（中/硬档窗口的长尾率与未压制基线同量级：0.0~0.4% vs 0.0%）。
+    之后只有**要复核播放态参数**（`tuned_profiles.yaml` 的 hysteresis/down_hold）时才需要它
+    （`tuned_thermal_floor` 已于 2026-09-28 定案**不下探**：该地板只在硬档生效，而硬档窗口的有效上限本就是它，
+    「无长尾」不能推出「更低也行」）；该条台账关闭后按仓库惯例把旁路入口注释掉（`// [PAUSED]`，勿直接删代码）。
+    已知数据质量瑕疵：同 app 多进程会交替占坑（实测同秒内 `9913→18144→9913` 反复 detach/attach，
+    伴随 `PID 切换失败: perf_event_open failed`）→ 直方图实际只覆盖当前挂着的那个进程
 
 ## 四、基线参考（会随固件变化，仅作量级对照）
 

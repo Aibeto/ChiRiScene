@@ -134,7 +134,7 @@ impl TempFilter {
     }
 }
 
-/// 单传感器四级热阶梯参数：三级温度阈值 + 对应三档性能上限 + 两级回滞batt / cpu 各构一份（阈值不同、cap 与回滞共用），见 `[thermal]` 块契约：温度 soft < mid < hard；
+/// 单传感器四级热阶梯参数：三级温度阈值 + 对应三档性能上限 + 三级独立回滞batt / cpu 各构一份（阈值不同、cap 与回滞共用），见 `[thermal]` 块契约：温度 soft < mid < hard；
 /// cap hard <= mid <= soft <= 1.0（config normalize 保证）
 #[derive(Clone, Copy)]
 struct ThermalLadder {
@@ -144,8 +144,12 @@ struct ThermalLadder {
     soft_cap: f32,
     mid_cap: f32,
     hard_cap: f32,
-    /// 软/中档回滞（°C）：降到 阈值 - hyst 以下才退出该档
+    /// **软档**回滞（°C）：降到 软限 - hyst 以下才解除软档
     hyst: f32,
+    /// 中档回滞（°C）：独立于软档（`Thermal.hysteresis_mid_c`）。共用软档回滞时中档解除点
+    /// （中限 - hyst）会落到软限以下 → 中档咬住后跳过软档、必须一路冷过软限才恢复（实测踩过）；
+    /// normalize 已强制 `中限 - 本值 >= 软限`
+    hyst_mid: f32,
     /// 硬档回滞（°C）：独立配置（`Thermal.hysteresis_hard_c`），硬档 0.40 的阶跃比软档敏感
     hyst_hard: f32,
 }
@@ -162,7 +166,7 @@ struct ThermalLadder {
 fn eval_thermal_cap(temp_c: f32, current: f32, l: &ThermalLadder) -> f32 {
     if temp_c >= l.hard || (current <= l.hard_cap && temp_c >= l.hard - l.hyst_hard) {
         l.hard_cap
-    } else if temp_c >= l.mid || (current <= l.mid_cap && temp_c >= l.mid - l.hyst) {
+    } else if temp_c >= l.mid || (current <= l.mid_cap && temp_c >= l.mid - l.hyst_mid) {
         l.mid_cap
     } else if temp_c >= l.soft || (current <= l.soft_cap && temp_c >= l.soft - l.hyst) {
         l.soft_cap
@@ -984,8 +988,8 @@ fn build_aff_snapshot(
 // [affinity]
 /// 应用 CPU 亲和布局与 core_ctl 在线策略（ChiRi 专属，跟随模式/屏幕/前台 PID）。内部带去重：布局与 PID 未变化时无 sysfs 写入，可安全周期性调用
 /// `core_utils` 为最近一次 SystemLoadUpdate 的逐核 util（按核选核打分输入）。`scenemode_offline` 为 scenemode 激活标志：
-/// 抑制 boost（boost 会把 min_cpus 抬回全组常在线、把被压制的核拉回来）并触发 scenemode 大核压制——首选 WALT core_ctl `max_cpus=0` 收缩 prime 簇，
-/// 兜底逐核 online 下线（见 core_ctl.rs）
+/// 抑制 boost（boost 会把 min_cpus 抬回全组常在线、把被压制的核拉回来）并触发 scenemode 离核压制——逐核 online 下线 little 簇（除引导核）
+/// + WALT core_ctl `max_cpus` 钳住该簇在线核数上界（见 core_ctl.rs 的 `scenemode_targets` / `scenemode_keep_cpus`）
 fn apply_affinity_and_corectl(
     affinity: &mut affinity::AffinityManager,
     corectl: &mut core_ctl::CoreCtlManager,
@@ -1009,7 +1013,7 @@ fn apply_affinity_and_corectl(
         return;
     }
     // stardust 家族（scenemode）语义：停线程迁移与动态分组、全部 cpuset 恢复全核——压频只压 CLG 频率上限；
-    // 核心层面仅做 prime 簇压制（首选 WALT core_ctl max_cpus=0 整簇 halt，兜底逐核 online 下线，见 core_ctl.rs [max_cpus]），线程/组摆放不做任何特化
+    // 核心层面仅下线 little 簇（除引导核）+ WALT core_ctl `max_cpus` 钳制保留核数（见 core_ctl.rs [max_cpus]），线程/组摆放不做任何特化
     // affinity.release 会把此前收窄的组按快照恢复。本分支由 2s 周期块与场景事件反复进入：仅在持有接管时 release 一次，避免息屏全程每 2s 重复回写后台组 uclamp
     // max 并刷「已释放接管」日志
     if scenemode_offline {
@@ -2051,7 +2055,7 @@ pub fn start_scheduler_thread(
                                     .and_then(|cfg| crate::common::fas_app_config(cfg))
                                     .is_some()
                                 {
-                                    // FAS 激活优先于 scenemode：scenemode 期间 prime 离线 + 专用小核独占，
+                                    // FAS 激活优先于 scenemode：scenemode 期间 little 除引导核全部离线 + 专用大核独占，
                                     // 不允许 FAS 在残缺拓扑上接管——先恢复全部在线核再激活（与亮屏恢复同序）守卫维持「FAS 实例存在 ⇒ 非 scenemode」不变量
                                     if scene_mode_active {
                                         scene_mode_active = false;
@@ -2129,6 +2133,7 @@ pub fn start_scheduler_thread(
                                     mid_cap: mc,
                                     hard_cap: hc,
                                     hyst: t.hysteresis_c,
+                                    hyst_mid: t.hysteresis_mid_c,
                                     hyst_hard: t.hysteresis_hard_c,
                                 },
                                 ThermalLadder {
@@ -2139,6 +2144,7 @@ pub fn start_scheduler_thread(
                                     mid_cap: mc,
                                     hard_cap: hc,
                                     hyst: t.hysteresis_c,
+                                    hyst_mid: t.hysteresis_mid_c,
                                     hyst_hard: t.hysteresis_hard_c,
                                 },
                                 t.free_above,
@@ -2834,8 +2840,8 @@ pub fn start_scheduler_thread(
                                             }
                                             log::info!("{}", t("scheduler-scene-mode-enter"));
                                             scene_mode_active = true;
-                                            // 立即应用 scenemode 核心压制（不等 2s 周期块）：小核+大核常驻低频 +prime 簇压制（WALT core_ctl 优先，
-                                            // 兜底逐核 offline）+ 专用小核 cpuset 独占
+                                            // 立即应用 scenemode 核心压制（不等 2s 周期块）：下线 little 簇（除引导核）
+                                            // + core_ctl `max_cpus` 钳制保留核数（`scenemode_keep_cpus()`）+ 专用大核 cpuset 独占
                                             {
                                                 let cfg = config_clone.read().unwrap();
                                                 apply_affinity_and_corectl(
@@ -2855,8 +2861,11 @@ pub fn start_scheduler_thread(
                             }
                         }
 
-                        // scenemode 饱和退出：**常驻簇（小核+大核）** max_util 持续顶满（≥SCENEMODE_SAT_UTIL 且持续 SAT_SECS=10s）
-                        // → 退回 reduce（恢复全部在线核）+ 300s 冷却不得重进，防拉锯util 是忙时占比（与频率无关），饱和即真饱和，与 perf_ceil 数值无耦合
+                        // scenemode 饱和退出：**常驻核（little 引导核 + 全部 big）**里任一核 max_util 持续顶满
+                        // （≥SCENEMODE_SAT_UTIL 且持续 SAT_SECS=10s）→ 退回 reduce（恢复全部在线核）+ 300s 冷却不得重进，防拉锯
+                        // util 是忙时占比（与频率无关），饱和即真饱和，与 perf_ceil 数值无耦合。
+                        // 2026-09-28 起 scenemode 下线 little 簇（只留引导核），故判据实际主要落在 big 上——
+                        // 这条保护不会因「换了一批常驻核」而失效，对象变了而已
                         if scene_mode_active && !is_screen_on {
                             let ranges = crate::common::chiri_core_ranges();
                             let standby_max = ranges
@@ -2880,8 +2889,8 @@ pub fn start_scheduler_thread(
                                     scenemode_cooldown_until =
                                         Some(Instant::now() + SCENEMODE_COOLDOWN);
                                     let current_mode = mode_clone.lock().unwrap().clone();
-                                    // 立即恢复全部在线核 + 解除专用核钉定，必须先于 CLG reload：prime 离线期间policy 目录消失，
-                                    // reload 枚举不到将使 prime 永久失去 worker、脱离调度控制
+                                    // 立即恢复全部在线核 + 解除专用核钉定，必须先于 CLG reload：worker 建起来时该簇在线核集应已完整
+                                    //（下线 little 期间因引导核在场、policy0 不会消失；但反序会让 worker 少管核，故顺序不变）
                                     {
                                         let cfg = config_clone.read().unwrap();
                                         apply_affinity_and_corectl(

@@ -1,5 +1,7 @@
 //! gear_state.rs: [decision] [gear]
 
+use std::time::{Duration, Instant};
+
 use log::info;
 
 use crate::fluent_args;
@@ -7,6 +9,11 @@ use crate::i18n::t_with_args;
 
 use super::FasController;
 use super::pid::scale_frames;
+
+/// 降档退避计数的**时间衰减**窗口：距上次降档超过该时长即视为「新一轮降档」，计数归 1。
+/// 必要性：退避计数不再被升档清零后（见下），若没有时间衰减，`min(4)` 会让一次抖动期的
+/// 16 倍冷却（≈24s）永久咬住后续的孤立降档——24s 不许升档对真实场景过重
+const DOWNGRADE_BACKOFF_RESET: Duration = Duration::from_secs(60);
 
 // [decision]
 // GearDecision
@@ -97,7 +104,6 @@ impl FasController {
                     .filter(|&g| g <= ref_fps + 15.0 && g > tfps + 0.5)
                     .reduce(f32::max)
                     .unwrap_or(next);
-                self.consecutive_downgrade_count = 0;
                 self.stable_gear_frames = 0;
                 return GearDecision::Upgrade {
                     target: best,
@@ -113,7 +119,6 @@ impl FasController {
                     self.upgrade_confirm_frames += 1;
                     self.downgrade_confirm_frames = 0;
                     if self.upgrade_confirm_frames >= confirm {
-                        self.consecutive_downgrade_count = 0;
                         self.stable_gear_frames = 0;
                         return GearDecision::Upgrade {
                             target: next,
@@ -145,7 +150,6 @@ impl FasController {
                     self.upgrade_confirm_frames += 2;
                     self.downgrade_confirm_frames = 0;
                     if self.upgrade_confirm_frames >= confirm {
-                        self.consecutive_downgrade_count = 0;
                         self.stable_gear_frames = 0;
                         info!(
                             "{}",
@@ -181,21 +185,35 @@ impl FasController {
                 self.downgrade_confirm_frames = 0;
                 self.cancel_boost();
             } else if avg_fps < self.current_target_fps - 10.0 {
+                // 原生档位识别优先于「极端卡顿」判定：游戏自己把帧率锁在低档（窗口均值贴住该档、
+                // 标准差小）→ 直接把目标档降下去。判据必须与 `detect_native_gear` 自身要求
+                // （`|avg - g| < 8`、stddev < 10%）自洽——原实现只放在 `is_extreme`（`avg < tfps*0.40`）
+                // 里面，两者交集为空：tfps=120 时需 `avg < 48` 且 `avg ∈ (52,60)`，g=60 这一支恒不可达
+                // （只剩 30 档能命中），「游戏原生 60fps」这个主场景永远识别不到原生档。
+                if let Some(native) = self.detect_native_gear(avg_fps) {
+                    return GearDecision::Downgrade {
+                        target: native,
+                        perf: 0.55,
+                        dampen: scale_frames(30, native),
+                    };
+                }
                 let is_extreme = avg_fps < tfps * 0.40
                     && self.fps_window.count() >= 10
                     && self.fps_window.stddev() < avg_fps.max(1.0) * 0.25;
 
                 if is_extreme {
-                    if let Some(native) = self.detect_native_gear(avg_fps) {
-                        return GearDecision::Downgrade {
-                            target: native,
-                            perf: 0.55,
-                            dampen: scale_frames(30, native),
-                        };
-                    }
                     self.cancel_boost();
                     self.downgrade_confirm_frames += 1;
-                } else if recent30 >= tfps - 5.0 {
+                // 取消阈值与升档判据同源：进入本分支的前提已是 `avg < tfps - 10.0`（**长窗**低），此时若
+                // **短窗** `recent30` 也回到 `tfps - 10.0` 以上，说明只是瞬时长窗低谷 → 清零计数、不降档。
+                // 原取 `tfps - 5.0` 时 `recent30 ∈ [tfps-10, tfps-5)`（tfps=120 即 110~115fps）**拿不到
+                // 取消**、降档计数继续累加 → 稳定跑 110~115fps 的段被误降档（2026-09-28 实测 45s 内 4 轮
+                // 120↔60，`降档加速` 记录的瞬时均值全卡在 109.7~110.0）。
+                // 注：两界"同源"是指取消阈值 ≤ 升档阈值（`next - 10.0`）——主升一旦成立取消必然同时成立，
+                // 故不会出现「同帧既返回升档又返回降档」；但主升的 avg 下界 `tfps*0.9` 在 tfps>100 时
+                // **高于** `tfps - 10.0`（120 档：108 < 110），落在 [108,110) 的帧率仍会满足降档的 avg 条件，
+                // 只靠上面的取消分支兜住，属已知脆弱点，勿再放宽取消阈值
+                } else if recent30 >= tfps - 10.0 {
                     self.cancel_boost();
                     self.downgrade_confirm_frames = 0;
                 } else if !self.downgrade_boost_active && self.downgrade_confirm_frames == 0 {
@@ -244,14 +262,28 @@ impl FasController {
                 let confirm = scale_frames(self.cfg.downgrade_confirm_frames, tfps);
                 if self.downgrade_confirm_frames >= confirm {
                     let old_fps = tfps;
-                    if (old_fps - self.last_downgrade_from_fps).abs() < 1.0 {
+                    // 退避计数只由降档维护，升档不再清零（原实现在三处升档路径清零 → 每次降档后
+                    // 紧跟的那次升档都把 backoff 打回 `1 << 1`，指数退避形同虚设：同一档反复降档
+                    // 也只会拿到 2 倍冷却，永远到不了 4/8/16 倍，防抖失效）。
+                    // 计数增长的两个条件：**同一档位**且**距上次降档在 DOWNGRADE_BACKOFF_RESET 内**
+                    // （时间衰减，防 `min(4)` 的 16 倍冷却长期咬住后续孤立降档）
+                    let same_gear = (old_fps - self.last_downgrade_from_fps).abs() < 1.0;
+                    let fresh_round = self
+                        .last_downgrade_at
+                        .map(|t| t.elapsed() >= DOWNGRADE_BACKOFF_RESET)
+                        .unwrap_or(true);
+                    if same_gear && !fresh_round {
                         self.consecutive_downgrade_count += 1;
                     } else {
                         self.consecutive_downgrade_count = 1;
                     }
                     self.last_downgrade_from_fps = old_fps;
+                    self.last_downgrade_at = Some(Instant::now());
                     let backoff = 1u32 << self.consecutive_downgrade_count.min(4);
-                    self.upgrade_cooldown = self.cfg.upgrade_cooldown_after_downgrade * backoff;
+                    // 计数器按帧递减（frame_pipeline 每帧 -1），各档帧预算不同 → 与同族
+                    // confirm/dampen/boost 一致过 scale_frames，冷却墙钟时长才不随档位漂移
+                    self.upgrade_cooldown =
+                        scale_frames(self.cfg.upgrade_cooldown_after_downgrade * backoff, prev);
                     self.stable_gear_frames = 0;
                     return GearDecision::Downgrade {
                         target: prev,

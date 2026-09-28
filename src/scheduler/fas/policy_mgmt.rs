@@ -280,7 +280,7 @@ impl FasController {
             .ok()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
-            let _ = crate::utils::try_write_file(
+            let _ = crate::utils::write_sysfs(
                 &format!(
                     "/sys/devices/system/cpu/cpufreq/policy{}/scaling_governor",
                     pid

@@ -23,14 +23,89 @@
 
 ### 调度 / 机制验证
 
+- **息屏离核策略改为「下线 little」的真机验证（2026-09-28 落地，最高优先）**：`core_ctl.rs::scenemode_targets()`
+  由 `ranges.prime` 改为 `ranges.little`（引导核 CPU0 无法热拔出，8550 实际下线 CPU1-2），core_ctl `max_cpus`
+  写 **1**（`scenemode_keep_cpus()`，**不是 0**——0 是 walt_halt_cpus 整簇停摆语义，对含引导核的簇写 0 会把
+  CPU0 一起停摆），big / prime 改常驻低频，调度服务独占核由「编号最大 little」改为「编号最大 big」。
+  判据（同版本长时观察，不做对照）：① `status.csv` 息屏段 `batt_power_w` 与 `dvpower [5][6]` 的档位/温度带
+  ——**大核最低频能效低于小核，息屏底噪可能不降反升**；② 是否仍出 `scheduler-scene-mode-saturation`
+  （判据取 little∪big 每核 util 最大值，换常驻核不影响它生效，**预期仍会触发**，只是对象从 little 变 big）；
+  ③ `corectl-reassert-offline` / `corectl-vendor-override` 是否刷屏（= core_ctl 把核拉回、在拉锯）；
+  ④ 亮屏唤醒/电源键响应延迟、`corectl-scenemode-off` 恢复是否干净（含 max_cpus 快照回写）；
+  ⑤ 独占大核后业务少 1 颗 big 的影响（亮屏恢复时应释放）。**软备份**：把 `scenemode_targets()` 换回
+  `ranges.prime`（core_ctl 路径会自动回到 halt 语义）。
+  ⑥（独立审查后补的护栏，需真机确认其是否触发）真机确认 little 簇快照 `min_cpus` 是否 >1——>1 时实现会先把它
+  压到 `keep`(=1)、退出再按快照写回；日志出现 `corectl-reserved-core-halted` 说明该内核把保留档也当停摆档
+  （引导核掉线），必须放弃 core_ctl 路径只走逐核 offline。
+  ⑦（元审查后补）`min_cpus` 的压低/写回是**独立记账**（`min_cpus_lowered`），不受 `max_cpus` 是否写回成功影响；
+  真机看退出后 `min_cpus` 是否回到快照（`cat .../core_ctl/min_cpus`）——若长期停在 1，说明写回一直被内核拒
+  （`max_cpus` 尚未解除或节点被锁），日志会持续 `corectl-write-failed`（debug 级）。
+  ⑧（元审查后如实记录，非缺陷）进程在 scenemode 中途被杀时，被独占大核的 **cpuset 排除会残留在磁盘**上，
+  而该排除是 ChiRi 用快照恢复的、快照随进程丢失 → 能否自愈**依赖系统 CpusetManager 重写组 cpus**（代码注释
+  既有观察）与「之后进入 boost 时覆盖写回」，ChiRi 自身不保证；真机可 `cat /dev/cpuset/top-app/cpus` 复核
+  编号最大的大核是否在列。
+  ⑨（第二轮审查发现并已修的 **P0**）目标簇定位原按 `first_cpu == scenemode_targets().first()` 比对——目标已
+  retain 掉引导核 CPU0，其 `first()` 是 CPU1，而 little 簇首核恒为 0 → **恒不命中**，core_ctl 路径整体静默失效
+  （max_cpus 钳制 / 引导核护栏 / min_cpus 压低与两处记账全是死代码）。现已改按「首核号 + 簇内核数」区间定位。
+  真机验证：进 scenemode 后 `cpu0/core_ctl/max_cpus` 应为 **1**（little 簇，`min_cpus` 同为 1），退出后两值都
+  回到快照，daemon.log 有对应 @A 帧（`max_cpus=1 ok`）；若仍无 corectl 打点 → 定位或节点仍不可用。
+  ⑩（第二轮审查记录的边界，**刻意不做自动修复**）`min_cpus` 残留无自愈路径：崩溃残留的
+  `min_cpus == max_cpus == keep` 会让 `discover()` 的残留判据（`max < min`）恒假，而 `force_online_all()`
+  只修 max_cpus / online——**不能**盲写 `cluster_size`（厂商把 little 的 min_cpus 配成小于簇规模是正常省电，
+  盲写会破坏它）。触发需「快照 min_cpus > keep」+「崩溃」同时成立；彻底解决需持久化「scenemode 进行中」标记。
+- **FAS 降档退避的时间衰减是否够（2026-09-28 改）**：退避计数不再被升档清零（防抖），改为「同档且距上次降档
+  <60s」才增长，理论上限仍是 `min(4)` = 16 倍 ≈ **24s 不许升档**。真机看王者局内 `fas-gear-switch` 条数与
+  两次 120→60 的间隔：若出现「游戏已回到 120fps 但被压 20s 以上」，把 `upgrade_cooldown_after_downgrade`
+  基值或 `.min(4)` 上限调小。
+- **FAS 原生档识别会一步跨多档（2026-09-28 修可达性后新增的观察面）**：`detect_native_gear` 从 `is_extreme`
+  内提到降档分支顶部后，「游戏原生 60fps」才可达（原实现与 `avg < tfps*0.40` 交集为空、恒不可达）；代价是它
+  **无 confirm 帧、无冷却、可一次跳多档**（144→60、120→30），判据 `|avg-g| < 8 && stddev < avg*0.10`。真机看
+  同局 `fas-gear-switch` 是否出现大跨档：若「稳定但偏低」的片段被误判（如全程 ~66fps 的段被当原生 60 而降
+  144→60），再给原生档加确认窗或限制一次只降一档。
+- **[已落地 2026-09-28] 分析侧「建账」三视图**（只读日志，不改调度行为）：`dvpower.py` 的 `[5]` cap 档迁移时间线 /
+  `[6]` 档位温度带 / `[7]` 按 mode 能量汇总（gpu/psi 能量加权）；`dvmain.py` 的 `[7]` 播放态帧间隔直方图
+  （活跃窗 `n>=15` + 长尾率 >52ms/>100ms）。**先有账再动参数**：本项目已禁 A/B，没有这三张表就只能盲调。
+- **播放态 fps 旁路的存续条件（2026-09-28 评估）**：该旁路唯一产物是离线直方图，立项理由「热压制是否伤播放」
+  已在 `logd_0928-170828` 上答完（无差异）→ **只在要复核 `tuned_profiles.yaml` 的 playback 参数
+  （hysteresis/down_hold）或 `tuned_thermal_floor` 时才需要它**；`:31`、`:34` 两条关闭后按仓库惯例用
+  `// [PAUSED]` 注释掉旁路入口（勿删代码）。已知瑕疵：同 app 多进程交替占坑（实测同秒 `9913→18144→9913`
+  反复 detach/attach + `PID 切换失败: perf_event_open failed`）→ 直方图只覆盖当前挂载的进程；候选修法是
+  同包多探针（`states`/`links` 已是 HashMap，但 `current_pid` 是单值、`switch_pid` 必经 detach），**需真机验证再动**。
+- **播放态直方图实际只覆盖到 200ms（2026-09-28 第二轮审查发现）**：`fps_monitor.rs` 的 `MAX_FRAME_NS=200ms`
+  把 >200ms 的帧间隔**整帧丢弃**（连 `n` 都不计）→ 档号 51+ 恒空，长尾率的分子分母都不含 >200ms 的严重卡顿，
+  「无长尾」只能读作「无 52~200ms 级卡顿」（命令文档与 `dvmain [7]` 输出已注明口径）。若要覆盖到档表上限
+  1020ms，需给直方图**单列**一个上限，**不能**直接抬 `MAX_FRAME_NS`——它同时喂 FAS 的 `frametimes`，把极端
+  间隔算进窗口会拉低 avg_fps、引发过度降档。
+- **息屏期 little 被顶满 100%（2026-09-28 包实锤，能量价值最高的待查项）**：`logd_0928-170828` 的 batch1
+  息屏段（05:59–09:39、09:51–12:25 等）里，daemon.log **7 次**报
+  `scenemode 持续顶满性能上限（little util 100%），退回 reduce 并进入 300s 冷却`，且每次都在息屏窗口内
+  （前后最近的界标是「息屏已超过阈值，切换到 scenemode」与「亮屏触发事件」）→ **息屏省电在反复自我撤销**。
+  配套数字：息屏+放电行 8345（占全部放电行 40%）均值 **0.42 W**（分桶 0.1~0.6 W 连续分布）、迁移 ≈2186/s、
+  `psi_cpu 23.8`；这些秒数的 `package` 是息屏前残留的 `me.weishu.kernelsu`（95% screen_on=0），
+  故 `[1]` 表里 kernelsu 的 0.59 W 是「息屏 0.42 W 段 + 少量亮屏段」的混合值，**不要当亮屏空转读**。
+  **下一步判据（全部可用本包现成数据）**：① 按息屏时间窗过滤 `aff_*.log`，看 little（core 0-2）上的
+  `u=` 与 comm 是谁；② `main_*.log` 息屏段 tick 行的 `max_util`/`cur_perf` 看负载形态；③ status.csv 息屏段的
+  `gpu_busy` 判别 CPU 侧还是 GPU 侧。**候选嫌疑**：dev_record 采集本身（息屏 2.3 h 写了 19 MB main + aff 每秒
+  全线程采样 + 每帧 eBPF，属观测者效应）/ 第三方后台（little 上高频出现 `V8_DefaultWorke`、`Chrome_ProcessL`、
+  `CookieMonsterCl`、`TracingMuxer`、`perfetto_hprof_` 等 Chromium 系线程名）/ ChiRi 自身巡检。
+  **若指向采集开销 → 结论是「诊断期不可测待机基线」（写判读口径，不改调度）；若指向第三方 → 才是压制策略问题。**
+
 - 亮屏 gap①：电源键亮屏无 touch 事件 → 20% 稳态 3 tick 降到地板；候选 = 亮屏复用 `on_touch()` 做一次性 400ms ceiling 窗口（待用户批准）。
 - 亮屏 gap②：亮屏恢复「任一权威节点报亮即恢复」不对称判定（0926 换属性轮询后需在新机制下重评；息屏保留多数票语义）。
 - FAS 无帧降级（退出 FAS 交回 CLG 或固定档保底）——会改调度行为，先定取向。
 - FAS 白名单真机验证：speedmobile / lolm / 国服 sgame 首刷看 devimp fps 是否贴 target 档（玩家开 90 帧则 target_fps 调 [60,90,120]）。
 - playback 参数复核（tuned*profiles.yaml 内 TODO）：hysteresis 0.06 / down_hold 150、`steady_decay*\*` 实际效果（headroom 0.85 与三簇 per_cluster 天花板已于 2026-09-28 按天花板全拆删除）。
-- **播放态掉帧验证（P0-3 收尾）**：动态帧信号已落地（2026-09-27：`event` 行 `decision=playback_fps` 直方图），
-  拿到真机包后按「占优簇反推基线 + 超基线长尾档」判读——中档 0.60 / 硬档窗口与播放态重叠时若基线没动，
-  即可把 `tuned_thermal_floor` 从 0.55 下调试探；若出现长尾档即证明 0.55 的下限是必要的（并考虑在线判据）。
+- **播放态掉帧验证（P0-3 收尾）【已答 2026-09-28】**：`logd_0928-170828` 已按「占优簇反推基线 + 超基线长尾档」
+  判读完成——中/硬档窗口（272 / 246 / 793 个活跃窗）长尾率 **0.0~0.4%**、未压制基线 **0.0%**，**基线没动**。
+  **遗留缺口**：本包只有常规码率视频（占优簇 12~16ms 档），无 4K/高码率样本；**在线判据不做**（无差异 = 不值得在线化）。
+- **`tuned_thermal_floor` 不下探【2026-09-28 重评定案，勿再提议】**：原「下探到 0.45」的推论**判据不成立**——
+  该地板只在 `cap < floor`（即**仅硬档 0.40**）时生效，而本包硬档窗口里播放态的**有效上限本来就是 0.55**
+  （`profile_ceil.min(cap.max(floor))`），「硬档窗口无长尾」证明的是「0.55 够用」，**完全没有覆盖 0.45 这个点**。
+  收益量级也否决它：硬档 ∩ 播放态 = 624 s（占全包放电 3.0%），就算 0.55→0.45 让 CPU 侧降 15%，
+  全包能量也就省 **≈0.03 Wh / 0.27%**；而风险是唯一可被用户感知的「视频卡顿」、且播放态没有在线判据。
+  要压「硬档下的播放态」应走**上游减热**（中档回滞已修），不是压地板。
+- **播放态「边充边放」温度曲线【本包无样本】**：`charge ∈ {charging, full}` ∩ `mode=playback` = **0 行**
+  （本包充电时段没有在播视频）→ `:34` 那条继续挂着，下次采集需特意覆盖该场景。
 - **播放态「边充边放」温度曲线复核（P0-3 收尾，2026-09-27 追加）**：`tuned.rs:54` `profile_ceil.min(cap.max(floor))`
   在硬档（cap 0.40）下由 `tuned_thermal_floor`（0.55，定义于 `src/chiri/config.rs::d_tuned_thermal_floor` +
   各 `module/config/<device>/feature.yaml`）把大核抬到 0.55，即 tuned 接管的播放态在 ≥45°C 时**可比 CLG 跑得更热**
@@ -74,4 +149,4 @@
 - panic 收尾缺 governor/gpu/lab 清理（靠重建幂等收敛，P2 可接受）；kgsl-3d0 与 devfreq 扫描可能收双节点（重复写无害）。
 - meta 两个写者共用固定 tmp 名（撕裂需两线程同时写）；rhine on_startup→DirWatcher 毫秒级窗口写入丢失；meta 被改非法后锁定期不自动 reassert（等下次改文件/重启）。
 - OPlus 电池：2S/2P 判定缺一次性标准节点读值（已加 telemetry-raw-snapshot 兜底）；bcc_parms 下标 12/13 疑似重复电流字段待核对；2S 机型自检：`dumpsys battery` voltage 3841mV 级=单节域（平均对）、7680mV 级=2S 直串（改回求和）。
-- 文档修订（用户定暂缓，顺手勿改）：README FAS 措辞与断链（README:28 链 `updateWithoutRestart.md` 不存在；`updateWith.md` 已移 `.archive/mdocs/`，恢复链接或删除）；mdocs/socList.md 滞后（只列 8550，实际 8550/8475/8998 三份）；`src/chiri/mod.rs:184`「多实例」注释过时（实际单实例）；affinity.rs 头注释 0.2 vs `PINNED_WEIGHT` 0.4；feature.yaml「整簇断电」注释 vs 实际只下线 prime；soc.yaml capacity 注释「厂商板级 DTS 覆盖」建议改弱为「来源待证」。
+- 文档修订（用户定暂缓，顺手勿改）：README FAS 措辞与断链（README:28 链 `updateWithoutRestart.md` 不存在；`updateWith.md` 已移 `.archive/mdocs/`，恢复链接或删除）；mdocs/socList.md 滞后（只列 8550，实际 8550/8475/8998 三份）；`src/chiri/mod.rs:184`「多实例」注释过时（实际单实例）；affinity.rs 头注释 0.2 vs `PINNED_WEIGHT` 0.4；soc.yaml capacity 注释「厂商板级 DTS 覆盖」建议改弱为「来源待证」。（原列的「feature.yaml『整簇断电』注释 vs 实际只下线 prime」已随 2026-09-28 的离核策略改动一并消解——注释与行为现在都是「下线 little」。）

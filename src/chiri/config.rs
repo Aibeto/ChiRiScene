@@ -1006,11 +1006,20 @@ pub struct ThermalGuardConfig {
     /// 回滞（°C）：温度降到 软限 - hysteresis 以下才解除压制。设太小会在阈值附近反复触发/解除，频率抖动
     #[serde(default = "d_thermal_hysteresis")]
     pub hysteresis_c: f32,
-    /// 硬限专用回滞（°C）：温度降到 硬限 - hysteresis_hard_c 以下才从硬档退到中档独立于上方 `hysteresis_c`（默认与其缺省同值 3.0）：硬档 0.40↔软档 0.
-    /// 85 的阶跃比软档解除敏感得多，2026-09-27 实测原实现硬档**无回滞**——batt 一降到 44.9°C 立刻跳回 0.85，批次2 在 75 分钟内 5 次进硬档、两次 60s 内重入（最近相隔 2.
-    /// 0 s）；分离出来才能按机型单独调（8550 取 2.0，即 45→43°C 才退）
-    #[serde(default = "d_thermal_hysteresis")]
+    /// 硬限专用回滞（°C）：温度降到 硬限 - hysteresis_hard_c 以下才从硬档退到中档，独立于上方
+    /// `hysteresis_c`（缺省 2.0，见 `d_thermal_hysteresis_hard`）：硬档 0.40↔软档 0.85 的阶跃比软档解除
+    /// 敏感得多，2026-09-27 实测原实现硬档**无回滞**——batt 一降到 44.9°C 立刻跳回 0.85，批次2 在 75 分钟
+    /// 内 5 次进硬档、两次 60s 内重入（最近相隔 2.0 s）；分离出来才能按机型单独调（8550 取 2.0，即 45→43°C 才退）
+    #[serde(default = "d_thermal_hysteresis_hard")]
     pub hysteresis_hard_c: f32,
+    /// 中限专用回滞（°C）：温度降到 中限 - hysteresis_mid_c 以下才从中档退到软档，缺省 2.0（见
+    /// `d_thermal_hysteresis_mid`）。与软档共用同一回滞时，中档解除点 = 中限 - hyst 可能**低于软档跳闸点**
+    /// （软限），此时中档一咬住就整段跳过软档、必须一路冷到软限以下才恢复（2026-09-28 实测 8550：
+    /// 43-3=40 < 41，cap=60 的 5152 s 里 2556 s 落在 batt 40-41℃ 桶，另有 2216 s 是「温度从 43 降到 40、
+    /// cap 一动不动」）。normalize 强制 `中限 - 本值 >= 软限`（每档解除点不得低于下一档跳闸点），
+    /// 故缺省只能取 2.0——旧缺省 3.0 的解除点 40°C 本身就违反该不变量，**不是「旧行为不变」**
+    #[serde(default = "d_thermal_hysteresis_mid")]
+    pub hysteresis_mid_c: f32,
     /// 热态 tuned 响应开关（默认 true）：把 cap 也发给 tuned（playback/akmode 等）执行器加这个开关前 `thermal_cap` 只下发 CLG、tuned 对温度零响应（结构缺口）
     /// ，见 tuned.rs [thermal_ceil]
     #[serde(default = "crate::utils::default_true")]
@@ -1062,6 +1071,17 @@ fn d_thermal_free_above() -> f32 {
 fn d_thermal_hysteresis() -> f32 {
     3.0
 }
+/// 中/硬档回滞缺省（°C）：取缺省温度阶梯允许的上限——`mid` 侧 `min(batt_mid-batt_soft, cpu_mid-cpu_soft)`
+/// = `min(43-41, 92-90)` = 2.0，`hard` 侧 `min(45-43, 95-92)` = 2.0（缺省 batt 41/43/45、cpu 90/92/95）。
+/// **不能沿用 `d_thermal_hysteresis()`(3.0)**：3.0 每次加载都越界、被 [hyst_invariant] 钳到 2.0 并打
+/// warn，等于「未写该键的配置永远拿不到注释承诺的值」（2026-09-28 审查发现）。另外旧缺省 3.0 的解除点
+/// 43-3=40 / 45-3=42 **本身就违反不变量**（低于下一档跳闸点），故缺省收到 2.0 是修 bug，不是「保持旧行为」
+fn d_thermal_hysteresis_mid() -> f32 {
+    2.0
+}
+fn d_thermal_hysteresis_hard() -> f32 {
+    2.0
+}
 fn d_tuned_thermal_floor() -> f32 {
     0.55
 }
@@ -1109,7 +1129,8 @@ impl Default for ThermalGuardConfig {
             free_above: d_thermal_free_above(),
             clamp_heavy: true,
             hysteresis_c: d_thermal_hysteresis(),
-            hysteresis_hard_c: d_thermal_hysteresis(),
+            hysteresis_hard_c: d_thermal_hysteresis_hard(),
+            hysteresis_mid_c: d_thermal_hysteresis_mid(),
             tuned_resp_enabled: true,
             tuned_thermal_floor: d_tuned_thermal_floor(),
             cpu_temp_zone_types: crate::utils::default_cpu_temp_zone_types(),
@@ -1161,7 +1182,10 @@ impl ThermalGuardConfig {
             self.hysteresis_c = d_thermal_hysteresis();
         }
         if !self.hysteresis_hard_c.is_finite() {
-            self.hysteresis_hard_c = d_thermal_hysteresis();
+            self.hysteresis_hard_c = d_thermal_hysteresis_hard();
+        }
+        if !self.hysteresis_mid_c.is_finite() {
+            self.hysteresis_mid_c = d_thermal_hysteresis_mid();
         }
         if !self.tuned_thermal_floor.is_finite() {
             self.tuned_thermal_floor = d_tuned_thermal_floor();
@@ -1221,6 +1245,25 @@ impl ThermalGuardConfig {
         }
         self.hysteresis_c = self.hysteresis_c.clamp(0.0, 20.0);
         self.hysteresis_hard_c = self.hysteresis_hard_c.clamp(0.0, 20.0);
+        self.hysteresis_mid_c = self.hysteresis_mid_c.clamp(0.0, 20.0);
+        // [hyst_invariant] 每档解除点（本级阈值 - 本级回滞）必须 >= 下一档（更浅档）的跳闸点，否则
+        // 该档会「跳过」浅一档：中档解除点 < 软限 → 中档咬住后不回软档 0.85、必须一路冷过软限才恢复
+        // （2026-09-28 实测就是这条）；硬档同理。两条传感器阶梯共用同一组回滞，故取两者中更严的上限
+        // 钳制 + warn（yaml 编译期嵌入、误配必须自愈，不得 panic）
+        let mid_room = (self.batt_mid_temp_c - self.batt_soft_temp_c)
+            .min(self.cpu_mid_temp_c - self.cpu_soft_temp_c)
+            .max(0.0);
+        if self.hysteresis_mid_c > mid_room {
+            self.hysteresis_mid_c =
+                thermal_clamp_warn(self.hysteresis_mid_c, 0.0, mid_room, "hysteresis_mid_c");
+        }
+        let hard_room = (self.batt_hard_temp_c - self.batt_mid_temp_c)
+            .min(self.cpu_hard_temp_c - self.cpu_mid_temp_c)
+            .max(0.0);
+        if self.hysteresis_hard_c > hard_room {
+            self.hysteresis_hard_c =
+                thermal_clamp_warn(self.hysteresis_hard_c, 0.0, hard_room, "hysteresis_hard_c");
+        }
         // tuned 下限必须不低于硬档 cap：低于则热态 tuned 比硬档还松、这段响应毫无意义
         self.tuned_thermal_floor = thermal_clamp_warn(
             self.tuned_thermal_floor,

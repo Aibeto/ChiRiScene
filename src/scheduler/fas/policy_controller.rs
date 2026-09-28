@@ -299,7 +299,7 @@ impl PolicyController {
         self.qos_clamp_warned = false;
         // 恢复接管前的 governor：performance 泄漏到 CLG/akmode/系统调频会让功耗停在「性能拉满」档
         if let Some(gov) = self.orig_governor.clone() {
-            let _ = crate::utils::try_write_file(
+            let _ = crate::utils::write_sysfs(
                 &format!(
                     "/sys/devices/system/cpu/cpufreq/policy{}/scaling_governor",
                     self.policy_id

@@ -13,7 +13,9 @@
 4. `migrations`/`wakeups` 是 2s 差分，换算每秒要 ÷2（本脚本不统计迁移率，看 dvmain.py）。
 5. **cap 序列不可跨批次连读**：daemon 因 `devimp/` 触顶 128MB 重启时把热状态重置回 100
    （本次 4.6 h 内 3 次）→ `[4]` 段同时给全量档位秒数与按批次明细。
-6. `thermal_cap_pct` 各档**累计占用秒数**是判断「热是常态还是偶发」的主指标。
+6. `thermal_cap_pct` 各档**累计占用秒数**是判断「热是常态还是偶发」的主指标；
+   定位「某档咬住多久 / 咬在什么温度带」看 `[5]` 迁移时间线与 `[6]` 档位温度区间，
+   按 mode 看能量与 gpu/psi 加权看 `[7]`。
 
 输出 `power.txt`：只写文件，stdout 只打几行摘要 + 路径（PowerShell 重定向会毁掉中文，见已知坑 16）。
 """
@@ -81,6 +83,11 @@ def _share(energy, total_wh):
     return energy / total_wh * 100 if total_wh else 0.0
 
 
+def _t(v):
+    """温度列格式化：缺失/异常（None）→ `?`，别让 None 进 f-string 变成 'nan'。"""
+    return "?" if v is None else f"{v:.0f}"
+
+
 def _row_mode_pkg(mode, pkg, v, energy, total_wh):
     """[1] 段一行：mode × package 全字段。"""
     pw = sorted(v["pw"])
@@ -112,6 +119,9 @@ def status_report(paths, rows):
     agg = collections.defaultdict(lambda: collections.defaultdict(list))
     tot = collections.defaultdict(lambda: collections.defaultdict(list))
     span = [None, None]
+    seq = collections.defaultdict(list)        # 批次 → 按序样本（含充电行，档位时间线要连续）
+    tier_temp = collections.defaultdict(list)
+    tier_pkg = collections.defaultdict(collections.Counter)
 
     for batch, r in rows:
         ch = (r.get("charge") or "-").strip() or "-"
@@ -124,14 +134,19 @@ def status_report(paths, rows):
         if ts:
             span[0] = ts if span[0] is None or ts < span[0] else span[0]
             span[1] = ts if span[1] is None or ts > span[1] else span[1]
+        mode = (r.get("mode") or "-").strip() or "-"
+        pkg = (r.get("package") or "").strip() or "-"
+        bt = dc.num(r.get("batt_temp"))
+        seq[batch].append((ts, cap_raw, bt, mode, pkg))
+        if bt is not None:
+            tier_temp[cap_raw].append(bt)
+        tier_pkg[cap_raw][pkg] += 1
         if ch != "discharging":
             continue
         pw = dc.num(r.get("batt_power_w"))
         if pw is None or pw <= 0:
             continue
         batch_dis[batch] += 1
-        mode = (r.get("mode") or "-").strip() or "-"
-        pkg = (r.get("package") or "").strip() or "-"
         for d in (agg[(mode, pkg)], tot[pkg]):
             d["pw"].append(pw)
             d["bt"].append(dc.num(r.get("batt_temp")))
@@ -176,6 +191,49 @@ def status_report(paths, rows):
         dist = ", ".join(f"{k}:{v}" for k, v in batch_cap[b].most_common(5))
         out.append(f"  {b[:22]:22s} {batch_secs[b]:7d} {batch_dis[b]:8d}  {dist}")
     out.append("")
+
+    out.append("# [5] cap 档迁移时间线（按批次；段 = 「起始时刻 → 该档」+ 温度走向 + 持续秒）")
+    out.append("#     **判「卡在某一档多久」用**：段末温度若已明显低于该档跳闸点（feature.yaml 阈值 − 该档回滞），")
+    out.append("#     说明这一档解除过慢（2026-09-28 实测：中档解除点 40℃ 低于软限 41℃，cap=60 有约一半")
+    out.append("#     秒数落在 batt 40~41℃ 桶）——先查 `hysteresis_mid_c` 再谈 cap 值。")
+    for b in sorted(batch_secs):
+        segs = []
+        for ts, cap, bt, _m, _p in seq.get(b, ()):
+            if segs and segs[-1][0] == cap:
+                segs[-1][3] = bt
+                segs[-1][4] += 1
+            else:
+                segs.append([cap, ts, bt, bt, 1])
+        out.append(f"  批次 {b}")
+        for cap, ts, bt0, bt1, secs in segs:
+            out.append(f"    {ts}  cap={cap:>3}  {_t(bt0)}→{_t(bt1)}℃  {secs}s")
+    out.append("")
+
+    out.append("# [6] 各 cap 档的电池温度区间与主要包（**判「档位是否咬在跳闸点以下」的第二把尺**）")
+    out.append("#     同档秒数在 [4]；此处看「这个档位实际对应的温度带」，与跳闸点/解除点对照。")
+    out.append(f"  {'cap':>5s} {'秒':>7s} {'battT min/avg/max':>19s}   主要包（前 3，按秒）")
+    for cap_v, n in sorted(cap_secs.items(), key=lambda kv: -kv[1]):
+        temps = tier_temp.get(cap_v) or []
+        rng = f"{min(temps):.0f} / {sum(temps) / len(temps):.1f} / {max(temps):.0f}" if temps else "-"
+        pk = ", ".join(f"{k} {v}" for k, v in tier_pkg[cap_v].most_common(3))
+        out.append(f"  {cap_v:>5s} {n:7d} {rng:>19s}   {pk}")
+    out.append("")
+
+    out.append("# [7] 按 mode 的能量汇总（gpu_busy / psi_cpu 为**能量加权**均值，仅放电段）")
+    out.append("#     判读：gpu 高 → 先查渲染侧；psi_cpu 高 → 先查调度/核数；两者都低 → 前台负载本身轻，")
+    out.append("#     能量落在后台/待机（配合 [2] 里 kernelsu/`-` 这类非前台包一起看）。")
+    out.append("#     **不做「按 gpu% 拆功率」**：gpu_busy 是占用率不是功率占比，没有模型支撑的拆法就是伪精确。")
+    out.append(f"  {'mode':9s} {'Wh':>6s} {'share':>6s} {'n':>7s} {'avg W':>6s} {'gpu%':>5s} {'psi':>5s}")
+    by_mode = collections.defaultdict(lambda: collections.defaultdict(list))
+    for (mode, _pkg), d in agg.items():
+        for k, v in d.items():
+            by_mode[mode][k].extend(x for x in v if x is not None)
+    for mode in sorted(by_mode, key=lambda m: -sum(by_mode[m]["pw"])):
+        d = by_mode[mode]
+        e = sum(d["pw"]) / 3600.0
+        out.append(f"  {mode:9s} {e:6.2f} {_share(e, total_wh):5.1f}% {len(d['pw']):7d} "
+                   f"{sum(d['pw']) / len(d['pw']):6.2f} {dc.avg(d['gpu']):5.1f} {dc.avg(d['psi']):5.1f}")
+    out.append("")
     return out, dict(charge=dict(charge), total_wh=total_wh, total_n=total_n,
                      top=sorted(tot, key=lambda k: -sum(tot[k]["pw"]))[:3],
                      tot_wh={k: sum(v["pw"]) / 3600.0 for k, v in tot.items()})
@@ -190,7 +248,7 @@ def devimp_report(root, since):
     所有 <0.5 A 的轻载秒（约 58%），均值被抬高。
     """
     files = dc.list_files(root, ("main_",), since)
-    out = ["# [5] 交叉验证：devimp 侧 P_avg（`batt_p` 列 / snap 行 / batt_i 符号定放电侧）",
+    out = ["# [8] 交叉验证：devimp 侧 P_avg（`batt_p` 列 / snap 行 / batt_i 符号定放电侧）",
            "#     **不要用作结论**：本机 batt_i 整数化（0/1/2/3），排除 batt_i==0 会删掉 <0.5A 轻载秒",
            "#     → 系统性高估（2026-09-24 实测 aweme 3.35 W vs status.csv 2.14 W）。"]
     if not files:
@@ -263,6 +321,8 @@ def main(argv=None):
            "#   3) 1 行 ≈ 1 秒 → ΣW/3600 = Wh（n 列 = 样本数≈秒）。",
            "#   4) migrations/wakeups 是 2s 差分，换算每秒 ÷2（本脚本不统计，见 dvmain.py）。",
            "#   5) 按包功耗归因看 [2]；[4] 的档位秒数=热常态/偶发判据；cap 不可跨批次连读。",
+           "#   6) 定位「档位咬住多久」看 [5] 迁移时间线 + [6] 档位温度区间；按 mode 的能量汇总看 [7]。",
+           "#   7) [8] 是 devimp 侧交叉验证，**不作结论**。",
            ""]
     summary = None
     if paths:

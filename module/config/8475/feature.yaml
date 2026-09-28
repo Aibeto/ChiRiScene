@@ -38,9 +38,10 @@ Affinity:
 # [corectl]
 CoreCtl:
   enabled: true
-  # scenemode 离线核：息屏超时进入 scenemode 后小核全开（保证 ≥3 个待命核响应
-  # 电源键等事件，另留 1 个专用小核给调度服务），大核簇/prime 整簇断电消除
-  # 空转漏电流；little 持续顶满上限则退回 reduce 并冷却 300s。亮屏按快照恢复。
+  # scenemode 离线核：息屏超时进入 scenemode 后**下线 little 簇**（引导核无法热拔出，实际
+  # 下线 8475 little 0-3 中的 1-3），big/prime 常驻低频（上限由 scenemode.yaml perf_ceil 压制），
+  # 另留 1 颗大核给调度服务。2026-09-28 与 8550 同批由「只下线 prime」改来（原因见 8550 同名段）。
+  # **本机型未实测**，先在真机上观察息屏功耗/唤醒响应。
   scenemode_offline: true
 
 # [thermal]
@@ -58,11 +59,14 @@ Thermal:
   hard_perf_cap: 0.40
   free_above: 0.80
   hysteresis_c: 3
-  # 以下四项为代码缺省值（2026-09-27 随四级阶梯 + 硬档回滞 + tuned 热响应新增）：
-  # 本机型未实测，先按缺省跟进（口径与字段语义见 8550/feature.yaml 同名段）。
+  # 以下几项为代码缺省值（2026-09-27 随四级阶梯 + 硬档回滞 + tuned 热响应新增，
+  # 2026-09-28 补中档回滞）：本机型未实测，先按缺省跟进（字段语义见 8550/feature.yaml 同名段）。
   batt_mid_temp_c: 43
   cpu_mid_temp_c: 92
-  hysteresis_hard_c: 3
+  # 中/硬档回滞取 2：受 normalize 不变量「本级解除点不得低于下一档跳闸点」约束
+  # （中限-软限 = 硬限-中限 = 2，写 3 会被钳到 2 并 warn），取舍与 8550 一致。
+  hysteresis_mid_c: 2
+  hysteresis_hard_c: 2
   tuned_resp_enabled: true
   tuned_thermal_floor: 0.55
 
