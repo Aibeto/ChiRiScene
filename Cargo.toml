@@ -31,10 +31,11 @@ include_dir = "0.7"
 # Aya 用于加载和与内核 eBPF 程序交互
 aya = "0.14.0"
 mio = { version = "1.0", features = ["os-ext"] }
-# 只开用到的特性：Runtime::new/block_on/spawn（rt-multi-thread）、
+# 只开用到的特性：current_thread runtime 的 block_on/spawn（rt）、
 # time::interval（time）、sync::watch（sync）。未用 macros（无 #[tokio::main]），
-# 也未用 fs/net/io/process/signal，故不再开 full
-tokio = { version = "1", features = ["rt-multi-thread", "time", "sync"] }
+# 也未用 fs/net/io/process/signal，故不再开 full；两个 eBPF 监控线程各自只跑
+# 一个 async 循环（无跨线程 spawn 需求），用 current_thread 即可，不需要 rt-multi-thread
+tokio = { version = "1", features = ["rt", "time", "sync"] }
 
 # --- Monitor 带来的依赖 ---    
 inotify = "0.11.1"

@@ -1222,14 +1222,45 @@ pub fn embedded_meta_str() -> &'static str {
     embedded_config_file("meta.yaml").unwrap_or_default()
 }
 
-/// 嵌入的 feature.yaml（不可修改调优段）：按命中处理器取 {soc}/feature.yaml，未命中取 feature.yaml；仅存于二进制，磁盘不落盘、不监听
-pub fn embedded_feature_str() -> &'static str {
-    if let Some(soc) = matched_soc_hint() {
-        if let Some(text) = embedded_config_file(&format!("{soc}/feature.yaml")) {
-            return text;
+/// 嵌入的 feature.yaml（不可修改调优段）：以根 `feature.yaml` 为**基底**，用命中处理器的
+/// `{soc}/feature.yaml` **按字段深合并覆盖**——map 递归合并（SoC 少写的字段继承根值），
+/// 标量/序列整体替换（不拼接）。未命中处理器时即根文件本身。仅存于二进制，磁盘不落盘、不监听。
+/// ⚠️ 全量合并意味着 SoC 未写的**整段**也会从根继承（如 8550/8998 无 `vector` 段 → 继承根的 vector）。
+fn merge_yaml(base: &mut serde_yaml::Value, over: &serde_yaml::Value) {
+    if let (serde_yaml::Value::Mapping(b), serde_yaml::Value::Mapping(o)) = (&mut *base, over) {
+        for (k, v) in o {
+            match b.get_mut(k) {
+                Some(slot) => merge_yaml(slot, v),
+                None => {
+                    b.insert(k.clone(), v.clone());
+                }
+            }
         }
+    } else {
+        // 任一侧非 map（标量/序列/类型不符）：整体替换，避免把两种形状混在一起
+        *base = over.clone();
     }
-    embedded_config_file("feature.yaml").unwrap_or_default()
+}
+
+pub fn embedded_feature_str() -> &'static str {
+    static MERGED: OnceLock<String> = OnceLock::new();
+    MERGED.get_or_init(|| {
+        let root = embedded_config_file("feature.yaml").unwrap_or_default();
+        let Some(soc_text) =
+            matched_soc_hint().and_then(|soc| embedded_config_file(&format!("{soc}/feature.yaml")))
+        else {
+            return root.to_string();
+        };
+        // 任一侧解析失败：退回 SoC 原文（与旧行为一致，后续 Config 反序列化会报出具体问题）
+        let (Ok(mut base), Ok(over)) = (
+            serde_yaml::from_str::<serde_yaml::Value>(root),
+            serde_yaml::from_str::<serde_yaml::Value>(soc_text),
+        ) else {
+            return soc_text.to_string();
+        };
+        merge_yaml(&mut base, &over);
+        serde_yaml::to_string(&base).unwrap_or_else(|_| soc_text.to_string())
+    })
 }
 
 /// 嵌入的 tuned_profiles.yaml（config/normal/）：特调参数组——缺省段 `akmode`（游戏特调兼未注册模式回退）+ `tuned_profiles` 段按模式名分派

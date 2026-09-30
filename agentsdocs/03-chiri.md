@@ -136,7 +136,7 @@ WebUI 侧：
 
 ### 息屏省电与屏幕状态
 
-- scenemode（息屏超时省电，2026-09 曾短暂暂停后恢复）：chiri `Config` 的 `scenemode`（Mode 段，默认 `enabled:true`、`perf_ceil` 极低封顶、`up_threshold=1.0` 不主动升频）与顶层 `scene_mode_delay_secs`（默认 300s=5 分钟）。`mod.rs` 息屏时记录 `screen_off_at`，`SystemLoadUpdate` 分支在息屏超时且**非特调、无任意 FAS 实例**（`fas_mgr.has_any_instance()`，活跃与后台保留实例都算存在——CLG 绝不能接管 FAS，保留实例 60s TTL reap 后自动放行）时一次性把 CLG 热切到 scenemode（scenemode 未启用则 release 回系统默认），亮屏自动恢复原模式。**进入 scenemode 时同步应用离线核**（`CoreCtl.scenemode_offline` 门控，见 core_ctl 章节：**下线 little 簇除引导核外的全部核**（2026-09-28 由「只下线 prime」改来：原策略把后台负载全挤到 3 个小核，实测息屏期 little 反复被顶满 100% → 触发 saturation 保护退回 reduce，息屏省电被反复自我撤销）+ big / prime 常驻低频（频率上限由 scenemode CLG 配置压制）+ **编号最大的大核独占**给调度服务 + 抑制 boost），CPU 侧待机功耗大幅下降；**常驻核（little 引导核 ∪ 全部 big）持续顶满上限则饱和退回 reduce 并 300s 冷却**（判据取每核 util 最大值，换常驻核不影响它生效，只是对象从 little 变成 big）。
+- scenemode（息屏超时省电，2026-09 曾短暂暂停后恢复）：chiri `Config` 的 `scenemode`（Mode 段，默认 `enabled:true`、`perf_ceil` 极低封顶、`up_threshold=1.0` 不主动升频）与顶层 `scene_mode_delay_secs`（默认 300s=5 分钟）。`mod.rs` 息屏时记录 `screen_off_at`，`SystemLoadUpdate` 分支在息屏超时且**非特调、无任意 FAS 实例**（`fas_mgr.has_any_instance()`，活跃与后台保留实例都算存在——CLG 绝不能接管 FAS，保留实例 60s TTL reap 后自动放行）时一次性把 CLG 热切到 scenemode（scenemode 未启用则 release 回系统默认），亮屏自动恢复原模式。**进入 scenemode 时是否下线核心由 `CoreCtl.scenemode_offline` 门控**（2026-10-01 前该字段**未接线**、由 `enabled` 无条件驱动 = 恒下线；现已接线为真门控，缺省 true 保持旧行为）。true = **下线 little 簇除引导核外的全部核**（2026-09-28 由「只下线 prime」改来：原策略把后台负载全挤到 3 个小核，实测息屏期 little 反复被顶满 100% → 触发 saturation 保护退回 reduce）+ `max_cpus` 钳到 `keep` + big / prime 常驻低频（频率上限由 scenemode CLG 配置压制）+ **编号最大的大核独占**给调度服务 + 抑制 boost，CPU 侧待机功耗下降；**false = 不下线任何核，保留全核，仅靠 `perf_ceil`(0.12) + uclamp 压制**（8550 于 2026-10-01 置 false：下线到单核 CPU0 后同样被顶满、26 次进入中 20 次被饱和保护撤销）。**常驻核（little 引导核 ∪ 全部 big）持续顶满上限则饱和退回 reduce 并 300s 冷却**（判据取每核 util 最大值，换常驻核不影响它生效，只是对象从 little 变成 big）。
 
 - 息屏 doze 天花板 0.30：`ScreenStateChange(false)` 生成的 doze 配置 `perf_ceil` 钳到 0.30（原 0.40），配合动态上限后后台突发（sync/JobScheduler）借力受限、空闲间隙照常降到地板频，压制"口袋发热"；5 分钟后 scenemode 进一步压到 0.12（2026-09-20 全局省电调整，原 0.15）。特调与 FAS（活跃时）息屏保持接管、跳过 doze（见 FAS 小节）。
 
@@ -162,7 +162,7 @@ WebUI 侧：
 
 - `mod.rs` 事件循环中 `fast_lock.tick()` 在每次 `recv_timeout` 唤醒时调用；模式切换/息屏 doze/亮屏恢复/看门狗超时/panic 收尾均正确 release fast_lock。
 
-- 8550/8475/8998 的 `feature.yaml` 没有 `vector:` 段（该档由 `fast_lock` 硬锁最高频、不读 CLG 参数；共享 `config/feature.yaml` 里有 vector 段，是代码默认值的来源）；akmode 已改为**无档位连续控制**（见 `mdocs/tuned_profiles-example.yaml`），不受影响。
+- `vector:` 段的分布与继承（2026-10-01 复核）：**8475 的 `feature.yaml` 有自己的 `vector:` 段；8550/8998 没有**，共享 `config/feature.yaml`（根）有。该档由 `fast_lock` 硬锁最高频、不读 CLG 参数。**2026-10-01 起 `feature.yaml` 取值改为「根为基底 + SoC 按字段深合并」**（见 `agentsdocs/02-convention.md` 配置节），故 8550/8998 现从根继承到 `vector:` 段——是否影响极速档行为待真机复核；akmode 已改为**无档位连续控制**（见 `mdocs/tuned_profiles-example.yaml`），不受影响。
 
 ### CPU 亲和与线程迁移（Affinity，ChiRi 专属）
 
@@ -235,7 +235,7 @@ WebUI 侧：
 
 - cluster 发现：遍历 `get_cpu_policies()` → related_cpus 首个 CPU 的 `/sys/devices/system/cpu/cpuN/core_ctl`（每 policy 一份，天然去重），惰性枚举一次；无节点打点 `corectl-unavailable` 后保持空表（scenemode 直接 sysfs 离线**不依赖** core_ctl 节点，仅受独立配置门控）。
 
-- 配置段 `CoreCtl`（enabled/scenemode_offline）。
+- 配置段 `CoreCtl`（enabled/scenemode_offline）。`scenemode_offline` 在 2026-10-01 前为**死字段**（`mod.rs` 未接线、下线由 `enabled` 无条件驱动），现已在 `apply_affinity_and_corectl` 接线为 `enabled && scenemode_offline` 真门控。
 
 - **enable 感知（2026-09-26）**：`CoreCtlCluster.enable: Option<bool>`——真机快照（Alpha07-02）policy0=1/3/0、policy3=3/4/1、policy7=0/1/0（min/max/enable），**仅 big enable=1**：little/prime 的 core_ctl 不可用，读到 enable=false → warn 一次（复用 `max_cpus_warned` 去重，i18n `corectl-enable-off`）后走逐核 offline 兜底；enable=None（读不到）保持「缺失即降级」。**不做 enable 周期重读**（厂商可能动态改，快照仅作省写优化；纠偏 reassert 兜底保留）。
 

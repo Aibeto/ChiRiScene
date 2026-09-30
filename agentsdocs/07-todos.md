@@ -2,17 +2,16 @@
 
 > 历史计划/日志归档后的**唯一 TODO 权威**。开工前先查本文件；完成一项删一项。2026-09-17 审查提出的旧项标注「先核实」——动手前先确认现行代码是否已修。
 >
-> **口径变更（2026-09-28）**：R3「**永不再新增 A/B 测试**」生效（详见 `04-hard-lessons.md` 的 `[hard]` 首条）。下列以 A/B 为手段的条目**不再按 A/B 执行**，改为「离线重放 + 同版本观察」：`:9` [C3] 构建剖面 A/B、`:12` 真机 A/B 整体未做、`:18` T7 uclamp.max=85 A/B 与 T8 clamp_heavy 恒钳 A/B、`:39` touch_boost_tiers A/B 与 clamp_heavy A/B、`:44` telemetry gpu_busy 采集成本 A/B——逐条待裁决去留，其中涉及"采集开关对照"的直接作废。
+> **口径变更（2026-09-28）**：R3「**永不再新增 A/B 测试**」生效（详见 `04-hard-lessons.md` 的 `[hard]` 首条）。下列以 A/B 为手段的条目**不再按 A/B 执行**，改为「离线重放 + 同版本观察」：[C3] 构建剖面、真机 A/B 整体、T7 uclamp.max=85 / T8 clamp_heavy 恒钳、telemetry gpu_busy 采集成本——逐条待裁决去留，其中涉及"采集开关对照"的直接作废。
 
 ### 性能与探针（perf-report backlog）
 
-- [K3] 摘除纯遥测探针需 meta 开关：wakeups/migrations 被 WebUI 消费（status.csv 18/19 列 + devimp snap + telemetry-summary），属数据面变更——需显式开关 + 关时写 `-` + WebUI null 展示同步。
-- [C1] fps_monitor / cpu_monitor 两 tokio runtime 改 current_thread（**必须 enable_time**；Cargo.toml features 收窄 `rt-multi-thread`→`rt`）；收益 ≈ 省 14 空闲线程，CPU 收益≈0。已定稿未实施。
-- [A3] devimp join 缓冲复用；[A7] i18n t() 预格式化缓存（硬约束：load_language 切语言必须整体重建）；[C3] 构建剖面 A/B（opt-level z/s/3 + thin LTO，比体积与 8550 实测功耗）；[C5] regex 跨热重载缓存（每次热重载全量重编译）。
-- [E1] app_detect cgroup tasks 内容比对短路（定级「最推荐先做」、行为等价、稳态每轮 N 次 /proc 读降为 1 次）；[E2] uevent 扩展（cpu hotplug / power_supply，前置=真机验证子系统覆盖）；[E3] logdr events buffer（liblog 协议 150-250 行 + SELinux 可达性验证）；[E4] pid_watcher 并入 app_detect（时延 500ms→1.5s 取舍待拍板）。
-- 自测量基线未做：daemon utime/stime 1s 采样进 status.csv 末列（新列一律追加末尾）+ cargo bench 三纯函数。
+- [K3] 摘除纯遥测探针需 meta 开关：wakeups/migrations 被 WebUI 消费（status.csv 第 19/20 列 wakeups/migrations + devimp snap + telemetry-summary），属数据面变更——需显式开关 + 关时写 `-` + WebUI null 展示同步。
+- [C3] 构建剖面（opt-level z/s/3 + thin LTO，比体积与 8550 实测功耗）——原 A/B 手段作废，待裁决：改同版本观察或直接作废。
+- [E3] logdr events buffer（liblog 协议 150-250 行 + SELinux 可达性验证）；[E4] pid_watcher 并入 app_detect（时延 500ms→1.5s 取舍待拍板）。
+  - **[E1] 内容比对短路已定案不做（2026-10-01）**：`app_detect.rs` 显式注明「刻意不做内容未变则复用」——冷启动期间 pid 先入组、exec 后 cmdline 才可读，缓存会漏检这类前台切换。
+- 自测量基线：**status.csv 末尾两列 `daemon_utime_ms`/`daemon_stime_ms` 已落地（2026-10-01，1s 采样读 `/proc/self/stat`）**；`cargo bench` 三纯函数仍未做（需先定哪三个 + 新建 benches/ 基础设施）。
 - 真机 A/B 整体未做（perf 16 项优化 + K1/K2 eBPF 同场景 status.csv 逐核 util 对比）；K1/K2 CI 构建确认（本机 stub 编译盲区，「CI 通过才算落地」）。
-- U1 真机验证：`rm daemon.log` / `rm -rf logs/` 后 ≤8KB 写入窗口内自愈重建；写满 50MB 轮转后新文件续写、备份链完整。
 - **已定案不做（勿重评）**：U3 cpu_monitor 侧、A5b、panic=abort、换 hasher/parking_lot、热路径值缓存、事件化否决四项（cgroup.events poll / PSI / thermal uevent / timerfd 全量合并）、换语言与双进程拆分。
 
 ### 内核取证（详见 06-kernel.md）
@@ -23,7 +22,10 @@
 
 ### 调度 / 机制验证
 
-- **息屏离核策略改为「下线 little」的真机验证（2026-09-28 落地，最高优先）**：`core_ctl.rs::scenemode_targets()`
+- ~~**息屏离核策略改为「下线 little」的真机验证（2026-09-28 落地，最高优先）**~~ → **2026-10-01 已结案（结论：不成立，已按修法3 改为不下线）**。结论来自 `logd_1001-045147`（A08-08/8550/PHB110/A16，9 批次、息屏 7.4 h）：**26 次进入 scenemode，20 次（77%）在 11~414 s 内被 `scenemode 持续顶满性能上限（little util 100%）→ 退回 reduce + 300 s 冷却` 撤销**，有效驻留 ≈3.6 h、另有 ≈1.7 h 处于禁入冷却（≈20×300 s）→ 下线 little 并没消除抖动，只是把瓶颈从「3 个小核」搬到了唯一在线的引导核 CPU0（判据 ①② 均命中，② 的「预期仍会触发」被证实，但对象是 little 引导核而非 big）。
+  处置：`CoreCtl.scenemode_offline` 该字段此前是**死字段**（`mod.rs` 未接线，下线由 `enabled` 无条件驱动），已接线为真门控并在 8550 置 **false**（不下线任何核、保留全核，仅靠 `perf_ceil` 0.12 + uclamp 压制）。**待下包复核**：① 进入 scenemode 后是否仍出 saturation 撤销（目标：显著减少）；② 息屏段 `batt_power_w` 走向（全核在线的漏电 vs 免冷却的净收益）；③ 亮屏唤醒/电源键响应与 `corectl` 恢复是否干净（此时 core_ctl 不再介入 scenemode，`max_cpus`/`min_cpus` 应保持快照值不动）。
+  其余子项（⑥⑦⑧⑨⑩）随「不下线」直接失效，无需再验；**软回退** = 8550/feature.yaml 的 `CoreCtl.scenemode_offline` 改回 true。
+- **息屏期 little 被顶满 100%（2026-09-28 包实锤）**：**2026-10-01 更新**——本包给出定量结论（见上条结案），根因确认为「下线 little → CPU0 单核承压」；`logd_0928-170828` 里 7 次撤销属同一机制。以下原始取证线索保留备用：
   由 `ranges.prime` 改为 `ranges.little`（引导核 CPU0 无法热拔出，8550 实际下线 CPU1-2），core_ctl `max_cpus`
   写 **1**（`scenemode_keep_cpus()`，**不是 0**——0 是 walt_halt_cpus 整簇停摆语义，对含引导核的簇写 0 会把
   CPU0 一起停摆），big / prime 改常驻低频，调度服务独占核由「编号最大 little」改为「编号最大 big」。
@@ -53,15 +55,6 @@
   `min_cpus == max_cpus == keep` 会让 `discover()` 的残留判据（`max < min`）恒假，而 `force_online_all()`
   只修 max_cpus / online——**不能**盲写 `cluster_size`（厂商把 little 的 min_cpus 配成小于簇规模是正常省电，
   盲写会破坏它）。触发需「快照 min_cpus > keep」+「崩溃」同时成立；彻底解决需持久化「scenemode 进行中」标记。
-- **FAS 降档退避的时间衰减是否够（2026-09-28 改）**：退避计数不再被升档清零（防抖），改为「同档且距上次降档
-  <60s」才增长，理论上限仍是 `min(4)` = 16 倍 ≈ **24s 不许升档**。真机看王者局内 `fas-gear-switch` 条数与
-  两次 120→60 的间隔：若出现「游戏已回到 120fps 但被压 20s 以上」，把 `upgrade_cooldown_after_downgrade`
-  基值或 `.min(4)` 上限调小。
-- **FAS 原生档识别会一步跨多档（2026-09-28 修可达性后新增的观察面）**：`detect_native_gear` 从 `is_extreme`
-  内提到降档分支顶部后，「游戏原生 60fps」才可达（原实现与 `avg < tfps*0.40` 交集为空、恒不可达）；代价是它
-  **无 confirm 帧、无冷却、可一次跳多档**（144→60、120→30），判据 `|avg-g| < 8 && stddev < avg*0.10`。真机看
-  同局 `fas-gear-switch` 是否出现大跨档：若「稳定但偏低」的片段被误判（如全程 ~66fps 的段被当原生 60 而降
-  144→60），再给原生档加确认窗或限制一次只降一档。
 - **[已落地 2026-09-28] 分析侧「建账」三视图**（只读日志，不改调度行为）：`dvpower.py` 的 `[5]` cap 档迁移时间线 /
   `[6]` 档位温度带 / `[7]` 按 mode 能量汇总（gpu/psi 能量加权）；`dvmain.py` 的 `[7]` 播放态帧间隔直方图
   （活跃窗 `n>=15` + 长尾率 >52ms/>100ms）。**先有账再动参数**：本项目已禁 A/B，没有这三张表就只能盲调。
@@ -81,13 +74,12 @@
   `scenemode 持续顶满性能上限（little util 100%），退回 reduce 并进入 300s 冷却`，且每次都在息屏窗口内
   （前后最近的界标是「息屏已超过阈值，切换到 scenemode」与「亮屏触发事件」）→ **息屏省电在反复自我撤销**。
   配套数字：息屏+放电行 8345（占全部放电行 40%）均值 **0.42 W**（分桶 0.1~0.6 W 连续分布）、迁移 ≈2186/s、
-  `psi_cpu 23.8`；这些秒数的 `package` 是息屏前残留的 `me.weishu.kernelsu`（95% screen_on=0），
+  `psi_cpu 23.8`；这些秒数的 `package` 是息屏前残留的 `me.weishu.kernelsu`（95% screen*on=0），
   故 `[1]` 表里 kernelsu 的 0.59 W 是「息屏 0.42 W 段 + 少量亮屏段」的混合值，**不要当亮屏空转读**。
-  **下一步判据（全部可用本包现成数据）**：① 按息屏时间窗过滤 `aff_*.log`，看 little（core 0-2）上的
-  `u=` 与 comm 是谁；② `main_*.log` 息屏段 tick 行的 `max_util`/`cur_perf` 看负载形态；③ status.csv 息屏段的
-  `gpu_busy` 判别 CPU 侧还是 GPU 侧。**候选嫌疑**：dev_record 采集本身（息屏 2.3 h 写了 19 MB main + aff 每秒
-  全线程采样 + 每帧 eBPF，属观测者效应）/ 第三方后台（little 上高频出现 `V8_DefaultWorke`、`Chrome_ProcessL`、
-  `CookieMonsterCl`、`TracingMuxer`、`perfetto_hprof_` 等 Chromium 系线程名）/ ChiRi 自身巡检。
+  **下一步判据（全部可用本包现成数据）**：① 按息屏时间窗过滤 `aff*\_.log`，看 little（core 0-2）上的
+`u=`与 comm 是谁；②`main\_\_.log`息屏段 tick 行的`max*util`/`cur_perf`看负载形态；③ status.csv 息屏段的`gpu_busy`判别 CPU 侧还是 GPU 侧。**候选嫌疑**：dev_record 采集本身（息屏 2.3 h 写了 19 MB main + aff 每秒
+全线程采样 + 每帧 eBPF，属观测者效应）/ 第三方后台（little 上高频出现`V8_DefaultWorke`、`Chrome_ProcessL`、
+`CookieMonsterCl`、`TracingMuxer`、`perfetto_hprof*` 等 Chromium 系线程名）/ ChiRi 自身巡检。
   **若指向采集开销 → 结论是「诊断期不可测待机基线」（写判读口径，不改调度）；若指向第三方 → 才是压制策略问题。**
 
 - 亮屏 gap①：电源键亮屏无 touch 事件 → 20% 稳态 3 tick 降到地板；候选 = 亮屏复用 `on_touch()` 做一次性 400ms ceiling 窗口（待用户批准）。
@@ -98,26 +90,18 @@
 - **播放态掉帧验证（P0-3 收尾）【已答 2026-09-28】**：`logd_0928-170828` 已按「占优簇反推基线 + 超基线长尾档」
   判读完成——中/硬档窗口（272 / 246 / 793 个活跃窗）长尾率 **0.0~0.4%**、未压制基线 **0.0%**，**基线没动**。
   **遗留缺口**：本包只有常规码率视频（占优簇 12~16ms 档），无 4K/高码率样本；**在线判据不做**（无差异 = 不值得在线化）。
-- **`tuned_thermal_floor` 不下探【2026-09-28 重评定案，勿再提议】**：原「下探到 0.45」的推论**判据不成立**——
-  该地板只在 `cap < floor`（即**仅硬档 0.40**）时生效，而本包硬档窗口里播放态的**有效上限本来就是 0.55**
-  （`profile_ceil.min(cap.max(floor))`），「硬档窗口无长尾」证明的是「0.55 够用」，**完全没有覆盖 0.45 这个点**。
-  收益量级也否决它：硬档 ∩ 播放态 = 624 s（占全包放电 3.0%），就算 0.55→0.45 让 CPU 侧降 15%，
-  全包能量也就省 **≈0.03 Wh / 0.27%**；而风险是唯一可被用户感知的「视频卡顿」、且播放态没有在线判据。
-  要压「硬档下的播放态」应走**上游减热**（中档回滞已修），不是压地板。
-- **播放态「边充边放」温度曲线【本包无样本】**：`charge ∈ {charging, full}` ∩ `mode=playback` = **0 行**
-  （本包充电时段没有在播视频）→ `:34` 那条继续挂着，下次采集需特意覆盖该场景。
-- **播放态「边充边放」温度曲线复核（P0-3 收尾，2026-09-27 追加）**：`tuned.rs:54` `profile_ceil.min(cap.max(floor))`
-  在硬档（cap 0.40）下由 `tuned_thermal_floor`（0.55，定义于 `src/chiri/config.rs::d_tuned_thermal_floor` +
-  各 `module/config/<device>/feature.yaml`）把大核抬到 0.55，即 tuned 接管的播放态在 ≥45°C 时**可比 CLG 跑得更热**
-  （播放态不走 CLG，CLG 此时已压到 0.40）——这是为「视频解码需要稳定档位」有意保留的，见 `tuned.rs [thermal_ceil]`
-  与 `agentsdocs/03-chiri.md` 的「热态 tuned 响应」条。待验证：**边充边放场景**下看整机/壳温曲线是否仍持续爬升；
-  若爬升不止，`0.55` 这个地板即首要嫌疑（次选：`tuned_resp_enabled` 是否需要在充电态额外降 cap）。
-  判据同上行——`tuned` tick 行 `cur_max` + status.csv `batt_power_w`（按 package 均值）+ 电池温度列。
-- `touch_boost_tiers: 3→2` 真机 A/B（8550，滑动/打字流畅度不行回 3 档）；`clamp_heavy` 恒钳 A/B（功耗 + 性能，与 T8 同源）。
+- **播放态「边充边放」温度曲线【本包无样本，待采集】**：`charge ∈ {charging, full}` ∩ `mode=playback` = **0 行**
+  （本包充电时段没有在播视频），下次采集需特意覆盖该场景。**嫌疑与判据**：`tuned.rs` 的
+  `profile_ceil.min(cap.max(floor))` 在硬档（cap 0.40）下由 `tuned_thermal_floor`（**0.55**，见
+  `src/chiri/config.rs::d_tuned_thermal_floor` + 各 `module/config/<device>/feature.yaml`）把大核抬到 0.55
+  ——tuned 接管的播放态在 ≥45°C 时**可比 CLG 跑得更热**（播放态不走 CLG，此时 CLG 已压到 0.40），
+  这是为「视频解码需要稳定档位」有意保留的（见 `tuned.rs [thermal_ceil]` 与 03-chiri.md「热态 tuned 响应」）。
+  若边充边放时整机/壳温**持续爬升不止**，`0.55` 地板即首要嫌疑（次选：充电态额外降 cap）。
+  判据 = `tuned` tick 行 `cur_max` + status.csv `batt_power_w`（按 package 均值）+ 电池温度列。
 - `background_uclamp_max_pct` 现值 **25**（8550；2026-09-28 由 35 下调，A1 降权）待真机复核后台同步 / 消息推送时延；回退 = 改回 35。
 - **PowerBase 档位体系与触摸升档的真机验证（2026-09-28 实现，8550 = 标准 #13 / 触摸 #20 / 上限 #25）**：① 触摸时打 `powerbase-touch-tier`（debug 级）且频率瞬抬到对应桶落点；② 连续触摸逐级升档（#13→#20→#25），已在 #25 时只续窗口、不调频；③ 窗口（`touch_break_ms`，8550 未覆盖该键 → 取代码默认 400ms）过后回落 #13；④ 非 PF SoC / 桶越界时的回退路径与不启用逐位一致。8998 已移出 CHIRI_SOC_HINTS（恢复支持需补 [powerbase] 显式段与 hints 片段，现兜底 3.0W）。
 - **PowerBase 无周期调用点（既有缺口，档位体系把它放大）**：`on_load_update` 只在**负载事件分支**被调用（`mod.rs:2696`），内部转调 PowerBase 后它的返回值 `Option<Duration>`（5s 防篡改重写的剩余时间）被丢弃、未纳入 `wait`——与 `fast_lock.tick()`（`mod.rs:2243`，返回值参与动态超时）不同形。后果：eBPF 负载源一旦停摆，`on_load_update` 不再执行 → **触摸升档窗口不回落**、防篡改重写也不发生，直到 `CLG_STALE_MAX` 看门狗（`mod.rs:2245` 起）释放 cpu_governor——它内部连带释放 PowerBase（旧记的「不含 power_base」已随后端改造失效），代价是整机退回系统调频，而不是「一直锁在 #25」。修法二选一（待用户定，未动）：接收返回值纳入 `wait`（但主循环只在 load 事件分支调用，还需另开超时路径），或给 PowerBase 单开周期调用点。
-- **feature.yaml 无 SoC→根 的字段级合并（维护陷阱）**：`embedded_feature_str()` 是按命中 SoC 取**整份** `{soc}/feature.yaml`，未命中才取根——不做字段级继承。故 8550 的 `powerbase` 段里没写的字段落的是**代码默认**（`PowerBaseConfig::default()`），不是根 yaml 的值；今天两者同值（1.15/0.5/50/3000/400）所以无差异，但日后改根不会传到 8550。
+- ~~feature.yaml 无 SoC→根 的字段级合并~~ **2026-10-01 已落地**：`embedded_feature_str()` 改为「根 `feature.yaml` 为基底 + `{soc}/feature.yaml` 按字段深合并覆盖」（`common.rs::merge_yaml`，map 递归、标量/序列整体替换）。**注意**：全量合并下 SoC 未写的**整段**也会从根继承——8550/8998 无 `vector` 段，现已继承根的 vector（极速档）配置，**待真机复核 8550 极速行为**。
 - 线程写观测：sched_setaffinity / cpuset / uclamp 写失败无观测（event 行 kind=thread_write 未实施；相关 i18n 键已删、要用需从 git 历史找回）。
 - **DOWN 实测从未做过**：写 down.chr → down-boot-halted + 60s 心跳（注意实际周期 300s）+ devimp mode=down + current_mode.chr 停在 down，对比停摆前后 governor/max_freq/cpu_boost/cpuidle/IO/sched/cpuset/在线核数。
 - telemetry gpu_busy 每秒读的采集成本 A/B（GPU busy 开关对照，最便宜的「功耗为何变高」验证项）。**【2026-09-28 已评估】**：采集开销的写盘主体是 devimp（20–28 kB/s，aff 帧占 88%），logd 侧 0.13 kB/s，`gpu_busy` 属 logd 每秒读、量级远小于 devimp；**A/B 已作废**，改为长时观察（同一版本内看该列读取与 `batt_power_w` 的相关性）。已知的反例警示：GPU **快照**（读 Adreno 节点）实测 playback 1.76→2.59 W（+47%，已默认关），即"读节点唤醒设备"类探针能到 W 级，故不能凭"读一次很便宜"推断所有探针都便宜。
@@ -145,8 +129,6 @@
 
 ### 配置 / 文档 / 杂项
 
-- **8745 配置疑案**：`module/config/8745/` 因 CHIRI_SOC_HINTS（现 ["8550","8475"]）不含 8745 **永不生效**，且与 8475 的 feature.yaml 内容不同（8745 缺 affinity/corectl/thermal 段）——合并方向待拍板（拍错毁调优）。
-- 版本号两套命名（module.prop Alpha*-Canary* vs Cargo.toml 2.0.2）是否统一留用户。
 - updateInformation/changelog.md 空文件，是否填 Alpha06-12→14 汇总待确认（HotUpdateInfo.md 亦空）。
 - 完整安装会清掉 down.chr / rhine.chr（用户停摆/实验室状态丢失，不在「保留配置」范围）；实验室还原不原子（meta 写失败半还原可重试）；实验室与 sync_meta_snapshot 都写 meta.yaml 理论交错未加锁。
 - （2026-09-17 提出，**先核实**）down.rs 非 UTF-8 读失败当缺失 → 模板覆盖会冲掉用户手改；BOM(U+FEFF) 两侧 trim 行为不一致；monitor `dynamic_enabled=false` 直返 global_mode 绕过 fas/akmode 门控；看门狗释放后 vector/特调无周期重建。

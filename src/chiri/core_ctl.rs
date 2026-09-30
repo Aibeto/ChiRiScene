@@ -116,6 +116,8 @@ fn self_tids() -> Vec<i32> {
 /// 计算 scenemode 下线目标：**little 簇**（息屏深度省电 = 下线小核，big / prime 常驻低频。
 /// 2026-09-28 由「下线 prime」改来：原策略把后台负载全挤到 3 个小核上，实测息屏期 little 反复被顶满
 /// 100%，反过来触发 saturation 保护退回 reduce，息屏省电被反复自我撤销）。
+/// 2026-10-01：本策略仍会把负载挤到唯一在线的引导核 CPU0（同样顶满 → 同样被撤销），故改为**按机型可选**——
+/// 由 `CoreCtl.scenemode_offline` 控制，8550 置 false 走「不下线、只压频」（见 8550/feature.yaml [corectl]）。
 /// 引导核 CPU0 无法热拔出（内核拒写 `cpu0/online=0`），故「关闭所有小核」实为 little 簇除 CPU0 外的全部核。
 /// 保留 CPU0 还顺带消除一个坑：little 的 cpufreq policy 不会因整簇消失而让 worker 失去接管
 /// （prime 整簇下线时 policy 目录消失，见 chiri/mod.rs 饱和退出处的 reload 顺序说明）

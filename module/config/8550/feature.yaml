@@ -32,11 +32,13 @@ Affinity:
   # A1（2026-09-28）：35 → 25，把后台实际工作点压到更低频段（等算力下总功耗下移）。
   # TODO: 实机复核后台同步/消息推送时延；回退 = 改回 35。
   background_uclamp_max_pct: 25
-  # normal（非 boost）下 top-app/foreground 组掩码剔除 little 的预置开关（默认关闭）：
+  # normal（非 boost）下 top-app/foreground 组掩码剔除 little 开关（2026-10-01 开启）：
   # A510 能效差且 DT 能耗模型低估其真实能耗，EAS 会把 64 位前台线程吸进 little；
-  # 收窄后 32 位任务的允许核交集由内核兜底（big 内 A710 仍在掩码内），每 2s 纠偏。
-  # TODO: 待内核信息（32 位核位图 / A710 核位，读 /sys/.../midr_el1 可核）针对化后决定开启。
-  normal_fg_exclude_little: false
+  # 收窄后每 2s 纠偏。原 TODO「待内核信息（32 位核位图 / A710 核位）」已作废：
+  # 本机 A710/X3 均不直接执行 AArch32，32 位程序经系统原生桥（转译层）落 64 位代码，
+  # 全核可跑，故无需按核位宽针对性放行；内核侧核交集兜底逻辑不变。
+  # 依据：logd_1001-045147 亮屏 UI 功耗偏高（launcher 亮屏 2.61 W vs 基线 1.9~2.4 W）。
+  normal_fg_exclude_little: true
   # ---- 2026-09-28 新增（放置与亲和线）。全部字段可选，但**缺省值不等于旧行为**：
   # bg_promote_exclude_prime / big_pressure_any_mode / bitwidth_aware / write_dedup 的代码缺省是
   # true = 新逻辑默认开启，要回旧行为必须显式写 false——没写这些键的档位/机型都已按新行为运行。
@@ -97,13 +99,17 @@ Affinity:
 # [corectl]
 CoreCtl:
   enabled: true
-  # scenemode 离线核：息屏超时进入 scenemode 后**下线 little 簇**（引导核 CPU0 无法热拔出，
-  # 实际下线 CPU1-2；内核拒写 cpu0/online），big/prime 常驻低频（上限由 scenemode.yaml 的
-  # perf_ceil 压制），另留 1 颗大核（编号最大）给调度服务。2026-09-28 由「只下线 prime」
-  # 改来：原策略把后台负载全挤到 3 个小核，实测息屏期 little 反复被顶满 100% → 触发
-  # saturation 保护退回 reduce，息屏省电被反复自我撤销。常驻核持续顶满仍退回 reduce + 300s 冷却。
-  # 亮屏按快照恢复。**真机未验**：息屏功耗/壳温走向待复核（大核低频能效低于小核，可能抬底噪）。
-  scenemode_offline: true
+  # scenemode 是否下线核心（修法3，2026-10-01 改）：
+  # false = 息屏进入 scenemode 后**不下线任何核**，保留全核、只靠 scenemode.yaml 的
+  # perf_ceil（0.12，三簇统一压低）+ 后台 uclamp 压制省电。理由（logd_1001-045147 实测）：
+  # 09-28「下线 little 簇（CPU1-2）」把负载挤到唯一在线的引导核 CPU0 → CPU0 util 100% →
+  # 触发 saturation 保护，26 次进入 scenemode 里 20 次被「退回 reduce + 300s 冷却」撤销
+  # （最短 11s），有效驻留不足一半、另有 ~1.7h 处于禁入冷却。保留全核消除单核瓶颈后
+  # 负载按 EAS 自然铺开，饱和判据（little 引导核+big 的 max_util ≥ 0.75 持续 10s）不再被
+  # 误触；省电交回频率上限。true = 旧行为（下线 little 簇）。
+  # 权衡：全核在线比下线核多一份漏电，但息屏期核多处于 cpuidle/WFI，实测判断以「消除
+  # 抖动 + 免冷却」为先；息屏功耗/壳温走向待下包复核。
+  scenemode_offline: false
 
 # [thermal]
 Thermal:

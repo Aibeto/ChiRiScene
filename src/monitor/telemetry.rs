@@ -141,7 +141,22 @@ impl Telemetry {
     }
     /// 电池瞬时功率（W，电流取绝对值）；电流或电压缺失返回 None
     pub fn batt_power_w(&self) -> Option<f32> {
-        Some(self.batt_current_ma()?.abs() * self.batt_voltage_v()?)
+        self.batt_sample().2
+    }
+    /// 一次取回 `(电压 V, 电流 A, 功率 W)`：**同一快照**（两处原子量各 load 一次后就地换算）。
+    /// 供 1s 状态块的状态行 / PowerAVG / 通知 / main_snap / 调试摘要**共用**——同一 tick 只读一次，
+    /// 避免 telemetry 线程两次 store（先电流后电压）恰好落在两次调用之间，出现「状态行功率 ≠ 记进
+    /// PowerAVG 的功率」的撕裂；`batt_voltage_v` / `batt_current_ma` / `batt_power_w` 保留给单值调用点
+    pub fn batt_sample(&self) -> (Option<f32>, Option<f32>, Option<f32>) {
+        let raw_v = self.batt_voltage_raw.load(Ordering::Relaxed);
+        let raw_i = self.batt_current_raw.load(Ordering::Relaxed);
+        let voltage = (raw_v != UNAVAIL).then(|| raw_v as f32 / voltage_divisor());
+        let current = (raw_i != UNAVAIL).then(|| raw_i as f32 / current_divisor());
+        let power = match (current, voltage) {
+            (Some(i), Some(v)) => Some(i.abs() * v),
+            _ => None,
+        };
+        (voltage, current, power)
     }
 }
 

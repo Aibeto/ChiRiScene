@@ -5,7 +5,7 @@
 use anyhow::Result;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, RwLock, OnceLock, mpsc};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -304,7 +304,10 @@ fn clamp_evidence_snapshot(warned: &mut HashSet<String>) -> String {
     let mut corectl = String::new();
     for id in policies {
         // smax：FREQ_QOS_MAX 聚合结果的读回值（低于写入值 = 被 QoS 钳制）
-        let path = format!("/sys/devices/system/cpu/cpufreq/policy{}/scaling_max_freq", id);
+        let path = format!(
+            "/sys/devices/system/cpu/cpufreq/policy{}/scaling_max_freq",
+            id
+        );
         match read_trim(&path) {
             Some(v) => seg_push(&mut smax, *id, &v),
             None => {
@@ -980,9 +983,10 @@ fn build_aff_snapshot(
 
 // [affinity]
 /// 应用 CPU 亲和布局与 core_ctl 在线策略（ChiRi 专属，跟随模式/屏幕/前台 PID）。内部带去重：布局与 PID 未变化时无 sysfs 写入，可安全周期性调用
-/// `core_utils` 为最近一次 SystemLoadUpdate 的逐核 util（按核选核打分输入）。`scenemode_offline` 为 scenemode 激活标志：
-/// 抑制 boost（boost 会把 min_cpus 抬回全组常在线、把被压制的核拉回来）并触发 scenemode 离核压制——逐核 online 下线 little 簇（除引导核）
-/// + WALT core_ctl `max_cpus` 钳住该簇在线核数上界（见 core_ctl.rs 的 `scenemode_targets` / `scenemode_keep_cpus`）
+/// `core_utils` 为最近一次 SystemLoadUpdate 的逐核 util（按核选核打分输入）。`scene_mode_active` 为 **scenemode 激活标志**
+/// （与配置字段 `CoreCtl.scenemode_offline` 不是一回事，勿混）：激活时抑制 boost（boost 会把 min_cpus 抬回全组常在线、
+/// 把被压制的核拉回来）；是否真的把 little 簇下线（除引导核）+ WALT core_ctl `max_cpus` 钳核数，另由 `config.core_ctl.scenemode_offline` 门控
+/// （见 core_ctl.rs 的 `scenemode_targets` / `scenemode_keep_cpus`）
 fn apply_affinity_and_corectl(
     affinity: &mut affinity::AffinityManager,
     corectl: &mut core_ctl::CoreCtlManager,
@@ -991,7 +995,7 @@ fn apply_affinity_and_corectl(
     screen_on: bool,
     fg_pid: i32,
     core_utils: &[f32],
-    scenemode_offline: bool,
+    scene_mode_active: bool,
 ) {
     // 实验室静态分组模式（contingency/babel）：停线程迁移、按模式写组级 cpus；governor/GPU 由调用方 sync（sync_lab_governor_gpu）
     // 周期重入即纠偏（框架写回的 top-app/foreground 会被重写）。core_ctl 交回系统（NONE）
@@ -1006,14 +1010,18 @@ fn apply_affinity_and_corectl(
         return;
     }
     // stardust 家族（scenemode）语义：停线程迁移与动态分组、全部 cpuset 恢复全核——压频只压 CLG 频率上限；
-    // 核心层面仅下线 little 簇（除引导核）+ WALT core_ctl `max_cpus` 钳制保留核数（见 core_ctl.rs [max_cpus]），线程/组摆放不做任何特化
-    // affinity.release 会把此前收窄的组按快照恢复。本分支由 2s 周期块与场景事件反复进入：仅在持有接管时 release 一次，避免息屏全程每 2s 重复回写后台组 uclamp
-    // max 并刷「已释放接管」日志
-    if scenemode_offline {
+    // 核心层面是否下线 little 簇（除引导核）+ WALT core_ctl `max_cpus` 钳制保留核数（见 core_ctl.rs [max_cpus]）
+    // 由 `CoreCtl.scenemode_offline` 决定（默认 true 保持既有行为）；置 false 时保留全核、只靠频率上限压制，
+    // 线程/组摆放不做任何特化。affinity.release 会把此前收窄的组按快照恢复。本分支由 2s 周期块与场景事件反复进入：
+    // 仅在持有接管时 release 一次，避免息屏全程每 2s 重复回写后台组 uclamp max 并刷「已释放接管」日志
+    if scene_mode_active {
         if affinity.is_active() {
             affinity.release();
         }
-        corectl.set_power_state(false, config.core_ctl.enabled);
+        corectl.set_power_state(
+            false,
+            config.core_ctl.enabled && config.core_ctl.scenemode_offline,
+        );
         return;
     }
     // fas 模式按 boost 处理：FAS 只负责调频，线程摆放沿用 boost 布局（top-app/foreground 收窄 prime∪big + 前台钉核 + core_ctl 保大核）；
@@ -1022,7 +1030,7 @@ fn apply_affinity_and_corectl(
     // mode=="fas" 时前台必为白名单游戏，摆放非负收益，gating is_active 反而会引入激活边界的布局抖动省电型特调（boost_affinity=false，如 playback/daily）
     // 不走 boost：不收窄 cpuset、不保大核常在线——与省电目标相反（大核空转漏电、解码线程被低上限压住）
     let boost = ((is_boost_mode(mode) && tuned_boost_affinity(config, mode)) || mode == "fas")
-        && !scenemode_offline;
+        && !scene_mode_active;
     // top-app uclamp.max 放开（激活期写 100 让重线程可被 EAS 放到 prime）的管理归属：特调（akmode）由本函数按当前模式同步 Some(true)；
     // fas 交给 fas_affinity_hook（None = 本函数不干预，避免与其时序打架）；其余 boost 模式 Some(false)——保证离开特调后不残留 100
     // 省电型特调同样不放开（不抬 prime 上限）
@@ -1738,6 +1746,8 @@ pub fn start_scheduler_thread(
                         v.map(|x| x.to_string())
                             .unwrap_or_else(|| "-".to_string())
                     };
+                    // 电池三元组本秒只读一次（同一快照），状态行 / PowerAVG / 通知 / main_snap / 调试摘要共用
+                    let (batt_voltage, batt_current, batt_power) = tm.batt_sample();
                     let current_mode = mode_clone.lock().unwrap().clone();
                     // 温度本秒读一次，status/devimp/thermal 三处共用；滤波值参与热判定，原始值不再直供
                     last_batt_temp = if batt_sensor_exists {
@@ -1762,6 +1772,8 @@ pub fn start_scheduler_thread(
                     let screen_prop_raw =
                         crate::monitor::screen_detect::read_screen_prop_raw()
                             .unwrap_or_else(|| "-".to_string());
+                    // 自测量基线：daemon 自身累计 CPU 时间（1s 采样读 /proc/self/stat），与状态行同行落盘
+                    let (daemon_utime_ms, daemon_stime_ms) = crate::logger::self_cpu_ms();
                     crate::logger::status_log_snapshot(
                         &current_mode,
                         &fg_package,
@@ -1776,15 +1788,17 @@ pub fn start_scheduler_thread(
                         &fmt_opt_full(Some(tm.psi_io_some())),
                         &fmt_opt_full(Some(tm.psi_mem_some())),
                         &fmt_opt_full(tm.gpu_busy()),
-                        &fmt_opt_full(tm.batt_voltage_v()),
+                        &fmt_opt_full(batt_voltage),
                         // 全精度：电流可能只有 0.5 级小数量级，取整会抹平真值、归档无法反推
-                        &fmt_opt_full(tm.batt_current_ma()),
-                        &fmt_opt_full(tm.batt_power_w()),
+                        &fmt_opt_full(batt_current),
+                        &fmt_opt_full(batt_power),
                         last_bpf_stats.0,
                         last_bpf_stats.1,
                         last_bpf_stats.2,
                         fas_fps,
                         &screen_prop_raw,
+                        daemon_utime_ms,
+                        daemon_stime_ms,
                     );
                     // PowerAVG（耗电参考/平均）：紧跟 status 行**顺序**写入 PowerAVG.chr取样口径：
                     // ① 仅电池放电（充电功率不属于耗电均值）；② 平均模式再排除息屏（息屏占时长大，
@@ -1797,7 +1811,7 @@ pub fn start_scheduler_thread(
                     };
                     let sample_ok =
                         charge_state == "discharging" && (!use_average || is_screen_on);
-                    let power_reading = if sample_ok { tm.batt_power_w() } else { None };
+                    let power_reading = if sample_ok { batt_power } else { None };
                     // 跳过时 PowerAVG.chr 不更新：跳过原因同一原因只报一次，写入样本后重新武装
                     let skip_reason = if !sample_ok {
                         if charge_state != "discharging" {
@@ -1865,9 +1879,9 @@ pub fn start_scheduler_thread(
                             &fmt_opt(Some(tm.psi_io_some()), 2),
                             &fmt_opt(Some(tm.psi_mem_some()), 2),
                             &fmt_opt(tm.gpu_busy(), 0),
-                            &fmt_opt(tm.batt_voltage_v(), 3),
-                            &fmt_opt(tm.batt_current_ma(), 0),
-                            &fmt_opt(tm.batt_power_w(), 2),
+                            &fmt_opt(batt_voltage, 3),
+                            &fmt_opt(batt_current, 0),
+                            &fmt_opt(batt_power, 2),
                             last_bpf_stats.0,
                             last_bpf_stats.1,
                             last_bpf_stats.2,
@@ -1906,7 +1920,7 @@ pub fn start_scheduler_thread(
                                     "wakeups" => last_bpf_stats.0.to_string(),
                                     "migrations" => last_bpf_stats.1.to_string(),
                                     "freq" => last_bpf_stats.2.to_string(),
-                                    "power" => fmt_opt(tm.batt_power_w(), 2)
+                                    "power" => fmt_opt(batt_power, 2)
                                 )
                             )
                         );

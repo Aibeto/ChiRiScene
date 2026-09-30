@@ -6,8 +6,10 @@
 
 判读铁律（口径以 `.cursor/commands/devimp-log-analysis.md`「三、判定要点」为准）：
 1. **功耗权威源 = `status.csv` 的 `charge` + `batt_power_w`**；devimp 侧的 `batt_p`/`P_avg`
-   只作交叉验证（本机 `batt_i` 整数化，「排除 batt_i==0」会删掉约 58% 的 <0.5A 轻载秒
-   → P_avg 系统性高估，实测 aweme 3.35 W vs 真值 2.14 W）。
+   只作交叉验证。**历史口径（仅轻载场景/旧包适用）**：早期机型 `batt_i` 整数化，「排除
+   batt_i==0」会删掉约 58% 的 <0.5A 轻载秒 → P_avg 高估（2026-09-24 实测 aweme 3.35 vs 2.14 W）。
+   `logd_1001-045147` 起本机电流已到 0.2~5.5A，`[8]` 与 status.csv **几乎相等**（FAS 3.95 vs 3.95），
+   该结论不再普遍成立，**不要外推到常规负载**（ChiRi 侧 `batt_power_w` 尺子已核实为准）。
 2. **放电方向按 `charge` 列判**（`== discharging`），**不要用电流符号**（方向随内核/机型而异）。
 3. 1 行 ≈ 1 秒采样，故 ΣW/3600 = Wh；表内 `n` 列是样本数（≈秒）。
 4. `migrations`/`wakeups` 是 2s 差分，换算每秒要 ÷2（本脚本不统计迁移率，看 dvmain.py）。
@@ -244,13 +246,15 @@ def devimp_report(root, since):
 
     口径复刻 `scripts/devimp-analyze.py`：只取 `snap` 行、放电方向由 `batt_i` 两侧功率中位数
     枚举（一侧落在 0.05~30 W 即认为该侧为放电）、功率值取 devimp 的 `batt_p` 列，
-    且 `batt_i == 0` 的行被排除——即「高估」的来源：本机 `batt_i` 整数化，排除 0 等于删掉
-    所有 <0.5 A 的轻载秒（约 58%），均值被抬高。
+    且 `batt_i == 0` 的行被排除。**历史口径（仅轻载场景/旧包适用）**：早期机型 `batt_i`
+    整数化时，排除 0 等于删掉所有 <0.5 A 的轻载秒（约 58%），均值被抬高；`logd_1001-045147`
+    起本机电流已到 0.2~5.5 A，该偏差不再普遍出现，[8] 与 status.csv 已几乎相等。
     """
     files = dc.list_files(root, ("main_",), since)
     out = ["# [8] 交叉验证：devimp 侧 P_avg（`batt_p` 列 / snap 行 / batt_i 符号定放电侧）",
-           "#     **不要用作结论**：本机 batt_i 整数化（0/1/2/3），排除 batt_i==0 会删掉 <0.5A 轻载秒",
-           "#     → 系统性高估（2026-09-24 实测 aweme 3.35 W vs status.csv 2.14 W）。"]
+           "#     **不要用作结论**（权威源 = status.csv 的 charge + batt_power_w）",
+           "#     历史高估口径仅轻载场景/旧包适用：早期 batt_i 整数化时排除 batt_i==0 会删掉 <0.5A 秒；",
+           "#     logd_1001-045147 起电流已到 0.2~5.5A，本表已与 status.csv 几乎相等。"]
     if not files:
         out.append(f"  （无 main_*.log：--since {since} 下无 devimp 侧样本，跳过交叉验证）")
         out.append("")
@@ -295,7 +299,8 @@ def devimp_report(root, since):
         out.append(f"{k[0]:9s} {k[1][:26]:26s} {len(v):8d} {dc.avg(v):12.2f} "
                    f"{dc.pct(v, .5):5.2f} {dc.pct(v, .95):6.2f}")
     out.append("")
-    out.append("#     对照读法：同一 mode×package 行与 [1] 表并排看，devimp 值应偏高（高估量级 ~0.3 W）。")
+    out.append("#     对照读法：同一 mode×package 行与 [1] 表并排看；两值应接近，devimp 明显偏高时")
+    out.append("#     按轻载/整数化口径解读，不要当结论。")
     out.append("")
     return out, dict(devimp={k: dc.avg(v) for k, v in g.items()}, note=note)
 
@@ -316,7 +321,7 @@ def main(argv=None):
            f"# dir   : {root}",
            f"# since : {a.since}（status.csv 无日期列 → 按父目录 x_<MMDD-HHMMSS>/ 批次戳筛）",
            "# 口径（判读铁律，正文见 .cursor/commands/devimp-log-analysis.md）:",
-           "#   1) 功耗权威源 = charge + batt_power_w；devimp 的 batt_i 整数化、batt_p/P_avg 系统性高估。",
+           "#   1) 功耗权威源 = charge + batt_power_w；devimp P_avg 只作交叉验证（高估口径仅轻载/旧包适用）。",
            "#   2) 放电方向按 charge 列判，**不要用电流符号**。",
            "#   3) 1 行 ≈ 1 秒 → ΣW/3600 = Wh（n 列 = 样本数≈秒）。",
            "#   4) migrations/wakeups 是 2s 差分，换算每秒 ÷2（本脚本不统计，见 dvmain.py）。",

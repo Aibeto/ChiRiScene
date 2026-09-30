@@ -1593,10 +1593,13 @@ pub struct CoreCtlConfig {
     /// 总开关：false 时不写任何 core_ctl 节点
     #[serde(default = "crate::utils::default_true")]
     pub enabled: bool,
-    /// scenemode 离线核（息屏深度省电）【已停用】stardust 家族（scenemode；down 是独立家族）语义已改为「停线程迁移 + 全部 cpuset 恢复全核 + 仅压频」，
-    /// 不再做prime 整簇下线；字段仅为兼容旧机型 yaml 保留（deny 解析需要），改值无效果
+    /// scenemode 是否下线核心（息屏深度省电）。true = 进入 scenemode 时下线 little 簇（除引导核）
+    /// 并用 WALT core_ctl `max_cpus` 钳住保留核数（见 `core_ctl.rs` 的 `scenemode_targets`）；
+    /// false = 不下线任何核，仅靠 scenemode.yaml 的频率上限（`perf_ceil`）+ uclamp 压制省电。
+    /// 2026-10-01 恢复字段效力（此前误标「已停用」，实为 mod.rs 未接线、由 `enabled` 无条件驱动）：
+    /// 8550 实测饱和抖动（26 次进入中 20 次 `持续顶满（little util 100%）→ 退回 reduce + 300s 冷却`，
+    /// 见 logd_1001-045147）置 false，消除「下线到单核 → 单核顶满 → 自我撤销」拉锯。
     #[serde(default = "crate::utils::default_true")]
-    #[allow(dead_code)]
     pub scenemode_offline: bool,
 }
 

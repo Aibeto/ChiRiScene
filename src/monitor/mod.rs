@@ -50,9 +50,9 @@ pub static CPU_HOTPLUG_DIRTY: AtomicBool = AtomicBool::new(false);
 pub struct FasSignal {
     /// 状态本体。热路径只读原子量，与改造前的裸 `AtomicBool` 同价
     flag: AtomicBool,
-/// **播放态旁路采样**谓词（2026-09-27）：特调 `playback` 接管时置位，让 fps 探针在非 FAS 会话里也挂帧源。
-/// 与 `flag` 分开存而非复用：`flag` 的语义被 FasManager/调度侧消费（FAS 是否接管），播放态混进去会让
-/// 「FAS 未激活」的判定失真；两者只在帧源门控处取或
+    /// **播放态旁路采样**谓词（2026-09-27）：特调 `playback` 接管时置位，让 fps 探针在非 FAS 会话里也挂帧源。
+    /// 与 `flag` 分开存而非复用：`flag` 的语义被 FasManager/调度侧消费（FAS 是否接管），播放态混进去会让
+    /// 「FAS 未激活」的判定失真；两者只在帧源门控处取或
     playback: AtomicBool,
     /// 保护 `flag`/`playback` 的谓词判定（wait_until_frame_source）与置位+通知（set / set_playback）的互斥锁；无哨兵值仅互斥用，勿删（见类型注释丢唤醒说明）
     lock: Mutex<()>,
@@ -229,7 +229,12 @@ pub fn start_monitor(
             // 激活前待机：等待**帧源**信号（FAS 激活 或 播放态旁路，见 [fas_signal]；稳态 0 周期唤醒），
             // 不建 runtime 不加载 eBPF——播放态旁路开启前同样零开销，首帧源到来时一次性建起来
             fas_signal.wait_until_frame_source(None);
-            if let Ok(rt) = tokio::runtime::Runtime::new() {
+            // 单线程 runtime：本线程只跑这一个 async 循环（无跨线程 spawn 需求），current_thread
+            // 省去 multi-thread 的 worker/blocking 空闲线程池；enable_time 供 interval/timeout 使用
+            if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .build()
+            {
                 rt.block_on(async {
                     if let Err(e) =
                         fps_monitor::start_fps_loop(tx_fps, rx_pid_fps, fas_signal).await
@@ -254,7 +259,11 @@ pub fn start_monitor(
     let tx_cpu = tx.clone();
     let ak_active_cpu = ak_active.clone();
     spawn_guarded("cpu_monitor_ebpf", move || {
-        if let Ok(rt) = tokio::runtime::Runtime::new() {
+        // 同 fps_monitor：单线程 runtime（current_thread + enable_time），省 multi-thread 空闲线程池
+        if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+        {
             rt.block_on(async {
                 if let Err(e) =
                     cpu_monitor::start_cpu_loop(tx_cpu, rx_pid_cpu, ak_active_cpu, sample_ms_normal)

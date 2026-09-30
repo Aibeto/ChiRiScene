@@ -116,7 +116,7 @@ impl SelfHealingAppender {
 }
 
 impl SelfHealingAppender {
-/// 落盘一行（已格式化字节）锁内 IO + 计数；`note_write` 达门限会经`log::info!` 重入本函数，调用方持本锁调用会对非重入 Mutex 死锁
+    /// 落盘一行（已格式化字节）锁内 IO + 计数；`note_write` 达门限会经`log::info!` 重入本函数，调用方持本锁调用会对非重入 Mutex 死锁
     fn append_line(&self, line: &[u8]) {
         let bytes = line.len() as u64;
         {
@@ -383,9 +383,11 @@ const STATUS_LOG_MAX_BYTES: u64 = 8 * 1024 * 1024;
 /// 每 N 行巡检一次（轮转 + 被删自愈）：常驻句柄被外部删除后指向孤儿 inode、写入不报错，只能靠巡检发现；1s 一行时 16 行 ≈ 16s 自愈窗口，stat 开销可忽略
 const STATUS_CHECK_EVERY: u64 = 16;
 
-/// CSV 表头（23 列，列序由 status_log_snapshot 保证对齐，完整列名见下方STATUS_HEADER 字符串）fps 为**预留列**，schema 恒定存在：
-/// 仅 FAS 激活且帧窗口有样本时为实测值，其余一律 "-"；列只在末尾追加，避免打乱既有列索引
-const STATUS_HEADER: &str = "timestamp,type,mode,package,charge,screen_on,batt_temp,cpu_temp,thermal_cap_pct,thermal_free_pct,clg_active,psi_cpu_some,psi_io_some,psi_mem_some,gpu_busy_pct,batt_voltage_v,batt_current_ma,batt_power_w,wakeups,migrations,freq_trans,fps,screen_prop";
+/// CSV 表头（25 列，列序由 status_log_snapshot 保证对齐，完整列名见下方STATUS_HEADER 字符串）fps 为**预留列**，schema 恒定存在：
+/// 仅 FAS 激活且帧窗口有样本时为实测值，其余一律 "-"；列只在末尾追加，避免打乱既有列索引。
+/// 末尾两列 daemon_utime_ms / daemon_stime_ms = daemon 自身累计用户态/内核态 CPU 时间（ms，自测量基线），
+/// 与同行的 batt_power_w 并排可反推「观测者自身开销」占比
+const STATUS_HEADER: &str = "timestamp,type,mode,package,charge,screen_on,batt_temp,cpu_temp,thermal_cap_pct,thermal_free_pct,clg_active,psi_cpu_some,psi_io_some,psi_mem_some,gpu_busy_pct,batt_voltage_v,batt_current_ma,batt_power_w,wakeups,migrations,freq_trans,fps,screen_prop,daemon_utime_ms,daemon_stime_ms";
 
 /// 常驻写入器：append 句柄 + 巡检计数
 struct StatusWriter {
@@ -569,6 +571,8 @@ pub fn status_log_snapshot(
     freq_trans: u32,
     fps: Option<f32>,
     screen_prop: &str,
+    daemon_utime_ms: u64,
+    daemon_stime_ms: u64,
 ) {
     // frozen（待春归）：status.csv 属于该模式要停的「额外开销」；闸口集中在此，所有写入路径过同一道
     if mode == "frozen" {
@@ -598,7 +602,29 @@ pub fn status_log_snapshot(
         &freq_trans.to_string(),
         &fmt_num(fps),
         screen_prop,
+        &daemon_utime_ms.to_string(),
+        &daemon_stime_ms.to_string(),
     ]);
+}
+
+/// daemon 自身累计 CPU 时间（ms）：读 `/proc/self/stat` 的 utime/stime（第 14/15 字段，单位
+/// USER_HZ=100 → ×10 得 ms）；读/解析失败返回 (0,0)。自测量基线用（与 status.csv 同行落盘）
+pub fn self_cpu_ms() -> (u64, u64) {
+    let Ok(text) = fs::read_to_string("/proc/self/stat") else {
+        return (0, 0);
+    };
+    // comm 可能含空格与括号：从**最后一个** ')' 之后切分，字段序才稳定（'(' 亦可用 rsplit 兜住）
+    let Some((_, rest)) = text.rsplit_once(')') else {
+        return (0, 0);
+    };
+    let mut it = rest.split_whitespace();
+    // rest 起始于整体第 3 字段(state)：索引 11 = utime(14)，索引 12 = stime(15)
+    let utime = it.nth(11).and_then(|v| v.parse::<u64>().ok());
+    let stime = it.next().and_then(|v| v.parse::<u64>().ok());
+    match (utime, stime) {
+        (Some(u), Some(s)) => (u.saturating_mul(10), s.saturating_mul(10)),
+        _ => (0, 0),
+    }
 }
 
 /// HH:MM:SS.mmm 格式**设备本地时间**（避免引入 chrono 依赖）；status.csv /devimp/ / daemon.log 时区统一为本地时间，离线对齐无需人工换算
@@ -1124,43 +1150,61 @@ fn diag_prune(current: Option<&str>) {
     }
 }
 
+// main_ 行拼接缓冲（**线程局部复用**）：devimp 行由同一线程高频写出，复用缓冲避免每行一次
+// `row.0.join(",")` 的 String 分配；仅在持 MAIN_WRITER 锁写出期间借用，`with` 返回前归还
+thread_local! {
+    static MAIN_LINE_BUF: std::cell::RefCell<String> =
+        std::cell::RefCell::new(String::with_capacity(512));
+}
+
 /// 写一行到 main_ 诊断日志（未开启开关时不产生任何 IO）
 fn main_write_line(row: MainRow) {
     if !diag_active() {
         return;
     }
-    let line = row.0.join(",");
-    // WRITER 临界区内只做写入与巡检（文件 IO），不获取任何其他锁；触顶换文件后的 tick 节流清零移到锁释放之后（锁序约定见 MAIN_WRITER）
-    let rotated = {
-        let mut w = MAIN_WRITER.lock().unwrap_or_else(|p| p.into_inner());
-        if w.file.is_none() {
-            let f = main_open(&mut w);
-            w.file = f;
-        }
-        let write_ok = match w.file.as_mut() {
-            Some(f) => f
-                .write_all(line.as_bytes())
-                .and_then(|_| f.write_all(b"\n"))
-                .is_ok(),
-            None => false,
-        };
-        if !write_ok {
-            // 写失败（磁盘/句柄异常）：重开重试一次，仍失败则丢弃本行
-            let f = main_open(&mut w);
-            w.file = f;
-            if let Some(f) = w.file.as_mut() {
-                let _ = f.write_all(line.as_bytes());
-                let _ = f.write_all(b"\n");
+    // 拼接 + 写入都在 MAIN_LINE_BUF.with 内完成，写出用的正是复用缓冲（不再每次分配 String）
+    let (rotated, line_len) = MAIN_LINE_BUF.with(|buf| {
+        let mut line = buf.borrow_mut();
+        line.clear();
+        for (i, f) in row.0.iter().enumerate() {
+            if i > 0 {
+                line.push(',');
             }
+            line.push_str(f);
         }
-        w.since_check += 1;
-        if w.since_check >= DEVIMP_CHECK_EVERY {
-            w.since_check = 0;
-            main_check(&mut w)
-        } else {
-            false
-        }
-    };
+        // WRITER 临界区内只做写入与巡检（文件 IO），不获取任何其他锁；触顶换文件后的 tick 节流清零移到锁释放之后（锁序约定见 MAIN_WRITER）
+        let rotated = {
+            let mut w = MAIN_WRITER.lock().unwrap_or_else(|p| p.into_inner());
+            if w.file.is_none() {
+                let f = main_open(&mut w);
+                w.file = f;
+            }
+            let write_ok = match w.file.as_mut() {
+                Some(f) => f
+                    .write_all(line.as_bytes())
+                    .and_then(|_| f.write_all(b"\n"))
+                    .is_ok(),
+                None => false,
+            };
+            if !write_ok {
+                // 写失败（磁盘/句柄异常）：重开重试一次，仍失败则丢弃本行
+                let f = main_open(&mut w);
+                w.file = f;
+                if let Some(f) = w.file.as_mut() {
+                    let _ = f.write_all(line.as_bytes());
+                    let _ = f.write_all(b"\n");
+                }
+            }
+            w.since_check += 1;
+            if w.since_check >= DEVIMP_CHECK_EVERY {
+                w.since_check = 0;
+                main_check(&mut w)
+            } else {
+                false
+            }
+        };
+        (rotated, line.len())
+    });
     if rotated {
         // 触顶换新文件：清 tick 节流状态（新文件首 tick 即记录，不留心跳空窗）
         main_tick_state_clear();
@@ -1168,7 +1212,7 @@ fn main_write_line(row: MainRow) {
         enforce_dir_limits(&common::get_module_root());
     }
     // 记账（含换行）：写入即事件触发，devimp/ 累计增长达 128MB 触发重启打包（在 WRITER 锁外调用，遵守锁序约定）
-    note_write(&DEVIMP_BYTES_WRITTEN, "devimp/", line.len() as u64 + 1);
+    note_write(&DEVIMP_BYTES_WRITTEN, "devimp/", line_len as u64 + 1);
 }
 
 /// 启动兜底清理：仅保留最近 DEVIMP_KEEP_FILES 份历史诊断文件（main_/aff_ 合并
@@ -1226,11 +1270,7 @@ fn detached_shell_parent() -> Option<i32> {
         .rsplit_once(')')
         .and_then(|(_, rest)| rest.split_whitespace().nth(1))
         .and_then(|s| s.parse::<i32>().ok());
-    if grand == Some(1) {
-        Some(ppid)
-    } else {
-        None
-    }
+    if grand == Some(1) { Some(ppid) } else { None }
 }
 
 /// logs/watchdog.pid 运行时自愈：logs/ 被外部删除时该文件随目录消失，WebUI 「关闭调度」靠它定位并终止看门狗——缺失会导致 stopScheduler 杀不死看门狗、
@@ -1988,9 +2028,14 @@ fn logd_batch_key(name: &str) -> String {
         let b = s.as_bytes();
         b.len() == 11
             && b[4] == b'-'
-            && b.iter().enumerate().all(|(i, c)| i == 4 || c.is_ascii_digit())
+            && b.iter()
+                .enumerate()
+                .all(|(i, c)| i == 4 || c.is_ascii_digit())
     };
-    let Some(stem) = name.strip_suffix(".tar.lz4").or_else(|| name.strip_suffix(".tar")) else {
+    let Some(stem) = name
+        .strip_suffix(".tar.lz4")
+        .or_else(|| name.strip_suffix(".tar"))
+    else {
         return name.to_string();
     };
     let stem = stem.strip_prefix("devimp_").unwrap_or(stem);
@@ -2044,7 +2089,10 @@ fn enforce_logd_limit(dir: &Path) {
         return;
     }
     // 最新批次 = 含最新 mtime 文件的那组（本轮 batch 的 devimp tar 最后落盘）
-    let newest_key = groups.iter().max_by_key(|(_, g)| g.0).map(|(k, _)| k.clone());
+    let newest_key = groups
+        .iter()
+        .max_by_key(|(_, g)| g.0)
+        .map(|(k, _)| k.clone());
     let floor = newest_key
         .as_ref()
         .and_then(|k| groups.get(k))
