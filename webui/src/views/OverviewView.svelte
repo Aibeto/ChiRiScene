@@ -60,6 +60,8 @@
   const deviceLabel = $derived(
     app.deviceKind === "chiri" ?
       t("overview.device.chiri")
+    : app.deviceKind === "unsupported" ?
+      t("overview.device.unsupported")
     : t("overview.device.unknown"),
   );
 

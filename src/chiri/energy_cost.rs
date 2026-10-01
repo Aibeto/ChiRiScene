@@ -331,7 +331,9 @@ pub fn fdp_destination(
     let ratio = dst_freq_cap_ratio.clamp(0.0, 1.0);
     let dsts: &[CoreGroup] = if allow_prime { &BOTH } else { &BIG_ONLY };
     let mut best: Option<FdpMove> = None;
-    // 位 0 = quota、位 1 = freq cap/数据缺失、位 2 = 净收益不达标；仅用于回一条可读的 skip 原因
+    // 位 0 = quota、位 1 = freq cap/数据缺失、位 2 = 净收益不达标。多候选中不同候选被不同约束拦下会
+    // 同时置位，故出参按位组合如实回（见函数尾），不压成单一原因——否则离线只能看到一个原因、
+    // 把「同一候选被多重拦截」误记成单一约束（如把 dstfreq 记高/记漏）。
     let mut blocked = 0u32;
     for &dst in dsts {
         let slot = cluster_slot(dst);
@@ -407,14 +409,17 @@ pub fn fdp_destination(
     match best {
         Some(m) => FdpChoice::Move(m),
         None => {
-            let reason = if blocked & 1 != 0 {
-                "quota"
-            } else if blocked & 2 != 0 {
-                "dstfreq"
-            } else if blocked & 4 != 0 {
-                "hysteresis"
-            } else {
-                "nodata"
+            // 按 blocked 的位组合如实回原因（不压成单一值）：离线按 `+` 拆开即可还原每个约束
+            // 各拦下多少候选，`nodata` 表示三个约束都没置位（候选为空或压根没进循环）
+            let reason = match blocked & 0b111 {
+                0 => "nodata",
+                1 => "quota",
+                2 => "dstfreq",
+                3 => "quota+dstfreq",
+                4 => "hysteresis",
+                5 => "quota+hysteresis",
+                6 => "dstfreq+hysteresis",
+                _ => "quota+dstfreq+hysteresis",
             };
             FdpChoice::Skip(reason)
         }

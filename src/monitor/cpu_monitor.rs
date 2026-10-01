@@ -101,7 +101,12 @@ pub async fn start_cpu_loop(
         for (name, cat, tp) in [
             ("handle_sched_wakeup", "sched", "sched_wakeup"),
             ("handle_sched_migrate_task", "sched", "sched_migrate_task"),
-            ("handle_cpufreq_transition", "cpufreq", "cpufreq_transition"),
+            // 频切探针的 tracepoint 在 **power** 子系统下，且 name 早已由 `cpufreq_transition`
+            // 改名为 `cpu_frequency`（v4.6 起）——原写 ("cpufreq","cpufreq_transition") 指向
+            // `/sys/kernel/tracing/events/cpufreq/cpufreq_transition/id`，该路径不存在 → 挂载恒失败
+            // （status/devimp 的 freq_trans 恒 0）。类别/名称按 mainline 口径修正（机型若另有
+            // 厂商 tracepoint 再另加候选）。
+            ("handle_cpufreq_transition", "power", "cpu_frequency"),
         ] {
             let result = (|| -> anyhow::Result<()> {
                 let prog: &mut TracePoint = bpf

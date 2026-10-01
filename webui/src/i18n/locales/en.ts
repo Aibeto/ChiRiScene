@@ -46,6 +46,7 @@ export default {
   'overview.device': 'Device match',
   'overview.device.chiri': 'ChiRi',
   'overview.device.unknown': 'Undetermined',
+  'overview.device.unsupported': 'Non-ChiRi device',
   'overview.power.ref': 'Live discharge reference',
   'overview.power.avg': 'Average discharge power',
   'overview.power.now': 'Current power',
@@ -140,6 +141,8 @@ export default {
   'config.advanced.back': 'Back to config',
   'config.down': 'DOWN mode',
   'config.down.hint': 'Operate under developer guidance',
+  // Non-ChiRi device: daemon never takes over scheduling, halt is permanent; toggle is disabled (see AdvancedView downFixed)
+  'config.down.hint.unsupported': 'SoC not in the ChiRi list: no scheduling takeover, permanently halted',
   'config.down.on': 'DOWN enabled',
   'config.down.off': 'Normal scheduling',
   'config.powerAvg': 'Show average power',

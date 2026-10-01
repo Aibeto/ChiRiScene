@@ -59,7 +59,19 @@
 
 - core_ctl 快照（Alpha07-02）：policy0 min/max/enable=1/3/0；policy3=3/4/1；policy7=0/1/0——**仅 big enable=1**，little/prime 压核时 core_ctl 不可用（已接 enable 感知，见 03）。
 - cpu_temp 两路读数：main snap 41.8-90.7℃ vs status.csv 恒 85-100 饱和——两路取自不同 zone，语义未定（07 T2）。
-- 触摸地板行为级证据：touch=1 决策下限 ≥1651200（touch0 min 729600）；4 个内核 input_boost 节点全 ENOENT，实际挂载点未知（07 T9）。
+- 触摸地板行为级证据：touch=1 决策下限 ≥1651200（touch0 min 729600）。
+- **input boost 节点（2026-10-01 定案，07 T9）**：daemon.log 报 `[touch-boost-disable] all 4 node(s) unavailable`
+  （首路径 `/sys/module/cpu_boost/parameters/input_boost_enabled`，errno 2 = ENOENT）→ **整个 `/sys/module/cpu_boost/`
+  目录不存在**（模块未加载/未编译），**不是我们写错字符串**；历史记录（`.archive/.codebuddy/memory/2026-09-18.md`）
+  亦确认为本机型常态 WARN（功能上由 ChiRi 自身 `on_touch()` 升频接管，`apply_disable_touch_boost` 因节点缺失
+  无害跳过）。4 个候选含 `boost_ms`（现代命名应为 `input_boost_ms`）可疑但无从验证；**真实 input boost 挂载点
+  本机仍未知**（T9 取证方向 = 换节点名族 / 查厂商 defconfig）。
 - cap85 窗口（0926-162821，n=2217s）：第 15 列 cur_freq_khz（决策）在变、第 16 列 max_freq_khz（上限）恒满档——两列不可混算；free_above 豁免带覆盖 little 5.5 / big 2.3 / prime 3.1%；cap85 2.7844W vs cap100 3.1845W（未场景归一）。clamp_heavy 恒钳已实现、对照实验已停做（07 T8 按 2026-09-28 口径作废）。
-- `handle_cpufreq_transition` eBPF 探针挂载失败（内核无 CONFIG_CPU_FREQ_TRACEPOINTS）→ status/devimp 的 freq_trans 恒 0——「看似频率从未切换」实为无探针；ftrace 候选 `trace_dcvsh_freq`（07 T6）。
+- **`handle_cpufreq_transition` eBPF 探针（2026-10-01 订正，旧结论「内核无 CONFIG_CPU_FREQ_TRACEPOINTS」已证伪）**：
+  实为**探针的 category/name 写错**——原写 `("cpufreq","cpufreq_transition")` 指向
+  `/sys/kernel/tracing/events/cpufreq/cpufreq_transition/id`（该路径不存在 → 挂载恒失败 → status/devimp 的
+  `freq_trans` 恒 0）。按 mainline：cpufreq 频切 tracepoint 在 **power** 子系统下，且 v4.6 起由 `cpufreq_transition`
+  改名为 `cpu_frequency`（`power:cpu_frequency`，另有 `power:cpu_frequency_limits`）。已改为
+  `("handle_cpufreq_transition","power","cpu_frequency")`（`cpu_monitor.rs`，本包 `x_*/daemon.log` 实错路径为证）。
+  **待下包复核 `freq_trans` 是否开始计数**；若仍 0，再查厂商是否另改了 tracepoint（ftrace 候选 `trace_dcvsh_freq`，07 T6）。
 - 检索口径：daemon.log 是 fluent 本地化文案非 key 字面量；Grep/rg 读不动部分 x\_\*/daemon.log（编码异常），走显式解码脚本（详见 05）。

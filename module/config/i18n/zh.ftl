@@ -128,6 +128,7 @@ down-disabled = [Down] down.chr 已清空，调度恢复正常
 down-watch-error = [Down] down.chr 监听失败: { $error }
 down-boot-halted = [Down] 本次启动即处于停摆：所有接管都不启用，采集与日志照常
 down-heartbeat = [Down] 停摆生效中（已 { $mins } 分钟）：调度保持全部释放，采集与日志照常（清空 down.chr 即恢复）
+down-unsupported-soc = [Down] 本机不在 ChiRi 支持列表：调度不接管 CPU，已按停摆对齐对外状态（仅写 current_mode.chr）
 
 # --- Scheduler: Config Watcher ---
 config-reloading = [Config] 检测到配置文件变更，正在重载...

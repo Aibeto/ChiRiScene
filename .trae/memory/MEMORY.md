@@ -31,6 +31,41 @@
   （`common::embedded_feature_str()` + `merge_yaml`：map 递归、非 map 整体替换）；
   **副作用**：8550/8998 无 `vector:` 段 → 现继承根的 vector，极速档影响待真机复核（8475 本就有段）。
   另：两处 fps/cpu 监控 runtime 由 `Runtime::new()`（multi-thread）改 `new_current_thread`，tokio 特性 `rt-multi-thread`→`rt`。
+- **非 ChiRi SoC 恒为停摆（2026-10-01）**：`main.rs` 调度器未启动分支调 `down::project_unsupported` —— 只写
+  `current_mode.chr = down` 投影 + 置进程级 `DOWN_ACTIVE`，**不写 `down.chr`**（输入文件仍归用户；该分支下
+  `on_startup`/`down_watcher` 不起，down.chr 读写本就不生效）。WebUI 侧 `deviceKind` 由两态改三态
+  `chiri | unsupported | unknown`（读到 active_config.chr 但无 `/` 才是 `unsupported`）；高级设置的停摆开关
+  `downFixed = deviceKind === 'unsupported'` 置灰恒显示停摆（提示 key `config.down.hint.unsupported`）。
+  正文见 `agentsdocs/02-convention.md` 的 DOWN 小节。
+
+## 2026-10-01（续）：devimp 诊断口径 + 两处探针定案 + 核秒评估
+
+判读包 = `devimpbin/1001-190148`（A08-11/10811、8550/PHB110、kernel 5.15.180-android13、两批次
+`x_*_1001-190143` / `x_*_1001-154231`）。**注意 `devimpbin/` 被 .gitignore，Grep 目录级会跳过，须显式给文件路径**。
+
+- **三结论回写（用户 item 9「确认」）**：
+  ① **热档中档解除点修复已生效**：8550 `hysteresis_mid_c: 1.5` → 中档解除点 `41.5℃` > 软限 41℃。
+     实证 cap=60 温度带 **min 41℃**（0928 为 40）、驻留 **1251 s**（0928 5152 s），解除后直接交软档 0.85。
+  ② **CLG-PF 全程生效**（0928「头号待办」capacity-missing 回退已在 1001 消失）：两批次均打
+     `[CLG-PF] 帕累托前沿查表已启用 | 指纹=92bcedf210e6aed1 桶数=46`（与 soc.yaml 逐字一致），
+     **全程无 `clg-pf-fallback`**（capacity-missing / bucket-out-of-range / cluster-target-missing / unknown-cluster）。
+  ③ **FDP 动作率基线 2/270 = 0.74%**：`action=fdp` 270 帧 = Skip 268（hysteresis 157 + dstfreq 111）+ Move 2
+     （`little->big f_src=1785`）；本包统计为旧脚本产物，dstfreq 111 含老口径高估（下包起 blocked 位组合可分离）。
+- **两处探针定案（用户 item 10/11「检查是不是节点写错」）**——**都不是玄学、都非本机字符串写错**：
+  ① `handle_cpufreq_transition` 挂载恒失败 = **category/name 写错**（旧结论「内核无 CONFIG_CPU_FREQ_TRACEPOINTS」证伪）：
+     原 `("cpufreq","cpufreq_transition")` → 路径不存在；mainline 该 tracepoint 在 **power** 子系统、v4.6 起改名
+     `cpu_frequency`。已改 `("handle_cpufreq_transition","power","cpu_frequency")`，待下包复核 `freq_trans` 起计数。
+  ② touch-boost 4 节点全 ENOENT = **`/sys/module/cpu_boost/` 整目录不存在**（模块未加载），非字符串写错；
+     功能由 ChiRi `on_touch()` 接管、`apply_disable_touch_boost` 无害跳过。真实 input boost 挂载点仍未知（07 T9）。
+- **核秒口径评估（用户 item 4，只评估未实现）**：核秒**不能**从 aff `t` 行积分（槽级差分 + 冷长尾降采样 +
+  每 30 帧刷新帧放大行数）。最省来源 = `cpu_monitor` 每 tick 已在算的 `CoreState.busy_diff`（ns）；加累计量仅
+  **每核每 tick 一次整数加 + 一次存储**（≈50 次加/秒，无新 syscall/文件读）。落地走 **status.csv 末尾追加一列**
+  （≈+1 MB/天，守「列只在末尾追加」）；`@S` 逐核行约 13 MB/天、会抵消差分省字，不取。**结论：开销可忽略。**
+- **devimp 探针可诊断性两修（用户 item 6「修」）**：① `energy_cost.rs` 的 `act=fdp` blocked 出参由「压成单一
+  reason」改为**位组合**（`quota+dstfreq` 等，新增 `nodata`），离线可还原每个约束各拦下多少候选；② `utils.rs`
+  新增 `write_nodes_verbose`（每节点 `Ok`/`Err(Some(errno))`/`Err(None)`），`affinity.rs` bg-uclamp 写按**真实
+  errno** 记账（原一律 `e0` 导致「半个候选组不存在」被读成 50% 写失败）；③ `dvaff.py` 成功率表加 `miss` 列、
+  从分母剔除 `e2/e20`（节点缺失，机型无该节点属常态）。
 
 ## 2026-09-28：天花板全拆 + T11 稳态下探 + 帕累托前沿落点（CLG-PF）
 

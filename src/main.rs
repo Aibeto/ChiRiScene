@@ -365,6 +365,9 @@ fn main() -> Result<()> {
         ))
     } else {
         log::warn!("{}", t("main-no-chiri-scheduler"));
+        // 非 ChiRi SoC 不接管 CPU，与停摆本就同态：把对外状态对齐（只写 current_mode.chr 投影，不碰 down.chr）
+        down::project_unsupported(&root);
+        log::info!("{}", t("down-unsupported-soc"));
         drop(rx);
         None
     };

@@ -72,12 +72,30 @@ pub fn write_nodes<P: AsRef<str>, V: AsRef<str>>(
     items: &[(P, V)],
     what: &'static str,
 ) -> Vec<String> {
-    let mut written: Vec<String> = Vec::new();
+    write_nodes_verbose(items, what)
+        .into_iter()
+        .filter_map(|(path, outcome)| outcome.is_ok().then_some(path))
+        .collect()
+}
+
+// [node_write_report]
+/// 单节点写入结局：`Ok` 写成功；`Err(Some(n))` 失败并带真实 errno（`n`）；`Err(None)` 失败但 errno 不可得。
+/// 供调用方按类打点：**节点缺失（ENOENT/ENOTDIR，机型无该节点）是常态，与真失败必须分开记账**——
+/// 只回「成功节点列表」时两者都只能记 `e0`，离线会把常态缺失误算成失败率。
+pub type NodeWriteOutcome = Result<(), Option<i32>>;
+
+/// 与 [`write_nodes`] 同口径（同样的 debug/warn 告警），但返回**每节点**结局（含真实 errno）。
+/// 只需成功节点列表时用 [`write_nodes`]；需要区分「节点缺失 / 真失败」打点时用本函数。
+pub fn write_nodes_verbose<P: AsRef<str>, V: AsRef<str>>(
+    items: &[(P, V)],
+    what: &'static str,
+) -> Vec<(String, NodeWriteOutcome)> {
+    let mut outcomes: Vec<(String, NodeWriteOutcome)> = Vec::with_capacity(items.len());
     let mut last_err: Option<String> = None;
     for (path, value) in items {
         let path = path.as_ref();
         match write_to_file(path, value.as_ref()) {
-            Ok(()) => written.push(path.to_string()),
+            Ok(()) => outcomes.push((path.to_string(), Ok(()))),
             Err(e) => {
                 if is_node_missing(&e) {
                     log::debug!("[{what}] node missing, skipped: {path}");
@@ -85,15 +103,20 @@ pub fn write_nodes<P: AsRef<str>, V: AsRef<str>>(
                     log::warn!("[{what}] write failed: {path} — {e}");
                 }
                 last_err = Some(e.to_string());
+                let errno = e
+                    .downcast_ref::<std::io::Error>()
+                    .and_then(|io| io.raw_os_error());
+                outcomes.push((path.to_string(), Err(errno)));
             }
         }
     }
-    if !written.is_empty() {
+    let any_ok = outcomes.iter().any(|(_, o)| o.is_ok());
+    if any_ok {
         clear_node_fail_warned(what);
     } else if let Some((first, _)) = items.first() {
         warn_all_nodes_failed(what, items.len(), first.as_ref(), last_err.as_deref());
     }
-    written
+    outcomes
 }
 
 /// 节点/目录不存在（ENOENT / ENOTDIR）：属「这台机型没有该节点」，按 debug 记

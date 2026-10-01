@@ -1,9 +1,9 @@
 id=chiri
 name=ChiRi Vector
 # name=ChiRi Tensor
-version=#1 Vector Refactor A08-11
+version=#1 Vector Refactor A08-12
 # version=#2 Tensor Matrix
-versionCode=10811
+versionCode=10812
 author=Aibeto
 description=ChiRi Schedule 千漓调度 (Canary)
 updateJson=https://raw.githubusercontent.com/Aibeto/ChiRiScene/main/updateInformation/update.json

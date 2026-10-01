@@ -80,16 +80,24 @@ def parse_t_line(line):
 
 
 def classify(result):
-    """result 归类；e0 = errno 不可得，**不是成功**。"""
+    """result 归类；e0 = errno 不可得，**不是成功**；e2/e20 = 节点缺失（机型无该节点，属常态）。"""
     if result == "ok":
         return "ok"
     if result == "e3":
         return "e3(ESRCH)"
     if result == "e22":
         return "e22(EINVAL)"
+    if result == "e2":
+        return "e2(ENOENT 节点缺失)"
+    if result == "e20":
+        return "e20(ENOTDIR 节点缺失)"
     if result == "e0":
         return "e0(errno 不可得)"
     return "other"
+
+
+# 节点缺失类 result（机型无该节点）：**不是写尝试**，成功率的分子分母都不该含它
+MISSING_RESULTS = ("e2", "e20")
 
 
 def scan(fn):
@@ -101,6 +109,7 @@ def scan(fn):
     acts = collections.Counter()
     act_ok = collections.Counter()
     act_tot = collections.Counter()
+    act_missing = collections.Counter()        # reason → 节点缺失行数（e2/e20，不入成功率分母）
     bulk = collections.Counter()
     bulk_frames = collections.Counter()
     bulk_by_act = collections.Counter()
@@ -169,6 +178,8 @@ def scan(fn):
                     act_tot[reason] += 1
                     if result == "ok":
                         act_ok[reason] += 1
+                    elif result in MISSING_RESULTS:
+                        act_missing[reason] += 1
                     if str(reason).endswith("_bulk"):
                         n = dc.num(value)
                         bulk[reason] += int(n) if n is not None else 0
@@ -214,7 +225,8 @@ def scan(fn):
                     core_rows[core] += 1
                     core_comm[(core, comm)] += 1
                     core_util[(core, comm)] += int(merged.get("u", 0))
-    return dict(acts=acts, act_ok=act_ok, act_tot=act_tot, bulk=bulk, bulk_frames=bulk_frames,
+    return dict(acts=acts, act_ok=act_ok, act_tot=act_tot, act_missing=act_missing,
+                bulk=bulk, bulk_frames=bulk_frames,
                 bulk_by_act=bulk_by_act, state=state, last=last, frames=frames,
                 full_frames=full_frames, partial_rows=partial_rows, dropped_t=dropped_t, traj=traj,
                 monotonic=monotonic, peak=peak, peak_ts=peak_ts, nfg_hdr=nfg_hdr,
@@ -235,8 +247,9 @@ HEADER = """\
 #    本脚本自动兼容。
 # 2. `<场景>_bulk` 是**清理规模的正解**（value = 本次条数）；逐条 `bind_release`
 #    只代表真有内核动作的条目。
-# 3. `result=e0` 不是成功：`io_result_tag` 拿不到 errno 时写 e0。e3=ESRCH（线程已退出，
-#    正常）、e22=EINVAL（偶发）。
+# 3. `result=e0` 不是成功：拿不到 errno 时写 e0。e3=ESRCH（线程已退出，正常）、
+#    e22=EINVAL（偶发）、**e2=ENOENT / e20=ENOTDIR = 节点缺失**（机型无该节点，属常态，
+#    成功率的分子分母都不含它；`_bulk`/多组写入的下方「miss」列即此）。
 # 4. 绑定轨迹统计的是存活集合里 `pin=1 且 home=-1` 的线程数（组掩码绑定、未钉核），
 #    单调上升到高位不回落 = 只绑不解的疑似泄漏。
 # ─────────────────────────────────────────────────────────────────────
@@ -262,11 +275,15 @@ def report(fn, st, groups=None, top=8):
         out.append(f"  {act:13s} {reason[:22]:22s} {classify(result):18s} {n:8d}")
     out.append("")
 
-    out.append("### @A 按 reason 的成功率（e0 不计入成功）")
-    out.append(f"  {'reason':26s} {'total':>8s} {'ok':>8s} {'rate':>7s}")
+    out.append("### @A 按 reason 的成功率（e0 不计入成功；e2/e20 节点缺失不计入分母）")
+    out.append(f"  {'reason':26s} {'total':>8s} {'ok':>8s} {'miss':>5s} {'rate':>7s}")
     for reason, tot in st["act_tot"].most_common():
         ok = st["act_ok"][reason]
-        out.append(f"  {reason[:26]:26s} {tot:8d} {ok:8d} {ok / tot * 100:6.1f}%")
+        miss = st["act_missing"][reason]
+        # 节点缺失（机型无该节点）不是写尝试：从分母剔除，否则半个候选组不存在会被读成 50% 写失败
+        denom = tot - miss
+        rate = (ok / denom * 100) if denom else 0.0
+        out.append(f"  {reason[:26]:26s} {tot:8d} {ok:8d} {miss:5d} {rate:6.1f}%")
     out.append("")
 
     out.append("### bulk 汇总帧（清理规模正解；单列，不与逐条 bind_release 混算）")

@@ -46,6 +46,7 @@ export default {
   'overview.device': '设备匹配',
   'overview.device.chiri': 'ChiRi',
   'overview.device.unknown': '无法判定',
+  'overview.device.unsupported': '非 ChiRi 机型',
   'overview.power.ref': '实时放电参考',
   'overview.power.avg': '平均放电功耗',
   'overview.power.now': '当前功耗',
@@ -137,6 +138,8 @@ export default {
   'config.advanced.back': '返回配置',
   'config.down': 'DOWN',
   'config.down.hint': '除非开发者要求否则不应启用',
+  // 非 ChiRi 机型：daemon 不接管调度、恒为停摆，开关置灰（见 AdvancedView 的 downFixed）
+  'config.down.hint.unsupported': '本机不在 ChiRi 支持列表，调度不接管 CPU，恒为停摆',
   'config.down.on': 'DOWN 已启用',
   'config.down.off': '正常调度',
   'config.powerAvg': '显示平均功耗',

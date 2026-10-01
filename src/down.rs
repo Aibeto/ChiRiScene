@@ -1,8 +1,9 @@
-//! down.rs: [consts] [state] [flag] [watch]
+//! down.rs: [consts] [state] [flag] [unsupported] [watch]
 //! DOWN 模式（调度停摆）：模块根 `down.chr` 写着保留字 `down` 时，调度关停**全部**调度功能，
 //! 只留采集与日志（eBPF、status.csv、daemon.log、devimp 照常），便于与接管时对比
 //! 与 `rhine.chr` 同款：对外暴露、可手改、内容即状态；文件在磁盘上，**重启后仍保持停摆**、只能改文件解除
 //! 判据只认 `down.chr`；`current_mode.chr` 的 `down` 是对外投影——停摆期调度线程不覆盖它，免得外部工具误判「已恢复」
+//! 唯一例外：非 ChiRi SoC 不起调度线程、本就不接管任何 CPU，开机直接写一次投影，见 `project_unsupported`
 //! 释放/恢复动作在调度循环里（governor 为该线程独占），这里只提供「当前该不该停摆」这一事实
 
 use std::fs;
@@ -57,6 +58,16 @@ static DOWN_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// 当前是否处于 DOWN 停摆（进程级，读原子量）
 pub fn is_down() -> bool {
     DOWN_ACTIVE.load(Ordering::Acquire)
+}
+
+// [unsupported]
+/// 非 ChiRi SoC：该分支不启动调度、不接管任何 CPU，与停摆本就同态，所以把对外状态对齐——只写一次
+/// `current_mode.chr`（外部工具 / WebUI 据此显示 DOWN），**不写 `down.chr`**：那是「用户意图」的
+/// 输入文件，本机没有可释放的接管，写它等于伪装成用户设过；进程级标志一并置真，与其它路径同口径。
+/// 由 main.rs 在「调度器未启动」分支调用一次（该分支无监听线程，写入后不再变更）
+pub fn project_unsupported(root: &Path) {
+    DOWN_ACTIVE.store(true, Ordering::Release);
+    let _ = utils::try_write_file(root.join("current_mode.chr"), DOWN_MODE.as_bytes());
 }
 
 // [watch]

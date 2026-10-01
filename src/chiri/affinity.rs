@@ -100,27 +100,26 @@ fn write_bg_uclamp_max(val: &str, reason: &str) {
         .iter()
         .map(|g| (format!("/dev/cpuctl/{g}/cpu.uclamp.max"), val.to_string()))
         .collect();
-    let written = crate::utils::write_nodes(&items, "bg-uclamp-max");
-    // A8：写失败计数（汇总观测），失败组仍在 @A 帧 e0 可见
+    let outcomes = crate::utils::write_nodes_verbose(&items, "bg-uclamp-max");
+    // A8：写失败计数（汇总观测），失败组仍在 @A 帧 e0/errno 可见
     UCLAMP_WRITE_FAILS.fetch_add(
-        items
-            .iter()
-            .filter(|(p, _)| !written.iter().any(|w| w == p))
-            .count() as u64,
+        outcomes.iter().filter(|(_, o)| o.is_err()).count() as u64,
         Ordering::Relaxed,
     );
     // 状态在写之后更新；写失败也更新：同值下周期即跳过，60s 兜底再断言，失败组在 @A 帧 e0 可见
     BG_UCLAMP_CODE.store(code, Ordering::Relaxed);
     BG_UCLAMP_AT_MS.store(now_ms, Ordering::Relaxed);
     // 打点与写入同门控：跳过写入时也不产生帧，否则同值重写仍会把 aff 文件刷满
+    // result 写**真实 errno**（如 `e2`=ENOENT 节点缺失，机型无该组属常态），不再一律记 `e0`——
+    // 否则离线成功率表会把「半个候选组不存在」误读成 50% 写失败
     if crate::logger::diag_active() {
-        for (path, _) in &items {
-            let result = if written.iter().any(|w| w == path) {
-                "ok"
-            } else {
-                "e0"
+        for (path, outcome) in &outcomes {
+            let code = match outcome {
+                Ok(()) => String::from("ok"),
+                Err(Some(n)) => format!("e{n}"),
+                Err(None) => String::from("e0"),
             };
-            crate::logger::aff_action("uclamp", 0, 0, "-", "-", path, val, result, reason);
+            crate::logger::aff_action("uclamp", 0, 0, "-", "-", path, val, &code, reason);
         }
     }
 }

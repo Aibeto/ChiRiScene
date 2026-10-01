@@ -11,17 +11,29 @@
 - [E3] logdr events buffer（liblog 协议 150-250 行 + SELinux 可达性验证）；[E4] pid_watcher 并入 app_detect（时延 500ms→1.5s 取舍待拍板）。
   - **[E1] 内容比对短路已定案不做（2026-10-01）**：`app_detect.rs` 显式注明「刻意不做内容未变则复用」——冷启动期间 pid 先入组、exec 后 cmdline 才可读，缓存会漏检这类前台切换。
 - 自测量基线：**status.csv 末尾两列 `daemon_utime_ms`/`daemon_stime_ms` 已落地（2026-10-01，1s 采样读 `/proc/self/stat`）**；`cargo bench` 三纯函数仍未做（需先定哪三个 + 新建 benches/ 基础设施）。
+  - **「核秒」口径开销评估（2026-10-01，只评估未实现）**：核秒**不能**从 aff 的 `t` 行积分——`t` 行是槽级差分 +
+    冷长尾降采样 + 每 30 帧刷新帧（`full=1`）放大行数，缺失行 = 未变，只能证明采样状态占比、不是核秒。
+    最省的来源是 `cpu_monitor` 每 tick **已在算**的 `CoreState.busy_diff`（ns）：加一个累计量只需**每核每 tick
+    一次整数加 + 一次存储**（160 ms × 8 核 ≈ 50 次加/秒，**无新 syscall、无新文件读**）。持久化二选一：
+    ① status.csv 末尾**追加一列累计核秒**（≈ +1 MB/天，推荐，遵守「列只在末尾追加」惯例）；② 在 `@S` 帧加逐核行
+    （≈ 150 B/s ≈ 13 MB/天，会部分抵消差分省字设计）。**结论：开销可忽略，真要落地走 ① 追加列**。
 - 真机 A/B 整体未做（perf 16 项优化 + K1/K2 eBPF 同场景 status.csv 逐核 util 对比）；K1/K2 CI 构建确认（本机 stub 编译盲区，「CI 通过才算落地」）。
 - **已定案不做（勿重评）**：U3 cpu_monitor 侧、A5b、panic=abort、换 hasher/parking_lot、热路径值缓存、事件化否决四项（cgroup.events poll / PSI / thermal uevent / timerfd 全量合并）、换语言与双进程拆分。
 
 ### 内核取证（详见 06-kernel.md）
 
-- **T1** DT 反编译（capacity 出处 / OPP 电压 / trip / cooling-map / idle 厂商改动全实证）——最大单点缺口；**T2** thermal zone 全清单 + cpu_temp 两路定案；**T3** cpuidle state 全量抓取；**T4** 真热压时段 dcvsh/lmh 采样（常规负载已排除）；**T5** msm_performance / Horae 活跃性（部分定案：msmp 不可读、horae=1）；**T6** ftrace（trace_sched_task_util / trace_dcvsh_freq）；**T7** uclamp.max=85 A/B → P1-5 tg 层钳制立项与否；**T8** clamp_heavy 恒钳 A/B（cap85 2.78 vs 3.18W 基线）；**T9** input boost 实际挂载点；**T10** 热压场景 FAS verify 行为。
+- **T1** DT 反编译（capacity 出处 / OPP 电压 / trip / cooling-map / idle 厂商改动全实证）——最大单点缺口；**T2** thermal zone 全清单 + cpu_temp 两路定案；**T3** cpuidle state 全量抓取；**T4** 真热压时段 dcvsh/lmh 采样（常规负载已排除）；**T5** msm_performance / Horae 活跃性（部分定案：msmp 不可读、horae=1）；**T6** ftrace（trace_sched_task_util / trace_dcvsh_freq）；**T7** uclamp.max=85 A/B → P1-5 tg 层钳制立项与否；**T8** clamp_heavy 恒钳 A/B（cap85 2.78 vs 3.18W 基线）；**T9** input boost 实际挂载点（**2026-10-01 已定案：非字符串写错，是节点本体不存在**——见 `06-kernel.md` 真机实测档案）；**T10** 热压场景 FAS verify 行为。
 - 树外 oplus_cpu 专项（frame_boost / eas_opt / OMRG / cpufreq_health 的 uclamp/亲和写入路径）。
 - 次级未确认：OMRG/kalama 启用与否、msm_lmh_dcvs/lmh.c 是否 probe、厂商 defconfig cdev 清单、`sched_lpm_disallowed_time` 定义文件、WALT busy-hold 对应 waltgov 行号、cpuset 收紧被 WALT 恢复宽掩码的实测。
 
 ### 调度 / 机制验证
 
+- **热档中档解除点修复（`hysteresis_mid_c`，2026-09-28 落地）——已实测生效（2026-10-01 结案）**：
+  原中档与软档共用 `hysteresis_c=3` → 中档解除点 `43−3=40°C` **低于软限跳闸 41°C**，中档一咬住即跳过
+  软档、须一路冷过 40°C 才恢复。8550 取 `hysteresis_mid_c: 1.5` → 解除点 `41.5°C`（> 软限 41）。
+  **本包实证**（`devimpbin/1001-190148` `power.txt [5][6]`）：cap=60 温度带 **min 41℃**（0928 为 40，
+  含 2556 s 落 40~41 桶）、驻留 **1251 s**（0928 5152 s），解除后直接交软档 cap=85（不再跨档跳过）。
+  正文与 normalize 不变量见 `03-chiri.md` 四级判定条。
 - ~~**息屏离核策略改为「下线 little」的真机验证（2026-09-28 落地，最高优先）**~~ → **2026-10-01 已结案（结论：不成立，已按修法3 改为不下线）**。结论来自 `logd_1001-045147`（A08-08/8550/PHB110/A16，9 批次、息屏 7.4 h）：**26 次进入 scenemode，20 次（77%）在 11~414 s 内被 `scenemode 持续顶满性能上限（little util 100%）→ 退回 reduce + 300 s 冷却` 撤销**，有效驻留 ≈3.6 h、另有 ≈1.7 h 处于禁入冷却（≈20×300 s）→ 下线 little 并没消除抖动，只是把瓶颈从「3 个小核」搬到了唯一在线的引导核 CPU0（判据 ①② 均命中，② 的「预期仍会触发」被证实，但对象是 little 引导核而非 big）。
   处置：`CoreCtl.scenemode_offline` 该字段此前是**死字段**（`mod.rs` 未接线，下线由 `enabled` 无条件驱动），已接线为真门控并在 8550 置 **false**（不下线任何核、保留全核，仅靠 `perf_ceil` 0.12 + uclamp 压制）。**待下包复核**：① 进入 scenemode 后是否仍出 saturation 撤销（目标：显著减少）；② 息屏段 `batt_power_w` 走向（全核在线的漏电 vs 免冷却的净收益）；③ 亮屏唤醒/电源键响应与 `corectl` 恢复是否干净（此时 core_ctl 不再介入 scenemode，`max_cpus`/`min_cpus` 应保持快照值不动）。
   其余子项（⑥⑦⑧⑨⑩）随「不下线」直接失效，无需再验；**软回退** = 8550/feature.yaml 的 `CoreCtl.scenemode_offline` 改回 true。
@@ -111,10 +123,22 @@
 - 「先读回 scaling_max_freq 再决定写」未实施（需真机确认内核同值写是否真触发重新锁频）；FastLock/PowerBase 5s 盲写改读校验、`cpu_freq_snapshot` 复用句柄（前置：cpufreq 节点支持重复读——FastReader 依赖 seek(0)，不支持 llseek 的节点读失败）。
 - clamp_change 内直接加 `smax ≤ cap 档位` 校验未做（现用 governor 侧 `clamp_apply` 跃迁事件作行为级证据替代）。
 - **帕累托前沿（CLG-PF）真机验证（2026-09-28 落地，仅 8550）**：① 确认接管日志出现 `clg-pf-enabled`（指纹 `92bcedf210e6aed1`、桶数 46），稳态期打 `clg-pf-tick-log`；② 若出现 `clg-pf-fallback`（缺容量 / 桶越界 / 该簇无目标）说明表与真机口径有漂移，先查 capacity 与桶边界再谈落点；③ 落点是「只下调」，观察**同场景稳态频率是否下移而掉帧不增**（R3 口径：只做长时观察，不做开关对照）；④ 触摸窗口内 PF 已与 decay 同口径关闭（`pf_target = None`）——若在触摸/滑动场景看到落点被压回低频桶，先确认 `touch_active` 状态而不是怀疑表数据。
-  - **①已实测（A08-04/10804 两段会话，`logd_0928-170828`）**：两段均在接管时打 `clg-pf-enabled`（指纹与桶数一致）。**②已命中，为当前头号待办**：启用后数分钟即 `[CLG-PF] 前沿表不可用（capacity-missing），回退比例路径（只此一次）`，两段会话均复现 → **CLG-PF 全程未生效**（落点 = 旧比例路径）。已排除「soc.yaml capacity 段缺失」（FDP 用同一个 `soc_capacity_for_group` 且无 `nodata` Skip）。诊断已增强为带核编号（`capacity-missing(cpu=N)`，2026-09-28 修）。**下一步（真机一条命令）**：逐核读 `/sys/devices/system/cpu/cpu{0..7}/cpu_capacity` 与 `/sys/devices/system/cpu/online`，定位是「真机无该节点且 soc.yaml 兜底未命中该核」还是「该核不在核心组区间」。③④ 待 PF 真正生效后再观察。
+  - **①②已结案（2026-10-01，`devimpbin/1001-190148` A08-11/8550 两批次）**：两批次接管时均打
+    `[CLG-PF] 帕累托前沿查表已启用 | 指纹=92bcedf210e6aed1 桶数=46`（与 soc.yaml 逐字一致）；
+    **全程无 `clg-pf-fallback`**（`capacity-missing` / `bucket-out-of-range` / `cluster-target-missing` /
+    `unknown-cluster` 均未出现）→ 0928 的「头号待办 ②：capacity-missing 全程回退」在本包**已消失、PF 全程生效**。
+    历史（0928）：启用后数分钟即 `[CLG-PF] 前沿表不可用（capacity-missing），回退比例路径（只此一次）`，两段均复现
+    → CLG-PF 全程未生效（落点 = 旧比例路径）；诊断已增强为带核编号（`capacity-missing(cpu=N)`）。已排除
+    「soc.yaml capacity 段缺失」（FDP 用同一个 `soc_capacity_for_group` 且无 `nodata` Skip）。
+    **③④ 现可观察**（PF 已真正生效）：落点只下调、同场景稳态频率是否下移而掉帧不增（R3 口径：只做长时观察）。
 - **`modes` / `anticipate`（三模式取点与预判交叠带）已生成但运行期未消费**：当前只落地了「需求桶 → 三簇目标频点」。要在 CLG 里消费三模式差异与交叠带，需先把「流畅度下界（`reserve_pct`）」与「预判基准提前量（`lead_frac`）」从占位值（reduce 0 / default 0.10 / boost 0.25；`lead_frac` 0.30）定稿——重跑脚本即可覆盖（`--reserve` / `--lead-frac`），不需要改代码。
 - **FDP（前沿主导的放置内核）已落地（2026-09-28），待真机验证**：`src/chiri/energy_cost.rs` 用**双边净收益**给后台/批处理 promote 选目的簇——「等算力下把这份算力放到边际 mW/Mdmips 更低的地方」；数据不手抄，直接读 `soc_frontier_policy().per_cluster.<簇>.{freq_khz, power_w}`（由 `scripts/frontier_policy.py` 从文档 §3 生成）。缺省 `fdp_enabled: false`（8550 已开 true）；`bg_promote_exclude_prime` 仍把关 prime 资格（静态表不含漏电/idle-exit，且判不出 P-b 的 >2600 Mdmips 门槛）。**降级口径（2026-09-28 用户定）**：`fdp_enabled` 为真但静态数据缺失（无 `capacity` / 无 `per_cluster` 功耗表）时，经 `energy_cost::fdp_available()` 判定后**回退原 A3 放置路径**（不把后台 promote 整段停掉）；FDP 自身的配额/净收益/选核否决仍不回退。**待验证**：① 日志 `action=fdp` 的 `net` 与真机 `batt_power_w` 走向是否同号（R3 口径：只做长时观察，不做开关对照）；② 自算例（little u=0.5 / big u=0.3 / prime u=0，d=168）在真机上是否落在同一档（模型 vs 实测 `scaling_cur_freq`）；③ 若出现「该升不升」（后台批处理变慢）先把 `fdp_cost_hysteresis_w` 调到 0.01。
   - **真机实证（A08-04/8550 两段会话，2026-09-28）**：`action=fdp` 帧 91 条**全部 Skip**（`hysteresis` 90 + `dstfreq` 1），**零 Move 帧、`pin bg_busy` 零出现**——该场景下 FDP 未批准任何迁移（这些时刻旧 A3 路径会 promote，属可观测的行为变化）。保守来源 = 成本包络口径（见下条「不同底」）与 `fdp_cost_hysteresis_w` 阈值；**阈值先不动**，按 ③ 收集「后台批处理是否变慢」的证据再定。另：`fdp_ready` 判据已与准入同源（防「数据缺失时 FDP 与 big 饱和保护同失」，2026-09-28 修）。
+  - **真机基线（2026-10-01，`devimpbin/1001-190148` A08-11/8550 两批次）**：`action=fdp` 共 **270 帧**，
+    Skip **268**（`hysteresis` 157 + `dstfreq` 111）、Move **2**（`little->big f_src=1785`，`move_group fdp ok`）
+    → **动作率基线 2/270 = 0.74%**（相对 0928 的 0/91 已有首个 Move）。**口径注意**：本包统计是**旧脚本产物**
+    （`aff.txt`），`dstfreq` 111 里含「同一候选被多重拦截只报一个」的老口径高估（见 T1a 修，`energy_cost.rs`
+    出参已改为 blocked 位组合 `quota+dstfreq` 等，下包起可分离）；`net` 与 `batt_power_w` 同号性仍待 ①。
 - **F3 / F4 待真机**：F3 = fps 探针 attach 累计失败数（已补打点 `fps-monitor-attach-stats`）需真机看真实失败率；F4 = FAS 延迟退出时长（`deactivate_delay_secs`）**本轮刻意未改数值**——缩短会提高「短暂离开（弹窗/画中画/后台配音）被误判为真退出」的概率并引发 activate/deactivate 抖动，应先测「离开→回来」时长分布。
 - **T11 三模式取点待真机复核（8550）**：`reduce.steady_decay_target_ratio = 0.80` 是刻意低于 default 的 0.90（天花板拆除后 reduce 与 default 其余参数已很接近，靠取点保住省电档差异）；`boost` 的 `steady_decay_enabled: false` 是「对功耗宽松档不主动下探」的选择。判据 = 省电档滑动手感 + 同场景稳态频率；省电档过钝就把该行删掉回到缺省 0.90。**8475/8998/根兜底的 boost 档同批也已显式 `steady_decay_enabled: false`**（同判据：`up_threshold` 0.55~0.65 时 T 落进常态负载区、削掉响应优势），这三份的 reduce/default 仍走缺省开启，待真机复核。
 - **FDP 源簇让出收益「不同底」（2026-09-28 审查发现，已在代码留 TODO）**：`src/chiri/energy_cost.rs` 的源簇一对值 = 现状取**实测**、之后取**模型**，而目的簇侧已用 `f_dst_now`/`f_dst_after` 的 min/max 包络把两侧锚到同一底；源簇侧缺模型现状值 → 当 little 实测高于模型（QoS / 热 / 别的线程抬频）时 `min` 仍会**放大让出收益**，可能推动不该有的迁移。修法 = 对称取 `f_src_now = min(实测, 模型)`；动手前先用真机 `action=fdp` 日志的 `net` 与 `batt_power_w` 走向对照（R3 口径：只做长时观察）。

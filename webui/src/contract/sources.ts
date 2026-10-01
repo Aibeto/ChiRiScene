@@ -8,19 +8,22 @@ import { absent, failed, ok, shellError } from './errors'
 import { isLive, run } from '@/kernel/shell'
 
 // [device]
-/** 设备形态：非 ChiRi 机型与读不到生效配置时都是 unknown */
-export type DeviceKind = 'chiri' | 'unknown'
+/** 设备形态：chiri = 生效配置指向 SoC 子目录；unsupported = 读到了生效配置但它不在子目录（非 ChiRi 机型）；unknown = 读不到，无法判定 */
+export type DeviceKind = 'chiri' | 'unsupported' | 'unknown'
 
 let deviceCache: DeviceKind | null = null
 
 /**
  * 是否 ChiRi 专属机型：以 active_config.chr 是否指向 SoC 子目录（含 '/'）为判据
- * （与 daemon 的 is_chiri_soc 同结果）仅用于界面文案呈现，不作权限/写入判断依据
+ * （与 daemon 的 is_chiri_soc 同结果）仅用于界面呈现，不作权限判断依据
+ * **读到内容但没有 '/' 才算「非 ChiRi」**：读不到是「无法判定」，两者不能混为一谈——非 ChiRi 分支的
+ * 界面判定（如高级设置里停摆开关置灰）只认前者，否则会把「尚未加载 / 读失败」误判成不支持机型
  */
 export async function deviceKind(): Promise<DeviceKind> {
   if (deviceCache !== null) return deviceCache
   const rel = await readActiveConfigRel()
-  deviceCache = rel.kind !== 'ok' || !rel.value.includes('/') ? 'unknown' : 'chiri'
+  deviceCache =
+    rel.kind !== 'ok' ? 'unknown' : rel.value.includes('/') ? 'chiri' : 'unsupported'
   return deviceCache
 }
 

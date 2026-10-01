@@ -1,68 +1,84 @@
 <script lang="ts">
   // AdvancedView.svelte: [bar] [fields]高级设置二级页：DOWN 停摆、PowerBase、息屏判定值与电池读数页同一套二级页逻辑：直写状态文件 / meta.yaml（不走草稿，
   // 写后回读），与 daemon 热重载对齐
-  import NumberField from '@/components/NumberField.svelte'
-  import Panel from '@/components/Panel.svelte'
-  import StateBox from '@/components/StateBox.svelte'
-  import ToggleField from '@/components/ToggleField.svelte'
-  import { onMount } from 'svelte'
-  import { t } from '@/i18n/index.svelte'
-  import { go } from '@/router.svelte'
-  import { app } from '@/state.svelte'
+  import NumberField from "@/components/NumberField.svelte";
+  import Panel from "@/components/Panel.svelte";
+  import StateBox from "@/components/StateBox.svelte";
+  import ToggleField from "@/components/ToggleField.svelte";
+  import { onMount } from "svelte";
+  import { t } from "@/i18n/index.svelte";
+  import { go } from "@/router.svelte";
+  import { app } from "@/state.svelte";
+
+  // 非 ChiRi 机型：daemon 不启动调度、恒为停摆（只写 current_mode.chr 投影，down.chr 在本机不生效），
+  // 开关置灰并固定显示为已停摆，免得用户点了开关却没有任何调度行为变化
+  // 只认「读到生效配置且不含 /」的确定态（'unsupported'）：'unknown'（尚未加载 / 读失败）不能算非 ChiRi，
+  // 否则 ChiRi 机型在静态项加载完成前、或 active_config.chr 读不到时会被误锁
+  const downFixed = $derived(app.deviceKind === "unsupported");
 
   onMount(() => {
     // DOWN 停摆开关显示的是 down.chr 的实际内容，进页时读一次
-    void app.loadDown()
-  })
+    void app.loadDown();
+  });
 </script>
 
 <div class="u-stack">
   <header class="bar u-row">
-    <button type="button" class="ak-button btn btn--ghost bar__back" onclick={() => go('config')}>
+    <button
+      type="button"
+      class="ak-button btn btn--ghost bar__back"
+      onclick={() => go("config")}
+    >
       <span class="bar__arrow" aria-hidden="true">←</span>
-      {t('config.advanced.back')}
+      {t("config.advanced.back")}
     </button>
-    <p class="bar__title">{t('config.advanced')}</p>
+    <p class="bar__title">{t("config.advanced")}</p>
   </header>
 
   {#if !app.metaValid}
     <!-- meta.yaml 有非法项时写入会被拒：说明原因，否则「点了没反应」无从排查 -->
     <StateBox
       kind="error"
-      message={t('config.advanced.metaInvalid')}
-      detail={app.metaProblems.join(' · ')}
+      message={t("config.advanced.metaInvalid")}
+      detail={app.metaProblems.join(" · ")}
     />
   {/if}
 
   <!-- 直写调度进程状态文件与 meta.yaml，不走草稿；ak-form-stack 一行一个控件（ak-choice 是 inline-grid，不套栅格会挤成一行） -->
-  <Panel signal="action" title={t('config.advanced')} desc={t('config.advanced.hint')}>
+  <Panel
+    signal="action"
+    title={t("config.advanced")}
+    desc={t("config.advanced.hint")}
+  >
     <div class="ak-form-stack">
       <ToggleField
-        label={t('config.down')}
-        hint={t('config.down.hint')}
-        checked={app.downActive}
-        disabled={app.downPending}
-        onchange={next => app.setDown(next)}
+        label={t("config.down")}
+        hint={downFixed ?
+          t("config.down.hint.unsupported")
+        : t("config.down.hint")}
+        checked={downFixed || app.downActive}
+        disabled={downFixed || app.downPending}
+        onchange={(next) => app.setDown(next)}
       />
       {#if app.downError}
         <p class="u-note u-danger u-mt-2">{app.downError}</p>
       {/if}
       <!-- PowerBase：以放电功耗替换 CLG 调频（模式名与外部接口不变），直写 meta.yaml 的 powerbase_enabled，热重载即时生效 -->
       <ToggleField
-        label={t('config.powerbase')}
-        hint={t('config.powerbase.hint')}
+        label={t("config.powerbase")}
+        hint={t("config.powerbase.hint")}
         checked={app.powerbaseEnabled}
-        onchange={next => app.setPowerbase(next)}
+        onchange={(next) => app.setPowerbase(next)}
       />
       <!-- 息屏判定值：debug.tracing.screen_state 等于该值视为息屏（默认 1，安装时按实测校正）；失焦/回车提交，直写 screen_off_value -->
       <NumberField
-        label={t('config.screenoff')}
-        hint={t('config.screenoff.hint')}
+        label={t("config.screenoff")}
+        hint={t("config.screenoff.hint")}
         value={app.screenOffValue}
         min={0}
         max={1}
         disabled={app.screenOffPending}
-        onchange={next => app.setScreenOffValue(next as 0 | 1)}
+        onchange={(next) => app.setScreenOffValue(next as 0 | 1)}
       />
       {#if app.screenOffError}
         <p class="u-note u-danger u-mt-2">{app.screenOffError}</p>
