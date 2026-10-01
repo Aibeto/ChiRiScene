@@ -1,6 +1,6 @@
 {
-  "version": "Alpha", 
-  "versionCode": 0,
+  "version": "Release 1-1", 
+  "versionCode": 20000,
   "zipUrl": "",
   "changelog": "https://raw.githubusercontent.com/Aibeto/ChiRiScene/main/updateInformation/changelog.md"
 }
