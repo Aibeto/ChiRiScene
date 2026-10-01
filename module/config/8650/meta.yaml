@@ -1,0 +1,35 @@
+# meta.yaml: [meta] 用户可修改的抬头字段（守护进程逐字段严格校验）
+name: "config_8650"
+author: "ChiRi"
+language: "zh"
+loglevel: "INFO"
+dev_record: true
+fas_enabled: true
+scenemode_enabled: true
+thread_bind: true
+# 功耗口径（PowerAVG.chr，仅 ChiRi）：false = 参考值（旧值先乘 10，与新值 10:1 加权递推，偏历史，含息屏样本）；
+#                                   true  = 累计平均值（等权全史，仅亮屏放电样本）。两者都只在放电时取样，热重载即时生效。
+power_avg: true
+# 常驻状态通知（Android 通知栏，仅 ChiRi）：false = 不投递，并撤销已投递的通知。
+notify: false
+# 电池读数（仅 ChiRi）：优先 OPlus 私有节点（bcc_parms，随采样刷新）。
+# 该节点存在且读到有效值时不回退（同机型标准节点单位与刷新都不可靠）；
+# 存在但无效（字段缺失/解析失败/全零）或节点不存在时才用标准节点
+oplus_chg: false
+# OPlus 双电芯：电压取两节平均、电流 ×2（两节并联分流），仅上面开关打开时有效
+oplus_dual_cell: false
+# 倍电压 / 倍电流：仅标准节点路径；OPlus 开关打开时这两项被强制关闭
+voltage_double: false
+current_double: false
+# 单位校准（须 > 0，无内置换算）：节点原始值 ÷ 该值 = V / A（功率 = 电流 × 电压）。
+# 缺省 1000000 = 标准 Android ABI 口径（节点报 µV/µA）；OPlus 私有节点报 mV/mA，
+# 安装时检测到该节点会自动写成 1000，正常无需手改，仅节点量级异常时才作校正。
+voltage_divisor: 1000000
+current_divisor: 1000000
+# 耗电读数满量程（W，WebUI 状态页仪表盘用；可选，默认 12）：只影响显示，不参与调度。
+power_max_w: 12
+# PowerBase 总开关（Stardust 家族，高级设置，默认关闭）：开启后 CLG 交由 PowerBase 接管
+powerbase_enabled: false
+# 息屏判定值（高级设置，默认 1）：debug.tracing.screen_state 属性等于该值视为息屏。
+# 安装时会按属性实测值自动校正，一般无需手改。
+screen_off_value: 1

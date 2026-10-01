@@ -1,0 +1,177 @@
+# 8650/feature.yaml: [function] [io-settings] [cpu-idle] [affinity] [corectl] [thermal] [sched]
+#                    [reduce] [default] [boost]
+# 取值口径：以根 config/feature.yaml 为基底、本文件按字段深合并覆盖（map 递归合并，标量/序列整体替换）。
+# 本机型尚无实测数据，数值沿用 8550 的同代际口径；凡标 TODO 的项都要真机复核后再定稿。
+# powerbase：沿用兜底段（target_power_w 3.0）。档位体系（tier_*）需要 soc.yaml 的 frontier_policy
+# 表，本机无该段 → 恒回退 hw_max，不要填桶号。
+
+# [function]
+function:
+  CpuIdleScalingGovernor: true
+  IOOptimization: true
+
+# [io-settings]
+IO_Settings:
+  Scheduler: ""
+  read_ahead_kb: "512"
+  nomerges: "1"
+  iostats: "0"
+
+# [cpu-idle]
+CpuIdle:
+  current_governor: "menu"
+
+scene_mode_delay_secs: 300
+
+# [affinity]
+Affinity:
+  enabled: true
+  top_app_uclamp_min_pct: 0
+  # boost 模式下 top-app 的 cpu.uclamp.max 百分比（0 = 不启用）：任务级钳制，
+  # 空闲间隙降到地板比 scaling_max_freq 硬顶更贴 EAS。
+  # TODO: 本机型未实测，先关闭（8550/8475 取 85）；待前台响应与功耗实测后定。
+  top_app_uclamp_max_pct: 0
+  pin_foreground_threads: true
+  # 后台降权（background / restricted 的 cpu.uclamp.max 百分比，0 = 关闭）：后台任务的
+  # util 需求被钳低 → EAS 放置与 schedutil 频率回落、优先落小核，给可感线程让路；
+  # 不禁止使用大核。刻意不含 system-background（含媒体/音频等可感知后台）。
+  # TODO: 本机型未实测，先取缺省 50（8550 取 25）；看后台消息时延再定。
+  background_uclamp_max_pct: 50
+  # 以下四项代码缺省即 true（= 新逻辑开启），不写即与 8550 同行为：
+  # bg_promote_exclude_prime / big_pressure_any_mode / bitwidth_aware / write_dedup。
+  # aarch32_clusters 留空 = 不限制 32 位落点（系统带转译层，只落 elf32 观测帧）。
+  # TODO: 确认本机 A520 是否承接 32 位任务后再决定是否填该名单。
+  # FDP（fdp_enabled）依赖 soc.yaml 的 frontier_policy 逐档功耗表，本机无该表 → 保持关闭。
+  # normal_fg_exclude_little（非 boost 时 top-app 掩码剔除 little）同属按簇能效结论，
+  # TODO: 待本机 little 贴顶与能耗实测后再决定。
+
+# [corectl]
+CoreCtl:
+  enabled: true
+  # 息屏 scenemode 是否下线核心：false = 保留全核、只靠 scenemode.yaml 的 perf_ceil 与
+  # 后台 uclamp 压制；下线到单核会把负载挤到引导核并触发饱和保护、把 scenemode 自我撤销。
+  # TODO: 本机型未实测，先看息屏功耗与唤醒响应。
+  scenemode_offline: false
+
+# [thermal]
+Thermal:
+  enabled: true
+  # CPU 温度探测名单默认 = 内置（soc_max → cpuss → mtktscpu/… 按序 contains 匹配），
+  # soc_max 为聚合温区（偏保守、非纯 CPU）；本机若需增删节点才写 cpu_temp_zone_types。
+  batt_soft_temp_c: 41
+  batt_hard_temp_c: 45
+  # 电池中限：soft < mid < hard（normalize 越界会钳制并 warn）。
+  batt_mid_temp_c: 43
+  # CPU 温度只在接近内核起控点（~95°C）时参与，避免常态温区被软件压制。
+  cpu_soft_temp_c: 90
+  cpu_hard_temp_c: 95
+  cpu_mid_temp_c: 92
+  # 四级阶梯的 cap：1.0 → 软 → 中 → 硬，必须 hard <= mid <= soft。
+  # 软档刻意不取过低值：cap 直接砍三成会在触发瞬间断崖掉帧。
+  soft_perf_cap: 0.85
+  mid_perf_cap: 0.60
+  hard_perf_cap: 0.40
+  # 豁免档：仅 clamp_heavy=false 时生效（当前恒为 true，cap 窗口内对所有簇恒钳写频目标）。
+  # 必须严格大于 soft_perf_cap，相等 = 压制带为空。
+  free_above: 0.95
+  clamp_heavy: true
+  # 各档独立回滞（°C）：受 normalize 不变量约束「本级解除点不得低于下一档跳闸点」。
+  # TODO: 中档回滞本机型未实测，先取 2（8550 取 1.5）。
+  hysteresis_c: 3
+  hysteresis_mid_c: 2
+  hysteresis_hard_c: 2
+  # 热态 tuned 响应：让 playback/akmode 等非 CLG 通道也对温度有响应。
+  tuned_resp_enabled: true
+  # 硬档不直接套给播放态（掉帧风险），normalize 保证 >= hard_perf_cap。
+  tuned_thermal_floor: 0.55
+
+# [sched]
+# 内核调度器参数微调：迁移成本调低便于跨核均衡、nr_migrate 收敛单次迁移量。
+# 写 /proc/sys/kernel/，白名单外忽略。
+Sched:
+  enabled: true
+  params:
+    sched_migration_cost_ns: "200000"
+    sched_nr_migrate: "27"
+
+# [reduce]
+reduce:
+  cpu_load_governor:
+    up_threshold: 0.90
+    down_threshold: 0.50
+    smoothing_up: 0.50
+    util_smoothing: 0.5
+    down_rate_limit_ticks: 2
+    up_rate_limit_ticks: 2
+    headroom_factor: 1.05
+    headroom_ramp: 0.12
+    perf_floor: 0.05
+    # 不设天花板：持续满负载仍要能到硬件最高频；省电靠门槛 + 升频速率 + 稳态下探。
+    perf_ceil: 1.00
+    # 稳态下探取点 T = up_threshold × 该比值；刻意低于 default 以保留省电档差异。
+    steady_decay_target_ratio: 0.80
+    perf_init: 0.20
+    up_jump_threshold: 0.35
+    slow_up_scale: 0.02
+    down_fast_threshold: 0.10
+    spike_jump_threshold: 0.35
+    spike_decay: 0.30
+    touch_boost_enabled: true
+    touch_boost_ms: 350
+    touch_boost_tiers: 1
+
+# [default]
+default:
+  cpu_load_governor:
+    # 高频门槛：util ≥ 该值才算高负载并全速升频，否则在滞回带内慢速爬升。
+    up_threshold: 0.88
+    down_threshold: 0.62
+    smoothing_up: 0.60
+    # 决策负载 EMA（1.0 = 关闭）：滤掉单 tick 摆动，抑制决策翻转与高频改写。
+    util_smoothing: 0.5
+    down_rate_limit_ticks: 2
+    up_rate_limit_ticks: 3
+    # target = util × headroom；1.0 = 贴负载，不给余量放大。
+    headroom_factor: 1.00
+    headroom_ramp: 0.08
+    perf_floor: 0.05
+    perf_ceil: 1.00
+    steady_decay_target_ratio: 0.90
+    # 接管起始性能，同时是触摸升频地板基线（floor = perf_init + tiers × 0.05）。
+    perf_init: 0.35
+    # TODO: 本机型未做按簇覆盖（8550 对 little 抬到 0.95 抑制贴顶）；先看 little 贴顶占比
+    # 与功耗再决定是否加 per_cluster。
+    up_jump_threshold: 0.45
+    slow_up_scale: 0.02
+    down_fast_threshold: 0.30
+    spike_jump_threshold: 0.40
+    # 单 tick 尖峰只保留 10% 增量（削 p95 尖峰，不动稳态）。
+    spike_decay: 0.10
+    touch_boost_enabled: true
+    touch_boost_ms: 600
+    # TODO: 触摸 600ms / 2 档未实测（滑动与打字的流畅度 + 功耗一起看）。
+    touch_boost_tiers: 2
+
+# [boost]
+boost:
+  cpu_load_governor:
+    up_threshold: 0.55
+    down_threshold: 0.40
+    smoothing_up: 0.95
+    down_rate_limit_ticks: 5
+    up_rate_limit_ticks: 1
+    headroom_factor: 1.25
+    headroom_ramp: 0.12
+    perf_floor: 0.40
+    perf_ceil: 1.0
+    # 稳态下探关闭：本档 up_threshold 低，开启会把常态负载也削掉、损失响应优势。
+    steady_decay_enabled: false
+    perf_init: 0.60
+    up_jump_threshold: 0.25
+    slow_up_scale: 0.05
+    down_fast_threshold: 0.05
+    spike_jump_threshold: 0.40
+    spike_decay: 0.20
+    touch_boost_enabled: true
+    touch_boost_ms: 500
+    touch_boost_tiers: 1

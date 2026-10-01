@@ -95,7 +95,7 @@ fn read_first_line(path: &str) -> String {
 /// 触发 Chiri 专用调度的处理器型号片段，命中任一即启用；片段须能互相区分，新增机型在此追加即可8998 暂时下线：从名单移除即不接管 CPU 仅监控，config/8998/ 与兜底 match 保留，
 /// 恢复时把片段加回来
 // [soc_detect]
-const CHIRI_SOC_HINTS: &[&str] = &["8550", "8475"];
+const CHIRI_SOC_HINTS: &[&str] = &["8550", "8475", "8650"];
 
 /// 读取单个 Android 系统属性（getprop key），失败/为空返回空串跨分区属性只能走 getprop 拿合并视图，直接读 /system/build.prop 会读空
 pub(crate) fn getprop(key: &str) -> String {

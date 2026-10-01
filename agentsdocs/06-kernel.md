@@ -12,6 +12,15 @@
 - CPU 注册为 thermal cooling device：内核温控限频是独立于 ChiRi thermal_cap 的第二层——「写了 max 却上不去」先查 OPP 对齐、再查 thermal cooling。
 - cpu-map 平铺，簇划分靠 capacity + freq-domain + idle 域表达，**勿拿 cpu-map 当簇划分依据**。
 
+### 平台基线（8650，真机日志口径）
+
+> 来源：`devimpbin/1002-042344`（PJX110 / 一加 Ace 3 Pro，board=pineapple，kernel 6.1.141-android14，android 17）。本机不在支持列表时的 devimp 头与 snap 行是唯一数据；无本地 dtsi。
+
+- 拓扑 **2+3+2+1 四 policy**：policy0 CPU0-1（A520，max 2265600）、policy2 CPU2-4（A720，max 3148800）、policy5 CPU5-6（A720，max 2956800）、policy7 CPU7（X4，max 3052800）。ChiRi 三组口径 little 0..2 / big 2..7 / prime 7..8——**两组 A720 各占一个 policy 但同归 big**，勿按 8550 的 0-2/3-6/7 三 policy 理解。
+- 观测到的 scaling_min 是动态的（厂商/vendor 随场景改 min，policy0 见 672000~1920000），**不能当硬件最低频**；完整 OPP 档表待真机 `scaling_available_frequencies` 或 dtsi。
+- 真机 cpufreq governor 观测值 = `uag`（与 8550/8475/8998 的 `cpu_governors` 首选一致）。
+- TODO: capacity（`cpu_capacity` 真机值未采样）、逐档功耗表（→ 无 `frontier_policy`，CLG-PF / FDP 均不启用）、idle/dpc 全缺。
+
 ### DT 对账
 
 - 本内核检出**无任何厂商 DT 源**：`arch/arm64/boot/dts/vendor` 是 symlink→`qcom/proprietary/devicetree`（仓库外、非 gitlink），`dts/qcom` 止于 sm8350；「280/855/1024 出自厂商 dts」在本检出永远无法验证。需厂商 DT 时另拉 `qcom/proprietary/devicetree` repo。
