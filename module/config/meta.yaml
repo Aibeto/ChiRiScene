@@ -6,7 +6,10 @@ name: "default_config"
 author: "yuki"
 language: "zh"
 loglevel: "INFO"
-dev_record: false
+# dev_record: 开发诊断记录（devimp/）总开关。本份同时是「未匹配任何 ChiRi SoC」时的回退配置，
+#   非 ChiRi 恒属停摆、DOWN 的职责就是记录，故默认开（三个 SoC 子目录的同名文件同为此值）；
+#   热重载即时生效，WebUI「开发记录」可随时关闭。目录不会失控：256MB 预算 + 128MB 单文件轮转
+dev_record: true
 # 功能总开关（缺省 true，热重载即时生效）：
 #   fas_enabled: FAS 帧感知调度总闸（关闭后运行中实例立即注销，模式判定不再产生 fas）
 #   scenemode_enabled: 息屏场景模式总闸（关闭后息屏不进入 scenemode，运行中立即退出恢复 doze）

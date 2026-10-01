@@ -283,12 +283,11 @@ pub fn start_monitor(
         }
     })?;
 
-    // ChiRi 专属遥测线程：1s 轮询 PSI / GPU busy% / 电池电流电压，写进程级共享原子量（telemetry()）供 chiri 调度层消费与落盘；仅 ChiRi SoC 启动，
-    // 非 ChiRi 零开销
-    if crate::common::is_chiri_soc() {
-        log::debug!("{}", t("monitor-thread-start-telemetry"));
-        spawn_guarded("telemetry_monitor", telemetry::telemetry_loop)?;
-    }
+    // 遥测线程：1s 轮询 PSI / GPU busy% / 电池电流电压，写进程级共享原子量（telemetry()）
+    // 供 chiri 调度层消费与落盘；**全 SoC 启动**——非 ChiRi 的独立诊断线程（chiri::start_diag_thread）
+    // 的 main_snap 行同样以它为数据源（原仅 ChiRi 启动，非 ChiRi 该行数据恒为空）
+    log::debug!("{}", t("monitor-thread-start-telemetry"));
+    spawn_guarded("telemetry_monitor", telemetry::telemetry_loop)?;
 
     // [detect]
     // 8. 启动应用检测主循环 (阻塞)

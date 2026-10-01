@@ -173,7 +173,10 @@ static LOG_RESTARTING: AtomicBool = AtomicBool::new(false);
 /// 不退出——退出后无人拉起、调度永久停止；此时计数清零并打 warn，等下一门限再判退出前打点也走本写路径，以`LOG_RESTARTING` 防重入；**调用方不得持有 appender 锁**（经 `log::info!
 /// `重入 append 会对非重入 Mutex 死锁）
 fn note_write(counter: &AtomicU64, dir: &str, bytes: u64) {
-    // 仅 Chiri 调度启用（非 ChiRi 无调度接管，不做自动重启；devimp 本就不产生）
+    // 仅 Chiri 调度启用自动重启：非 ChiRi 不重启（重启 = 退出进程由看门狗拉起，会中断监控/WebUI）。
+    // 注：非 ChiRi 现已由独立诊断线程产出 devimp（start_diag_thread），此处仍不记账——
+    // 目录不失控由「单文件 128MB 轮转（main_check/aff_check）+ enforce_dir_limits 预算清理」承担，
+    // 二者不依赖本函数
     if !common::is_chiri_soc() {
         return;
     }

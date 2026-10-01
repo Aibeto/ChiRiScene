@@ -4,6 +4,22 @@
 > 本文件只记「本环境开工必须先知道、且不在 agentsdocs 里的结论」与最新契约指针。
 > 历史统一口径期（2026-09-13 ~ 09-23）的长期事实在 `.codebuddy/memory/MEMORY.md`（各环境互读不互写，只读参考）。
 
+## 2026-10-02：devimp 产出与 ChiRi 调度线程解耦（非 ChiRi 也能开 devimp_main）
+
+- **根因**：devimp 全部写入点都在 `src/chiri/mod.rs` 的 `scheduler_ipc` 1s 块内；非 ChiRi 不启动
+  调度线程 → 一行都不写（DOWN 停摆表象亦源于此，ChiRi 真 down 时 1s 块未被 `!halted` 门控、devimp 照写）。
+- **修法（用户口径「devimp_main 必须始终能独立开启」）**：新增 `chiri::start_diag_thread(config_path)`，
+  `main.rs` 仅在**调度器未启动分支**起它（线程名 `diag_writer`，与调度线程互斥、无重复写入）。每秒
+  `main_snap` + `build_aff_snapshot`（已解耦，传空被管表）+ `aff_snapshot`，屏幕/模式变化写 `main_event`；
+  `meta.dev_record` / `devimp_top_n` 每 5s 重读（热重载）。只读快照、不写任何 sysfs。
+- **非 ChiRi 取值口径**：mode 列 = `app_detect::last_determined_mode()`（空回退 rules `global_mode`）；
+  thermal cap=100 / clg=0 / wakeups·migrations·freq_trans=0（均 ChiRi 专属语义）；CPU/GPU 频率照采。
+- **配套**：`build_aff_snapshot` 签名与 `AffinityManager` 解耦（非 ChiRi 传空被管表）；`monitor/mod.rs` 的
+  telemetry 线程由「仅 ChiRi」放开为**全 SoC 启动**（`main_snap` 数据源）；`logger::note_write` 仍非 ChiRi
+  早退（不自动重启，目录靠 128MB 轮转 + `enforce_dir_limits` 约束）。
+- 逐文件改动清单、i18n 新增 key 与校验结果见当日日志 `.trae/memory/2026-10-02.md`；契约正文见
+  `agentsdocs/02-convention.md` 的「开发诊断日志（devimp/）」条。
+
 ## 2026-10-01：scenemode 改为不下线（修法3）+ 前台不落 little + 功耗尺子结论
 
 - **scenemode 抖动定量实证（`logd_1001-045147`，A08-08/8550）**：26 次进入中 **20 次（77%）** 在 11~414 s 内被

@@ -19,6 +19,9 @@ main-config-loaded = [Main] 已读取配置: { $path } (loglevel={ $loglevel }, 
 main-module-version = [Main] 模块版本: { $name } { $version } (versionCode { $code }) | SoC { $soc } | kernel { $kernel }
 main-chiri-scheduler-selected = [Main] 检测到特定处理器，已启用 Chiri 专用调度器
 main-no-chiri-scheduler = [Main] 本处理器不在 Chiri 支持列表内，调度不接管 CPU（仅监控/WebUI/日志）
+main-diag-thread-started = [Main] 非 ChiRi 机型：已启动独立诊断线程（devimp 随 meta.dev_record 独立开关，不受停摆门控）
+main-diag-thread-failed = [Main] 启动独立诊断线程失败: { $error }
+main-diag-thread-panic = [诊断] 独立诊断线程（diag_writer）panic 退出，devimp 产出已停止（须重启模块恢复）
 main-special-tuned-exported = [Main] 已导出 { $count } 个内部特调白名单条目到 special_tuned.yaml
 main-log-archive-submitted = [Main] 上一轮日志已归档，后台打包至 logd/{ $zip }
 main-devimp-archive-submitted = [Main] 上一轮 devimp 诊断日志已归档，后台打包至 logd/{ $zip }

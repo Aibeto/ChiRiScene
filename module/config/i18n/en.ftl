@@ -19,6 +19,9 @@ main-config-loaded = [Main] Config loaded: { $path } (loglevel={ $loglevel }, la
 main-module-version = [Main] Module version: { $name } { $version } (versionCode { $code }) | SoC { $soc } | kernel { $kernel }
 main-chiri-scheduler-selected = [Main] Specific SoC detected, enabling Chiri scheduler
 main-no-chiri-scheduler = [Main] SoC not in Chiri support list, CPU is not taken over (monitor/WebUI/logging only)
+main-diag-thread-started = [Main] Non-ChiRi SoC: independent diagnostic thread started (devimp toggled via meta.dev_record, not gated by halt)
+main-diag-thread-failed = [Main] Failed to start independent diagnostic thread: { $error }
+main-diag-thread-panic = [Diag] independent diagnostic thread (diag_writer) panicked, devimp output stopped (restart the module to recover)
 main-special-tuned-exported = [Main] exported { $count } internal special-tuned whitelist entries to special_tuned.yaml
 main-log-archive-submitted = [Main] previous logs archived, packing in background to logd/{ $zip }
 main-devimp-archive-submitted = [Main] previous devimp diagnostics archived, packing in background to logd/{ $zip }

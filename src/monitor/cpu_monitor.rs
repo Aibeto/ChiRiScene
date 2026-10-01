@@ -490,7 +490,8 @@ static SNAP_TGID_MAP: AtomicPtr<aya::maps::Map> = AtomicPtr::new(std::ptr::null_
 /// 每秒进程快照供数（aff `@S` 帧）：遍历 TGID_RUN_TIME 全 map（差分基线滚动重建）产出全系统每进程 util
 /// util = 窗口（≈1s）运行时间增量 / 墙钟，**百分比**、多核并行可 >100（仅 9999 上限）；首帧/新进程只建基线 util=0
 /// 进程名走 `proc_name` + pid→name 缓存，稳态每帧零 /proc 名字读取；调用方自行排序取 top-N，本函数不排序不落盘
-/// 仅 `diag_active()` 开启时被 chiri 主循环每秒调用（关闭零开销，开启约毫秒级）
+/// 仅 `diag_active()` 开启时被每秒调用（关闭零开销，开启约毫秒级）：ChiRi 走调度线程主循环，
+/// 非 ChiRi 走独立诊断线程 `chiri::start_diag_thread`（2026-10-02 起两端都会调用者是这个入口）
 pub fn snapshot_procs() -> Vec<ProcSnap> {
     let ptr = SNAP_TGID_MAP.load(Ordering::Acquire);
     if ptr.is_null() {

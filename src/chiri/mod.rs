@@ -724,10 +724,16 @@ fn mask_hex(pid: i32) -> String {
 /// - 线程：`t <pid> <tid> [comm] [u=] [core=] [home=] [pin=] [uclamp=]`（槽序固定，未变槽 `-`，真值 `-` 写 `NaN`）
 /// 数据来源与成本：进程 util 走 `snapshot_procs`（eBPF map 差分）；线程 util 走
 /// `sample_one_tid` stat 差分（只对下钻线程，长尾按热窗/刷新帧降采样）；核掩码
-/// 只对落盘进程查 `read_tid_mask`；home/pin 直取 AffinityManager 状态表；uclamp
+/// 只对落盘进程查 `read_tid_mask`；home/pin 直取入参 `th_diag`（ChiRi 由
+/// AffinityManager 派生，非 ChiRi 传空表 = 无亲和接管）；uclamp
 /// 不下钻恒 -1（本版永不变化，故差分行里只可能出现在刷新帧）
+///
+/// 入参解耦：`th_diag`（被管线程 (tid,pid,home,pinned)）与 `managed_pids`
+/// 由调用方传入，使本函数脱离 `AffinityManager`，非 ChiRi 的独立诊断线程
+/// 也能复用（传 `&[]` 即仅落 top-N 进程 + 前台线程流）
 fn build_aff_snapshot(
-    mgr: &affinity::AffinityManager,
+    th_diag: &[(i32, i32, i16, bool)],
+    managed_pids: &[i32],
     fg_pid: i32,
     fg_pkg: &str,
     top_n: usize,
@@ -735,10 +741,9 @@ fn build_aff_snapshot(
     use std::collections::{HashMap, HashSet};
 
     // 被管线程状态（home/pin）一次取完；进程级 home 从这里派生
-    let diag = mgr.thread_diag();
-    let mut th_state: HashMap<u32, (i16, bool)> = HashMap::with_capacity(diag.len());
+    let mut th_state: HashMap<u32, (i16, bool)> = HashMap::with_capacity(th_diag.len());
     let mut pid_home: HashMap<u32, i16> = HashMap::new();
-    for (tid, pid, home, pinned) in &diag {
+    for (tid, pid, home, pinned) in th_diag {
         th_state.insert(*tid as u32, (*home, *pinned));
         // 进程级 home（确定性归属，与 HashMap 遍历序无关）：取最小有效 home，全无有效记录落 -1——多钉线程进程的 p 行 home 不再逐帧漂移
         let slot = pid_home.entry(*pid as u32).or_insert(-1);
@@ -759,7 +764,7 @@ fn build_aff_snapshot(
             }
         }
     }
-    for (tid, pid, _, pinned) in &diag {
+    for (tid, pid, _, pinned) in th_diag {
         if seen_tid.insert(*tid as u32) {
             tids.push((*pid as u32, *tid as u32, *pinned));
         }
@@ -927,7 +932,7 @@ fn build_aff_snapshot(
     if fg_pid > 0 && seen_pid.insert(fg_pid as u32) {
         extra.push(fg_pid as u32);
     }
-    let mut managed: Vec<u32> = mgr.managed_pids().into_iter().map(|p| p as u32).collect();
+    let mut managed: Vec<u32> = managed_pids.iter().map(|p| *p as u32).collect();
     managed.sort_unstable();
     for pid in managed {
         if seen_pid.insert(pid) {
@@ -1102,6 +1107,181 @@ impl ModeFile {
 /// 读一次文件内容与期望字节比对（供跳过无变化的周期重写）。读失败（文件缺失 / 不可读）即判不等 → 由调用方重写自愈
 fn file_content_eq(path: &std::path::Path, expected: &[u8]) -> bool {
     matches!(std::fs::read(path), Ok(cur) if cur == expected)
+}
+
+// [diag_thread]
+/// 独立诊断写入线程（**非 ChiRi 机型专用**，由 main.rs 在无调度线程时启动）：
+/// 把 devimp 的 `main_*` / `aff_*` 产出从 ChiRi `scheduler_ipc` 的 1s 块中解耦出来
+/// ——ChiRi 的 devimp 写入全在调度线程内，非 ChiRi 不启动调度线程即零产出；本线程
+/// 让 `devimp_main` 在任意 SoC、任意模式（含 DOWN/停摆）下都能随 `meta.dev_record`
+/// 独立开关，不受调度接管与停摆门控影响。
+///
+/// 只读快照 + 写 devimp，不触碰任何 sysfs 调度节点（无接管语义，纯采集）：
+/// - 模式列：非 ChiRi 无调度接管，取 `app_detect` 判定结果，空则回退 rules 全局模式；
+/// - 温度：电池为安全边界、CPU 仅记录，与调度线程同口径（不做调度侧滤波）；
+/// - `aff_` 线程流：非 ChiRi 无亲和接管，被管线程表传空 → 仅落 top-N 进程 + 前台线程；
+/// - thermal/clg 语义为 ChiRi 专属，非 ChiRi 恒写中性值（cap=100、clg=0）。
+///
+/// `config_path` 用于每 5s 重读 `meta.dev_record` / `meta.devimp_top_n`（热重载口径
+/// 与调度线程一致）。线程名 `diag_writer`，与调度线程互不依赖。
+pub fn start_diag_thread(config_path: std::path::PathBuf) -> Result<()> {
+    // 温度源探测（与 scheduler_ipc 同口径）：电池作为热安全边界，CPU 温度仅记录
+    let temp_sensor_path = crate::utils::find_cpu_temp_path().ok();
+    let batt_sensor_exists = crate::utils::find_battery_temp_path().is_some();
+    // 模式列回退值：rules 全局模式（非 ChiRi 无 per-app 接管时的缺省）
+    let fallback_mode = {
+        let g = crate::common::embedded_rules().global_mode;
+        if g.is_empty() {
+            crate::down::DOWN_MODE.to_string()
+        } else {
+            g
+        }
+    };
+
+    // 记录线程不许静默死：monitor 侧的线程由 `monitor::spawn_guarded` 兜底（panic → 打点 → 交看门狗拉起），
+    // 本线程由 chiri 侧自起、不在其覆盖范围，故自带一层 catch_unwind。DOWN 的职责就是记录，
+    // 记录线程无声停摆是最难查的形态（表现为「devimp 忽然不长了」），至少留一条 error
+    thread::Builder::new()
+        .name("diag_writer".to_string())
+        .spawn(move || {
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut last_cfg_sync: Option<Instant> = None;
+            let mut dev_record = false;
+            let mut top_n: usize = 10;
+            // 变化跟踪（null = 无基准，重开后首帧按「已变化」处理）
+            let mut prev_screen_on: Option<bool> = None;
+            let mut prev_mode: Option<String> = None;
+
+            loop {
+                // 每 5s 重读 meta：dev_record / devimp_top_n 热重载生效（与调度线程同口径）
+                if last_cfg_sync.map_or(true, |t| t.elapsed() >= Duration::from_secs(5)) {
+                    last_cfg_sync = Some(Instant::now());
+                    if let Ok(cfg) = Config::load(config_path.to_str().unwrap_or_default()) {
+                        dev_record = cfg.meta.dev_record;
+                        top_n = cfg.meta.devimp_top_n;
+                    }
+                }
+                crate::logger::set_diag_active(dev_record);
+
+                // 关闭态：零采样零写入（不读包名/屏幕、不读温度），仅保留 1s 节拍等开关重开
+                if !dev_record {
+                    prev_screen_on = None;
+                    prev_mode = None;
+                    thread::sleep(Duration::from_secs(1));
+                    continue;
+                }
+
+                let fg_pkg = crate::monitor::app_detect::get_current_package();
+                let is_screen_on = crate::common::screen_on();
+                // 模式列：非 ChiRi 无调度接管，取 app_detect 判定结果；空（未判定/息屏清空）回退 rules 全局模式
+                let mode = {
+                    let m = crate::monitor::app_detect::last_determined_mode();
+                    if m.is_empty() {
+                        fallback_mode.clone()
+                    } else {
+                        m
+                    }
+                };
+                crate::logger::set_diag_mode(&mode);
+                // 诊断日志按前台包名分组：变化即切换 main_ 文件（内部去重，空包名不切换）
+                crate::logger::set_diag_package(&fg_pkg);
+
+                // 状态变化事件（与 ChiRi 同口径，decision 列记事件名）。首帧只建立基准不报事件：
+                // 初始 screen/mode 已由每秒 snap 行承载，事件行只表达「变化」
+                if let Some(prev) = prev_screen_on {
+                    if prev != is_screen_on {
+                        crate::logger::main_event(
+                            "screen",
+                            "-",
+                            if is_screen_on { "on" } else { "off" },
+                        );
+                    }
+                }
+                prev_screen_on = Some(is_screen_on);
+                if let Some(prev) = prev_mode.as_deref() {
+                    if prev != mode.as_str() {
+                        crate::logger::main_event("mode_change", &fg_pkg, &mode);
+                    }
+                }
+                prev_mode = Some(mode);
+
+                // 温度本秒读一次（原始值；本线程无热判定，不做调度侧滤波）
+                let batt_temp = if batt_sensor_exists {
+                    crate::utils::read_battery_temp_celsius()
+                } else {
+                    None
+                };
+                let cpu_temp = temp_sensor_path
+                    .as_ref()
+                    .and_then(|p| crate::utils::read_f64_from_file(p).ok())
+                    .map(|v| (v / 1000.0) as f32);
+
+                let tm = crate::monitor::telemetry::telemetry();
+                let fmt_opt = |v: Option<f32>, digits: usize| {
+                    v.map(|x| format!("{:.*}", digits, x))
+                        .unwrap_or_else(|| "-".to_string())
+                };
+                // 电池三元组本秒只读一次（同一快照），各列共用
+                let (batt_voltage, batt_current, batt_power) = tm.batt_sample();
+                let (cpu_cur, cpu_max, cpu_min, cpu_gov) = crate::chiri::cpu_freq_snapshot();
+                let (gpu_cur, gpu_max, gpu_min, gpu_gov) =
+                    if GPU_SNAPSHOT_ENABLED && gpu_snapshot_due() {
+                        crate::chiri::gpu::devfreq_snapshot()
+                    } else {
+                        (
+                            "-".to_string(),
+                            "-".to_string(),
+                            "-".to_string(),
+                            "-".to_string(),
+                        )
+                    };
+
+                // snap 行（1s）：thermal/clg 为 ChiRi 专属语义，非 ChiRi 写中性值
+                crate::logger::main_snap(
+                    is_screen_on,
+                    &fmt_opt(batt_temp, 1),
+                    &fmt_opt(cpu_temp, 1),
+                    "100",
+                    false,
+                    &fmt_opt(Some(tm.psi_cpu_some()), 2),
+                    &fmt_opt(Some(tm.psi_io_some()), 2),
+                    &fmt_opt(Some(tm.psi_mem_some()), 2),
+                    &fmt_opt(tm.gpu_busy(), 0),
+                    &fmt_opt(batt_voltage, 3),
+                    &fmt_opt(batt_current, 0),
+                    &fmt_opt(batt_power, 2),
+                    0,
+                    0,
+                    0,
+                    &cpu_cur,
+                    &cpu_max,
+                    &cpu_min,
+                    &cpu_gov,
+                    &gpu_cur,
+                    &gpu_max,
+                    &gpu_min,
+                    &gpu_gov,
+                );
+                // @S 每秒进程/线程快照（aff_* 线程流文件）：非 ChiRi 无亲和接管，
+                // 被管线程表与被管进程集传空 → 仅 top-N 进程 + 前台线程
+                let (rows, full) = build_aff_snapshot(
+                    &[],
+                    &[],
+                    crate::monitor::app_detect::get_current_pid(),
+                    &fg_pkg,
+                    top_n,
+                );
+                crate::logger::aff_snapshot(&rows, full);
+
+                thread::sleep(Duration::from_secs(1));
+            }
+        }))
+        .is_err()
+        {
+            log::error!("{}", t("main-diag-thread-panic"));
+        }
+        })?;
+    Ok(())
 }
 
 // [threads]
@@ -1899,8 +2079,12 @@ pub fn start_scheduler_thread(
                         // getaffinity/stat 读取，冷长尾按 30 帧一次降采样（帧语义见 build_aff_snapshot）；
                         // 第二返回值为刷新帧标记，交由 logger 在帧头打 `full=1`
                         let snap_top_n = config_clone.read().unwrap().meta.devimp_top_n;
+                        // 被管线程表/进程集一次取完传入（build_aff_snapshot 已与 AffinityManager 解耦，见其 doc）
+                        let th_diag = affinity_mgr.thread_diag();
+                        let managed = affinity_mgr.managed_pids();
                         let (rows, full) = build_aff_snapshot(
-                            &affinity_mgr,
+                            &th_diag,
+                            &managed,
                             crate::monitor::app_detect::get_current_pid(),
                             &fg_package,
                             snap_top_n,

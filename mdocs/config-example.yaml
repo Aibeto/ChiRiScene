@@ -34,7 +34,7 @@ meta:
   # 不受 N 截断、恒定落盘。
   # 布尔值必须裸写（serde_yaml 把带引号的
   # "true" 解析为字符串而非 bool）。允许外部修改（WebUI 开关 + 热重载）
-  dev_record: false
+  dev_record: true
   # ── 功能总开关（缺省 true，允许外部修改：手改后热重载即时生效；布尔值必须裸写）──
   # fas_enabled：FAS 帧感知调度总闸。false 后 fas_available() 恒为 false——
   #   determine_mode 不再产生 fas 模式、FAS 监测线程不启动、运行中 FAS 实例立即

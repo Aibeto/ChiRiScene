@@ -368,6 +368,15 @@ fn main() -> Result<()> {
         // 非 ChiRi SoC 不接管 CPU，与停摆本就同态：把对外状态对齐（只写 current_mode.chr 投影，不碰 down.chr）
         down::project_unsupported(&root);
         log::info!("{}", t("down-unsupported-soc"));
+        // devimp 解耦：非 ChiRi 无调度线程，devimp_main / aff_ 产出改由独立诊断线程承担
+        // （随 meta.dev_record 独立开关，不受调度接管与停摆门控——「devimp_main 必须能始终独立开启」）
+        match chiri::start_diag_thread(config_path.clone()) {
+            Ok(()) => log::info!("{}", t("main-diag-thread-started")),
+            Err(e) => error!(
+                "{}",
+                t_with_args("main-diag-thread-failed", &fluent_args!("error" => e.to_string()))
+            ),
+        }
         drop(rx);
         None
     };
