@@ -14,12 +14,30 @@
 
 ### 平台基线（8650，真机日志口径）
 
-> 来源：`devimpbin/1002-042344`（PJX110 / 一加 Ace 3 Pro，board=pineapple，kernel 6.1.141-android14，android 17）。本机不在支持列表时的 devimp 头与 snap 行是唯一数据；无本地 dtsi。
+> 来源：`devimpbin/1002-042344`（PJX110 / 一加 Ace 3 Pro，board=pineapple，kernel 6.1.141-android14，android 17）与参考内核 `android_kernel_oneplus_sm8650`（build.config.msm.gki：gki_defconfig + vendor/pineapple_GKI.config）。本机不在支持列表时的 devimp 头与 snap 行是唯一真机数据；**vendor DTS 不在该 checkout**（`msm_kernel_extensions.bzl` 引 `//msm-kernel/arch/arm64/boot/dts/vendor`，仓库内 dts/qcom 止于 sm8450），与 8550 同一处境。
 
 - 拓扑 **2+3+2+1 四 policy**：policy0 CPU0-1（A520，max 2265600）、policy2 CPU2-4（A720，max 3148800）、policy5 CPU5-6（A720，max 2956800）、policy7 CPU7（X4，max 3052800）。ChiRi 三组口径 little 0..2 / big 2..7 / prime 7..8——**两组 A720 各占一个 policy 但同归 big**，勿按 8550 的 0-2/3-6/7 三 policy 理解。
 - 观测到的 scaling_min 是动态的（厂商/vendor 随场景改 min，policy0 见 672000~1920000），**不能当硬件最低频**；完整 OPP 档表待真机 `scaling_available_frequencies` 或 dtsi。
 - 真机 cpufreq governor 观测值 = `uag`（与 8550/8475/8998 的 `cpu_governors` 首选一致）。
-- TODO: capacity（`cpu_capacity` 真机值未采样）、逐档功耗表（→ 无 `frontier_policy`，CLG-PF / FDP 均不启用）、idle/dpc 全缺。
+- 已确认的编译配置：`CONFIG_ENERGY_MODEL=y`、`CONFIG_UCLAMP_TASK=y`、`CONFIG_CPU_IDLE_GOV_MENU=y`、`CONFIG_SCHED_WALT=m`、`CONFIG_ARM_QCOM_CPUFREQ_HW=m`、`CONFIG_OPLUS_CPU_FREQ_GOV_UAG=m`（`cpufreq_uag.ko` 进 `modules.list.msm.pineapple`）；无 `cpufreq_walt` 调速器。
+- **`sched_migration_cost_ns` / `sched_nr_migrate` 在本内核不是 `/proc/sys/kernel` 节点**：本内核注册的 sched sysctl 只有 12 个（`sched_child_runs_first`、`sched_deadline_period_{min,max}_us`、`sched_energy_aware`、`sched_pelt_multiplier`、`sched_rr_timeslice_ms`、`sched_rt_{period,runtime}_us`、`sched_schedstats`、`sched_util_clamp_{min,max}`、`sched_util_clamp_min_rt_default`，分别由 `kernel/sched/core.c`、`topology.c`、`pelt.c` 的 `register_sysctl_init` 注册）；`sched_migration_cost` 等在无 `CONFIG_SCHED_DEBUG` 时是 `const`（`const_debug`），只有 debugfs `/sys/kernel/debug/sched/{migration_cost_ns,nr_migrate}`，该配置未开。源码默认值 500000 / 32。→ 8650 的 `Sched` 段已置 `enabled: false`（白名单 7 键中本机仅 `sched_energy_aware`、`sched_schedstats` 可写，且都不该动）；FAS 与 tuned 的 `migration_cost_ns` 同节点，本机一律空转（写失败按未配置处理）。
+- 频率档表由 EPSS 硬件 LUT 运行时注册（`drivers/cpufreq/qcom-cpufreq-hw.c::qcom_cpufreq_hw_read_lut`），无静态 CPU OPP 可抄；EM 依赖 DT 的 `dynamic-power-coefficient`（随 vendor DTS 缺失）。
+- **真机 capacity（`cpu_capacity` 逐 policy）**：policy0 = 379、policy2 = 923、policy5 = 867、policy7 = 1024（FAS 自动算力权重日志，已是 `arch_topology.c` 归一化后的值）。已写入 `config/8650/soc.yaml [capacity]`（big 取 923）。
+- 真机频率范围（CLG 初始化读到的 policy min–max，MHz）：P0 364.8–2265.6、P2 499.2–3148.8、P5 499.2–2956.8、P7 480–3302.4。注意 snap 行里的 `cpu_max_khz` 常见 3052800 之类**不是硬件上限**，是厂商/vendor 动态改过的 policy max。
+- TODO: 逐档功耗表（→ 无 `frontier_policy`，CLG-PF / FDP 均不启用）、idle/dpc 全缺；sm8450.dtsi 的数值（4+3+1 三域）**不可**套到 8650。
+
+### 平台基线（zumapro，Pixel 9 Pro / Tensor G4）
+
+> 来源：`devimpbin/1002-135302`（Pixel 9 Pro，board=zumapro，android 16，kernel 6.1.145）与预编译内核树 `android-gs-caimito-6.1-android15-qpr1`（**只有 .ko / .dtb / .cfg，无源码**）。DT 取自 `trunk-12755779/zumapro-a1-foplp.dtb`，用自写的 FDT 解析读出原始属性（本机无 dtc）。
+
+- 拓扑 **4+3+1 三 policy**（与高通的 2+3+2+1 不同，勿混）：policy0 CPU0-3（A520）、policy4 CPU4-6（A720）、policy7 CPU7（X4）。真机频率范围（MHz）：little 820–1950、big 357–2600、prime 700–3105（min 是厂商动态的，非硬件下限）。
+- cpufreq 调速器真机值 = **`sched_pixel`**（Google 自家调速器），不是 uag/walt。
+- capacity：DT 只有 `capacity-dmips-mhz`（cpu0-3 = 193、cpu4-6 = 927、cpu7 = 1024），它与 sysfs `cpu_capacity` **不同量纲**——后者是「dmips × policy 最高频」折算后归一化到 1024。本机 arch_topology 的折算口径未确认，**勿把 DT 值直接当 sysfs 值填进 soc.yaml**；真机 `cpu_capacity` 待采样（FAS 算力权重日志或 sysfs）。
+- idle（µs，residency/exit）：`cpu-idle-states` 逐核绑定 little→hayes 2000/160、big→hunter 2500/190、prime→hunterelp 3500/220。
+- dpc：little 70 / big 513 / prime 757。
+- **DT 没有 CPU OPP**（无 `opp-hz`，只有 `cpufreq_domain0-2` 与外围设备的 `freq-table-hz`）→ 频表来自驱动/固件，只能取真机 `scaling_available_frequencies`。
+- 本机 GPU 利用率候选节点全部不存在（非 Adreno/GED）→ devimp 的 gpu 列恒 `-`；`debug.tracing.screen_state` 同样缺失 → 息屏判定恒亮屏。
+- `/proc/sys/kernel/sched_*` 真机清单与 8650 **逐项相同**（12 个，无 `sched_migration_cost_ns` / `sched_nr_migrate`）→ `Sched` 段关段与 FAS/tuned 的 `migration_cost_ns` 空转，两台机同口径。
 
 ### DT 对账
 

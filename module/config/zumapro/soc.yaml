@@ -1,0 +1,48 @@
+# zumapro/soc.yaml: [topology] [capacity] [freq] [idle] [dpc] [cpu_governors]
+# SoC 硬件基线：编译期嵌入（同 feature.yaml，防篡改、磁盘不落盘）。
+# 定位 = 运行时 sysfs 探测的兜底与校准基准，不是调优输入；改动需重编。
+soc: "zumapro"
+
+# [topology] 核心组 CPU ID 区间（左闭右开），common.rs::chiri_core_ranges 的数据源。
+# Pixel 9 Pro（Tensor G4）是 4+3+1 三 policy：little A520（CPU0-3）/ big A720（CPU4-6）
+# / prime X4（CPU7），与 policy0/4/7 一一对应（高通系是 2+3+2+1 四 policy，勿混）。
+topology:
+  little: { start: 0, end: 4 }
+  big: { start: 4, end: 7 }
+  prime: { start: 7, end: 8 }
+
+# [capacity] TODO: 真机 cpu_capacity 未采样，暂不填。
+# 该机 DT 里只有 capacity-dmips-mhz（little 193 / big 927 / prime 1024），它与 sysfs
+# cpu_capacity **不是同一量纲**——后者是「dmips × policy 最高频」折算后再归一化到 1024 的值，
+# 本机 arch_topology 的折算口径未确认，勿把 DT 值直接填进来。
+# 影响面：仅帕累托前沿的需求折算与 FDP，本机无 frontier_policy，当前不受影响。
+
+# [freq] TODO: 本机 DT 没有 CPU OPP（opp-hz 缺失，freq 由 cpufreq_domain 驱动/固件提供），
+# 无静态档表可抄；以真机 scaling_available_frequencies 为准，取到后补三簇档位
+# （写 scaling_max_freq 前须 floor 对齐到表内档位）。
+
+# [idle] 空闲态代价（µs，来自 zumapro-a1 dtb 的 idle-states，cpu-idle-states 已按核绑定）：
+# little→hayes、big→hunter、prime→hunterelp。校准基准，本期无运行时消费方。
+idle_us:
+  exit_latency:
+    little: 160
+    big: 190
+    prime: 220
+  min_residency:
+    little: 2000
+    big: 2500
+    prime: 3500
+
+# [dpc] dynamic-power-coefficient（来自同一份 dtb 的逐核属性）。校准基准，本期无运行时消费方。
+dpc:
+  little: 70
+  big: 513
+  prime: 757
+
+# [cpu_governors] cpufreq 调速器优先级（从左到右）：启动时逐 policy 读
+# scaling_available_governors，取第一个该 policy 可用的作为「默认调速器」（CLG / 特调 /
+# PowerBase / FastLock / 残留清理共用）。不写本段或全不可用 → 沿用 schedutil。
+# sched_pixel 是本机真机当前值（Google 自家的 cpufreq 调速器），排第一以贴近出厂行为；
+# 若实测发现它与 CLG 的上限写入互相打架，把它删掉即回退 schedutil。
+# 注意：performance 是兜底，放在最后一位防止前面所有调速器均不可用
+cpu_governors: [sched_pixel, schedutil, performance]

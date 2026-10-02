@@ -1,7 +1,8 @@
 id=chiri
 name=ChiRi
-version=#3 Transition 相变 A01-02
-versionCode=30000
+version=#3 Transition 相变 A01-04
+versionCode=30104
 author=Aibeto
 description=ChiRi Schedule 千漓调度 (Canary)
-updateJson=https://raw.githubusercontent.com/Aibeto/ChiRiScene/main/updateInformation/update.json
+updateJson=https://raw.githubusercontent.com/Aibeto/ChiRiScene/updatepush/update.json
+ 

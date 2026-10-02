@@ -24,7 +24,7 @@ src/                  # Rust 守护进程主代码
 yumi-ebpf/            # eBPF 探针（bpfel-unknown-none，build-std 编译；独立 workspace，不在根 members；sched_switch + queueBuffer + 遥测计数探针）
 xtask/                # 构建脚本（cargo xtask build 完成编译打包 zip）
 module/               # Magisk/KernelSU 模块载体（module.prop、customize.sh、service.sh）
-  config/             # meta.yaml（可改抬头）+ feature.yaml（调优段）+ rules.yaml + i18n (en.ftl / zh.ftl)；字段说明书在 mdocs/*-example.yaml（不随构建嵌入）；<soc>/ 处理器子目录（meta/feature/soc 三件套齐全，缺一即编译失败；8475/8998/8650 各自一份）+ normal/tuned_profiles.yaml、normal/scenemode.yaml、normal/fas.yaml（FAS 白名单）、normal/fas/<配置名>.yaml 每应用 FAS 调优（编译期嵌入）；rhine-init.yaml 实验室模式定义（同样只进二进制）
+  config/             # meta.yaml（可改抬头）+ feature.yaml（调优段）+ rules.yaml + i18n (en.ftl / zh.ftl)；字段说明书在 mdocs/*-example.yaml（不随构建嵌入）；<soc>/ 处理器子目录（meta/feature/soc 三件套齐全，缺一即编译失败；8475/8998/8650/zumapro 各自一份）+ normal/tuned_profiles.yaml、normal/scenemode.yaml、normal/fas.yaml（FAS 白名单）、normal/fas/<配置名>.yaml 每应用 FAS 调优（编译期嵌入）；rhine-init.yaml 实验室模式定义（同样只进二进制）
   rhine.chr           # 实验室状态（对外暴露、可手改；空/只有注释 = 未启用）。rhine-back.chr 由 daemon 生成，不随包
 webui/                # Svelte 5(runes) + TypeScript + Vite + ak-ui 管理界面；分层 kernel/shell → contract → data → views，tests/ 为纯逻辑断言（详见 webui/README.md）
   scripts/fetch-fonts.mjs  # 构建期拉取字体（predev/prebuild 自动执行）：Poppins 拉丁 + Noto Sans SC 中文子集，产物 src/assets/fonts/ 不入库

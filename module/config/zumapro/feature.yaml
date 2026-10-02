@@ -1,7 +1,7 @@
-# 8650/feature.yaml: [function] [io-settings] [cpu-idle] [affinity] [corectl] [thermal] [sched]
-#                    [reduce] [default] [boost]
+# zumapro/feature.yaml: [function] [io-settings] [cpu-idle] [affinity] [corectl] [thermal] [sched]
+#                       [reduce] [default] [boost]
 # 取值口径：以根 config/feature.yaml 为基底、本文件按字段深合并覆盖（map 递归合并，标量/序列整体替换）。
-# 本机型尚无实测数据，数值沿用 8550 的同代际口径；凡标 TODO 的项都要真机复核后再定稿。
+# 本机型尚无实测数据，数值沿用 8650 的同代际口径；凡标 TODO 的项都要真机复核后再定稿。
 # powerbase：沿用兜底段（target_power_w 3.0）。档位体系（tier_*）需要 soc.yaml 的 frontier_policy
 # 表，本机无该段 → 恒回退 hw_max，不要填桶号。
 
@@ -50,7 +50,7 @@ CoreCtl:
   enabled: true
   # 息屏 scenemode 是否下线核心：false = 保留全核、只靠 scenemode.yaml 的 perf_ceil 与
   # 后台 uclamp 压制；下线到单核会把负载挤到引导核并触发饱和保护、把 scenemode 自我撤销。
-  # TODO: 本机型未实测，先看息屏功耗与唤醒响应。
+  # TODO: 本机 core_ctl 节点是否存在未确认（参考内核树只有预编译产物），先看息屏功耗与唤醒响应。
   scenemode_offline: false
 
 # [thermal]
@@ -87,15 +87,13 @@ Thermal:
 
 # [sched]
 # 内核调度器参数微调：写 /proc/sys/kernel/<key>，白名单外忽略。
-# 本机型关闭：该内核（6.1 GKI / OnePlus sm8650）在 /proc/sys/kernel 下只注册了这一组 sched_*——
-# sched_child_runs_first / sched_deadline_period_{min,max}_us / sched_energy_aware /
-# sched_pelt_multiplier / sched_rr_timeslice_ms / sched_rt_{period,runtime}_us / sched_schedstats /
-# sched_util_clamp_{min,max} / sched_util_clamp_min_rt_default（由 kernel/sched/core.c、
-# topology.c、pelt.c 各自 register_sysctl_init 注册）。没有 sched_migration_cost_ns /
-# sched_nr_migrate / sched_latency_ns / sched_min_granularity_ns / sched_wakeup_granularity_ns：
-# 它们在无 CONFIG_SCHED_DEBUG 时是 const，只留 debugfs 副本 /sys/kernel/debug/sched/*（该配置未开）。
+# 本机型关闭：真机 `ls /proc/sys/kernel/sched_*` 只有 12 个节点——sched_child_runs_first /
+# sched_deadline_period_{min,max}_us / sched_energy_aware / sched_pelt_multiplier /
+# sched_rr_timeslice_ms / sched_rt_{period,runtime}_us / sched_schedstats /
+# sched_util_clamp_{min,max} / sched_util_clamp_min_rt_default，**没有** sched_migration_cost_ns
+# 与 sched_nr_migrate（与 8650 的 GKI 6.1 同一形态：它们只在 CONFIG_SCHED_DEBUG 下有 debugfs 副本）。
 # 白名单 7 个键里本机型仅有 sched_energy_aware 与 sched_schedstats 可写，而两者都不该由 ChiRi 改。
-# TODO: 真机 ls /proc/sys/kernel/sched_* 确认；确实存在再开本段。FAS 与 tuned 的 migration_cost_ns 走同一节点，本机型同样空转（写失败按「未配置」处理，无副作用）。
+# FAS 与 tuned 的 migration_cost_ns 走同一节点，本机一律空转（写失败按「未配置」处理）。
 Sched:
   enabled: false
   params:

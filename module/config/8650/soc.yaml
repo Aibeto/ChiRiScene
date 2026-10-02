@@ -11,11 +11,16 @@ topology:
   big: { start: 2, end: 7 }
   prime: { start: 7, end: 8 }
 
-# [capacity] 本地无该机型 dtsi，capacity 以真机 sysfs（cpu_capacity）为准。
-# TODO: 取到真机 cpu_capacity 或板级 DTS 后补三簇值（厂商板级覆盖常见，勿照抄 mainline DT）。
-# 影响面：仅帕累托前沿的需求折算与 FDP 用兜底值，本机无 frontier_policy，当前不受影响。
+# [capacity] EAS capacity 兜底（真机 cpu_capacity 读不到时用；真机 sysfs 永远优先）。
+# 真机值（PJX110，FAS 自动算力权重日志逐 policy 读 cpu_capacity）：little 379、prime 1024；
+# big 组跨两个 policy（CPU2-4 = 923、CPU5-6 = 867），本表只有三个槽，取较高者。
+capacity:
+  little: 379
+  big: 923
+  prime: 1024
 
-# [freq] 本地无该机型 dtsi，频率档位以真机 sysfs（scaling_available_frequencies）为准。
+# [freq] 频表由 cpufreq-hw 的 EPSS 硬件 LUT 运行时注册（drivers/cpufreq/qcom-cpufreq-hw.c），
+# 无静态 OPP 表可抄；以真机 scaling_available_frequencies 为准。
 # TODO: 取到真机频表后补三簇档位；写 scaling_max_freq 前须 floor 对齐到表内档位。
 
 # [idle] 本地无该机型 dtsi，暂无 idle-state 代价数据。
@@ -25,5 +30,8 @@ topology:
 # [cpu_governors] cpufreq 调速器优先级（从左到右）：启动时逐 policy 读
 # scaling_available_governors，取第一个该 policy 可用的作为「默认调速器」（CLG / 特调 /
 # PowerBase / FastLock / 残留清理共用）。不写本段或全不可用 → 沿用 schedutil。
+# 真机可用集合（pineapple defconfig）：schedutil（默认）/ performance / powersave /
+# conservative + uag（OPlus 模块 cpufreq_uag.ko，真机当前值）；walt 在本内核不是调速器
+# （CONFIG_SCHED_WALT 是调度器模块），列在中间只为与其它机型同表、永不命中。
 # 注意：performance 是兜底，放在最后一位防止前面所有调速器均不可用
 cpu_governors: [uag, walt, schedutil, performance]

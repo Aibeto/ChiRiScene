@@ -212,14 +212,14 @@ Android 8.0 (API 26) 及以上 ARM64 (AArch64) 并拥有 Root 权限
 
 ChiRi 提供以下模式：
 
-| 模式          | 描述                     | 启用场景         |
-| :------------ | :----------------------- | :--------------- |
-| **scenemode** | 树懒模式，尽可能降低功耗 | 暂不支持手动启用 |
-| **reduce**    | 降低响应，延长续航       | 待机、轻度使用   |
-| **default**   | 自适应调频，平衡         | 万金油           |
-| **boost**     | 高响应配置，性能优先     | 中高负载         |
+| 模式          | 描述                     | 启用场景               |
+| :------------ | :----------------------- | :--------------------- |
+| **scenemode** | 树懒模式，尽可能降低功耗 | 暂不支持手动启用       |
+| **reduce**    | 降低响应，延长续航       | 待机、轻度使用         |
+| **default**   | 自适应调频，平衡         | 万金油                 |
+| **boost**     | 高响应配置，性能优先     | 中高负载               |
 | **特调**      | 白名单应用专属参数组     | 前台命中白名单自动触发 |
-| **FAS**       | 帧时间间隔感知           | FAS 白名单内的游戏 |
+| **FAS**       | 帧时间间隔感知           | FAS 白名单内的游戏     |
 
 ---
 
@@ -280,27 +280,39 @@ FAS 白名单内的游戏（明日方舟：终末地、王者荣耀等）前台�
 - **QQ群** - 1091201364
 - **GitHub Issues** - [项目问题和建议](https://github.com/Aibeto/ChiRiScene/issues)
 
-## 开放源代码许可
+## 开放源代码和免费使用许可
 
-| Project                                  | License                          | Repository                                                            |
-| :--------------------------------------- | :------------------------------- | :-------------------------------------------------------------------- |
-| imacte/yumi                              | GPL v3.0                         | [GitHub](https://github.com/imacte/yumi)                              |
-| Sutoliu/AppOptR                          | GPL v3.0                         | [Gitee](https://gitee.com/sutoliu/AppOptR)                            |
-| torvalds/linux                           | GPL v2.0 WITH Linux-syscall-note | [GitHub](https://github.com/torvalds/linux)                           |
-| OnePlusOSS/android_kernel_oneplus_sm8550 | GPL v2.0 WITH Linux-syscall-note | [Github](https://github.com/OnePlusOSS/android_kernel_oneplus_sm8550) |
-| AYNTechnologies/linux                    | GPL v2.0 WITH Linux-syscall-note | [Github](https://github.com/AYNTechnologies/linux)                    |
+### 主要项目
 
-### 参考的补丁
+| Project                                  | License                          | Repository                                                            | Platform |
+| :--------------------------------------- | :------------------------------- | :-------------------------------------------------------------------- | :------- |
+| imacte/yumi                              | GPL v3.0                         | [GitHub](https://github.com/imacte/yumi)                              | ALL      |
+| Sutoliu/AppOptR                          | GPL v3.0                         | [Gitee](https://gitee.com/sutoliu/AppOptR)                            | ALL      |
+| torvalds/linux                           | GPL v2.0 WITH Linux-syscall-note | [GitHub](https://github.com/torvalds/linux)                           | SM8550   |
+| OnePlusOSS/android_kernel_oneplus_sm8550 | GPL v2.0 WITH Linux-syscall-note | [Github](https://github.com/OnePlusOSS/android_kernel_oneplus_sm8550) | SM8550   |
+| AYNTechnologies/linux                    | GPL v2.0 WITH Linux-syscall-note | [Github](https://github.com/AYNTechnologies/linux)                    | SM8550   |
+| OnePlusOSS/android_kernel_oneplus_sm8650 | GPL v2.0 WITH Linux-syscall-note | [Github](https://github.com/OnePlusOSS/android_kernel_oneplus_sm8650) | SM8650   |
 
-| title                                                         | from                            | record                                                                                                                                              |
+### 补丁
+
+| Title                                                         | Contributors                    | Patch                                                                                                                                               |
 | :------------------------------------------------------------ | :------------------------------ | :-------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [PATCH 07/10] arm64: dts: qcom: sm8550: Update EAS properties | Xilin Wu <wuxilin123@gmail.com> | [Patchew](https://patchew.org/linux/20240424-ayn-odin2-initial-v1-0-e0aa05c991fd@gmail.com/20240424-ayn-odin2-initial-v1-7-e0aa05c991fd@gmail.com/) |
 
-## 参考与鸣谢
+### 技术参考项目
 
 | Project            | License  | Repository                                                   |
 | :----------------- | :------- | :----------------------------------------------------------- |
 | LittleYouran_CTS_3 | GPL v3.0 | [GitHub](https://github.com/LittleYouran/LittleYouran_CTS_3) |
+| dieshot            |          | kurnal-insights.com                                          |
+
+### 字体
+
+| Font                     | License     | Repository                                                      | 使用位置 / 注册名    |
+| :----------------------- | :---------- | :-------------------------------------------------------------- | :------------------- |
+| Poppins                  | SIL OFL 1.1 | [GitHub](https://github.com/google/fonts/tree/main/ofl/poppins) | WebUI 拉丁字母与数字 |
+| Noto Sans SC（思源黑体） | SIL OFL 1.1 | [GitHub](https://github.com/notofonts/noto-cjk)                 | WebUI 中文           |
+| JetBrains Mono           | SIL OFL 1.1 | [GitHub](https://github.com/JetBrains/JetBrainsMono)            | 全部等宽文本         |
 
 ---
 
