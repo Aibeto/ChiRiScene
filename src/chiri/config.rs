@@ -1248,18 +1248,14 @@ impl ThermalGuardConfig {
         self.hysteresis_mid_c = self.hysteresis_mid_c.clamp(0.0, 20.0);
         // [hyst_invariant] 每档解除点（本级阈值 - 本级回滞）必须 >= 下一档（更浅档）的跳闸点，否则
         // 该档会「跳过」浅一档：中档解除点 < 软限 → 中档咬住后不回软档 0.85、必须一路冷过软限才恢复
-        // （2026-09-28 实测就是这条）；硬档同理。两条传感器阶梯共用同一组回滞，故取两者中更严的上限
-        // 钳制 + warn（yaml 编译期嵌入、误配必须自愈，不得 panic）
-        let mid_room = (self.batt_mid_temp_c - self.batt_soft_temp_c)
-            .min(self.cpu_mid_temp_c - self.cpu_soft_temp_c)
-            .max(0.0);
+        // （2026-09-28 实测就是这条）；硬档同理。参与判定的只有电池阶梯，故 room 只看电池侧温度差，
+        // 不受 CPU 阈值牵连；误配必须自愈，不得 panic
+        let mid_room = (self.batt_mid_temp_c - self.batt_soft_temp_c).max(0.0);
         if self.hysteresis_mid_c > mid_room {
             self.hysteresis_mid_c =
                 thermal_clamp_warn(self.hysteresis_mid_c, 0.0, mid_room, "hysteresis_mid_c");
         }
-        let hard_room = (self.batt_hard_temp_c - self.batt_mid_temp_c)
-            .min(self.cpu_hard_temp_c - self.cpu_mid_temp_c)
-            .max(0.0);
+        let hard_room = (self.batt_hard_temp_c - self.batt_mid_temp_c).max(0.0);
         if self.hysteresis_hard_c > hard_room {
             self.hysteresis_hard_c =
                 thermal_clamp_warn(self.hysteresis_hard_c, 0.0, hard_room, "hysteresis_hard_c");

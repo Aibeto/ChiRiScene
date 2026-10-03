@@ -162,11 +162,13 @@ def num(v):
 
 
 def avg(v):
+    # 样本全缺返回 0.0：报告里看到「某列恒 0.0」先回原始列确认是不是缺值（写 `-`），别当真实读数
     v = [x for x in v if x is not None]
     return sum(v) / len(v) if v else 0.0
 
 
 def pct(v, q):
+    # 同 avg：空样本返回 0.0
     v = sorted(x for x in v if x is not None)
     return v[min(int(len(v) * q), len(v) - 1)] if v else 0.0
 

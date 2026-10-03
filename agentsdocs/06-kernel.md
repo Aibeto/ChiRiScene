@@ -36,7 +36,7 @@
 - idle（µs，residency/exit）：`cpu-idle-states` 逐核绑定 little→hayes 2000/160、big→hunter 2500/190、prime→hunterelp 3500/220。
 - dpc：little 70 / big 513 / prime 757。
 - **DT 没有 CPU OPP**（无 `opp-hz`，只有 `cpufreq_domain0-2` 与外围设备的 `freq-table-hz`）→ 频表来自驱动/固件，只能取真机 `scaling_available_frequencies`。
-- 本机 GPU 利用率候选节点全部不存在（非 Adreno/GED）→ devimp 的 gpu 列恒 `-`；`debug.tracing.screen_state` 同样缺失 → 息屏判定恒亮屏。
+- 本机 GPU 利用率候选节点全部不存在（非 Adreno/GED）→ devimp 的 gpu 列恒 `-`；`debug.tracing.screen_state` 同样缺失（只让 `screen_prop` 列写 `-`，息屏判定走 uevent 路径不受影响）。
 - `/proc/sys/kernel/sched_*` 真机清单与 8650 **逐项相同**（12 个，无 `sched_migration_cost_ns` / `sched_nr_migrate`）→ `Sched` 段关段与 FAS/tuned 的 `migration_cost_ns` 空转，两台机同口径。
 
 ### DT 对账

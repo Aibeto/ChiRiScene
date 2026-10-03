@@ -788,11 +788,14 @@ const DEVIMP_CHECK_EVERY: u64 = 256;
 /// tick 行无变化时的心跳间隔（决策签名不变时每 2s 仍写一条，保证时间轴连续）
 const MAIN_TICK_HEARTBEAT: Duration = Duration::from_secs(2);
 
-/// tick 行节流状态：cluster 名 → (上次写入的决策签名, 上次写入时刻)。签名只含决策结果字段（decision/tgt_perf/cur_freq/max_freq/thermal/touch/防抖进度），
-/// util/over/under 等逐 tick 抖动的观测值不参与——稳态不写，过渡期逐 tick 记录
-static MAIN_TICK_STATE: OnceLock<Mutex<HashMap<String, (String, Instant)>>> = OnceLock::new();
+/// tick 行节流状态：cpufreq policy id → (cluster 名 → (上次写入的决策签名, 上次写入时刻))。
+/// 必须按 policy 分桶再按 cluster 名：同一 SoC 上多个 policy 可能判出同一个 cluster 名（如 8650 的 policy2 与 policy5 都属 big），
+/// 只按 cluster 名做 key 时两个 policy 会互相刷新对方的签名，去重失效。签名只含决策结果字段
+/// （decision/tgt_perf/cur_freq/max_freq/thermal/touch/防抖进度），util/over/under 等逐 tick 抖动的观测值不参与——稳态不写，过渡期逐 tick 记录
+static MAIN_TICK_STATE: OnceLock<Mutex<HashMap<i32, HashMap<String, (String, Instant)>>>> =
+    OnceLock::new();
 
-fn main_tick_state() -> &'static Mutex<HashMap<String, (String, Instant)>> {
+fn main_tick_state() -> &'static Mutex<HashMap<i32, HashMap<String, (String, Instant)>>> {
     MAIN_TICK_STATE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -1294,10 +1297,11 @@ pub fn ensure_watchdog_pid_file() {
     let _ = fs::write(&pid_path, ppid.to_string());
 }
 
-/// tick 行：CLG/akmode 调频决策轨迹（每决策 tick × 每核心组一行）。写入量控制：按 cluster 节流——决策签名变化即写，无变化时每 2s 心跳一条；
+/// tick 行：CLG/akmode 调频决策轨迹（每决策 tick × 每个 cpufreq policy 一行）。写入量控制：按 policy + cluster 节流——决策签名变化即写，无变化时每 2s 心跳一条；
 /// util/over/under 等逐 tick 抖动的观测值不触发写入；防抖与升降过渡期仍逐 tick 记录
 #[allow(clippy::too_many_arguments)]
 pub fn main_tick(
+    policy_id: i32,
     cluster: &str,
     max_util: &str,
     over: u32,
@@ -1321,7 +1325,8 @@ pub fn main_tick(
     let now = Instant::now();
     let should_write = {
         let mut st = main_tick_state().lock().unwrap_or_else(|p| p.into_inner());
-        match st.get_mut(cluster) {
+        let inner = st.entry(policy_id).or_default();
+        match inner.get_mut(cluster) {
             Some((last_sig, last_t)) => {
                 if *last_sig == sig && now.duration_since(*last_t) < MAIN_TICK_HEARTBEAT {
                     false
@@ -1332,7 +1337,7 @@ pub fn main_tick(
                 }
             }
             None => {
-                st.insert(cluster.to_string(), (sig, now));
+                inner.insert(cluster.to_string(), (sig, now));
                 true
             }
         }

@@ -679,6 +679,7 @@ impl CoreGroupWorker {
                 "little"
             };
             crate::logger::main_tick(
+                self.cluster.policy_id,
                 name,
                 &format!("{:.2}", self.dev_raw_util),
                 self.dev_over,

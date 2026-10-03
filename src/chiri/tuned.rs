@@ -69,6 +69,8 @@ struct PolicyRestore {
 
 /// 单个 policy 的运行时状态：无档位连续 max 控制
 struct ClusterState {
+    /// 该 policy 的内核编号（同一 cluster 名下可能有多个 policy，日志节流据此分桶）
+    policy_id: i32,
     core_name: &'static str,
     /// 内核可用频率（kHz，升序去重），目标上限在该表中就近取档
     available_freqs: Vec<u32>,
@@ -124,7 +126,7 @@ pub struct TunedGovernor {
     cfg: SpecialTunedConfig,
 /// 当前接管的特调模式名（akmode / playback / daily …）：日志用；release 后保留（deactivated 日志要报是哪个模式退出）
     mode: String,
-    /// 特调激活共享标志：Monitor 层（cpu_monitor）据此切换采样间隔（特调 40ms / 其余 120ms）
+    /// 特调激活共享标志：Monitor 层（cpu_monitor）据此切换采样间隔（特调 40ms / 其余 160ms）
     ak_active: Arc<AtomicBool>,
     clusters: Vec<ClusterState>,
     /// 各 policy 的 governor/min/max 快照，release 时恢复
@@ -272,6 +274,7 @@ impl TunedGovernor {
             let _ = max_writer.write_value_force(current_max);
 
             self.clusters.push(ClusterState {
+                policy_id: pid,
                 core_name: name,
                 available_freqs: freqs,
                 max_writer,
@@ -464,9 +467,9 @@ impl TunedGovernor {
         // gated_write 是关联函数不借 &mut self，与 &self.cfg 不冲突
         let cfg = &self.cfg;
 
-        // main_ tick 行数据（每核心组一行：cluster / util / decision / cur_max / hw_max），只在开发记录开启时收集（关闭时零开销、零分配、零写入）
+        // main_ tick 行数据（每个 policy 一行：policy_id / cluster / util / decision / cur_max / hw_max），只在开发记录开启时收集（关闭时零开销、零分配、零写入）
         let diag = crate::logger::diag_active();
-        let mut main_rows: Vec<(&'static str, String, &'static str, u32, u32)> = Vec::new();
+        let mut main_rows: Vec<(i32, &'static str, String, &'static str, u32, u32)> = Vec::new();
 
         for c in &mut self.clusters {
             let range: &std::ops::Range<usize> = if c.core_name == "little" {
@@ -588,6 +591,7 @@ impl TunedGovernor {
 
             if diag {
                 main_rows.push((
+                    c.policy_id,
                     c.core_name,
                     format!("{:.2}", util),
                     decision,
@@ -600,8 +604,9 @@ impl TunedGovernor {
         // main_ tick 行（开发记录开启时才有 IO）：cur_freq_khz 写当前动态 max、max_freq_khz 写硬件最高（kHz），over/under 无档位语义恒 0；
         // util 列写决策用负载（util_smoothing < 1 时为 EMA 后的值），离线回放该列时不能当原始 util 二次平滑
         if diag {
-            for (name, util, decision, cur_max, hw_max) in &main_rows {
+            for (policy_id, name, util, decision, cur_max, hw_max) in &main_rows {
                 crate::logger::main_tick(
+                    *policy_id,
                     name,
                     util,
                     0,

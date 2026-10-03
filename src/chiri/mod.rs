@@ -2310,7 +2310,7 @@ pub fn start_scheduler_thread(
                     if !halted
                         && !(mode_clone.lock().unwrap().as_str() == "fas" && fas_mgr.is_active())
                     {
-                        let (enabled, batt_ladder, cpu_ladder, free_above) = {
+                        let (enabled, batt_ladder, free_above) = {
                             let t = &config_clone.read().unwrap().thermal;
                             let (sc, mc, hc) =
                                 (t.soft_perf_cap, t.mid_perf_cap, t.hard_perf_cap);
@@ -2327,34 +2327,22 @@ pub fn start_scheduler_thread(
                                     hyst_mid: t.hysteresis_mid_c,
                                     hyst_hard: t.hysteresis_hard_c,
                                 },
-                                ThermalLadder {
-                                    soft: t.cpu_soft_temp_c,
-                                    mid: t.cpu_mid_temp_c,
-                                    hard: t.cpu_hard_temp_c,
-                                    soft_cap: sc,
-                                    mid_cap: mc,
-                                    hard_cap: hc,
-                                    hyst: t.hysteresis_c,
-                                    hyst_mid: t.hysteresis_mid_c,
-                                    hyst_hard: t.hysteresis_hard_c,
-                                },
                                 t.free_above,
                             )
                         };
                         let cur = thermal_cap_current;
                         // 复用 snap 块（1s）缓存的温度，≤1s 旧值对带回滞的秒级热判定无影响
                         let batt_t = last_batt_temp;
+                        // CPU 温度只进事件行的展示字段，不参与下面的压制判定
                         let cpu_t = last_cpu_temp;
+                        // 限幅判定的唯一依据就是电池温度阶梯；CPU 温度只走 snap / status.csv / 事件文本，不参与压制
                         let new_cap = if !enabled {
                             1.0
                         } else {
-                            match (batt_t, cpu_t) {
-                                (Some(b), Some(c)) => eval_thermal_cap(b, cur, &batt_ladder)
-                                    .min(eval_thermal_cap(c, cur, &cpu_ladder)),
-                                (Some(b), None) => eval_thermal_cap(b, cur, &batt_ladder),
-                                (None, Some(c)) => eval_thermal_cap(c, cur, &cpu_ladder),
-                                // 双传感器缺失/读失败：保持现状，下轮重试
-                                (None, None) => cur,
+                            match batt_t {
+                                Some(b) => eval_thermal_cap(b, cur, &batt_ladder),
+                                // 电池温度缺失/读失败：保持现状，下轮重试
+                                None => cur,
                             }
                         };
                         // 解除方向限速：压制加深立即生效，解除每周期最多 +0.15（UNPRESS_STEP）逐级恢复——立即全量解除会温度反弹再触发深压，cap 振荡是高负载周期性卡顿的直接来源

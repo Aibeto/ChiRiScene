@@ -39,6 +39,8 @@
 - cap=85 ≠ 已压制（豁免带覆盖仅 2~5% tick）；cap85 功耗差未做场景归一化，不可直接读作限幅节省。
 - 触摸地板只在 Worker flush clamp 生效、不反映在 tgt 列；tuned 路径 over/under/tgt 恒 0 是不写列非异常；FAS 段无 tick（脚本输出 `-` 非 0.0）。
 - psi_cpu / gpu_busy / over_cores 只被日志消费、不进任何调度判定。
+- **压制判定只看电池温度**（2026-10-04 定案，`mod.rs` 的 cap 分支已不构造 CPU 阶梯）：`cpu_temp` 列（status.csv / snap / `thermal_change` 事件文本）是**遥测**，它缺失或恒 `-` **不代表热保护失效**，判「为什么不压制」只看 `batt_temp` 与 `feature.yaml` 的 `batt_*_temp_c`；反过来说 CPU 温度再高也不会触发 cap。
+- **跨机型比 tick 行数/日志体积前，先除掉 8650 的 2× 因子**（2026-10-04 前的包）：8650 把 policy2/policy5 都判成 `big`，而旧版 tick 节流只按 cluster 名做 key，两个 policy 互相刷新签名 → 去重失效、双倍落盘（`devimpbin/1003-213457` 实测 playback big 50 行/簇/秒 vs little 6.67）。修复后 key = policy id + cluster 名。
 - daemon.log 是 fluent 本地化文案**非 key 字面量**（搜 key 恒假阴性，先查 `module/config/i18n/zh.ftl` 再搜）；含 U+2068 隔离符需先剥离；Grep/rg 对部分 x\_\*/daemon.log 读不动（编码异常，positive control 零命中一律按未检索处理），rg 本机可能撞 Windows Store stub——用 PowerShell StreamReader 显式枚举兜底。
 - daemon 重启会重置热保护 cap=100 → 跨重启 cap 序列不可连读；`scaling_governor` 写 EPERM = 内核本就 schedutil（OEM 锁 governor）。
 - `dvaff.py` 的存活集合与 tid 复用口径（2026-09-28 起与写入端契约对齐）：**按帧头 `full=1` 的刷新帧收敛**——连续两次刷新帧都没出现的 tid 视为已退出，从绑定轨迹与合并态统计中移出（旧包无 `full=1` 则不收敛，行为与旧版一致）；`t` 行 **`pid` 变化 = tid 被别的进程复用**（写入端只落一条零槽标识行），此时该 tid 的逐槽合并态整条作废重建，绝不沿用旧进程的 comm/core/pin；**无法解析的 `t` 行**计入报告与摘要的「无法解析丢弃 N」（槽名/槽序与写入端不一致时整行丢弃，N 突然变大先查帧格式而不是解读数据）。`--groups` 非法（非数字 / 端点倒置）与 `--core-top` 越界（须 1..64）直接报错退出 2，不再静默产出空簇或反向切片。

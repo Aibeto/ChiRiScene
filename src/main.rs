@@ -343,7 +343,7 @@ fn main() -> Result<()> {
 // [channels] 5. 创建通信通道（有界：容量 64，满时 send 阻塞形成背压，防止事件无限积压；足够承载 160ms（特调 40ms）负载事件与低频状态事件）
     let (tx, rx) = mpsc::sync_channel::<common::DaemonEvent>(64);
 
-// 特调激活共享标志：TunedGovernor 接管/释放时置位，cpu_monitor 据此在 120ms 与 40ms 采样间隔间切换
+// 特调激活共享标志：TunedGovernor 接管/释放时置位，cpu_monitor 据此在常规 160ms 与特调 40ms 采样间隔间切换
     let ak_active = Arc::new(AtomicBool::new(false));
 
 // FAS 前台激活信号：FasManager 激活/去激活时置位并唤醒等待者，fps_monitor 据此门控 eBPF 探针——FAS 未激活时不建 tokio runtime、不加载 eBPF、
