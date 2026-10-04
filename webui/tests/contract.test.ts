@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { isSafeConfigRel, isSafeFileName, shQuote } from '@/contract/paths'
 import {
   LOG_LEVELS,
+  META_FIELDS,
   replaceTopLevelField,
   validateFieldValue,
   validateMeta
@@ -136,6 +137,14 @@ describe('meta.yaml 校验（复刻守护进程口径）', () => {
     expect(validateFieldValue('screen_off_value', true as unknown as number)).not.toBeNull()
     expect(validateMeta({ ...valid, screen_off_value: 0 })).toEqual([])
     expect(validateMeta({ ...valid, screen_off_value: 2 }).length).toBe(1)
+  })
+
+  it('devimp 手改字段：整数校验（usize 解析失败会整份重置）', () => {
+    expect(validateMeta({ ...valid, devimp_top_n: 8, devimp_aff_secs: 2 })).toEqual([])
+    expect(validateMeta({ ...valid, devimp_aff_secs: 0 })).toEqual([])
+    expect(validateMeta({ ...valid, devimp_aff_secs: 2.5 }).length).toBe(1)
+    expect(validateMeta({ ...valid, devimp_aff_secs: -1 }).length).toBe(1)
+    expect(META_FIELDS).toContain('devimp_aff_secs')
   })
 
   it('电池读数字段：布尔类型与单位校准的数字类型', () => {

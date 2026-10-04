@@ -4,7 +4,7 @@
 
 use anyhow::Result;
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -557,6 +557,20 @@ fn apply_mode_takeover(
 /// 最近 30 帧内槽有变化的长尾保持逐帧采样（差分判定需要「本帧 u」），静默满 30 帧后
 /// 降为刷新帧采样
 const AFF_SNAP_REFRESH_FRAMES: u64 = 30;
+
+/// 息屏时 `@S` 帧采样间隔的倍率（叠在 meta `devimp_aff_secs` 之上）。息屏期线程摆放基本静止，
+/// 逐秒下钻的边际信息量低，而守护进程自身的 stat 采样开销是实打实的常驻负载
+const AFF_SNAP_OFFSCREEN_FACTOR: usize = 5;
+
+/// `@S` 帧采样节流计数（进程级）：调度线程与独立诊断线程互斥运行（非 ChiRi 才起后者），共用一个计数器无歧义
+static AFF_SNAP_TICK: AtomicU64 = AtomicU64::new(0);
+
+/// `@S` 帧本轮是否该采：`every` 为 1 时每轮都采（历史行为）。
+/// 跳过的轮次**不推进** `build_aff_snapshot` 内部帧号，故刷新帧间隔同步拉长到 `30 × every` 秒、
+/// 存活集合的收敛粒度同比例变粗——离线读包按 `full=1` 收敛时要知道这一层
+fn aff_snap_due(every: usize) -> bool {
+    AFF_SNAP_TICK.fetch_add(1, Ordering::Relaxed) % every.max(1) as u64 == 0
+}
 
 /// `uclamp` 槽的占位值：本版不下钻、恒 -1（预留字段），故除刷新帧外该槽永不落盘
 const AFF_UCLAMP_RESERVED: i32 = -1;
@@ -1148,17 +1162,19 @@ pub fn start_diag_thread(config_path: std::path::PathBuf) -> Result<()> {
             let mut last_cfg_sync: Option<Instant> = None;
             let mut dev_record = false;
             let mut top_n: usize = 10;
+            let mut aff_secs: usize = 1;
             // 变化跟踪（null = 无基准，重开后首帧按「已变化」处理）
             let mut prev_screen_on: Option<bool> = None;
             let mut prev_mode: Option<String> = None;
 
             loop {
-                // 每 5s 重读 meta：dev_record / devimp_top_n 热重载生效（与调度线程同口径）
+                // 每 5s 重读 meta：dev_record / devimp_top_n / devimp_aff_secs 热重载生效（与调度线程同口径）
                 if last_cfg_sync.map_or(true, |t| t.elapsed() >= Duration::from_secs(5)) {
                     last_cfg_sync = Some(Instant::now());
                     if let Ok(cfg) = Config::load(config_path.to_str().unwrap_or_default()) {
                         dev_record = cfg.meta.dev_record;
                         top_n = cfg.meta.devimp_top_n;
+                        aff_secs = cfg.meta.devimp_aff_secs;
                     }
                 }
                 crate::logger::set_diag_active(dev_record);
@@ -1262,16 +1278,20 @@ pub fn start_diag_thread(config_path: std::path::PathBuf) -> Result<()> {
                     &gpu_min,
                     &gpu_gov,
                 );
-                // @S 每秒进程/线程快照（aff_* 线程流文件）：非 ChiRi 无亲和接管，
-                // 被管线程表与被管进程集传空 → 仅 top-N 进程 + 前台线程
-                let (rows, full) = build_aff_snapshot(
-                    &[],
-                    &[],
-                    crate::monitor::app_detect::get_current_pid(),
-                    &fg_pkg,
-                    top_n,
-                );
-                crate::logger::aff_snapshot(&rows, full);
+                // @S 进程/线程快照（aff_* 线程流文件）：非 ChiRi 无亲和接管，
+                // 被管线程表与被管进程集传空 → 仅 top-N 进程 + 前台线程。
+                // 采样间隔受 meta `devimp_aff_secs` 节流（息屏再乘倍率）：跳过的轮次不推进帧号
+                let aff_every = aff_secs * if is_screen_on { 1 } else { AFF_SNAP_OFFSCREEN_FACTOR };
+                if aff_snap_due(aff_every) {
+                    let (rows, full) = build_aff_snapshot(
+                        &[],
+                        &[],
+                        crate::monitor::app_detect::get_current_pid(),
+                        &fg_pkg,
+                        top_n,
+                    );
+                    crate::logger::aff_snapshot(&rows, full);
+                }
 
                 thread::sleep(Duration::from_secs(1));
             }
@@ -1954,6 +1974,13 @@ pub fn start_scheduler_thread(
                             .unwrap_or_else(|| "-".to_string());
                     // 自测量基线：daemon 自身累计 CPU 时间（1s 采样读 /proc/self/stat），与状态行同行落盘
                     let (daemon_utime_ms, daemon_stime_ms) = crate::logger::self_cpu_ms();
+                    // 功耗分解：CPU 动态项估计（无功耗表的 SoC 恒 None）+ 残差（外围 / 静态 / GPU）
+                    let cpu_dyn_w =
+                        crate::chiri::energy_cost::cpu_dynamic_power_w(&last_core_utils);
+                    let resid_w = match (batt_power, cpu_dyn_w) {
+                        (Some(p), Some(c)) => Some(p - c),
+                        _ => None,
+                    };
                     crate::logger::status_log_snapshot(
                         &current_mode,
                         &fg_package,
@@ -1979,6 +2006,8 @@ pub fn start_scheduler_thread(
                         &screen_prop_raw,
                         daemon_utime_ms,
                         daemon_stime_ms,
+                        cpu_dyn_w,
+                        resid_w,
                     );
                     // PowerAVG（耗电参考/平均）：紧跟 status 行**顺序**写入 PowerAVG.chr取样口径：
                     // ① 仅电池放电（充电功率不属于耗电均值）；② 平均模式再排除息屏（息屏占时长大，
@@ -2074,22 +2103,31 @@ pub fn start_scheduler_thread(
                             &gpu_min,
                             &gpu_gov,
                         );
-                        // @S 每秒进程/线程快照（aff_* 线程流文件）：top-N 进程 + 前台树/被管进程
+                        // @S 进程/线程快照（aff_* 线程流文件）：top-N 进程 + 前台树/被管进程
                         // 线程下钻同 main_snap 的 diag_active 门控（关闭零采样零写入）；开启时为
                         // getaffinity/stat 读取，冷长尾按 30 帧一次降采样（帧语义见 build_aff_snapshot）；
-                        // 第二返回值为刷新帧标记，交由 logger 在帧头打 `full=1`
-                        let snap_top_n = config_clone.read().unwrap().meta.devimp_top_n;
-                        // 被管线程表/进程集一次取完传入（build_aff_snapshot 已与 AffinityManager 解耦，见其 doc）
-                        let th_diag = affinity_mgr.thread_diag();
-                        let managed = affinity_mgr.managed_pids();
-                        let (rows, full) = build_aff_snapshot(
-                            &th_diag,
-                            &managed,
-                            crate::monitor::app_detect::get_current_pid(),
-                            &fg_package,
-                            snap_top_n,
-                        );
-                        crate::logger::aff_snapshot(&rows, full);
+                        // 第二返回值为刷新帧标记，交由 logger 在帧头打 `full=1`。
+                        // 采样间隔受 meta `devimp_aff_secs` 节流（息屏再乘倍率）：跳过的轮次不推进帧号，
+                        // 且被管线程表只在真正要采时才取（省一轮快照拷贝）
+                        let (snap_top_n, snap_aff_secs) = {
+                            let m = &config_clone.read().unwrap().meta;
+                            (m.devimp_top_n, m.devimp_aff_secs)
+                        };
+                        let aff_every =
+                            snap_aff_secs * if is_screen_on { 1 } else { AFF_SNAP_OFFSCREEN_FACTOR };
+                        if aff_snap_due(aff_every) {
+                            // 被管线程表/进程集一次取完传入（build_aff_snapshot 已与 AffinityManager 解耦，见其 doc）
+                            let th_diag = affinity_mgr.thread_diag();
+                            let managed = affinity_mgr.managed_pids();
+                            let (rows, full) = build_aff_snapshot(
+                                &th_diag,
+                                &managed,
+                                crate::monitor::app_detect::get_current_pid(),
+                                &fg_package,
+                                snap_top_n,
+                            );
+                            crate::logger::aff_snapshot(&rows, full);
+                        }
                     }
                     if telemetry_log_counter % 20 == 0 && log::log_enabled!(log::Level::Debug) {
                         log::debug!(

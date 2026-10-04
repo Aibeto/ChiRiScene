@@ -11,6 +11,9 @@
 - [E3] logdr events buffer（liblog 协议 150-250 行 + SELinux 可达性验证）；[E4] pid_watcher 并入 app_detect（时延 500ms→1.5s 取舍待拍板）。
   - **[E1] 内容比对短路已定案不做（2026-10-01）**：`app_detect.rs` 显式注明「刻意不做内容未变则复用」——冷启动期间 pid 先入组、exec 后 cmdline 才可读，缓存会漏检这类前台切换。
 - 自测量基线：**status.csv 末尾两列 `daemon_utime_ms`/`daemon_stime_ms` 已落地（2026-10-01，1s 采样读 `/proc/self/stat`）**；`cargo bench` 三纯函数仍未做（需先定哪三个 + 新建 benches/ 基础设施）。
+  - **首包实测（`devimpbin/1005-021253`，A01-06 / 8550 / 24.7 h）**：daemon 自身 **5.36% 单核（亮屏）/ 4.63%（息屏）/ 6.96%（screen_prop=4）**，五段合计 3381 s CPU 时间。大头是 `@S` 帧的前台线程逐帧 stat 下钻（帧头 `nfg` 峰值 1036）。
+  - **降开销手段已落地（2026-10-05）**：meta `devimp_aff_secs`（缺省 1，clamp 1..=60）+ 息屏固定倍率 `AFF_SNAP_OFFSCREEN_FACTOR`=5。**TODO: 验证收益**——比的是「关 dev_record」与「开 dev_record + 各档 `devimp_aff_secs`」的 `daemon_utime_ms` 差分，属守护进程自身开销的构造性自检，**不是功耗 A/B**；目标把息屏侧压到 2% 以内。
+  - **功耗分解两列已落地（2026-10-05）**：status.csv 末尾追加 `cpu_dyn_w` / `resid_w`（`energy_cost::cpu_dynamic_power_w`），离线分解走 `scripts/devimp/dvenergy.py`。**TODO: 标定复核**——用 8550 下个包看 `[4]` 回归的截距 a（外围地板，亮屏期望 1.5~2.5 W）与 R²；a 明显偏离或 R² < 0.3 说明能效表与真机量纲对不上，需回 `mdocs/8550/sm8550-freq-power.md` §3 复核电压来源。
   - **「核秒」口径开销评估（2026-10-01，只评估未实现）**：核秒**不能**从 aff 的 `t` 行积分——`t` 行是槽级差分 +
     冷长尾降采样 + 每 30 帧刷新帧（`full=1`）放大行数，缺失行 = 未变，只能证明采样状态占比、不是核秒。
     最省的来源是 `cpu_monitor` 每 tick **已在算**的 `CoreState.busy_diff`（ns）：加一个累计量只需**每核每 tick

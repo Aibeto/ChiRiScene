@@ -3,7 +3,7 @@
 
 用法:
     python scripts/devimp/dvrun.py <logd_*.tar.gz | 已解压目录>
-        [--tag T] [--since MMDD-HHMMSS] [--min-n 30] [--only extract,analyze,main,aff,status,power]
+        [--tag T] [--since MMDD-HHMMSS] [--min-n 30] [--only extract,analyze,main,aff,status,power,energy]
 
 或者用一条命令入口（Windows）：
     scripts\\devimp-run.cmd devimpbin\\logd_0925-045336.tar.gz
@@ -16,6 +16,7 @@
     aff.txt       dvaff 探针
     status.txt    dvstatus 探针
     power.txt     dvpower 探针（按包功耗归因：status.csv 权威 + devimp 侧交叉验证）
+    energy.txt    dvenergy 探针（功耗三层分解 + 外围基线剥离；老包无 cpu_dyn_w/resid_w 时只报提示）
     report.md    步骤清单 + 各探针头条数字 + 单独重跑任一阶段的完整命令
 
 失败隔离：任一阶段失败不中断整条链（依赖允许时继续），`report.md` 里明确标注失败阶段。
@@ -32,7 +33,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import dvcommon as dc  # noqa: E402
 
-STAGES = ("extract", "analyze", "main", "aff", "status", "power")
+STAGES = ("extract", "analyze", "main", "aff", "status", "power", "energy")
 PY = sys.executable or "python"
 
 
@@ -223,6 +224,25 @@ def main(argv=None):
         report.append("")
         headline += lines[1:][:2]
 
+    if "energy" in want:
+        import dvenergy
+        def _energy():
+            import io
+            import contextlib
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = dvenergy.main([outdir, "--since", a.since])
+            head = [l.strip() for l in buf.getvalue().splitlines() if l.strip()]
+            return rc, head
+        ok, lines, err, dt = run_stage("energy", _energy)
+        report.append(f"## 7. energy（dvenergy.py）{'✅' if ok else '❌ 失败'}")
+        report += [f"- {l}" for l in lines]
+        if err:
+            report.append(f"- **失败**: {err}")
+            failed.append(("energy", err))
+        report.append("")
+        headline += lines[1:][:2]
+
     # ── 收尾：重跑命令 + 失败清单 ──
     tag = os.path.basename(outdir)
     report += ["## 单独重跑任一阶段", "",
@@ -236,6 +256,7 @@ def main(argv=None):
                f"python scripts/devimp/dvaff.py devimpbin/{tag} --since {a.since}",
                f"python scripts/devimp/dvstatus.py devimpbin/{tag}",
                f"python scripts/devimp/dvpower.py devimpbin/{tag} --since {a.since}",
+               f"python scripts/devimp/dvenergy.py devimpbin/{tag}",
                "# 或一次性全跑",
                f"python scripts/devimp/dvrun.py {a.input} --tag {tag}",
                "```", ""]

@@ -1319,6 +1319,8 @@ struct MetaYamlFile {
     dev_record: Option<bool>,
 /// aff `@S` 每秒快照帧的 top-N 进程数（手改字段，WebUI 无开关），详见 ExternalMetaOverrides 同名字段
     devimp_top_n: Option<usize>,
+    /// aff `@S` 快照帧的采样间隔秒数（手改字段，WebUI 无开关），详见 ExternalMetaOverrides 同名字段
+    devimp_aff_secs: Option<usize>,
     fas_enabled: Option<bool>,
     scenemode_enabled: Option<bool>,
     /// 线程摆放总开关（affinity + core_ctl），详见 ExternalMetaOverrides
@@ -1356,6 +1358,9 @@ pub struct ExternalMetaOverrides {
 /// aff @S 每秒快照 top-N 进程数（缺省 10）：每秒按 util 降序落盘前 N 个进程；前台树与被管进程不受 N 截断、恒定落盘消费点：Config::load 合并后由 Meta::
 /// normalize 钳到 1..=64（超限 clamp，不判文件非法）
     pub devimp_top_n: Option<usize>,
+    /// aff @S 快照帧采样间隔秒数（缺省 1）：每 N 秒采一帧，息屏再乘 `AFF_SNAP_OFFSCREEN_FACTOR`。
+    /// 调大即线性减少 stat 采样与写盘——守护进程自身的常驻开销主要就花在前台线程逐帧下钻上
+    pub devimp_aff_secs: Option<usize>,
     pub fas_enabled: Option<bool>,
     pub scenemode_enabled: Option<bool>,
 /// 线程摆放总闸（`thread_bind`）：实验室 frozen 专用机制——用户侧开关已移除，仅 frozen 模式写 false 交还线程亲和/绑核与 core_ctl。 与机型内嵌 feature
@@ -1497,6 +1502,7 @@ fn parse_disk_meta(text: &str) -> Option<ExternalMetaOverrides> {
         },
         dev_record: f.dev_record,
         devimp_top_n: f.devimp_top_n,
+        devimp_aff_secs: f.devimp_aff_secs,
         fas_enabled: f.fas_enabled,
         scenemode_enabled: f.scenemode_enabled,
         thread_bind: f.thread_bind,

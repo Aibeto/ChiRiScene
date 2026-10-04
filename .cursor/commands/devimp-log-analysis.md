@@ -31,12 +31,13 @@ scripts\devimp-run.cmd devimpbin\logd_XXXX-XXXXXX.tar.gz
 #   → 产出在 devimpbin\<MMDD-HHMMSS>\ ：inventory.txt / analyze.txt / main.txt /
 #     aff.txt / status.txt / report.md（输出目录就是解压目录）
 
-# 也可分步跑（--only 选择阶段：extract,analyze,main,aff,status,power）
+# 也可分步跑（--only 选择阶段：extract,analyze,main,aff,status,power,energy）
 python scripts\devimp\dvextract.py devimpbin\logd_XXXX-XXXXXX.tar.gz
 python scripts\devimp\dvmain.py    devimpbin\<tag> [--since MMDD-HHMMSS] [--min-n 30]
 python scripts\devimp\dvaff.py     devimpbin\<tag>
 python scripts\devimp\dvstatus.py  devimpbin\<tag>
 python scripts\devimp\dvpower.py   devimpbin\<tag> [--since MMDD-HHMMSS]
+python scripts\devimp\dvenergy.py  devimpbin\<tag>
 ```
 
 **内层归档格式 2026-09-25 起多了一种（重要）**：`module/scripts/pack.sh` 的 `archive`
@@ -111,6 +112,7 @@ python scripts\devimp-analyze.py <解压目录> [--since MMDD-HHMMSS] [--min-n 3
 | `dvaff.py`     | `aff_*.log`：`@A` 动作与 bulk、`@S` 差分帧累积（按 `full=1` 收敛存活集合、tid 复用作废）、绑定轨迹、`t` 行核分布与存活集合合并态（`--groups` 按机型分簇） | `python scripts\devimp\dvaff.py <解压目录> [--since MMDD-HHMMSS] [--groups "0-2,3-6,7"] [--core-top 8]` |
 | `dvstatus.py`  | `status.csv` + `daemon.log`：charge / 放电功率 / fps / FAS 证据 / 重启界标                                                       | `python scripts\devimp\dvstatus.py <解压目录>`                                        |
 | `dvpower.py`   | **按包功耗归因**：`status.csv` 权威（按 mode×package / 按包 / **按 mode 能量汇总 `[7]`**）+ 热档秒数 `[4]` + **档位迁移时间线 `[5]` / 档位温度区间 `[6]`** + devimp 侧交叉验证 `[8]` | `python scripts\devimp\dvpower.py <解压目录> [--since MMDD-HHMMSS]`                   |
+| `dvenergy.py`  | **功耗三层分解 + 外围基线剥离**（2026-10-05 新增）：`[1]` 总口/CPU 动态/残差三层能量账、`[2]` 同场景低负载分位的**外围基线**、`[3]` CPU 增量能量（调度改动该看这个）、`[4]` `batt_power_w ~ a + b·cpu_dyn_w` 回归（a=外围地板、R² 低说明总口被外围淹没）。依赖 status.csv 末两列 `cpu_dyn_w`/`resid_w`，老包（2026-10-05 前的 daemon）只报提示不产表 | `python scripts\devimp\dvenergy.py <解压目录>`（`--selftest` 自检）                  |
 | `dvlz4.py`     | 纯 python LZ4 解码（供 dvextract 用；有 `--selftest`）                                                                           | `python scripts\devimp\dvlz4.py --selftest`                                           |
 | `dvcommon.py`  | 共享工具（列定义、文件头解析、切行、统计、UTF-8 输出）                                                                           | （库，不直接跑）                                                                      |
 
@@ -229,6 +231,13 @@ python scripts\devimp-analyze.py <解压目录> [--since MMDD-HHMMSS] [--min-n 3
   0.106/0.889 等浮点，`batt_p` 列正常）：铁律「排除 batt_i==0」会误删约 58% 样本且恰是
   <0.5A 轻载秒 → P_avg 系统性高估（aweme 实测 3.35W vs 真值 2.14W）。此类包功耗**以
   status.csv 的 `charge`+`batt_power_w` 为准**，devimp 功耗列只做交叉验证
+- **`batt_power_w` 是电池端总功率，含屏幕 / modem / GPU / 静态漏电这些调度层碰不到的外围**（2026-10-05
+  立此口径）：按包归因时「这个包耗电高」常常只是「这个包亮屏久」。要判定调度改动的效果，走
+  `scripts\devimp\dvenergy.py` 的三层分解——`cpu_dyn_w`（能效表折算的 CPU 动态项，只含动态、
+  是下界）与 `resid_w` = `batt_power_w − cpu_dyn_w`（残差含外围 + CPU 静态 + GPU，**不是纯外围**）。
+  读法：先看 `[1]` 的 CPU 占比（低 = 外围主导，别拿总口归因），再用 `[2]` 的同场景低负载分位得到
+  外围基线，`[3]` 的增量能量才是调度该背的那份；`[4]` 回归的 R² 低即说明总口被外围噪声淹没。
+  两列只在有功耗表的 SoC（当前仅 8550）有值，其余恒 `-`；充电行的 `resid_w` 无意义
 - 模式语义：`clg_active=1` = CLG 在接管；`mode=fas` = FAS 接管；特调模式（playback/akmode）= tuned 接管；
   PowerBase 开启时替换 CLG（日志有 powerbase-activated）
 - `freq_trans` 恒 0 而非 `-` = 内核无 cpufreq tracepoint（探针没挂上），不是「频率从未切换」

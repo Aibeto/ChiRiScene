@@ -386,11 +386,15 @@ const STATUS_LOG_MAX_BYTES: u64 = 8 * 1024 * 1024;
 /// 每 N 行巡检一次（轮转 + 被删自愈）：常驻句柄被外部删除后指向孤儿 inode、写入不报错，只能靠巡检发现；1s 一行时 16 行 ≈ 16s 自愈窗口，stat 开销可忽略
 const STATUS_CHECK_EVERY: u64 = 16;
 
-/// CSV 表头（25 列，列序由 status_log_snapshot 保证对齐，完整列名见下方STATUS_HEADER 字符串）fps 为**预留列**，schema 恒定存在：
+/// CSV 表头（27 列，列序由 status_log_snapshot 保证对齐，完整列名见下方STATUS_HEADER 字符串）fps 为**预留列**，schema 恒定存在：
 /// 仅 FAS 激活且帧窗口有样本时为实测值，其余一律 "-"；列只在末尾追加，避免打乱既有列索引。
 /// 末尾两列 daemon_utime_ms / daemon_stime_ms = daemon 自身累计用户态/内核态 CPU 时间（ms，自测量基线），
 /// 与同行的 batt_power_w 并排可反推「观测者自身开销」占比
-const STATUS_HEADER: &str = "timestamp,type,mode,package,charge,screen_on,batt_temp,cpu_temp,thermal_cap_pct,thermal_free_pct,clg_active,psi_cpu_some,psi_io_some,psi_mem_some,gpu_busy_pct,batt_voltage_v,batt_current_ma,batt_power_w,wakeups,migrations,freq_trans,fps,screen_prop,daemon_utime_ms,daemon_stime_ms";
+/// 更末两列 cpu_dyn_w / resid_w = 功耗分解（见 `energy_cost::cpu_dynamic_power_w`）：
+/// cpu_dyn_w = CPU 动态功率估计（能效表折算，**只含动态项**，是 CPU 功耗下界；无表的 SoC 恒 "-"）；
+/// resid_w = batt_power_w − cpu_dyn_w，残差里装着屏幕 / modem / GPU / 静态漏电这些调度层碰不到的外围。
+/// 充电行两列照算但 resid 无意义（batt_power_w 是充电功率不是本机消耗），离线只看放电行
+const STATUS_HEADER: &str = "timestamp,type,mode,package,charge,screen_on,batt_temp,cpu_temp,thermal_cap_pct,thermal_free_pct,clg_active,psi_cpu_some,psi_io_some,psi_mem_some,gpu_busy_pct,batt_voltage_v,batt_current_ma,batt_power_w,wakeups,migrations,freq_trans,fps,screen_prop,daemon_utime_ms,daemon_stime_ms,cpu_dyn_w,resid_w";
 
 /// 常驻写入器：append 句柄 + 巡检计数
 struct StatusWriter {
@@ -576,6 +580,8 @@ pub fn status_log_snapshot(
     screen_prop: &str,
     daemon_utime_ms: u64,
     daemon_stime_ms: u64,
+    cpu_dyn_w: Option<f32>,
+    resid_w: Option<f32>,
 ) {
     // frozen（待春归）：status.csv 属于该模式要停的「额外开销」；闸口集中在此，所有写入路径过同一道
     if mode == "frozen" {
@@ -607,6 +613,8 @@ pub fn status_log_snapshot(
         screen_prop,
         &daemon_utime_ms.to_string(),
         &daemon_stime_ms.to_string(),
+        &fmt_num(cpu_dyn_w),
+        &fmt_num(resid_w),
     ]);
 }
 

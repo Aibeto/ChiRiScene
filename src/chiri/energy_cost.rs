@@ -79,6 +79,69 @@ pub fn cluster_power_w(cluster: CoreGroup, freq_khz: u32) -> Option<f32> {
     interp(freqs, powers, freq_khz)
 }
 
+// [accounting]
+/// CPU **动态**功率估计（W）：逐簇 `簇功耗表(实测频率) × 簇忙碌比` 求和。
+///
+/// 忙碌比 = 簇内各核 util 之和 ÷ 簇核数——表是「整簇满载」口径，单核满载即 1/N。
+/// util 入参是 `core_utils`（按 CPU 编号索引，0~1）。
+///
+/// ⚠️ 三处口径限制，读数前必知：
+/// 1. 表只含动态项（不含漏电 / 静态 / idle-exit），故本值是 CPU 功耗的**下界**，
+///    不是整机 CPU 功耗；
+/// 2. 电压借自另一批次（见模块头），绝对量有系统偏差，只保证相对可比；
+/// 3. 无功耗表的 SoC（当前仅 8550 有）返回 `None`，对应列写 `-`。
+///
+/// 用途：把电池端总功率里 ChiRi 能影响的那部分单独记一列，离线用「总 − 动态 = 残差」
+/// 剥掉屏幕 / modem / GPU / 静态这些调度层碰不到的外围，避免拿整机功耗直接归因调度改动。
+///
+/// **代价**：有表的 SoC 上每秒 1 次调用 = 3 次 `scaling_cur_freq` open/read（`dev_record`
+/// 关闭时也照读，因为它挂在 status 行上而不是诊断块里）。相对 `@S` 帧上千次 stat 读是小头，
+/// 但与「常态零开销」方向相反，取舍记在此——要彻底省掉就得复用 `cpu_freq_snapshot()` 的结果。
+pub fn cpu_dynamic_power_w(core_utils: &[f32]) -> Option<f32> {
+    let ranges = common::chiri_core_ranges();
+    let groups = [CoreGroup::Little, CoreGroup::Big, CoreGroup::Prime];
+    let spans = [ranges.little, ranges.big, ranges.prime];
+    // 先确认至少一簇有功耗表，再读频率：无表的 SoC 一个 sysfs 都不读（本函数每秒随 status 行调用）
+    let has_table = (0..3)
+        .any(|i| !spans[i].is_empty() && cluster_energy_table(groups[i]).is_some());
+    if !has_table {
+        return None;
+    }
+    let freqs = read_cluster_freqs();
+    let mut total = 0.0f32;
+    let mut any = false;
+    for i in 0..3 {
+        let span = &spans[i];
+        if span.is_empty() {
+            continue;
+        }
+        let Some(freq) = freqs[i] else {
+            continue;
+        };
+        let Some(p_cluster) = cluster_power_w(groups[i], freq) else {
+            continue;
+        };
+        // 负载源停摆（eBPF 没挂上 / 通道断开）时 core_utils 为空或长度不足：此时 busy 会算成 0，
+        // 若照算就得到 Some(0.0)，落盘成「CPU 一点电不耗、全是外围」——是缺失不是真值。
+        // 该簇一个核的 util 都取不到就整簇跳过，全簇跳过则返回 None（写 "-"）
+        let mut busy = 0.0f32;
+        let mut seen = 0usize;
+        for c in span.clone() {
+            if let Some(u) = core_utils.get(c).copied() {
+                busy += u;
+                seen += 1;
+            }
+        }
+        if seen == 0 {
+            continue;
+        }
+        // 分母仍是簇核数（表是整簇满载口径），不是 seen——部分核读不到只让该簇估值偏低，不失真
+        total += p_cluster * (busy / span.len() as f32).clamp(0.0, 1.0);
+        any = true;
+    }
+    any.then_some(total)
+}
+
 // [supply]
 /// 该簇的**真实频档**（kHz 升序）：优先 `soc.yaml [freq_khz]`，缺失则回退前沿受控块
 /// `per_cluster.<簇>.freq_khz`（两者同源）；都缺 → `None`

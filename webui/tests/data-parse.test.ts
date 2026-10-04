@@ -6,7 +6,8 @@ import { filterByLevel, parseDaemonLog } from '@/data/daemon-log'
 const HEADER =
   'timestamp,type,mode,package,charge,screen_on,batt_temp,cpu_temp,thermal_cap_pct,thermal_free_pct,' +
   'clg_active,psi_cpu_some,psi_io_some,psi_mem_some,gpu_busy_pct,batt_voltage_v,batt_current_ma,' +
-  'batt_power_w,wakeups,migrations,freq_trans,fps,screen_prop,daemon_utime_ms,daemon_stime_ms'
+  'batt_power_w,wakeups,migrations,freq_trans,fps,screen_prop,daemon_utime_ms,daemon_stime_ms,' +
+  'cpu_dyn_w,resid_w'
 
 function row(overrides: Partial<Record<string, string>> = {}): string {
   const base: Record<string, string> = {
@@ -34,7 +35,9 @@ function row(overrides: Partial<Record<string, string>> = {}): string {
     fps: '-',
     screen_prop: '1',
     daemon_utime_ms: '12340',
-    daemon_stime_ms: '560'
+    daemon_stime_ms: '560',
+    cpu_dyn_w: '0.42',
+    resid_w: '1.53'
   }
   return [
     'timestamp',
@@ -61,16 +64,18 @@ function row(overrides: Partial<Record<string, string>> = {}): string {
     'fps',
     'screen_prop',
     'daemon_utime_ms',
-    'daemon_stime_ms'
+    'daemon_stime_ms',
+    'cpu_dyn_w',
+    'resid_w'
   ]
     .map(col => overrides[col] ?? base[col])
     .join(',')
 }
 
 describe('status.csv 解析', () => {
-  it('列数常量与守护进程表头一致（25 列）', () => {
-    expect(STATUS_COLUMN_COUNT).toBe(25)
-    expect(HEADER.split(',')).toHaveLength(25)
+  it('列数常量与守护进程表头一致（27 列）', () => {
+    expect(STATUS_COLUMN_COUNT).toBe(27)
+    expect(HEADER.split(',')).toHaveLength(27)
   })
 
   it('跳过表头并按列名取值', () => {

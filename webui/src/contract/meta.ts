@@ -17,6 +17,8 @@ export const META_FIELDS = [
   'dev_record',
   /** aff @S 快照 top-N 进程数（手改字段，daemon 侧 usize）：刻意不进 WRITABLE_FIELDS */
   'devimp_top_n',
+  /** aff @S 快照帧采样间隔秒数（手改字段，daemon 侧 usize）：刻意不进 WRITABLE_FIELDS */
+  'devimp_aff_secs',
   'fas_enabled',
   'scenemode_enabled',
   'thread_bind',
@@ -201,6 +203,15 @@ export function validateMeta(values: Record<string, unknown>): string[] {
       values.devimp_top_n < 0)
   ) {
     problems.push('devimp_top_n 必须是整数')
+  }
+  // devimp_aff_secs 同 devimp_top_n 的 isSafeInteger 口径（usize 解析失败会整文件重置）
+  if (
+    'devimp_aff_secs' in values &&
+    (typeof values.devimp_aff_secs !== 'number' ||
+      !Number.isSafeInteger(values.devimp_aff_secs) ||
+      values.devimp_aff_secs < 0)
+  ) {
+    problems.push('devimp_aff_secs 必须是整数')
   }
   // 息屏判定值：仅 0/1 合法（daemon 侧其它值回退默认 1，不判整文件非法，界面从严）
   if ('screen_off_value' in values) {

@@ -24,6 +24,8 @@ fn apply_meta_overrides(meta: &mut Meta, o: &crate::common::ExternalMetaOverride
     // devimp_top_n 无 meta.yaml 模板载体（模板刻意不写、走代码缺省）：不能沿用derive Default 的 0，必须回缺省 10（0/超限最终由 Meta::normalize 钳到 1.
     // =64）
     meta.devimp_top_n = o.devimp_top_n.unwrap_or_else(d_devimp_top_n);
+    // devimp_aff_secs 同 devimp_top_n：模板刻意不写、走代码缺省，不能沿用 derive Default 的 0
+    meta.devimp_aff_secs = o.devimp_aff_secs.unwrap_or_else(d_devimp_aff_secs);
     if let Some(v) = o.fas_enabled {
         meta.fas_enabled = v;
     }
@@ -88,6 +90,11 @@ pub struct Meta {
     /// 快照 top-N 进程数（meta.yaml `devimp_top_n`，缺省 10）：aff_* 的 `@S` 每秒快照帧按 util 降序落盘的进程行数（前台树与被管进程不受截断）；钳到 1..=64（0 → 1）
     #[serde(default = "d_devimp_top_n", alias = "DevimpTopN")]
     pub devimp_top_n: usize,
+
+    /// `@S` 快照帧采样间隔秒数（meta.yaml `devimp_aff_secs`，缺省 1）：每 N 秒落一帧（息屏再乘固定倍率）；
+    /// 钳到 1..=60（0 → 1）。调大省的是前台线程逐帧 stat 下钻，是守护进程常驻开销的主要来源
+    #[serde(default = "d_devimp_aff_secs", alias = "DevimpAffSecs")]
+    pub devimp_aff_secs: usize,
 
     /// FAS 帧感知调度总开关（缺省 true）：关闭后 fas_available() 恒为 false——不再产生 fas 模式、FAS 监测线程不启动、运行中实例立即注销meta 段可外部修改（热重载生效）
     #[serde(default = "crate::utils::default_true", alias = "FasEnabled")]
@@ -176,6 +183,10 @@ fn default_language() -> String {
 fn d_devimp_top_n() -> usize {
     10
 }
+/// `@S` 帧采样间隔缺省值（`devimp_aff_secs`）：1 秒一帧（历史行为，不降采样）
+fn d_devimp_aff_secs() -> usize {
+    1
+}
 /// 息屏判定值缺省值（meta.yaml `screen_off_value`）：debug.tracing.screen_state = 1 视为息屏
 fn default_screen_off_value() -> u32 {
     1
@@ -185,6 +196,7 @@ impl Meta {
     /// 校验并规范化 meta 段（与 Config::load 各段 normalize 统一口径）：`devimp_top_n`钳到 1..=64（0 → 1、>64 → 64），不判整个文件非法
     pub fn normalize(&mut self) {
         self.devimp_top_n = self.devimp_top_n.clamp(1, 64);
+        self.devimp_aff_secs = self.devimp_aff_secs.clamp(1, 60);
     }
 }
 
