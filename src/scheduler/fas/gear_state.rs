@@ -15,6 +15,11 @@ use super::pid::scale_frames;
 /// 16 倍冷却（≈24s）永久咬住后续的孤立降档——24s 不许升档对真实场景过重
 const DOWNGRADE_BACKOFF_RESET: Duration = Duration::from_secs(60);
 
+/// 升档落点 perf 的下限上限：`(new_fps / 144)` 在高帧率档会超出本值、被截断成本值，
+/// 即升档瞬间的 perf 落点。调低 = 升档后从更低处起步（稳态由 PID decay 收敛），
+/// 突发卡顿仍由 pid_jank 的紧急跳频（大帧直接跳 perf）抬回
+const MIN_UPGRADE_PERF_CEIL: f32 = 0.62;
+
 // [decision]
 // GearDecision
 
@@ -50,7 +55,7 @@ impl FasController {
         self.pid.reset();
         self.fps_window.clear();
         let final_perf = if new_fps > old {
-            let min_upgrade_perf = (new_fps / 144.0).clamp(0.45, 0.70);
+            let min_upgrade_perf = (new_fps / 144.0).clamp(0.45, MIN_UPGRADE_PERF_CEIL);
             perf.max(min_upgrade_perf)
         } else {
             let max_downgrade_perf = (new_fps / 144.0 + 0.30).clamp(0.45, 0.75);

@@ -35,6 +35,11 @@ import dvcommon as dc  # noqa: E402
 
 STAMP_RE = re.compile(r"(\d{4}-\d{6})")
 
+# 放电功率的合理性上限（W）：手机端电量计偶发瞬时尖峰，读数可到 25~33 W 这种不可能量级。
+# 超上限的行计入「异常读数」单独计数，不进均值/p50/p95/max/Wh——否则一个尖峰就能把
+# 按包的 max 与均值拉飞，归因时会被误读成「这个包功耗爆表」
+PW_SANITY_MAX_W = 20.0
+
 
 def cap_tier(raw):
     """`thermal_cap_pct` 归一到整数档。
@@ -124,6 +129,8 @@ def status_report(paths, rows):
     seq = collections.defaultdict(list)        # 批次 → 按序样本（含充电行，档位时间线要连续）
     tier_temp = collections.defaultdict(list)
     tier_pkg = collections.defaultdict(collections.Counter)
+    pw_bad = 0          # 超 PW_SANITY_MAX_W 的行数（电量计尖峰，不进任何统计）
+    pw_bad_max = 0.0
 
     for batch, r in rows:
         ch = (r.get("charge") or "-").strip() or "-"
@@ -147,6 +154,10 @@ def status_report(paths, rows):
             continue
         pw = dc.num(r.get("batt_power_w"))
         if pw is None or pw <= 0:
+            continue
+        if pw > PW_SANITY_MAX_W:
+            pw_bad += 1
+            pw_bad_max = pw if pw > pw_bad_max else pw_bad_max
             continue
         batch_dis[batch] += 1
         for d in (agg[(mode, pkg)], tot[pkg]):
@@ -178,6 +189,9 @@ def status_report(paths, rows):
     out.append(f"# [3] 累计能量（仅放电）：{total_wh:.1f} Wh / {total_n / 3600.0:.1f} h，"
                f"均值 {total_wh * 3600.0 / total_n if total_n else 0:.2f} W"
                f"（{total_n} 个 ≈秒样本）")
+    if pw_bad:
+        out.append(f"#     [!] 已剔除异常读数 {pw_bad} 行（batt_power_w > {PW_SANITY_MAX_W:.0f} W，"
+                   f"最大 {pw_bad_max:.2f} W）：电量计瞬时尖峰，不进均值/p50/p95/max/Wh")
     out.append("")
 
     out.append("# [4] thermal_cap_pct 各档累计占用秒数（**判断热是常态还是偶发的主指标**）")
@@ -237,6 +251,7 @@ def status_report(paths, rows):
                    f"{sum(d['pw']) / len(d['pw']):6.2f} {dc.avg(d['gpu']):5.1f} {dc.avg(d['psi']):5.1f}")
     out.append("")
     return out, dict(charge=dict(charge), total_wh=total_wh, total_n=total_n,
+                     pw_bad=pw_bad, pw_bad_max=pw_bad_max,
                      top=sorted(tot, key=lambda k: -sum(tot[k]["pw"]))[:3],
                      tot_wh={k: sum(v["pw"]) / 3600.0 for k, v in tot.items()})
 

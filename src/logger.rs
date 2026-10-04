@@ -62,6 +62,29 @@ struct AppendState {
 /// 低频巡检间隔（字节）：外部删除 `daemon.log` 后最坏丢这么多日志（约 60 行）
 const LOG_VERIFY_BYTES: u64 = 8 * 1024;
 
+/// 写失败的连续计数（成功即归零）：句柄重建失败与写盘失败原本全程静默，
+/// 进程照常跑而日志停在最后成功的一行，事后无从区分「这段时间没有事件」与「写不进去」
+static APPEND_FAIL_STREAK: AtomicU64 = AtomicU64::new(0);
+/// 连续失败的第几次之后再报一条（首次失败必报）
+const APPEND_FAIL_REPORT_EVERY: u64 = 100;
+/// 告警期间置位：warn 自身走同一写路径，不置位会在写失败时递归
+static APPEND_REPORTING: AtomicBool = AtomicBool::new(false);
+
+/// 报一次写失败。**调用方不得持有 appender 锁**（warn 会重入 `append_line`）
+fn report_append_failure() {
+    if APPEND_REPORTING.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    let n = APPEND_FAIL_STREAK.fetch_add(1, Ordering::Relaxed) + 1;
+    if n == 1 || n % APPEND_FAIL_REPORT_EVERY == 0 {
+        log::warn!(
+            "{}",
+            t_with_args("logger-append-failed", &fluent_args!("n" => n.to_string()))
+        );
+    }
+    APPEND_REPORTING.store(false, Ordering::Relaxed);
+}
+
 impl SelfHealingAppender {
     /// 备份名：`daemon.log` -> `daemon.1.log`（把扩展名前缀替换为 `.{n}.log`）
     fn archive_path(&self, n: u32) -> PathBuf {
@@ -119,6 +142,7 @@ impl SelfHealingAppender {
     /// 落盘一行（已格式化字节）锁内 IO + 计数；`note_write` 达门限会经`log::info!` 重入本函数，调用方持本锁调用会对非重入 Mutex 死锁
     fn append_line(&self, line: &[u8]) {
         let bytes = line.len() as u64;
+        let mut ok = false;
         {
             let mut st = match self.state.lock() {
                 Ok(g) => g,
@@ -142,14 +166,21 @@ impl SelfHealingAppender {
                 if f.write_all(line).and_then(|_| f.flush()).is_ok() {
                     st.size += bytes;
                     st.since_verify += bytes;
+                    ok = true;
                 } else {
                     // 写失败（句柄失效 / 磁盘异常）：丢弃句柄，下一条重建
                     st.file = None;
                 }
             }
+            // 句柄仍为 None = 重建也没成功，同样算一次失败
         }
         // 记账：按编码长度计（与写成败无关），决定「日志目录预算 / 128MB 打包门限」触发点
         note_write(&LOGS_BYTES_WRITTEN, "logs/", bytes);
+        if ok {
+            APPEND_FAIL_STREAK.store(0, Ordering::Relaxed);
+        } else {
+            report_append_failure();
+        }
     }
 }
 
