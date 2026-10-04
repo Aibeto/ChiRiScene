@@ -1794,7 +1794,7 @@ pub struct SchedTuning {
 
 /// scenemode 延迟缺省值：5 分钟
 fn default_scene_mode_delay_secs() -> u64 {
-    300
+    3000
 }
 
 // [config_impl]
