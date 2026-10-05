@@ -27,7 +27,7 @@
     "svelte-check": "^4.7.6",
     "subset-font": "^2.3.0",
     "typescript": "^6.0.3",
-    "vite": "^8.3.1",
+    "vite": "^8.3.2",
     "vitest": "^5.0.1"
   }
 }
