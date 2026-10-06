@@ -210,7 +210,7 @@ fn fas_package_ready(package: &str) -> bool {
         && crate::common::fas_enabled()
         && crate::common::fas_available()
         && crate::common::fas_whitelist_entry(package)
-            .and_then(crate::common::fas_app_config)
+            .and_then(|cfg| crate::common::fas_app_config(cfg))
             .is_some()
 }
 
