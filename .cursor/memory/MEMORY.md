@@ -20,6 +20,12 @@
 
 ## 契约要点
 
+- FAS 所有权/叠加实现（2026-10-06）：前台检测与游戏 owner 分离；帧事件采集时携带 PID/generation，摘挂 drain 与 CLOCK_MONOTONIC 截止界标隔离旧 ring/队列。失焦期间暂停 FPS 反馈与目标推断，按真实 policy CPU 集合负载控制，不冻结旧高频；恢复清状态并预热 12 个有效新帧，无帧 500ms 回退 load-only，热保护仍由负载驱动。窗口核验单 worker、3s 最小间隔、800ms 超时、512KiB cap、5s 证据 TTL；Unknown 不无限续期，VisibleUnfocused 需 mObscured=false。详见 agentsdocs/03-chiri.md；本机 Cargo 目标验证遇到 registry/rustup 权限与缓存阻塞，portable 测试不能代替 Android/eBPF 通过证据。
+- devimp 统计（2026-10-06）：文件/批次/root + --since 归档戳选择；样本等效 Wh 与有效短区间积分分开，跨 type/charge/mode/package/screen 边界不外推，长缺口不归因为 suspend；总口与动态模型扣同子集各自基线，负残差保留，模型不是物理下界。FPS 全空不证明未 FAS；版本按解析身份去重，缺失占位不冲突。命令正文与 agentsdocs/05-maint.md 已同步。
+- daemon 自耗专项计划（2026-10-07）：唯一有效计划为 `.cursor/plans/2026-10-07-daemon-selfcost-implementation-plan.md`（合并版），原 CodeBuddy 计划已标记废弃，Cursor 修订版不再留在 docs。仅完成文档整理，未实施或预执行。先校正离线工具，再单独授权原同步路径的墙钟/线程 CPU 汇总测量；不调大 aff_secs、不主动关闭诊断作对照、不降采样质量。30~40ms 是进程 CPU 配对估计，不是墙钟阻塞；日志首尾覆盖不能证明诊断开关状态；所有测量调用入账，50ms 只限制告警。诊断线程化须另立计划，先固定原始基线并验证实际采集时点，不能只靠不可变上下文宣称不降质。本地编译测试继续跳过。
+
+- selfcost 一致性契约：配置指纹仅排序 map，保留列表优先顺序；配置、指纹及代际在配置写锁内发布，采样参数与身份在对应读锁内冻结，build 前释放。worker 故障关闭发送入口后排空至通道断开，失败提交等待 join 后回退，不再超时放行新差分帧；永久 IO 阻塞仍会导致等待无界，worker 保持默认关闭。修订未编译测试，详见 agentsdocs/02-convention.md。
+
 - **SoC 硬件基线 soc.yaml（2026-09-26）**：`module/config/{soc}/soc.yaml`（topology/capacity/freq_khz/idle/dpc），编译期嵌入，sysfs 兜底与校准基准、非调优输入；`chiri_core_ranges`/capacity/freq 兜底已接，硬编码 match 保留为最后兜底。口径与坑见 agentsdocs/02-convention.md 配置嵌入条；审计结论（其余 rs 常数不外挂）见 `.cursor/docs/2026-09-26-soc-hardcode-audit.md`。
 - logd/ 归档预算清理（2026-09-24 起）：`enforce_logd_limit` 按**归档批次原子删**——
   `<ts>.tar` 与 `devimp_<ts>.tar` 同进退、最新批次永不删，最新批次 ≥200MB 时收到 256MB 即停。

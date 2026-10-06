@@ -86,9 +86,9 @@ pub fn cluster_power_w(cluster: CoreGroup, freq_khz: u32) -> Option<f32> {
 /// util 入参是 `core_utils`（按 CPU 编号索引，0~1）。
 ///
 /// ⚠️ 三处口径限制，读数前必知：
-/// 1. 表只含动态项（不含漏电 / 静态 / idle-exit），故本值是 CPU 功耗的**下界**，
-///    不是整机 CPU 功耗；
-/// 2. 电压借自另一批次（见模块头），绝对量有系统偏差，只保证相对可比；
+/// 1. 表只含动态项（不含漏电 / 静态 / idle-exit），本值是模型估计，
+///    不是逐秒物理下界或实测 CPU 总功率；
+/// 2. 电压借自另一批次（见模块头），绝对量有系统偏差，相对排序也需核对适用场景；
 /// 3. 无功耗表的 SoC（当前仅 8550 有）返回 `None`，对应列写 `-`。
 ///
 /// 用途：把电池端总功率里 ChiRi 能影响的那部分单独记一列，离线用「总 − 动态 = 残差」
@@ -96,50 +96,93 @@ pub fn cluster_power_w(cluster: CoreGroup, freq_khz: u32) -> Option<f32> {
 ///
 /// **代价**：有表的 SoC 上每秒 1 次调用 = 3 次 `scaling_cur_freq` open/read（`dev_record`
 /// 关闭时也照读，因为它挂在 status 行上而不是诊断块里）。相对 `@S` 帧上千次 stat 读是小头，
-/// 但与「常态零开销」方向相反，取舍记在此——要彻底省掉就得复用 `cpu_freq_snapshot()` 的结果。
+/// 同秒已有实测快照时可改用 `cpu_dynamic_power_w_with_frequencies`，省去重复频率读取。
 pub fn cpu_dynamic_power_w(core_utils: &[f32]) -> Option<f32> {
+    if !has_cpu_energy_table() {
+        return None;
+    }
+    let frequencies = read_cluster_freqs();
+    let ranges = common::chiri_core_ranges();
+    let spans = [ranges.little, ranges.big, ranges.prime];
+    sum_cpu_dynamic_power_w(core_utils, &spans, &frequencies, cluster_power_w)
+}
+
+/// CPU 动态功率估计（W）：使用同秒 `(policy ID, scaling_cur_freq kHz)` 快照。
+/// 顺序不限，policy ID 不得重复；缺失、读取失败及 0 频率均跳过，不回退模型、不额外读频率。
+/// policy 到簇的拓扑映射沿用 `read_cluster_freqs` 的一次性发现结果。
+pub fn cpu_dynamic_power_w_with_frequencies(
+    core_utils: &[f32],
+    policy_frequencies: &[(u32, Option<u32>)],
+) -> Option<f32> {
+    if !has_cpu_energy_table() {
+        return None;
+    }
+    let ranges = common::chiri_core_ranges();
+    let spans = [ranges.little, ranges.big, ranges.prime];
+    let frequencies = cluster_frequencies_from_policies(cluster_policy_ids(), policy_frequencies);
+    sum_cpu_dynamic_power_w(core_utils, &spans, &frequencies, cluster_power_w)
+}
+
+fn has_cpu_energy_table() -> bool {
     let ranges = common::chiri_core_ranges();
     let groups = [CoreGroup::Little, CoreGroup::Big, CoreGroup::Prime];
     let spans = [ranges.little, ranges.big, ranges.prime];
-    // 先确认至少一簇有功耗表，再读频率：无表的 SoC 一个 sysfs 都不读（本函数每秒随 status 行调用）
-    let has_table = (0..3)
-        .any(|i| !spans[i].is_empty() && cluster_energy_table(groups[i]).is_some());
-    if !has_table {
-        return None;
-    }
-    let freqs = read_cluster_freqs();
-    let mut total = 0.0f32;
-    let mut any = false;
-    for i in 0..3 {
-        let span = &spans[i];
+    (0..3).any(|slot| !spans[slot].is_empty() && cluster_energy_table(groups[slot]).is_some())
+}
+
+fn cluster_frequencies_from_policies(
+    policy_ids: &[Option<u32>; 3],
+    policy_frequencies: &[(u32, Option<u32>)],
+) -> [Option<u32>; 3] {
+    policy_ids.map(|policy_id| {
+        let policy_id = policy_id?;
+        policy_frequencies
+            .iter()
+            .find(|(observed_policy_id, _)| *observed_policy_id == policy_id)
+            .and_then(|(_, frequency_khz)| *frequency_khz)
+            .filter(|frequency_khz| *frequency_khz > 0)
+    })
+}
+
+fn sum_cpu_dynamic_power_w<F>(
+    core_utils: &[f32],
+    spans: &[std::ops::Range<usize>; 3],
+    policy_frequencies: &[Option<u32>; 3],
+    mut power_at_frequency: F,
+) -> Option<f32>
+where
+    F: FnMut(CoreGroup, u32) -> Option<f32>,
+{
+    let groups = [CoreGroup::Little, CoreGroup::Big, CoreGroup::Prime];
+    let mut total_power = 0.0f32;
+    let mut has_observed_cluster = false;
+    for slot in 0..3 {
+        let span = &spans[slot];
         if span.is_empty() {
             continue;
         }
-        let Some(freq) = freqs[i] else {
+        let Some(frequency_khz) = policy_frequencies[slot] else {
             continue;
         };
-        let Some(p_cluster) = cluster_power_w(groups[i], freq) else {
+        let Some(cluster_power) = power_at_frequency(groups[slot], frequency_khz) else {
             continue;
         };
-        // 负载源停摆（eBPF 没挂上 / 通道断开）时 core_utils 为空或长度不足：此时 busy 会算成 0，
-        // 若照算就得到 Some(0.0)，落盘成「CPU 一点电不耗、全是外围」——是缺失不是真值。
-        // 该簇一个核的 util 都取不到就整簇跳过，全簇跳过则返回 None（写 "-"）
-        let mut busy = 0.0f32;
-        let mut seen = 0usize;
-        for c in span.clone() {
-            if let Some(u) = core_utils.get(c).copied() {
-                busy += u;
-                seen += 1;
+        let mut busy_utilization = 0.0f32;
+        let mut observed_core_count = 0usize;
+        for core_index in span.clone() {
+            if let Some(utilization) = core_utils.get(core_index).copied() {
+                busy_utilization += utilization;
+                observed_core_count += 1;
             }
         }
-        if seen == 0 {
+        if observed_core_count == 0 {
             continue;
         }
-        // 分母仍是簇核数（表是整簇满载口径），不是 seen——部分核读不到只让该簇估值偏低，不失真
-        total += p_cluster * (busy / span.len() as f32).clamp(0.0, 1.0);
-        any = true;
+        // 缺失 util 不当成实测零；有样本时仍按整簇核数归一化。
+        total_power += cluster_power * (busy_utilization / span.len() as f32).clamp(0.0, 1.0);
+        has_observed_cluster = true;
     }
-    any.then_some(total)
+    has_observed_cluster.then_some(total_power)
 }
 
 // [supply]
@@ -496,6 +539,61 @@ pub fn fdp_destination(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_frequencies_follow_policy_ids_and_preserve_missing_values() {
+        let policy_ids = [Some(0), Some(4), Some(7)];
+        let frequencies = [(7, Some(2_000_000)), (0, Some(600_000)), (4, None)];
+        assert_eq!(
+            cluster_frequencies_from_policies(&policy_ids, &frequencies),
+            [Some(600_000), None, Some(2_000_000)]
+        );
+        assert_eq!(
+            cluster_frequencies_from_policies(&policy_ids, &[(0, Some(0))]),
+            [None, None, None]
+        );
+        assert_eq!(
+            cluster_frequencies_from_policies(&[None; 3], &frequencies),
+            [None; 3]
+        );
+    }
+
+    #[test]
+    fn snapshot_accounting_uses_khz_and_full_cluster_denominators() {
+        let spans = [0..2, 2..3, 3..4];
+        let frequencies = [Some(1_000_000), None, Some(2_000_000)];
+        let power_at_frequency = |_: CoreGroup, frequency_khz| {
+            interp(&[1_000_000, 2_000_000], &[2.0, 4.0], frequency_khz)
+        };
+        assert_eq!(
+            sum_cpu_dynamic_power_w(&[1.0, 0.0, 1.0, 0.5], &spans, &frequencies, power_at_frequency),
+            Some(3.0)
+        );
+        assert_eq!(
+            sum_cpu_dynamic_power_w(&[1.0], &spans, &frequencies, power_at_frequency),
+            Some(1.0)
+        );
+        assert_eq!(
+            sum_cpu_dynamic_power_w(&[], &spans, &frequencies, power_at_frequency),
+            None
+        );
+        assert_eq!(
+            sum_cpu_dynamic_power_w(&[0.0; 4], &spans, &frequencies, power_at_frequency),
+            Some(0.0)
+        );
+        assert_eq!(
+            sum_cpu_dynamic_power_w(&[1.0; 4], &spans, &[None; 3], power_at_frequency),
+            None
+        );
+    }
+
+    #[test]
+    fn snapshot_api_does_not_estimate_unobserved_frequencies() {
+        assert_eq!(
+            cpu_dynamic_power_w_with_frequencies(&[1.0; 8], &[] as &[(u32, Option<u32>)]),
+            None
+        );
+    }
 
     #[test]
     fn interp_linear_clamp_and_missing() {

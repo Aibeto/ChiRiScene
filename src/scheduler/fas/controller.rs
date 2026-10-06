@@ -11,11 +11,17 @@ use super::fps_window::FpsWindow;
 use super::pid::{PidController, fps_norm};
 use super::policy_controller::PolicyController;
 
+pub(super) const FRAME_FEEDBACK_WARMUP_FRAMES: u32 = 12;
+const FRAME_FEEDBACK_STALE: std::time::Duration = std::time::Duration::from_millis(500);
+
 // [struct]
 // FasController — 主控制器：帧率档位匹配 + PID 控制
 // CPU 负载数据（core_utils/fg_util）由 SystemLoadUpdate 事件喂入
 
 pub struct FasController {
+    pub(super) frame_feedback_enabled: bool,
+    pub(super) warmup_remaining: u32,
+    pub(super) last_frame_at: Option<Instant>,
     pub(super) cfg: FasRulesConfig,
     pub(super) fps_margin: f32,
 
@@ -105,6 +111,9 @@ impl FasController {
         let cfg = FasRulesConfig::default();
         let pid_ctrl = PidController::new(cfg.pid.kp, cfg.pid.ki, cfg.pid.kd);
         Self {
+            frame_feedback_enabled: true,
+            warmup_remaining: FRAME_FEEDBACK_WARMUP_FRAMES,
+            last_frame_at: None,
             fps_margin: 3.0,
             perf_index: cfg.perf_init,
             pid: pid_ctrl,
@@ -181,6 +190,78 @@ impl FasController {
         self.core_utils.extend_from_slice(utils);
     }
 
+    pub fn set_frame_feedback_enabled(&mut self, enabled: bool) {
+        if self.frame_feedback_enabled == enabled {
+            return;
+        }
+        self.frame_feedback_enabled = enabled;
+        self.reset_frame_feedback();
+    }
+
+    /// 新会话清空帧控制状态；12 个有效新帧完成预热，期间只按簇负载调频。
+    pub fn reset_frame_feedback(&mut self) {
+        // set_game 已按 per-app 齿轮集合选定目标；这里只抬高非法目标，全局齿轮情形下保持既定 target 语义
+        let max_gear = self.max_gear();
+        if !self.fps_gears.iter().any(|gear| (gear - self.current_target_fps).abs() < 0.5) {
+            self.current_target_fps = max_gear;
+        }
+        self.reset_runtime();
+        self.refresh_cached_values();
+        self.foreground_max_util = 0.0;
+        self.downgrade_boost_perf_saved = 0.0;
+        self.last_frame_at = None;
+        self.warmup_remaining = FRAME_FEEDBACK_WARMUP_FRAMES;
+        self.init_time = Instant::now()
+            .checked_sub(std::time::Duration::from_millis(
+                self.cfg.cold_boot_ms as u64,
+            ))
+            .unwrap_or_else(Instant::now);
+        for policy in &mut self.policies {
+            policy.freq_hold_frames = 0;
+        }
+    }
+
+    pub(super) fn uses_load_control(&self) -> bool {
+        !self.frame_feedback_enabled
+            || self.warmup_remaining > 0
+            || self
+                .last_frame_at
+                .is_none_or(|timestamp| timestamp.elapsed() >= FRAME_FEEDBACK_STALE)
+    }
+
+    /// load-only 的地板：沿用配置 base，不叠加 current_target_fps bonus（帧反馈暂停时目标帧率与负载无关）。
+    pub(super) fn load_control_floor(&self) -> f32 {
+        self.cfg.perf_floor.min(self.cfg.perf_ceil)
+    }
+
+    /// 负载事件推进热护栏；仅 load-only、热护栏进入或 perf 实际变化时才 apply_freqs——
+    /// 正常 FPS 反馈且热态未变时不得改写 freq_hold_frames/强写节奏。
+    pub fn update_load_control(&mut self) {
+        let previous_perf = self.perf_index;
+        let was_holding = self.thermal_hold;
+        self.update_thermal_hold();
+        let load_only = self.uses_load_control();
+        let entering_hold = !was_holding && self.thermal_hold;
+        if load_only {
+            let demand = self
+                .core_utils
+                .iter()
+                .copied()
+                .filter(|util| util.is_finite())
+                .fold(0.0_f32, f32::max);
+            let ceiling = self.effective_perf_ceil();
+            self.perf_index = demand.clamp(self.load_control_floor().min(ceiling), ceiling);
+        }
+        if load_only || entering_hold {
+            if let Some(cap) = self.thermal_perf_cap() {
+                self.perf_index = self.perf_index.min(cap);
+            }
+        }
+        if load_only || entering_hold || self.perf_index != previous_perf {
+            self.apply_freqs();
+        }
+    }
+
     // [helpers]
     // 辅助方法
 
@@ -225,7 +306,13 @@ impl FasController {
     /// 当前帧率——fps_window 窗口均值（120 帧窗口，60fps 下约 2s），与齿轮决策 avg_fps 同口径供 status.csv 的 fps 列读取，
     /// 窗口无样本（未收到帧/加载退出/切换后已 clear）时返回 None
     pub fn current_fps(&self) -> Option<f32> {
-        if self.fps_window.count() == 0 {
+        // 预热期或帧源已过期（stale fallback 中）不算有效帧率，避免把旧统计当当前 fps
+        if self.warmup_remaining > 0
+            || self
+                .last_frame_at
+                .is_none_or(|timestamp| timestamp.elapsed() >= FRAME_FEEDBACK_STALE)
+            || self.fps_window.count() == 0
+        {
             None
         } else {
             Some(self.fps_window.mean())
@@ -373,5 +460,226 @@ impl FasController {
         self.post_jank_guard_frames = 0;
         self.target_fps_offset = 0.0;
         self.util_sample_timer = Instant::now();
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use crate::fas_types::ClusterProfile;
+    use crate::utils::FastWriter;
+
+    pub(crate) fn controller_with_policy() -> FasController {
+        let mut controller = FasController::new();
+        controller.policies.push(PolicyController::new(
+            FastWriter::new("/nonexistent/fas-test-max".to_string()),
+            FastWriter::new("/nonexistent/fas-test-min".to_string()),
+            vec![100, 200, 300, 400, 500],
+            0,
+            ClusterProfile::default(),
+            500,
+            None,
+            1,
+        ));
+        controller.policies[0].cpu_ids = vec![0];
+        controller.reset_frame_feedback();
+        controller
+    }
+
+    #[test]
+    fn warmup_counts_only_valid_frames_and_defers_pid() {
+        let mut controller = controller_with_policy();
+        controller.update_frame(0);
+        controller.update_frame(1);
+        controller.update_frame(u64::MAX);
+        assert_eq!(controller.warmup_remaining, FRAME_FEEDBACK_WARMUP_FRAMES);
+        for _ in 0..FRAME_FEEDBACK_WARMUP_FRAMES {
+            controller.update_frame(16_666_667);
+        }
+        assert_eq!(controller.warmup_remaining, 0);
+        assert_eq!(controller.ema_actual_ms, 0.0);
+        assert_eq!(
+            controller.fps_window.count(),
+            FRAME_FEEDBACK_WARMUP_FRAMES as usize
+        );
+    }
+
+    #[test]
+    fn suspended_feedback_does_not_consume_frames() {
+        let mut controller = controller_with_policy();
+        controller.set_frame_feedback_enabled(false);
+        controller.update_frame(16_666_667);
+        assert_eq!(controller.warmup_remaining, FRAME_FEEDBACK_WARMUP_FRAMES);
+        assert_eq!(controller.current_fps(), None);
+    }
+
+    #[test]
+    fn load_only_applies_lower_frequency_without_foreground_util() {
+        let mut controller = controller_with_policy();
+        controller.set_frame_feedback_enabled(false);
+        controller.update_cpu_util(1.0);
+        controller.update_core_utils(&[0.1]);
+        controller.update_load_control();
+        assert!(controller.policies[0].current_freq < 500);
+        assert!(controller.perf_index <= controller.effective_perf_floor());
+    }
+
+    #[test]
+    fn load_only_temperature_enforces_cap_below_floor() {
+        let mut controller = controller_with_policy();
+        controller.set_frame_feedback_enabled(false);
+        controller.cfg.core_temp_throttle_perf = 0.1;
+        controller.set_temp_threshold(40.0);
+        controller.set_temperature(41.0);
+        controller.update_core_utils(&[1.0]);
+        controller.update_load_control();
+        assert!(controller.thermal_hold);
+        assert!(controller.perf_index <= 0.1);
+        assert_eq!(controller.policies[0].current_freq, 100);
+    }
+
+    #[test]
+    fn stale_frame_stream_returns_to_load_control() {
+        let mut controller = controller_with_policy();
+        controller.warmup_remaining = 0;
+        controller.last_frame_at = Some(Instant::now() - std::time::Duration::from_secs(1));
+        controller.perf_index = 1.0;
+        controller.update_core_utils(&[0.1]);
+        controller.update_load_control();
+        assert!(controller.policies[0].current_freq < 500);
+    }
+
+    #[test]
+    fn normal_feedback_load_event_does_not_touch_frequency_path() {
+        let mut controller = controller_with_policy();
+        controller.warmup_remaining = 0;
+        controller.last_frame_at = Some(Instant::now());
+        controller.perf_index = 0.7;
+        controller.policies[0].freq_hold_frames = 2;
+        controller.update_core_utils(&[0.9]);
+        controller.update_load_control();
+        // 正常帧反馈路径不得 apply_freqs：freq_hold_frames 不被递减、perf 不被负载改写
+        assert_eq!(controller.policies[0].freq_hold_frames, 2);
+        assert_eq!(controller.perf_index, 0.7);
+    }
+
+    #[test]
+    fn load_only_floor_uses_config_base_without_target_bonus() {
+        let mut controller = controller_with_policy();
+        controller.set_frame_feedback_enabled(false);
+        controller.fps_gears = vec![60.0, 144.0];
+        controller.current_target_fps = 144.0;
+        controller.cfg.perf_floor = 0.10;
+        controller.cfg.perf_ceil = 0.90;
+        controller.update_core_utils(&[0.0]);
+        controller.update_load_control();
+        // 地板用配置 base（0.10），不叠加 144fps 的 target_fps bonus（否则会是 0.35）
+        assert!(controller.effective_perf_floor() > controller.cfg.perf_floor);
+        assert!((controller.perf_index - 0.10).abs() < 1e-6);
+    }
+
+    #[test]
+    fn current_fps_hidden_during_warmup_and_stale() {
+        let mut controller = controller_with_policy();
+        controller.fps_window.push(120.0);
+        assert_eq!(controller.current_fps(), None);
+        controller.warmup_remaining = 0;
+        controller.last_frame_at = Some(Instant::now());
+        assert!(controller.current_fps().is_some());
+        controller.last_frame_at = Some(Instant::now() - std::time::Duration::from_secs(1));
+        assert_eq!(controller.current_fps(), None);
+    }
+
+    #[test]
+    fn stale_fallback_discards_old_stats_and_restarts_warmup() {
+        let mut controller = controller_with_policy();
+        controller.warmup_remaining = 0;
+        controller.jank_streak = 4;
+        controller.ema_actual_ms = 33.0;
+        controller.fps_window.push(999.0);
+        controller.last_frame_at = Some(Instant::now() - std::time::Duration::from_secs(1));
+        controller.update_frame(16_666_667);
+        // stale 后首个有效帧应重置为预热，且不把旧 999 fps 并进新窗口
+        assert_eq!(
+            controller.warmup_remaining,
+            FRAME_FEEDBACK_WARMUP_FRAMES - 1
+        );
+        assert_eq!(controller.fps_window.count(), 1);
+        assert_eq!(controller.jank_streak, 0);
+        assert_eq!(controller.ema_actual_ms, 0.0);
+    }
+
+    #[test]
+    fn consecutive_valid_frames_advance_warmup_without_restart() {
+        let mut controller = controller_with_policy();
+        controller.warmup_remaining = 0;
+        controller.last_frame_at = Some(Instant::now() - std::time::Duration::from_secs(1));
+        controller.update_frame(16_666_667);
+        controller.update_frame(16_666_667);
+        assert_eq!(
+            controller.warmup_remaining,
+            FRAME_FEEDBACK_WARMUP_FRAMES - 2
+        );
+    }
+
+    #[test]
+    fn resume_clears_gear_jank_and_frame_history() {
+        let mut controller = controller_with_policy();
+        controller.current_target_fps = 30.0;
+        controller.fps_gears = vec![60.0, 120.0];
+        controller.jank_streak = 5;
+        controller.ema_actual_ms = 40.0;
+        controller.fps_window.push(30.0);
+        controller.set_frame_feedback_enabled(false);
+        controller.set_frame_feedback_enabled(true);
+        assert_eq!(controller.current_fps(), None);
+        assert_eq!(controller.jank_streak, 0);
+        assert_eq!(controller.ema_actual_ms, 0.0);
+        assert_eq!(controller.current_target_fps, controller.max_gear());
+        assert_eq!(controller.warmup_remaining, FRAME_FEEDBACK_WARMUP_FRAMES);
+    }
+
+    #[test]
+    fn resume_keeps_configured_gear_within_gear_set() {
+        let mut controller = controller_with_policy();
+        controller.fps_gears = vec![30.0, 60.0, 120.0];
+        controller.current_target_fps = 30.0;
+        controller.set_frame_feedback_enabled(false);
+        controller.set_frame_feedback_enabled(true);
+        assert_eq!(controller.current_target_fps, 30.0);
+        assert_eq!(controller.warmup_remaining, FRAME_FEEDBACK_WARMUP_FRAMES);
+    }
+
+    #[test]
+    fn unchanged_feedback_does_not_restart_warmup() {
+        let mut controller = controller_with_policy();
+        controller.update_frame(16_666_667);
+        controller.set_frame_feedback_enabled(true);
+        assert_eq!(
+            controller.warmup_remaining,
+            FRAME_FEEDBACK_WARMUP_FRAMES - 1
+        );
+        assert_eq!(controller.fps_window.count(), 1);
+    }
+
+    #[test]
+    fn load_only_uses_each_clusters_demand() {
+        let mut controller = controller_with_policy();
+        controller.policies.push(PolicyController::new(
+            FastWriter::new("/nonexistent/fas-test-max".to_string()),
+            FastWriter::new("/nonexistent/fas-test-min".to_string()),
+            vec![100, 200, 300, 400, 500],
+            1,
+            ClusterProfile::default(),
+            500,
+            None,
+            1,
+        ));
+        controller.policies[1].cpu_ids = vec![1];
+        controller.set_frame_feedback_enabled(false);
+        controller.update_core_utils(&[0.1, 1.0]);
+        controller.update_load_control();
+        assert!(controller.policies[0].current_freq < controller.policies[1].current_freq);
+        assert_eq!(controller.policies[1].current_freq, 500);
     }
 }

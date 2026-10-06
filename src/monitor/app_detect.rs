@@ -62,9 +62,58 @@ fn get_system_ime_packages() -> HashSet<String> {
     imes
 }
 
-// 包名用 Arc<str> 存放：读方零分配取快照（current_package_arc），仅在包名变化时一次分配
-static CURRENT_PACKAGE: LazyLock<Arc<Mutex<Arc<str>>>> =
-    LazyLock::new(|| Arc::new(Mutex::new(Arc::from(""))));
+/// 前台身份快照：包名用 Arc<str>（读方零分配）、进程启动时间用于防 PID 复用，检测代数随身份变化递增
+#[derive(Clone, Debug)]
+pub struct ForegroundSnapshot {
+    pub package: Arc<str>,
+    pub pid: i32,
+    pub process_starttime: Option<u64>,
+    pub generation: u64,
+}
+
+impl ForegroundSnapshot {
+    /// 身份一致性：包名、PID、进程启动时间三者全同才算同一前台实例；PID 复用或进程重启都会破坏它
+    pub fn identity_matches(&self, other: &ForegroundSnapshot) -> bool {
+        self.package == other.package
+            && self.pid == other.pid
+            && self.process_starttime == other.process_starttime
+    }
+}
+
+// 身份与 raw 提示同锁存放：读方一次锁内拿到一致快照，避免读到半更新的包名/PID 组合
+struct ForegroundState {
+    package: Arc<str>,
+    pid: i32,
+    process_starttime: Option<u64>,
+    generation: u64,
+    raw_package: Arc<str>,
+}
+
+impl Default for ForegroundState {
+    fn default() -> Self {
+        Self {
+            package: Arc::from(""),
+            pid: 0,
+            process_starttime: None,
+            generation: 0,
+            raw_package: Arc::from(""),
+        }
+    }
+}
+
+impl ForegroundState {
+    fn snapshot(&self) -> ForegroundSnapshot {
+        ForegroundSnapshot {
+            package: self.package.clone(),
+            pid: self.pid,
+            process_starttime: self.process_starttime,
+            generation: self.generation,
+        }
+    }
+}
+
+static FOREGROUND_STATE: LazyLock<Mutex<ForegroundState>> =
+    LazyLock::new(|| Mutex::new(ForegroundState::default()));
 static IME_BLOCKLIST: LazyLock<HashSet<String>> = LazyLock::new(get_system_ime_packages);
 
 pub fn get_current_pid() -> i32 {
@@ -73,17 +122,55 @@ pub fn get_current_pid() -> i32 {
 
 /// 当前前台包名（实时，含同模式切换——包名变化即更新）；供 scheduler_ipc 的 devimp snap 行等消费，避免各处维护过期副本
 pub fn get_current_package() -> String {
-    CURRENT_PACKAGE.lock().unwrap().to_string()
+    FOREGROUND_STATE.lock().unwrap().package.to_string()
 }
 
 /// 当前前台包名的**零分配**快照：Arc<str> 克隆只递增引用计数；供周期块（如 1s 的 FAS 巡检）代替 get_current_package()
 pub fn current_package_arc() -> Arc<str> {
-    CURRENT_PACKAGE.lock().unwrap().clone()
+    FOREGROUND_STATE.lock().unwrap().package.clone()
+}
+
+/// 前台身份快照（包名/PID/启动时间/检测代数）一次锁内取齐，供窗口核验与 FAS 门控绑定同一实例；
+/// 无效身份（空包名或非正 PID）返回 None，调用方不得把缺失当成合法身份复用
+pub fn foreground_snapshot() -> Option<ForegroundSnapshot> {
+    let snapshot = FOREGROUND_STATE.lock().unwrap().snapshot();
+    (snapshot.pid > 0 && !snapshot.package.is_empty()).then_some(snapshot)
+}
+
+/// 未经过 ignored/IME 筛选的 cgroup 候选，仅作为窗口核验提示，不证明可见性；检测失败即清空（Unknown），不沿用旧包名
+pub fn raw_foreground_package_arc() -> Arc<str> {
+    FOREGROUND_STATE.lock().unwrap().raw_package.clone()
+}
+
+fn set_raw_foreground_package(package: &str) {
+    let mut state = FOREGROUND_STATE.lock().unwrap();
+    if state.raw_package.as_ref() != package {
+        state.raw_package = Arc::from(package);
+    }
+}
+
+/// 检测代数：身份（包名/PID/启动时间）变化或同身份强制刷新时递增；旧代数事件据此被后续快照拒绝
+fn next_generation(
+    current: &ForegroundSnapshot,
+    candidate: &ForegroundSnapshot,
+    force_bump: bool,
+) -> u64 {
+    if force_bump || !current.identity_matches(candidate) {
+        current.generation.wrapping_add(1)
+    } else {
+        current.generation
+    }
 }
 
 /// 检测到新包名时更新**预处理**：com.xx:push 子进程名一律先归一到主包名（com.xx）——子进程与所属包调度语义就是同一应用（厂商框架改写 cmdline 首段同理）归一发生在唯一入口，下游（规则匹配、
 /// FAS/特调白名单、亲和迁移、devimp 分组、通知）拿到的都已是主包名，无需再剥后缀
-fn set_current_package(pkg: &str, pid: i32) {
+/// 返回更新后的快照：事件生产取发送时快照的 generation 绑定检测代数，不在消费端重标
+fn set_current_package(
+    pkg: &str,
+    pid: i32,
+    process_starttime: Option<u64>,
+    force_bump: bool,
+) -> ForegroundSnapshot {
     let base = match pkg.split_once(':') {
         Some((b, _suffix)) => {
             debug!(
@@ -97,11 +184,118 @@ fn set_current_package(pkg: &str, pid: i32) {
         }
         None => pkg,
     };
-    *CURRENT_PACKAGE.lock().unwrap() = Arc::from(base);
+    let mut state = FOREGROUND_STATE.lock().unwrap();
+    let candidate = ForegroundSnapshot {
+        package: Arc::from(base),
+        pid,
+        process_starttime,
+        generation: state.generation,
+    };
+    let generation = next_generation(&state.snapshot(), &candidate, force_bump);
+    state.package = candidate.package;
+    state.pid = pid;
+    state.process_starttime = process_starttime;
+    state.generation = generation;
     CURRENT_PID.store(pid, Ordering::Relaxed);
+    state.snapshot()
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    fn snapshot(
+        package: &str,
+        pid: i32,
+        starttime: Option<u64>,
+        generation: u64,
+    ) -> ForegroundSnapshot {
+        ForegroundSnapshot {
+            package: Arc::from(package),
+            pid,
+            process_starttime: starttime,
+            generation,
+        }
+    }
+
+    #[test]
+    fn same_package_restart_updates_identity() {
+        let previous = snapshot("com.example.game", 42, Some(1000), 7);
+        let restarted = snapshot("com.example.game", 43, Some(1000), 7);
+        assert!(!previous.identity_matches(&restarted));
+        assert_eq!(next_generation(&previous, &restarted, false), 8);
+    }
+
+    #[test]
+    fn same_package_and_pid_with_new_starttime_updates_identity() {
+        let previous = snapshot("com.example.game", 42, Some(1000), 7);
+        let reused_pid = snapshot("com.example.game", 42, Some(2000), 7);
+        assert!(!previous.identity_matches(&reused_pid));
+        assert_eq!(next_generation(&previous, &reused_pid, false), 8);
+    }
+
+    #[test]
+    fn unreadable_starttime_is_not_legal_reuse() {
+        let previous = snapshot("com.example.game", 42, Some(1000), 7);
+        let unreadable = snapshot("com.example.game", 42, None, 7);
+        assert!(!previous.identity_matches(&unreadable));
+        assert_eq!(next_generation(&previous, &unreadable, false), 8);
+    }
+
+    #[test]
+    fn forced_refresh_advances_generation_so_old_events_are_rejected() {
+        let previous = snapshot("com.example.game", 42, Some(1000), 7);
+        let unchanged = snapshot("com.example.game", 42, Some(1000), 7);
+        assert_eq!(
+            next_generation(&previous, &unchanged, false),
+            previous.generation
+        );
+        assert_eq!(
+            next_generation(&previous, &unchanged, true),
+            previous.generation.wrapping_add(1)
+        );
+    }
+
+    #[test]
+    fn rapid_return_replaces_pending_pid_without_package_debounce() {
+        assert_eq!(
+            confirmed_foreground_pid("com.example.game", "com.example.game", 43, 42),
+            43
+        );
+        assert_eq!(
+            confirmed_foreground_pid("com.example.game", "com.example.other", 43, 42),
+            42
+        );
+    }
 }
 
 // [cgroup]
+
+/// 归一主包名（去掉 com.xx:push 子进程后缀），与 set_current_package 的归一保持同一口径
+fn base_package(pkg: &str) -> &str {
+    pkg.split_once(':').map_or(pkg, |(base, _suffix)| base)
+}
+
+/// 读取 /proc/<pid>/stat 第 22 字段（进程启动时间）：防同包同 PID 的 ABA；读取失败返回 None，调用方不得当作合法复用
+fn read_process_starttime(pid: i32) -> Option<u64> {
+    let stat = utils::read_file_content(&format!("/proc/{pid}/stat")).ok()?;
+    stat.rsplit_once(')')
+        .and_then(|(_, fields)| fields.split_whitespace().nth(19))
+        .and_then(|value| value.parse().ok())
+}
+
+fn confirmed_foreground_pid(
+    previous_package: &str,
+    detected_package: &str,
+    detected_pid: i32,
+    previous_pid: i32,
+) -> i32 {
+    if detected_package == previous_package && detected_pid > 0 {
+        detected_pid
+    } else {
+        previous_pid
+    }
+}
 
 /// 判断是否为有效的用户应用包名
 fn is_valid_user_app(pkg: &str, ignored_apps: &[String]) -> bool {
@@ -151,24 +345,41 @@ fn is_valid_user_app(pkg: &str, ignored_apps: &[String]) -> bool {
 
 /// 倒序扫描（Android 把最新前台放在 procs 末尾，命中即返回）；反向迭代 + 复用 cmdline 路径缓冲，每轮省一次 Vec 与 String 分配**刻意不做「内容未变则复用」短路**：
 /// 冷启动期间 pid 先入组、exec 后 cmdline 才可读，缓存会漏检这类前台切换
-fn check_cgroup_path(path: &str, ignored_apps: &[String]) -> Option<(String, i32)> {
+fn check_cgroup_path(
+    path: &str,
+    ignored_apps: &[String],
+) -> Option<(Option<String>, Option<(String, i32)>)> {
     let Ok(content) = utils::read_file_content(path) else {
         return None;
     };
+    let mut raw_candidate = None;
     let mut cmdline_path = String::with_capacity(32);
     for pid_str in content.split_whitespace().rev() {
+        let Ok(pid) = pid_str.parse::<i32>() else {
+            continue;
+        };
+        if pid <= 0 {
+            continue;
+        }
         cmdline_path.clear();
         let _ =
             std::fmt::Write::write_fmt(&mut cmdline_path, format_args!("/proc/{pid_str}/cmdline"));
         if let Ok(cmdline) = utils::read_file_content(&cmdline_path) {
             let pkg_name = cmdline.split('\0').next().unwrap_or("").trim();
+            let candidate_base = base_package(pkg_name);
+            if raw_candidate.is_none()
+                && candidate_base.contains('.')
+                && !candidate_base.starts_with('/')
+                && !candidate_base.starts_with('.')
+            {
+                raw_candidate = Some(candidate_base.to_string());
+            }
             if is_valid_user_app(pkg_name, ignored_apps) {
-                let pid = pid_str.parse::<i32>().unwrap_or(0);
-                return Some((pkg_name.to_string(), pid));
+                return Some((raw_candidate, Some((pkg_name.to_string(), pid))));
             }
         }
     }
-    None
+    Some((raw_candidate, None))
 }
 
 /// 从 Cgroup 读取前台应用
@@ -180,22 +391,28 @@ fn get_focused_app_from_cgroup(ignored_apps: &[String]) -> Result<(String, i32),
     ];
 
     let cached = VALID_CGROUP_IDX.load(Ordering::Relaxed);
-    if cached < paths.len() {
-        if let Some(res) = check_cgroup_path(paths[cached], ignored_apps) {
-            return Ok(res);
+    let mut raw_candidate = None;
+    let mut read_succeeded = false;
+    let path_indices = (cached < paths.len())
+        .then_some(cached)
+        .into_iter()
+        .chain((0..paths.len()).filter(|index| *index != cached));
+    for index in path_indices {
+        if let Some((candidate, filtered)) = check_cgroup_path(paths[index], ignored_apps) {
+            read_succeeded = true;
+            if raw_candidate.is_none() {
+                raw_candidate = candidate;
+            }
+            if let Some(foreground) = filtered {
+                set_raw_foreground_package(raw_candidate.as_deref().unwrap_or(""));
+                VALID_CGROUP_IDX.store(index, Ordering::Relaxed);
+                return Ok(foreground);
+            }
         }
     }
-
-    for (i, path) in paths.iter().enumerate() {
-        if i == cached {
-            continue;
-        }
-        if let Some(res) = check_cgroup_path(path, ignored_apps) {
-            VALID_CGROUP_IDX.store(i, Ordering::Relaxed);
-            return Ok(res);
-        }
+    if read_succeeded {
+        set_raw_foreground_package(raw_candidate.as_deref().unwrap_or(""));
     }
-
     Err("No valid app found".into())
 }
 
@@ -423,6 +640,7 @@ pub fn app_detection_loop(
 
     let temp_sensor_path = utils::find_cpu_temp_path().unwrap_or_default();
     let mut last_package = String::new();
+    let mut last_process_starttime: Option<u64> = None;
     let mut last_mode = String::new();
     let mut last_screen_state = true;
 
@@ -453,6 +671,7 @@ pub fn app_detection_loop(
 
             if current_screen_state {
                 last_package.clear();
+                last_process_starttime = None;
                 pending_package.clear();
                 last_mode.clear();
                 *LAST_DETERMINED_MODE.lock().unwrap() = String::new();
@@ -461,6 +680,7 @@ pub fn app_detection_loop(
         }
 
         if !current_screen_state {
+            set_raw_foreground_package("");
             thread::sleep(Duration::from_secs(1));
             continue;
         }
@@ -469,15 +689,26 @@ pub fn app_detection_loop(
         // guard 不跨文件读持有——cgroup 扫描是文件 IO，拉长持锁会让 config_watcher 写入空等
         let ignored_apps = config_arc.lock().unwrap().ignored_apps.clone();
 
-        let (detected_pkg, detected_pid) = get_focused_app_from_cgroup(&ignored_apps)
-            .unwrap_or_else(|_| (last_package.clone(), get_current_pid()));
+        let (detected_pkg, detected_pid) = match get_focused_app_from_cgroup(&ignored_apps) {
+            Ok(focused) => focused,
+            Err(_) => {
+                // 检测失败：清空 raw 提示（Unknown），不沿用旧包名让窗口核验拿旧候选续命
+                set_raw_foreground_package("");
+                (last_package.clone(), get_current_pid())
+            }
+        };
 
         let mut final_pkg = last_package.clone();
-        let mut final_pid = get_current_pid();
+        let mut final_pid = confirmed_foreground_pid(
+            &last_package,
+            &detected_pkg,
+            detected_pid,
+            get_current_pid(),
+        );
 
         // 无阻塞防抖逻辑
         if detected_pkg != last_package && !detected_pkg.is_empty() {
-            if detected_pkg != pending_package {
+            if detected_pkg != pending_package || detected_pid != pending_pid {
                 pending_package = detected_pkg.clone();
                 pending_pid = detected_pid;
                 debounce_start = Instant::now();
@@ -516,7 +747,18 @@ pub fn app_detection_loop(
             0.0
         };
 
-        if last_package != final_pkg || force_refresh {
+        let prev_pid = get_current_pid();
+        // 低频路径：本轮回合只读一次 starttime（仅有效 PID），用于同包同 PID 的 ABA 判定，不新增高频扫描
+        let final_starttime = if final_pid > 0 {
+            read_process_starttime(final_pid)
+        } else {
+            None
+        };
+        let identity_changed = base_package(&final_pkg) != last_package
+            || final_pid != prev_pid
+            || final_starttime != last_process_starttime;
+
+        if identity_changed || force_refresh {
             if !final_pkg.is_empty() {
                 debug!(
                     "{}",
@@ -530,8 +772,9 @@ pub fn app_detection_loop(
                         )
                     )
                 );
-                let prev_pid = get_current_pid();
-                set_current_package(&final_pkg, final_pid);
+                // 同身份强制刷新也递增 generation：旧 mode 事件不会被后续快照接受
+                let snapshot =
+                    set_current_package(&final_pkg, final_pid, final_starttime, force_refresh);
                 // 前台 PID 变化即时广播（cpu_monitor/fps 共用）：仅 pid 真正变化且有效时发
                 if final_pid != prev_pid && final_pid > 0 {
                     debug!(
@@ -568,21 +811,24 @@ pub fn app_detection_loop(
                         pid: final_pid,
                         mode: new_mode.clone(),
                         temperature: current_temp,
+                        detection_generation: snapshot.generation,
                     });
                     last_mode = new_mode;
                     // 同步镜像：DOWN 停摆退出时调度线程按它对齐接管
                     *LAST_DETERMINED_MODE.lock().unwrap() = last_mode.clone();
                 } else if crate::common::is_chiri_soc()
                     && !last_package.is_empty()
-                    && last_package != final_pkg
+                    && identity_changed
                 {
                     // 同模式前台切换（ChiRi 专属）：补发 PackageSwitch 供 FAS 切换 uprobe 目标；首轮与亮屏后 last_package 为空不触发
                     let _ = tx.send(DaemonEvent::PackageSwitch {
                         package_name: final_pkg.clone(),
                         pid: final_pid,
+                        detection_generation: snapshot.generation,
                     });
                 }
-                last_package = final_pkg;
+                last_package = base_package(&final_pkg).to_string();
+                last_process_starttime = final_starttime;
             } else {
                 debug!("{}", t("app-detect-no-app"));
             }

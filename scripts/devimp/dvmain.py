@@ -12,9 +12,8 @@
   不是实际频率；比值 = cap%（实际频率看 snap 的 `cpu_cur_khz`）
 - `decision` / `reason` 分布；`deb_up`/`deb_down` 的**最大连续值**（升/降频速率限制
   streak 计数，不是错误计数——输出文件头已注明）
-- 热：`thermal_change` 事件序列（`batt=/cpu=/cap=/free=`）与**真正落在压制带
-  `(soft_perf_cap, free_above)` 内的 tick 占比**（`cap=85` 不等于已压制；
-  `free_above` 是性能豁免档，不是温度带；tuned 段 cap 列为 `-`）
+- 热：`thermal_change` 事件序列与候选区间 tick 占比（不是实际 clamp 证据）；
+  `free_above` 仅在 `clamp_heavy=false` 时豁免，配置缺失不能认定豁免。
 - snap 侧：每 policy 的 `cpu_cur_khz` vs `cpu_max_khz`、`cpu_governor`，
   `wakeups`/`migrations` **÷2**（2s 增量）；附迁移率量级带供对照
 - **播放态帧间隔直方图**（`event` 行 `decision=playback_fps`）：只统计活跃窗口（n ≥
@@ -62,7 +61,7 @@ def build(files, min_n):
     if mixed:
         out.append(f"  [!] 同一包内出现多值 {mixed} —— 跨值对比无效（功耗绝对值不可比）")
     else:
-        out.append("  [ok] 单一版本/机型，可跨批次对比")
+        out.append("  [ok] 已解析版本/机型无冲突；不代表跨场景功耗可比")
     ts_cols = sorted({h["ts_column"] for h in heads if h.get("ts_column")})
     out.append(f"  ts-column : {', '.join(ts_cols) if ts_cols else '(缺)'}")
     out.append("")
@@ -165,7 +164,7 @@ def mode_package(files, cols, min_n):
             if fa is not None and cap / 100.0 < perf < fa:
                 ctr["in_band"] += 1
             elif fa is not None and perf >= fa:
-                ctr["exempt(>=free_above)"] += 1
+                ctr["above_free(candidate, clamp_heavy unknown)"] += 1
             elif perf <= cap / 100.0:
                 ctr["below_cap(min 无操作)"] += 1
         band[key] = ctr
@@ -176,6 +175,7 @@ def mode_package(files, cols, min_n):
     out.append("#     deb_up/deb_down 是 up_wait/down_wait 的**连续方向 streak 计数**，")
     out.append("#     不是错误计数；下表报「最大连续值」。")
     out.append("#     `-` = 本行该列无样本（如 FAS/tuned 段无 tick → 无决策值、无 cap）。")
+    out.append("#     in_band 仅几何候选区间；clamp_heavy/实际下发未确认，不是受钳制占比。")
     hdr = (f"{'batch':22s} {'mode':9s} {'package':24s} {'n_snap':>6s} {'n_tick':>6s} {'span':23s} "
            f"{'battT':>5s} {'cpuT':>5s} {'capAvg':>6s} | "
            f"{'l_cap%':>6s} {'b_cap%':>6s} {'p_cap%':>6s} | {'debUp':>5s} {'debDn':>5s} | "
@@ -222,8 +222,9 @@ def mode_package(files, cols, min_n):
 
 def thermal(files, cols):
     I = dc.index_map(cols)
-    out = ["# [5] 热：thermal_change 事件与压制带 `(soft_perf_cap, free_above)` 内 tick 占比",
-           "#     `cap=85` ≠ 已压制：压制只落在 (cap, free_above) 区间，`>= free_above` 不钳制；",
+    out = ["# [5] 热：thermal_change 事件与候选区间 tick 占比（不是实际钳制证明）",
+           "#     free_above 仅 clamp_heavy=false 时豁免；clamp_heavy=true 恒钳，不受 free_above 豁免。",
+           "#     日志没有配置快照时不推定 clamp_heavy，需核对当时有效配置与实际下发。",
            "#     tuned 段（playback/akmode 等）cap 列恒为 `-`（FAS/tuned 接管时不走 CLG 限幅）。"]
     events = collections.defaultdict(list)
     for fn in files:

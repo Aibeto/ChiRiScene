@@ -469,7 +469,7 @@ impl TunedGovernor {
 
         // main_ tick 行数据（每个 policy 一行：policy_id / cluster / util / decision / cur_max / hw_max），只在开发记录开启时收集（关闭时零开销、零分配、零写入）
         let diag = crate::logger::diag_active();
-        let mut main_rows: Vec<(i32, &'static str, String, &'static str, u32, u32)> = Vec::new();
+        let mut main_rows: Vec<(i32, &'static str, f32, &'static str, u32, u32)> = Vec::new();
 
         for c in &mut self.clusters {
             let range: &std::ops::Range<usize> = if c.core_name == "little" {
@@ -590,14 +590,7 @@ impl TunedGovernor {
             }
 
             if diag {
-                main_rows.push((
-                    c.policy_id,
-                    c.core_name,
-                    format!("{:.2}", util),
-                    decision,
-                    c.current_max,
-                    hw_max,
-                ));
+                main_rows.push((c.policy_id, c.core_name, util, decision, c.current_max, hw_max));
             }
         }
 
@@ -608,17 +601,17 @@ impl TunedGovernor {
                 crate::logger::main_tick(
                     *policy_id,
                     name,
-                    util,
+                    *util,
                     0,
                     0,
-                    "-",
-                    "-",
-                    &cur_max.to_string(),
-                    &hw_max.to_string(),
+                    None,
+                    None,
+                    Some(*cur_max),
+                    Some(*hw_max),
                     decision,
                     0,
                     0,
-                    "-",
+                    None,
                     false,
                 );
             }

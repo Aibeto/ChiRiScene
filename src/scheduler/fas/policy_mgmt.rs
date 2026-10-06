@@ -174,16 +174,22 @@ impl FasController {
             self.freq_force_timer = Instant::now();
         }
 
-        let mut effective_perf = self.perf_index.clamp(0.0, 1.0);
+        self.update_thermal_hold();
+        let load_only = self.uses_load_control();
+        let ceiling = self.effective_perf_ceil();
+        let thermal_cap = self.thermal_perf_cap();
+        let mut effective_perf = self.perf_index.clamp(0.0, ceiling);
 
         // 利用率软封顶 — 使用 EMA 平滑值，增加多重保护防止断崖
         let in_jank = self.jank_cooldown > 0 || self.jank_streak > 0;
         let floor = self.effective_perf_floor();
+        // load-only（暂停反馈/预热/stale）解除帧率关联，地板用配置 base 而非含 target_fps bonus 的 effective floor
+        let load_floor = self.load_control_floor();
         let near_floor = self.perf_index < floor + 0.10;
         // 热降频检测：fg_util 骤降但 perf_index 高 → 内核在限频，util 数据不可信
         let thermal_suspected = self.ema_fg_util < 0.25 && self.perf_index > 0.50;
 
-        if !in_jank && !near_floor && !thermal_suspected && self.ema_fg_util > 0.05 {
+        if !load_only && !in_jank && !near_floor && !thermal_suspected && self.ema_fg_util > 0.05 {
             let divisor = self.cfg.util_cap_divisor.max(0.1);
             let util_cap = (self.ema_fg_util / divisor).clamp(0.40, 1.0);
             if effective_perf > util_cap {
@@ -192,10 +198,33 @@ impl FasController {
             }
         }
 
-        let ratio = effective_perf;
-
+        if let Some(cap) = thermal_cap {
+            effective_perf = effective_perf.min(cap);
+        }
         for policy in &mut self.policies {
-            if policy.freq_hold_frames > 0 && !force {
+            let ratio = if load_only {
+                let demand = if policy.cpu_ids.is_empty() {
+                    // 拓扑缺失时使用整机保守需求，不把 policy ID 猜作 CPU 区间。
+                    self.core_utils
+                        .iter()
+                        .copied()
+                        .filter(|util| util.is_finite())
+                        .fold(0.0_f32, f32::max)
+                } else {
+                    policy
+                        .cpu_ids
+                        .iter()
+                        .filter_map(|cpu| self.core_utils.get(*cpu))
+                        .copied()
+                        .filter(|util| util.is_finite())
+                        .fold(0.0_f32, f32::max)
+                };
+                let bounded = demand.clamp(load_floor.min(ceiling), ceiling);
+                thermal_cap.map_or(bounded, |cap| bounded.min(cap))
+            } else {
+                effective_perf
+            };
+            if policy.freq_hold_frames > 0 && !force && !load_only && thermal_cap.is_none() {
                 policy.freq_hold_frames = policy.freq_hold_frames.saturating_sub(1);
                 continue;
             }
@@ -215,7 +244,7 @@ impl FasController {
                 .abs();
 
                 // 变化小于迟滞阈值且非强制时跳过
-                if diff <= self.cfg.freq_hysteresis && !force {
+                if diff <= self.cfg.freq_hysteresis && !force && thermal_cap.is_none() {
                     continue;
                 }
 

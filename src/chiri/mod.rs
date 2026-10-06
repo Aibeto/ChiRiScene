@@ -1,8 +1,10 @@
 //! mod.rs: [consts] [thermal] [policies] [aff_snap] [affinity] [threads] [config_watcher] [ipc_main] [ipc_state]
 //! [evt_loop] [evt_screen] [evt_mode] [evt_pkg_switch] [evt_load] [evt_frame] [evt_reload] [evt_bpf]
-//! [panic_recovery]
+//! [panic_recovery] [fas_focus]
 
 use anyhow::Result;
+use std::borrow::Cow;
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock, mpsc};
@@ -181,7 +183,10 @@ pub mod scheduler;
 pub mod affinity;
 pub mod core_ctl;
 pub mod cpu_load_governor;
+pub mod diag_cost;
+pub mod diag_worker;
 pub mod energy_cost;
+mod fas_focus;
 pub mod fas_manager;
 pub mod fast;
 pub mod governor;
@@ -198,6 +203,225 @@ use crate::logger;
 use crate::utils;
 use config::Config;
 use scheduler::CpuScheduler;
+
+// [fas_focus]
+fn fas_package_ready(package: &str) -> bool {
+    crate::common::is_chiri_soc()
+        && crate::common::fas_enabled()
+        && crate::common::fas_available()
+        && crate::common::fas_whitelist_entry(package)
+            .and_then(crate::common::fas_app_config)
+            .is_some()
+}
+
+/// 供 line 内部复用的一致前台快照。
+#[derive(Clone, Debug)]
+pub(crate) struct FasForeground {
+    pub package: Arc<str>,
+    pub pid: i32,
+    pub process_starttime: Option<u64>,
+    pub generation: u64,
+}
+
+impl FasForeground {
+    pub(crate) fn is_valid(&self) -> bool {
+        self.pid > 0 && !self.package.is_empty()
+    }
+}
+
+fn fas_foreground_snapshot() -> Option<FasForeground> {
+    let snapshot = crate::monitor::app_detect::foreground_snapshot()?;
+    Some(FasForeground {
+        package: snapshot.package,
+        pid: snapshot.pid,
+        process_starttime: snapshot.process_starttime,
+        generation: snapshot.generation,
+    })
+}
+
+fn fas_last_determined_mode() -> Option<String> {
+    let determined = crate::monitor::app_detect::last_determined_mode();
+    Some(determined)
+}
+
+fn fas_raw_foreground_package() -> Arc<str> {
+    crate::monitor::app_detect::raw_foreground_package_arc()
+}
+
+/// 事件携带的 PID 只是普通整数，须借 /proc 读出 starttime 才能与快照做 ABA 判据。
+fn manager_process_starttime(pid: i32) -> Option<u64> {
+    if pid <= 0 {
+        return None;
+    }
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let after_comm = stat.rsplit_once(')')?.1;
+    let starttime = after_comm.split_whitespace().nth(19)?;
+    starttime.parse().ok()
+}
+
+fn reconcile_fas_focus(
+    manager: &mut fas_manager::FasManager,
+    probe: &crate::monitor::window_visibility::WindowVisibilityProbe,
+    confirmed_focus: &mut Option<(crate::monitor::window_visibility::WindowRequest, Instant)>,
+    pending_mode: &mut Option<String>,
+    screen_on: bool,
+) {
+    use crate::monitor::window_visibility::{WindowRequest, WindowVisibility};
+    use fas_focus::{FocusDecision, decide_focus};
+
+    let Some(owner) = manager.active_pkg() else {
+        if confirmed_focus.take().is_some() {
+            probe.invalidate();
+        }
+        return;
+    };
+    let owner = owner.to_string();
+    if !screen_on {
+        let feedback_changed = manager.frame_source().is_some_and(|source| source.frame_feedback);
+        manager.set_frame_feedback_enabled(false);
+        let had_confirmation = confirmed_focus.take().is_some();
+        if feedback_changed || had_confirmation {
+            probe.invalidate();
+        }
+        return;
+    }
+
+    let snapshot = fas_foreground_snapshot();
+    let owner_process_alive = manager.owner_is_alive();
+    let owner_matches = snapshot.as_ref().is_some_and(|snapshot| {
+        manager.owner_matches_process(snapshot.pid, snapshot.process_starttime)
+    }) && owner_process_alive;
+    let raw_foreground = fas_raw_foreground_package();
+    let owner_allowed = fas_package_ready(&owner);
+    let foreground_is_owner = snapshot
+        .as_ref()
+        .is_some_and(|snapshot| snapshot.is_valid() && snapshot.package.as_ref() == owner);
+    let fast_same = foreground_is_owner
+        && raw_foreground.as_ref() == owner
+        && owner_matches
+        && owner_allowed;
+    if fast_same {
+        let feedback_changed = manager.frame_source().is_some_and(|source| !source.frame_feedback);
+        manager.set_frame_feedback_enabled(true);
+        manager.cancel_delayed_exit();
+        *pending_mode = None;
+        let had_confirmation = confirmed_focus.take().is_some();
+        if feedback_changed || had_confirmation {
+            probe.invalidate();
+        }
+        return;
+    }
+
+    // 进程已死：不读窗口证明续期，直接走延迟退出。
+    let deadline_managed = !owner_process_alive || (foreground_is_owner && !owner_matches);
+    let make_request = |source: crate::monitor::FrameSource| WindowRequest {
+        package: owner.clone(),
+        pid: source.pid,
+        generation: source.generation,
+        foreground: raw_foreground.to_string(),
+    };
+    let Some(source) = manager.frame_source() else { return; };
+    let initial_request = make_request(source);
+    let previous_focus = probe
+        .latest(&initial_request)
+        .filter(|observation| {
+            observation.visibility == WindowVisibility::Focused
+                && observation.observed_at.elapsed() < fas_focus::WINDOW_EVIDENCE_MAX_AGE
+        })
+        .map(|observation| observation.observed_at)
+        .or_else(|| {
+            confirmed_focus
+                .as_ref()
+                .filter(|(request, observed_at)| {
+                    *request == initial_request
+                        && observed_at.elapsed() < fas_focus::WINDOW_EVIDENCE_MAX_AGE
+                })
+                .map(|(_, observed_at)| *observed_at)
+        });
+    // 非 Focused 结果会先暂停反馈；缓存只在 fresh Focused 时保留。
+    if previous_focus.is_none() {
+        manager.set_frame_feedback_enabled(false);
+    }
+    let Some(source) = manager.frame_source() else { return; };
+    let request = make_request(source);
+    probe.request(request.clone());
+    let observation = probe.latest(&request);
+    let evidence = observation
+        .as_ref()
+        .filter(|observation| {
+            observation.visibility != WindowVisibility::Focused
+                || observation.observed_at.elapsed() < fas_focus::WINDOW_EVIDENCE_MAX_AGE
+        })
+        .map(|observation| {
+            let decision = match observation.visibility {
+                WindowVisibility::Focused => FocusDecision::Focused,
+                WindowVisibility::VisibleUnfocused => FocusDecision::LoadOnly,
+                WindowVisibility::Hidden | WindowVisibility::Unknown => FocusDecision::Grace,
+            };
+            (decision, observation.observed_at.elapsed())
+        })
+        .or_else(|| {
+            previous_focus.map(|observed_at| (FocusDecision::Focused, observed_at.elapsed()))
+        });
+    let decision = if !owner_process_alive {
+        FocusDecision::Grace
+    } else if deadline_managed {
+        decide_focus(false, false, None)
+    } else if owner_allowed {
+        decide_focus(false, false, evidence)
+    } else {
+        FocusDecision::Grace
+    };
+    match decision {
+        FocusDecision::Focused => {
+            let observed_at = observation
+                .as_ref()
+                .map(|value| value.observed_at)
+                .or(previous_focus)
+                .unwrap();
+            let feedback_changed = !source.frame_feedback;
+            manager.set_frame_feedback_enabled(true);
+            manager.cancel_delayed_exit();
+            *pending_mode = None;
+            if feedback_changed {
+                probe.invalidate();
+            }
+            if let Some(restored_source) = manager.frame_source() {
+                let restored_request = make_request(restored_source);
+                *confirmed_focus = Some((restored_request.clone(), observed_at));
+                probe.request(restored_request);
+            }
+        }
+        FocusDecision::LoadOnly => {
+            *confirmed_focus = None;
+            manager.set_frame_feedback_enabled(false);
+            manager.cancel_delayed_exit();
+            *pending_mode = None;
+        }
+        FocusDecision::Grace => {
+            *confirmed_focus = None;
+            manager.set_frame_feedback_enabled(false);
+            manager.request_delayed_exit();
+            *pending_mode = Some(fas_delayed_exit_target(manager, snapshot.as_ref()));
+        }
+    }
+}
+
+/// 延迟退出目标：只有实例仍在、且当前快照确实不是 FAS 前台时才采信determine 的实时模式，防止用旧 generation 的目标。
+fn fas_delayed_exit_target(
+    manager: &fas_manager::FasManager,
+    snapshot: Option<&FasForeground>,
+) -> String {
+    let owner = manager.active_pkg();
+    let determined = fas_last_determined_mode().unwrap_or_default();
+    let snapshot_is_owner = snapshot.is_some_and(|snapshot| {
+        owner.is_some_and(|owner| snapshot.package.as_ref() == owner)
+    });
+    if snapshot_is_owner || determined.is_empty() || determined == "fas" {
+        return "default".to_string();
+    }
+    determined
+}
 
 // [policies]
 /// CPU 频率策略簇信息
@@ -230,28 +454,150 @@ pub fn get_cpu_policies() -> Vec<CpuPolicy> {
     policies
 }
 
+/// policy 发现缓存 TTL（秒）：非空缓存距上次成功扫描 ≥ 该值即重扫比对 id 列表。
+/// **语义边界**：运行期新增/删除 policy 最多延迟该时长被发现；空结果/失败不永久缓存（见 `policy_cache_merge`）
+const POLICY_RESCAN_TTL: Duration = Duration::from_secs(60);
+
+// [policies]
+/// `cpu_freq_snapshot` 的 policy **发现结果与基础路径**缓存（仅缓存发现，不缓存实际频率值）。
+/// 非空才缓存；空结果不永久缓存、失败保留旧列表且不推进时刻（下次照常重试）。与逐值读取解耦：
+/// 取到列表后释放锁，实际 cur/min/max/gov 由调用方在锁外逐个读
+static POLICIES_CACHE: OnceLock<Mutex<Option<PolicyBases>>> = OnceLock::new();
+
+/// 缓存的 policy 发现结果：id 列表（升序）+ 各 policy 基础路径 + 上次成功扫描时刻
+struct PolicyBases {
+    ids: Vec<i32>,
+    bases: Vec<String>,
+    scanned_at: Instant,
+}
+
+impl PolicyBases {
+    /// 由 id 列表构造缓存项（基础路径 = `/sys/devices/system/cpu/cpufreq/policy<id>`）
+    fn from_ids(ids: Vec<i32>, scanned_at: Instant) -> Self {
+        let bases = ids
+            .iter()
+            .map(|id| format!("/sys/devices/system/cpu/cpufreq/policy{id}"))
+            .collect();
+        Self {
+            ids,
+            bases,
+            scanned_at,
+        }
+    }
+
+    /// 克隆 (id, 基础路径) 供锁外读取
+    fn entries(&self) -> Vec<(i32, String)> {
+        self.ids
+            .iter()
+            .cloned()
+            .zip(self.bases.iter().cloned())
+            .collect()
+    }
+}
+
+/// 纯逻辑（便于测试）：是否需要一次新的发现扫描——无缓存，或距上次成功扫描 ≥ [`POLICY_RESCAN_TTL`]
+fn policy_cache_needs_scan(cache: &Option<PolicyBases>, now: Instant) -> bool {
+    match cache {
+        Some(c) => now.duration_since(c.scanned_at) >= POLICY_RESCAN_TTL,
+        None => true,
+    }
+}
+
+/// 纯逻辑（不读 sysfs，便于测试）：合并一次发现结果。
+/// - 结果非空：有增删 → 重建（含基础路径）；无增删 → 仅刷新扫描时刻（避免每次调用重扫）；
+/// - 结果为空：**不清空**旧缓存、**不更新**时刻（空期间每次调用照常重试，不永久缓存空结果）
+/// - `scan_started_at` 为本次扫描**开始**时刻：并发保护——扫描在锁外进行，若两个线程同时在扫，
+///   后完成的「旧扫描」不得覆盖先完成的「新扫描」。只接受开始时刻不早于缓存时刻的结果。
+fn policy_cache_merge(
+    cache: &mut Option<PolicyBases>,
+    ids: Vec<i32>,
+    scan_started_at: Instant,
+    now: Instant,
+) {
+    if ids.is_empty() {
+        return;
+    }
+    if let Some(c) = cache {
+        if scan_started_at < c.scanned_at {
+            return;
+        }
+    }
+    match cache {
+        Some(c) if c.ids == ids => c.scanned_at = now,
+        _ => *cache = Some(PolicyBases::from_ids(ids, now)),
+    }
+}
+
+/// 取当前 policy 的 (id, 基础路径) 列表（必要时重扫）。**锁外做 sysfs 访问**：
+/// 判定/扫描/写缓存各自为短临界区，扫描（read_dir + boost 读）与逐值读取都不持锁
+fn policy_bases() -> Vec<(i32, String)> {
+    let cell = POLICIES_CACHE.get_or_init(|| Mutex::new(None));
+    // 1) 是否需要重扫（短临界区只读缓存状态，随后释放锁）
+    let need_scan = {
+        let guard = cell.lock().unwrap_or_else(|e| e.into_inner());
+        policy_cache_needs_scan(&guard, Instant::now())
+    };
+    if need_scan {
+        // 2) 扫描在锁外（read_dir + boost 读，避免持锁做 sysfs 访问）。
+        //    先取扫描开始时刻，供锁内合并做并发保护（旧扫描不得覆盖新结果）
+        let scan_started = Instant::now();
+        let ids: Vec<i32> = get_cpu_policies().into_iter().map(|p| p.id).collect();
+        // 3) 写缓存在锁内（短临界区，无 sysfs 访问）
+        let mut guard = cell.lock().unwrap_or_else(|e| e.into_inner());
+        policy_cache_merge(&mut guard, ids, scan_started, Instant::now());
+    }
+    // 4) 取缓存（克隆 id + 基础路径），释放锁；实际值读取在调用方锁外
+    let guard = cell.lock().unwrap_or_else(|e| e.into_inner());
+    let cache: &Option<PolicyBases> = &guard;
+    cache.as_ref().map(PolicyBases::entries).unwrap_or_default()
+}
+
 /// main_ snap 行用：各 policy 的**实际**当前频率/上限/下限/调速器，`;` 分隔、每项`policy<id>:<值>`，读不到写 `-`只在诊断开启时调用（每秒一次 sysfs 读），
-/// 不做缓存——值会被内核 governor 改写，缓存必过期与 tick 行 cur_freq_khz/max_freq_khz （调度器决策值）互补：那两列是「我们写了多少」，这里是「内核实际是多少」
+/// 与 tick 行 cur_freq_khz/max_freq_khz（调度器决策值）互补：那两列是「我们写了多少」，这里是「内核实际是多少」
+/// **C3**：policy **发现结果**（id 列表 + 基础路径）走缓存（非空才缓存、60s 重扫），实际值仍每次照读——
+/// 故输出在静态拓扑下逐字节不变；运行期新增 policy 最多延迟 [`POLICY_RESCAN_TTL`]（60s）被发现
 pub fn cpu_freq_snapshot() -> (String, String, String, String) {
+    // 先取（必要时重扫）发现结果并释放锁，再逐个读实际值节点（不跨节点读取持锁）
+    let entries: Vec<(i32, (String, String, String, String))> = policy_bases()
+        .into_iter()
+        .map(|(id, base)| {
+            let read = |f: &str| -> String {
+                std::fs::read_to_string(format!("{base}/{f}"))
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or_else(|_| "-".to_string())
+            };
+            (
+                id,
+                (
+                    read("scaling_cur_freq"),
+                    read("scaling_max_freq"),
+                    read("scaling_min_freq"),
+                    read("scaling_governor"),
+                ),
+            )
+        })
+        .collect();
+    render_freq_snapshot(&entries)
+}
+
+/// 纯函数（便于逐字节对拍，不读 sysfs）：把 (policy id, 四项值) 渲染成 4 条 `;` 分隔的
+/// `policy<id>:<值>` 串，顺序 = 入参顺序，读不到的值由调用方传 `-`
+fn render_freq_snapshot(
+    entries: &[(i32, (String, String, String, String))],
+) -> (String, String, String, String) {
     let (mut cur, mut max, mut min, mut gov) =
         (String::new(), String::new(), String::new(), String::new());
-    for p in get_cpu_policies() {
-        let base = format!("/sys/devices/system/cpu/cpufreq/policy{}", p.id);
-        let read = |f: &str| -> String {
-            std::fs::read_to_string(format!("{base}/{f}"))
-                .map(|s| s.trim().to_string())
-                .unwrap_or_else(|_| "-".to_string())
-        };
-        let push = |dst: &mut String, v: String| {
-            if !dst.is_empty() {
-                dst.push(';');
-            }
-            dst.push_str(&format!("policy{}:{}", p.id, v));
-        };
-        push(&mut cur, read("scaling_cur_freq"));
-        push(&mut max, read("scaling_max_freq"));
-        push(&mut min, read("scaling_min_freq"));
-        push(&mut gov, read("scaling_governor"));
+    let push = |dst: &mut String, id: i32, v: &str| {
+        if !dst.is_empty() {
+            dst.push(';');
+        }
+        dst.push_str(&format!("policy{id}:{v}"));
+    };
+    for (id, (c, ma, mi, g)) in entries {
+        push(&mut cur, *id, c);
+        push(&mut max, *id, ma);
+        push(&mut min, *id, mi);
+        push(&mut gov, *id, g);
     }
     (cur, max, min, gov)
 }
@@ -572,6 +918,547 @@ fn aff_snap_due(every: usize) -> bool {
     AFF_SNAP_TICK.fetch_add(1, Ordering::Relaxed) % every.max(1) as u64 == 0
 }
 
+// [selfcost]
+// ── B1/B3：@S 同步成本测量（真实采样路径计时入账）；D1：可选诊断 worker 交接（默认关闭）──
+// 累计器由**调用线程独占**（thread_local，无全局锁），仅在 `diag_active()` ∩ `aff_snap_due`
+// 已门控的采样块内计时；关闭时不探测、不改变原采样口径。
+
+/// @S 同步成本测量的线程局部状态：累计器 + 会话标识 + 窗口起点 + 上轮诊断开闭边沿
+#[derive(Default)]
+struct AffCostState {
+    stats: diag_cost::CostStats,
+    /// 会话标识（进入会话时取一次 epoch 秒，窗口内稳定不变）
+    session: String,
+    /// 当前窗口起点（None = 未开始计时）
+    window_open_at: Option<Instant>,
+    /// 当前窗口起点的 epoch 秒（写入摘要的 `window_start`）
+    window_open_epoch: u64,
+    /// 上轮 `diag_active()`：会话开闭边沿判定
+    was_diag: bool,
+    /// 慢调用告警节流（≥ [`diag_cost::SLOW_NS`]，最多每 [`AFF_COST_SLOW_WARN`] 一条）
+    last_slow_warn: Option<Instant>,
+    /// 上一次 flush 的摘要写入成本 + **其实际发生窗口**（延后到下一次 flush 报出，
+    /// 但归属窗口用这里存的 `(window_start, window_end)`，而非被报告时的当前窗口）。
+    /// 单独存放而**不**留在 `stats` 里：避免 `reset()` 把它当成「本窗口」入账导致归属错位。
+    pending_summary: Option<(u64, u64, diag_cost::BlockStats)>,
+}
+
+// 累计器按调用线程独占
+thread_local! {
+    static AFF_COST: RefCell<AffCostState> = RefCell::new(AffCostState::default());
+}
+
+/// 窗口时长：每 60s 输出一次摘要并清零（不足 60s 的尾窗在会话结束时输出）
+const AFF_COST_WINDOW: Duration = Duration::from_secs(60);
+/// 慢调用告警节流间隔（只影响告警频度，不影响入账）
+const AFF_COST_SLOW_WARN: Duration = Duration::from_secs(10);
+
+/// 当前墙钟 epoch 秒（仅作会话/窗口标识，无需本地时区）
+fn aff_cost_epoch() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// [B2] 输出一个窗口的 @S 自测量摘要（[`diag_cost::Block::ALL`] 三个 block 各一行）并清零累计器。
+/// 空窗口不落行（避免产生无意义文件）；写失败记 `write_error` 并告警，**不阻断原 aff 采集**。
+///
+/// **Summary 归属约定**：`summary` 行代表「上一次结算写入本身」的成本，其 `window_*` 是该写入
+/// **实际发生的区间**，**不是**被报告时的当前窗口——`Build`/`Write` 才是当前窗口。故上一轮
+/// flush 的写入成本存在 [`AffCostState::pending_summary`]（连其自身窗口），本轮先 `absorb` 进
+/// `Summary` 块、用 pending 自己的窗口成行报出；本轮的写入成本再存入 pending 留给下一轮。
+fn aff_cost_flush(st: &mut AffCostState) {
+    let window_end_epoch = aff_cost_epoch();
+    // 1. 把上一次 flush 延后报出的 summary 写入成本并入 Summary 块，并记住它**自己的**窗口
+    let summary_window: Option<(u64, u64)> = match st.pending_summary.take() {
+        Some((ws, we, bs)) => {
+            st.stats.absorb(diag_cost::Block::Summary, &bs);
+            Some((ws, we))
+        }
+        None => None,
+    };
+    let total: u64 = diag_cost::Block::ALL
+        .iter()
+        .map(|b| st.stats.stats(*b).count)
+        .sum();
+    if total > 0 {
+        let cur_ws = st.window_open_epoch.to_string();
+        let cur_we = window_end_epoch.to_string();
+        let mut ok = true;
+        let s0 = Instant::now();
+        let sc0 = diag_cost::thread_cpu_ns();
+        for block in diag_cost::Block::ALL {
+            // 本窗口该块无入账则不落行（Build/Write 看当前窗口；Summary 见下）
+            if st.stats.stats(block).count == 0 {
+                continue;
+            }
+            // 2. Build/Write 用当前窗口；Summary 用 pending 自己的窗口（本窗口无 pending 则跳过）
+            let (ws, we) = match block {
+                diag_cost::Block::Summary => match summary_window {
+                    Some((pws, pwe)) => (pws.to_string(), pwe.to_string()),
+                    None => continue,
+                },
+                _ => (cur_ws.clone(), cur_we.clone()),
+            };
+            let line = st.stats.summary_line(&st.session, &ws, &we, block);
+            if !crate::logger::selfcost_write_line(&line) {
+                ok = false;
+            }
+        }
+        let sc1 = diag_cost::thread_cpu_ns();
+        let summary_cpu = match (sc0, sc1) {
+            (Some(a), Some(b)) => Some(b.saturating_sub(a)),
+            _ => {
+                st.stats.note_clock_error();
+                None
+            }
+        };
+        if !ok {
+            st.stats.note_write_error();
+            log::warn!(
+                "[selfcost] 摘要写入失败（会话={} 窗口=[{},{}]），该窗口测量不完整；原 aff 帧不受影响",
+                st.session,
+                cur_ws,
+                cur_we
+            );
+        }
+        // 3. 记录本次摘要写入成本，归属窗口取 [刚关闭窗口的 end, 当前 epoch]（写入确实发生在此区间）
+        let mut tmp = diag_cost::CostStats::new();
+        tmp.record(
+            diag_cost::Block::Summary,
+            s0.elapsed().as_nanos() as u64,
+            summary_cpu,
+        );
+        let bs = tmp.stats(diag_cost::Block::Summary).clone();
+        let write_window_end = aff_cost_epoch();
+        log::debug!(
+            "[selfcost] summary 写入成本归属窗口 [{},{}]（下一次 flush 报出）",
+            window_end_epoch,
+            write_window_end
+        );
+        st.pending_summary = Some((window_end_epoch, write_window_end, bs));
+        // 4. 复位本窗口块统计（保留错误计数；已 absorb 的 pending 随 reset 一并清空）
+        st.stats.reset();
+    } else {
+        st.stats.reset();
+    }
+    // 5. 开下一个窗口
+    st.window_open_at = Some(Instant::now());
+    st.window_open_epoch = window_end_epoch;
+}
+
+/// 会话结束的尾窗排空：[`aff_cost_flush`] 把本次结算的 summary 写入成本延后存入
+/// [`AffCostState::pending_summary`]（留给「下一个窗口」报出）；但会话结束时已没有下一个窗口，
+/// 这里把 `pending_summary` 按其**自身窗口边界**单独补写一行，否则该成本**永久丢失**。
+/// 之后整会话清零（不再依赖「Summary 残留在 `CostStats` 里」——它已不留在 `stats`）。
+fn aff_cost_drain_tail(st: &mut AffCostState) {
+    if let Some((ws, we, bs)) = st.pending_summary.take() {
+        // 并入 Summary 块以复用 `summary_line` 的字段序与会话级错误计数
+        st.stats.absorb(diag_cost::Block::Summary, &bs);
+        let window_start = ws.to_string();
+        let window_end = we.to_string();
+        let line = st
+            .stats
+            .summary_line(&st.session, &window_start, &window_end, diag_cost::Block::Summary);
+        if !crate::logger::selfcost_write_line(&line) {
+            log::warn!("[selfcost] 会话尾窗残留摘要写入失败（会话={}）", st.session);
+        }
+    }
+    st.stats.reset_session();
+}
+
+/// [B1] 记一帧 @S 的 build/write 两段成本（**两段 CPU 区间不重叠**：build=c0→c1、write=c1→c2），
+/// 并按窗口节流输出摘要。每次调用都入账（不因慢而跳过）；慢只做节流告警。
+/// 段内任一端时钟读取失败 → 该段 `cpu_ns=None` 并记一次时钟错误（不兜底为 0 或进程时间）
+fn aff_cost_record(
+    t0: Instant,
+    c0: Option<u64>,
+    t1: Instant,
+    c1: Option<u64>,
+    t2: Instant,
+    c2: Option<u64>,
+) {
+    AFF_COST.with(|cell| {
+        let mut st = cell.borrow_mut();
+        let wall_build = t1.duration_since(t0).as_nanos() as u64;
+        let wall_write = t2.duration_since(t1).as_nanos() as u64;
+        let build_cpu = match (c0, c1) {
+            (Some(a), Some(b)) => Some(b.saturating_sub(a)),
+            _ => {
+                st.stats.note_clock_error();
+                None
+            }
+        };
+        let write_cpu = match (c1, c2) {
+            (Some(a), Some(b)) => Some(b.saturating_sub(a)),
+            _ => {
+                st.stats.note_clock_error();
+                None
+            }
+        };
+        st.stats.record(diag_cost::Block::Build, wall_build, build_cpu);
+        st.stats.record(diag_cost::Block::Write, wall_write, write_cpu);
+        // 慢调用只做节流告警（不影响入账）；不额外读 /proc
+        if (wall_build >= diag_cost::SLOW_NS || wall_write >= diag_cost::SLOW_NS)
+            && st
+                .last_slow_warn
+                .map_or(true, |t| t.elapsed() >= AFF_COST_SLOW_WARN)
+        {
+            st.last_slow_warn = Some(Instant::now());
+            log::warn!(
+                "[selfcost] @S 同步块墙钟偏慢 build={:.1}ms write={:.1}ms（阈值 {}ms，仅告警）",
+                wall_build as f64 / 1e6,
+                wall_write as f64 / 1e6,
+                diag_cost::SLOW_NS / 1_000_000
+            );
+        }
+        // 窗口到期（每 60s）：输出累计摘要并清零。窗口未开（会话 tick 尚未跑）时先开窗，
+        // **不立即结算**——否则首帧刚入账就被当成一个只有 1 帧的窗口写出
+        match st.window_open_at {
+            Some(t) if t.elapsed() >= AFF_COST_WINDOW => aff_cost_flush(&mut st),
+            None => {
+                let now_epoch = aff_cost_epoch();
+                st.window_open_at = Some(Instant::now());
+                st.window_open_epoch = now_epoch;
+                if st.session.is_empty() {
+                    st.session = format!("s{now_epoch}");
+                }
+            }
+            _ => {}
+        }
+    });
+}
+
+/// [B1/B3] 会话开闭结算（由调度线程每秒调用，累计器线程独占）：
+/// - diag 假→真：起新会话（会话 id / 窗口起点重置、`reset_session` 全清含错误计数），
+///   并按需启动 D1 worker、递增代际；
+/// - diag 真→假：输出不足 60s 尾窗、排空延后的 summary 写入成本、关闭 selfcost 文件句柄、停 worker（均幂等）。
+///
+/// 尾窗写入口 `logger::selfcost_write_line` 不以 `diag_active()` 为门（只要求 devimp/ 目录已存在），
+/// 因此「真→假」这一轮尾窗仍能落盘。
+fn aff_cost_session_tick(diag_now: bool) {
+    AFF_COST.with(|cell| {
+        let mut st = cell.borrow_mut();
+        if diag_now {
+            if !st.was_diag {
+                st.was_diag = true;
+                let now_epoch = aff_cost_epoch();
+                st.session = format!("s{now_epoch}");
+                st.window_open_at = Some(Instant::now());
+                st.window_open_epoch = now_epoch;
+                st.stats.reset_session();
+                diag_worker_start();
+                diag_worker_bump_generation();
+            }
+            return;
+        }
+        if st.was_diag {
+            // 会话结束：输出尾窗（不足 60s 也输出），随后关闭 selfcost、停 worker。
+            // 尾窗写入口 `logger::selfcost_write_line` 不以 `diag_active()` 为门（只要求 devimp/ 目录已存在），
+            // 故 diag 已转假时尾窗仍能落盘。
+            aff_cost_flush(&mut st);
+            // 排空 flush 延后存入 `pending_summary` 的本次写入成本（会话结束没有下一个窗口可报）
+            aff_cost_drain_tail(&mut st);
+            crate::logger::selfcost_close();
+            diag_worker_shutdown();
+            st.was_diag = false;
+            st.window_open_at = None;
+        }
+    });
+}
+
+// [diag_worker_handoff] D1（**默认关闭**，不改变现网行为）
+/// D1 诊断渲染/写入 worker 交接开关：**默认 false** —— 保留现同步路径（`logger::aff_snapshot`
+/// 直接调用）为默认，先固定原始基线。置 true 后调度线程仍在原采样时点完成采样/差分，
+/// 仅把已渲染行交 worker 写（见 [`aff_snapshot_dispatch`]）。
+/// 启用前置（**缺一不可**）：B 原始基线已固定、D4 整体迁移单独评审、前台切换代际隔离已接入
+/// （[`diag_worker_bump_generation`] 由调度线程在前台包变化时调用）；风险见 `diag_worker` 模块头。
+const DIAG_WORKER_ENABLED: bool = false;
+
+/// D1 worker 句柄（仅在 [`DIAG_WORKER_ENABLED`] 时由 [`diag_worker_start`] 创建；默认始终为 None）。
+/// 用 `Arc` 持有：提交路径要**先克隆句柄、释放本锁**，再在锁外做可能阻塞的交付——
+/// 否则队满阻塞会把 worker 生命周期管理/停机/代际切换一起卡在这把锁上
+/// （违反计划「不能把串行阻塞换成共享锁等待」）
+static DIAG_WORKER: OnceLock<Mutex<Option<Arc<diag_worker::DiagWorker>>>> = OnceLock::new();
+
+/// 启动诊断 worker（仅 [`DIAG_WORKER_ENABLED`] 生效）；幂等，已启动则 no-op
+fn diag_worker_start() {
+    if !DIAG_WORKER_ENABLED {
+        return;
+    }
+    let mut g = DIAG_WORKER
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if g.is_none() {
+        *g = Some(Arc::new(diag_worker::DiagWorker::start()));
+        log::info!("[diag] render worker started");
+    }
+}
+
+/// 停机/会话切换：排空并释放诊断 worker（幂等）；默认关闭时始终为 None，等价 no-op
+fn diag_worker_shutdown() {
+    let taken = {
+        let mut g = DIAG_WORKER
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        g.take()
+    };
+    if let Some(w) = taken {
+        w.shutdown();
+        log::info!("[diag] render worker stopped");
+    }
+}
+
+/// 前台切换/诊断重开时递增 worker 代际（仅启用时生效）
+fn diag_worker_bump_generation() {
+    if !DIAG_WORKER_ENABLED {
+        return;
+    }
+    let g = DIAG_WORKER
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if let Some(w) = g.as_ref() {
+        w.bump_generation();
+    }
+}
+
+// [diag_identity]
+/// 读 `/proc/<pid>/stat` 第 22 字段 `starttime`（进程启动以来 tick 数，PID 复用判别用）；
+/// 读不到返回 0（=unknown，按「无法判别复用」处理）。
+/// 用于身份隔离：同包同 PID 的进程重启 / PID 回收必须被识别为身份变化。
+/// 从**最后一个 `)`** 之后切分：comm（第 2 字段）可能含空格与括号，跨过 comm 后字段序才稳定
+/// （参考 `logger::self_cpu_ms` 的同一处理）；`rest` 起始于整体第 3 字段(state)，starttime(22) → 索引 19。
+fn proc_starttime_ticks(pid: i32) -> u64 {
+    if pid <= 0 {
+        return 0;
+    }
+    let Ok(text) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+        return 0;
+    };
+    let Some((_, rest)) = text.rsplit_once(')') else {
+        return 0;
+    };
+    rest.split_whitespace()
+        .nth(19)
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
+/// 前台身份三元组：包名 + pid + 进程 starttime(tick)。starttime 参与判定使**同包同 PID 复用**
+/// （进程重启 / PID 回收）也被视为身份变化——否则新旧进程的帧会被混拼进同一前台键下。
+type DiagIdentity = (String, i32, u64);
+
+// [D1]
+/// 配置 Debug 指纹规范化：按缩进保留层级，仅排序匿名 map 容器。
+/// 列表与命名结构保持原序；只适用于 Config 的派生 Debug 格式。
+fn canonical_debug(dbg: &str) -> String {
+    // 每个非空行一个节点；children 存子节点下标。
+    struct Node {
+        line: String,
+        indent: usize,
+        children: Vec<usize>,
+    }
+    let mut nodes: Vec<Node> = Vec::new();
+    let mut roots: Vec<usize> = Vec::new();
+    // 栈保存「当前打开的父链」，栈顶即下一个更大缩进行的父节点。
+    let mut stack: Vec<usize> = Vec::new();
+    for raw in dbg.lines() {
+        let indent = raw.len() - raw.trim_start().len();
+        let idx = nodes.len();
+        nodes.push(Node {
+            line: raw.to_string(),
+            indent,
+            children: Vec::new(),
+        });
+        // 弹掉缩进 >= 本行的节点，栈顶即缩进更小的父节点。
+        while matches!(stack.last(), Some(&t) if nodes[t].indent >= indent) {
+            stack.pop();
+        }
+        match stack.last() {
+            Some(&parent) => nodes[parent].children.push(idx),
+            None => roots.push(idx),
+        }
+        stack.push(idx);
+    }
+    // 前序 DFS；子节点按自身行规范化文本排序后入栈（逆序入栈以按序弹出）。
+    let mut out = String::new();
+    let mut visit: Vec<usize> = roots.iter().rev().copied().collect();
+    while let Some(idx) = visit.pop() {
+        out.push_str(&nodes[idx].line);
+        out.push('\n');
+        let mut kids = nodes[idx].children.clone();
+        // Debug 的匿名花括号容器是 map；列表和命名结构保持原序。
+        let parent_line = nodes[idx].line.trim();
+        if parent_line == "{" || parent_line.ends_with(": {") {
+            kids.sort_by(|&left, &right| {
+                nodes[left].line.trim().cmp(nodes[right].line.trim())
+            });
+        }
+        for &k in kids.iter().rev() {
+            visit.push(k);
+        }
+    }
+    // 收尾与旧的 `lines().join("\n")` 一致：不留末尾换行。
+    if out.ends_with('\n') {
+        out.pop();
+    }
+    out
+}
+
+/// 全量配置身份：派生 Debug 保留字段层级与列表顺序，map 条目规范化排序。
+fn diag_config_identity(cfg: &Config) -> String {
+    canonical_debug(&format!("{cfg:#?}"))
+}
+
+/// 当前配置身份（跨线程：config_watcher 重载时写、调度线程提交帧时读填
+/// `FrameTask.config_identity`）。默认关闭 D1 时不参与实际路径。
+static DIAG_CONFIG_IDENTITY: OnceLock<RwLock<String>> = OnceLock::new();
+
+/// 写入当前配置身份，返回是否**发生变化**（变化即由调用方 [`diag_worker_bump_generation`]）。
+/// 首次写入（原为空串）不算变化——避免启动即无谓递增代际。
+fn diag_config_identity_set(cfg: &Config) -> bool {
+    let id = diag_config_identity(cfg);
+    let cell = DIAG_CONFIG_IDENTITY.get_or_init(|| RwLock::new(String::new()));
+    let mut g = cell.write().unwrap_or_else(|e| e.into_inner());
+    let changed = !g.is_empty() && *g != id;
+    *g = id;
+    changed
+}
+
+/// 读取当前配置身份串（未初始化时为空串）；供 [`aff_snapshot_dispatch`] 填 `config_identity`。
+fn diag_config_identity_get() -> String {
+    DIAG_CONFIG_IDENTITY
+        .get_or_init(|| RwLock::new(String::new()))
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+/// [D1] 前台身份变化判定（纯函数，便于测试）：三元组（包名 / pid / starttime）**任一**变化即 `true`。
+/// `prev` 为 `None`（首次）视为变化；调用方据此决定是否 bump 代际（首次不 bump，见调度循环）。
+/// starttime 参与判定使「同包同 PID 复用」（进程重启 / PID 回收）也被识别为身份变化。
+fn diag_identity_changed(prev: &Option<DiagIdentity>, now: &DiagIdentity) -> bool {
+    match prev {
+        Some(p) => p.0 != now.0 || p.1 != now.1 || p.2 != now.2,
+        None => true,
+    }
+}
+
+/// 采样时点冻结的**一致快照**（仅 D1 启用时构造；默认路径为 `None`）。
+/// 在 `t0`**之前**、且在前台身份判定（「身份变化 → bump 代际」）**之后**一次性取齐，
+/// 保证帧任务携带的身份/fg_pid/代际/帧号都取自采样时点（而非 build/写出/交付时点）。
+///
+/// **它消除两类错配**：
+/// - 「新 PID 配旧 generation」：fg_pid/fg_starttime 复用身份判定同一次取值，generation 在此
+///   冻结（dispatch 不再重读）；本 tick 检测到前台切换时 bump 已先发生，快照必携带新代际；
+/// - 配置指纹、代际与采样参数在配置读锁内读取，热重载在对应写锁内发布。
+struct SampledFrame {
+    /// 单调采样时点，不包含 build 与队列等待。
+    sampled_at: Instant,
+    /// 采样时点墙钟（`MMDD-HHmmss`），作帧头 `@S ts=`
+    ts: String,
+    /// 采样时点前台 pid（与 `build_aff_snapshot` 同一次取值，避免两次读取不一致）
+    fg_pid: i32,
+    /// 采样时点前台进程 `starttime`（tick，0 = 读不到）：与 `fg_pid` 合起来识别同包同 PID 的进程重启 / PID 回收
+    fg_starttime: u64,
+    /// 采样时点的当前配置身份串（与 `generation`/`sequence` 同段读取）
+    config_identity: String,
+    /// 采样时点冻结的诊断代际（**dispatch 不得再重新读取**）：与前台身份判定在同一 tick 内、
+    /// 且晚于「身份变化 → bump 代际」，故新前台必配新代际，直接用它组 `FrameId`。
+    generation: u64,
+    /// 采样时点分配并冻结的帧序号（与采样顺序一致）：dispatch 直接取用，不再在交付时取号；
+    /// 被丢弃的帧会留下序号空洞（可接受，离线按 generation+sequence 判序）。
+    sequence: u64,
+}
+
+/// 采样身份冻结：调用方须持配置读锁，且已完成前台代际更新。
+fn diag_sample_frame(
+    ts: String,
+    fg_pid: i32,
+    fg_starttime: u64,
+    worker: &diag_worker::DiagWorker,
+) -> SampledFrame {
+    SampledFrame {
+        sampled_at: Instant::now(),
+        ts,
+        fg_pid,
+        fg_starttime,
+        // 配置读锁覆盖指纹与代际读取。
+        config_identity: diag_config_identity_get(),
+        generation: worker.generation(),
+        sequence: worker.next_sequence(),
+    }
+}
+
+/// D1：@S 帧交付入口。
+///
+/// **时间语义分离（有意迁移，仅在 [`DIAG_WORKER_ENABLED`] 启用后生效）**：
+/// - **同步路径（默认）**：调 `logger::aff_snapshot`，帧头 `@S ts=` 取**写出时刻**
+///   （原始语义，逐字节不变；此时 `sampled` 恒为 `None`）；
+/// - **异步路径（D1 启用）**：帧头 `@S ts=` 取**采样时点**（`sampled.ts`，由调用方在采样时点取），
+///   使整帧被异步延迟写出时 `@S ts=` 仍与 `status.csv` 时序配对。
+///
+/// 两者 ts 来源不同是**有意的语义迁移**：默认关闭时完全不触发，行为与旧同步路径一致。
+///
+/// **锁序**：先克隆 `Arc<DiagWorker>` 并释放 [`DIAG_WORKER`] 锁，再在锁外调用 `submit`。
+/// `submit` 在队满时会阻塞（保真优先回压），必须发生在锁外——否则停机、代际切换、
+/// worker 生命周期管理会被同一次阻塞卡住，等于把串行阻塞换成了共享锁等待（计划明令禁止）。
+///
+/// **失败处理**：`submit` 返回 `Err(task)` 时整帧所有权被交还，这里**回退到 drain 出口**
+/// （`aff_snapshot_drain`，采样 ts、不受诊断门控），不做静默丢帧（保 `full=1`、帧序号与完整
+/// 快照契约）；与 worker 共用同一出口，保住整帧与**采样时点**。回退只发生在 D1 启用路径上
+/// （`sampled == Some` 且 worker 曾可用），默认同步路径不经过此处。回退发生在锁外，不引入锁等待。
+///
+/// **代际/帧号冻结**：`generation`/`sequence` 由调用方在采样时点冻结进 [`SampledFrame`]，
+/// 本函数**不**再调用 `w.generation()`/`w.next_sequence()`——避免交付时点重读造成「新 PID
+/// 配旧 generation」；此处取 worker 句柄**仅**用于 `submit`。
+fn aff_snapshot_dispatch(rows: Vec<String>, full: bool, sampled: Option<SampledFrame>) -> bool {
+    if DIAG_WORKER_ENABLED {
+        if let Some(s) = sampled {
+            let worker = {
+                let g = DIAG_WORKER
+                    .get_or_init(|| Mutex::new(None))
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                g.as_ref().map(Arc::clone)
+            };
+            if let Some(w) = worker {
+                let id = diag_worker::FrameId {
+                    generation: s.generation,
+                    sequence: s.sequence,
+                };
+                let task = diag_worker::FrameTask {
+                    id,
+                    sampled_at: s.sampled_at,
+                    ts: s.ts,
+                    rows,
+                    full,
+                    fg_pid: s.fg_pid,
+                    fg_starttime: s.fg_starttime,
+                    config_identity: s.config_identity,
+                };
+                return match w.submit(task) {
+                    Ok(()) => true,
+                    Err(task) => {
+                        // worker 已退出/通道断开：回退 drain 出口（采样 ts、不受诊断门控），
+                        // 保住整帧（不丢帧、不重复写、不被 diag_active 门控丢弃）
+                        log::warn!("[diag] render worker 不可用，本帧回退 drain 出口写入");
+                        crate::logger::aff_snapshot_drain(&task.rows, task.full, &task.ts);
+                        false
+                    }
+                };
+            }
+        }
+    }
+    // 默认路径 / 无采样帧：原始同步语义，帧头 ts 取写出时刻
+    crate::logger::aff_snapshot(&rows, full);
+    false
+}
+
 /// `uclamp` 槽的占位值：本版不下钻、恒 -1（预留字段），故除刷新帧外该槽永不落盘
 const AFF_UCLAMP_RESERVED: i32 = -1;
 
@@ -787,7 +1674,11 @@ fn build_aff_snapshot(
 
     // 线程采样：stat 差分（首见/首帧只建基线 util=0）+ comm；core 取 stat 的 processor 字段（读不到 -1）。采样失败（线程已退出）即不落行
     // 末位 = 本帧要落的 `t` 行（None = 全槽未变、省行；差分的核心：采样了也可能省行）
-    let mut th_rows: Vec<(u32, u32, String, Option<String>)> = Vec::with_capacity(tids.len());
+    // [C1] 第 3 字段为**已净化的 comm token**（`aff_token` 结果）：只在需要时构造（惰性），
+    // 未构造的省行路径存占位 `Cow::Borrowed("")`。因 `s.comm` 是迭代内局部值、token 要跨迭代
+    // 存入本表，故存 `'static`（构造时 `into_owned`，借用不跨迭代保存）
+    let mut th_rows: Vec<(u32, u32, Cow<'static, str>, Option<String>)> =
+        Vec::with_capacity(tids.len());
     // 本帧是否刷新帧（帧头据此打 `full=1`，下游按它重建存活集合）
     let refresh;
     {
@@ -802,6 +1693,10 @@ fn build_aff_snapshot(
         let frame = st.frame;
         // 刷新帧：首帧必全量（全建基线、util 全 0），此后每 30 帧一次（防漂移）
         refresh = first || frame % AFF_SNAP_REFRESH_FRAMES == 0;
+        // [C1] 本帧「已采样到的 pid」集合：用于判定每 pid 本帧首条线程——其净化 comm 是补位
+        // p 行的兜底来源，即使该线程本帧省行也必须保留 token（把旧实现「所有线程都带 token」
+        // 的隐式依赖显式化，保证下方 `pid_comm` 兜底仍取到每 pid 首条的净化 comm）
+        let mut seen_pid_frame: HashSet<u32> = HashSet::new();
         for &(pid, tid, full) in &tids {
             let (home, pinned) = th_state.get(&tid).copied().unwrap_or((-1, false));
             // 长尾且已退冷：本轮**不采样、不落行**（省 stat 读与行；语义由「缺失行 = 与上次落盘相同」承载）。刷新帧或热窗内的仍逐帧采样
@@ -812,6 +1707,17 @@ fn build_aff_snapshot(
                 // 线程已退出：顺手回收基线（原地 remove，不整表重建）
                 st.base.remove(&tid);
                 continue;
+            };
+            // [C1] 本帧该 pid 首条被采样线程（见上方 seen_pid_frame 说明）：即使本线程省行，
+            // 也要为它保留净化 comm，供 p 行兜底
+            let first_pid = seen_pid_frame.insert(pid);
+            // [C1] 净化 comm 并落成 `'static`：`aff_token` 可能借用 `s.comm`，而 token 要跨迭代
+            // 存进 th_rows，故必须 `into_owned()`（借用不跨迭代保存）。此闭包只在需要时调用，
+            // 常态省行路径完全不构造——**注意**：一旦构造就必然分配一次，
+            // 所以 C1 的实际收益是「减少需要构造 token 的线程数」，不是快照内部零分配。
+            // `ThSnap.comm` 的比对仍用**原始** `s.comm`（不参与本 token）
+            let clean_comm = |c: &str| -> Cow<'static, str> {
+                crate::logger::aff_token(c).into_owned().into()
             };
             // 窗口分母取该 tid 自己的上次采样时刻：冷长尾跨刷新帧时窗口 = 实际间隔
             let win_secs = match st.base.get(&tid) {
@@ -826,7 +1732,8 @@ fn build_aff_snapshot(
                 _ => 0.0,
             };
             let util = util_pct.round() as i32;
-            let comm_tok = crate::logger::aff_token(&s.comm);
+            // [C1] 惰性 token 槽：None = 尚未构造（本帧不需要落 comm）
+            let mut comm_tok: Option<Cow<'static, str>> = None;
             // 基线**原地更新**（复用 entry），顺带按槽级差分组出本帧要落的行
             let row = match st.base.get_mut(&tid) {
                 Some(e) => {
@@ -857,11 +1764,12 @@ fn build_aff_snapshot(
                     e.pin = pinned;
                     e.pid = pid;
                     if refresh {
-                        // 刷新帧：全量重锚（下游据此重建存活集合），不做槽级省略
+                        // 刷新帧：全量重锚（下游据此重建存活集合），不做槽级省略；comm 必构造
+                        comm_tok = Some(clean_comm(&s.comm));
                         Some(render_t_row(
                             pid,
                             tid,
-                            Some(&comm_tok),
+                            comm_tok.as_ref().map(|c| &**c),
                             Some(util),
                             Some(s.processor),
                             Some(home),
@@ -869,11 +1777,15 @@ fn build_aff_snapshot(
                             Some(AFF_UCLAMP_RESERVED),
                         ))
                     } else if any_ch {
-                        // 常态：只写变化的那部分，未变槽 `-`、尾部未变槽整段省略
+                        // 常态：只写变化的那部分，未变槽 `-`、尾部未变槽整段省略；
+                        // [C1] 仅 comm 真变化时才构造 token（其余槽变化不构造）
+                        if comm_ch {
+                            comm_tok = Some(clean_comm(&s.comm));
+                        }
                         Some(render_t_row(
                             pid,
                             tid,
-                            comm_ch.then_some(comm_tok.as_str()),
+                            comm_tok.as_ref().map(|c| &**c),
                             util_ch.then_some(util),
                             core_ch.then_some(s.processor),
                             home_ch.then_some(home),
@@ -885,7 +1797,7 @@ fn build_aff_snapshot(
                     }
                 }
                 None => {
-                    // 首见（新线程 / 新进程线程）：无基准可比，六槽全写（全量行），长尾则进热窗观察 30 帧
+                    // 首见（新线程 / 新进程线程）：无基准可比，六槽全写（全量行），长尾则进热窗观察 30 帧；comm 必构造
                     st.base.insert(
                         tid,
                         ThSnap {
@@ -900,10 +1812,11 @@ fn build_aff_snapshot(
                             hot_until: frame + AFF_SNAP_REFRESH_FRAMES,
                         },
                     );
+                    comm_tok = Some(clean_comm(&s.comm));
                     Some(render_t_row(
                         pid,
                         tid,
-                        Some(&comm_tok),
+                        comm_tok.as_ref().map(|c| &**c),
                         Some(util),
                         Some(s.processor),
                         Some(home),
@@ -912,16 +1825,23 @@ fn build_aff_snapshot(
                     ))
                 }
             };
-            th_rows.push((pid, tid, comm_tok, row));
+            // [C1] 每 pid 本帧首条线程：即便上面未构造 token（该线程全槽未变、本帧省行），
+            // 也要补齐，否则 p 行 comm 兜底会取不到该 pid 的净化 comm（与旧行为不一致）
+            if first_pid && comm_tok.is_none() {
+                comm_tok = Some(clean_comm(&s.comm));
+            }
+            th_rows.push((pid, tid, comm_tok.unwrap_or(Cow::Borrowed("")), row));
         }
         // 增量清理：只保留本轮候选集内的 tid（线程消亡随候选集消失回收），`retain` 原地收缩零分配注意保留本轮未采样的冷长尾：其基线 `at` 要留到刷新帧才能算出覆盖整段间隔的 util，
         // 删掉会把窗口重置为 0
         st.base.retain(|tid, _| seen_tid.contains(tid));
     }
     // 被管进程的 comm 兜底（不在进程快照里时用其任一线程 comm）。取**采样到**（含本帧省行）的线程：省行的线程其进程仍可能在补位 p 行上
+    // [C1] 每 pid 首条线程的 token 已在上方保证构造（`first_pid` 分支）；`or_insert` 先到先得，
+    // 故兜底仍拿到「每 pid 本帧首条线程的净化 comm」，与旧实现一致。占位空串只出现在非首条线程上，永不入选
     let mut pid_comm: HashMap<u32, &str> = HashMap::new();
     for (pid, _, comm, _) in &th_rows {
-        pid_comm.entry(*pid).or_insert(comm.as_str());
+        pid_comm.entry(*pid).or_insert(&**comm);
     }
 
     // ── 进程集合：util top-N ∪ 前台进程 ∪ 被管进程 ──
@@ -1446,7 +2366,16 @@ pub fn start_scheduler_thread(
                 match Config::load(config_path.to_str().unwrap()) {
                     Ok(new_config) => {
                         logger::update_level(&new_config.meta.loglevel);
-                        *config_clone.write().unwrap() = new_config;
+                        // [D1] 配置身份变化 → 递增诊断代际（避免跨配置混写）；须在移入 config_clone 前取身份
+                        {
+                            // 配置、指纹与代际在同一个配置写锁内发布。
+                            let mut configuration = config_clone.write().unwrap();
+                            let diag_cfg_changed = diag_config_identity_set(&new_config);
+                            *configuration = new_config;
+                            if diag_cfg_changed {
+                                diag_worker_bump_generation();
+                            }
+                        }
 
                         let new_lang = config_clone.read().unwrap().meta.language.clone();
                         if old_lang != new_lang {
@@ -1699,11 +2628,19 @@ pub fn start_scheduler_thread(
             let mut last_load_event = Instant::now();
             // FAS 延迟退出期间记住的目标模式（fas → X 的 ModeChange 被延迟时记录），超时退出完成后按它重新接管（1s tick 巡检消费）
             let mut pending_mode_after_fas: Option<String> = None;
+            let window_probe = crate::monitor::window_visibility::WindowVisibilityProbe::new();
+            let mut confirmed_window_focus = None;
             // 最近一次 SystemLoadUpdate 的逐核 util 快照（按核亲和选核输入）
             let mut last_core_utils: Vec<f32> = Vec::new();
             // 温度缓存（1s snap 块读取一次，status/devimp/thermal 三处共用）：thermal 2s 块复用 ≤1s 旧值，温度变化秒级，对带回滞判定无影响
             let mut last_batt_temp: Option<f32> = None;
             let mut last_cpu_temp: Option<f32> = None;
+            // [D1] 上一帧前台身份三元组（包名 + 前台 pid + 进程 starttime）：**任一变化**即递增
+            // 诊断代际，隔离新旧前台的帧任务——同包 PID 更换 / 进程重启（PID 复用，靠 starttime
+            // 识别）同样要隔离（worker 启用时防止跨身份拼接；默认关闭时该判定零开销）
+            let mut last_diag_identity: Option<DiagIdentity> = None;
+            // [D1] 初始化当前配置身份串（worker 提交帧携带；后续由 config_watcher 重载时更新并递增代际）
+            diag_config_identity_set(&config_clone.read().unwrap());
             // 温度滤波：MTK soc_max 跳变极大，不滤波会让热保护 cap 周期性 bang-bang 震荡
             let mut batt_filter = TempFilter::new(-10.0, 70.0, 10.0, 1.0);
             let mut cpu_filter = TempFilter::new(5.0, 110.0, 12.0, 3.0);
@@ -1722,6 +2659,8 @@ pub fn start_scheduler_thread(
                         down_resume_mode = mode_clone.lock().unwrap().clone();
                         // FAS 延迟退出的目标模式随之失效（DOWN 退出按 down_resume_mode 接管）
                         pending_mode_after_fas = None;
+                        window_probe.invalidate();
+                        confirmed_window_focus = None;
                         halt_since = Some(Instant::now());
                         // 顺序：先把频率与布局交回系统（各 release 会恢复自己的快照），再写状态文件——反了会有一瞬间「既停摆又还持有着」
                         cpu_governor.release();
@@ -1767,7 +2706,13 @@ pub fn start_scheduler_thread(
                                 ak_governor.release();
                                 fast_lock.release();
                                 cpu_governor.release();
-                                if !pkg.is_empty() && fas_mgr.activate(&pkg, pid) {
+                                if fas_package_ready(&pkg)
+                                    && pid > 0
+                                    && fas_cooldown_until.is_none_or(|until| Instant::now() >= until)
+                                    && crate::monitor::app_detect::raw_foreground_package_arc().as_ref() == pkg
+                                    && fas_mgr.activate(&pkg, pid)
+                                {
+                                    fas_mgr.set_frame_feedback_enabled(is_screen_on);
                                     fas_affinity_hook(&mut affinity_mgr, &mut corectl_mgr, true, pid);
                                 } else {
                                     fas_mgr.deactivate_all();
@@ -1962,6 +2907,30 @@ pub fn start_scheduler_thread(
                         .and_then(|t| cpu_filter.push(t));
                     // 前台包名实时取自 app_detect（含同模式切换；用事件维护会写过期包名）
                     let fg_package = crate::monitor::app_detect::get_current_package();
+                    // [D1] 前台身份三元组（包名 + pid + 进程 starttime）**任一**变化 → 递增诊断
+                    // 代际（仅在 worker 启用时生效，否则立即返回）：使旧前台的帧任务与新前台的帧任务
+                    // 分属不同 generation，不跨身份拼接；pid 与 starttime 一并纳入——同包 PID 更换 /
+                    // 进程重启（PID 复用）也需隔离。starttime 要读 /proc，仅在 D1 启用时读（默认零开销）
+                    //
+                    // 【顺序不变式（消除「新 PID 配旧 generation」的关键）】本段与下方采样快照处于
+                    // **同一 tick**，且本段**先于**快照：先「身份变化 → bump 代际」，后「构造 SampledFrame
+                    // （读 generation）」。快照的 fg_pid/fg_starttime **复用本段同一次取值**（不再重读），
+                    // 故「身份判定所用 PID」与「快照携带 PID/代际」同源——本段一旦检测到切换，本 tick 的
+                    // bump 必已被下方快照取到；不会出现「快照读到新 PID、代际仍属旧前台」。
+                    let (fg_pid_now, fg_starttime_now): (i32, u64) = if DIAG_WORKER_ENABLED {
+                        let pid = crate::monitor::app_detect::get_current_pid();
+                        (pid, proc_starttime_ticks(pid))
+                    } else {
+                        (0, 0)
+                    };
+                    let now_identity: DiagIdentity =
+                        (fg_package.clone(), fg_pid_now, fg_starttime_now);
+                    if diag_identity_changed(&last_diag_identity, &now_identity) {
+                        if last_diag_identity.is_some() {
+                            diag_worker_bump_generation();
+                        }
+                        last_diag_identity = Some(now_identity);
+                    }
                     // 诊断日志按前台包名分组：变化即切换 main_ 文件（内部去重，空包名不切换）
                     crate::logger::set_diag_package(&fg_package);
                     // 充放电状态：1s 一次读 status 节点（电流符号厂商方向不一，不可靠）
@@ -1974,9 +2943,28 @@ pub fn start_scheduler_thread(
                             .unwrap_or_else(|| "-".to_string());
                     // 自测量基线：daemon 自身累计 CPU 时间（1s 采样读 /proc/self/stat），与状态行同行落盘
                     let (daemon_utime_ms, daemon_stime_ms) = crate::logger::self_cpu_ms();
+                    // [selfcost] 会话开闭结算（每秒一次，与诊断是否开启无关）：诊断 假→真起新会话/启 worker、
+                    // 真→假输出不足 60s 尾窗并关闭 selfcost/worker（幂等）
+                    aff_cost_session_tick(crate::logger::diag_active());
+                    let cpu_snapshot = crate::logger::diag_active()
+                        .then(crate::chiri::cpu_freq_snapshot);
                     // 功耗分解：CPU 动态项估计（无功耗表的 SoC 恒 None）+ 残差（外围 / 静态 / GPU）
-                    let cpu_dyn_w =
-                        crate::chiri::energy_cost::cpu_dynamic_power_w(&last_core_utils);
+                    let cpu_dyn_w = if let Some((cpu_cur, _, _, _)) = cpu_snapshot.as_ref() {
+                        let policy_frequencies: Vec<(u32, Option<u32>)> = cpu_cur
+                            .split(';')
+                            .filter_map(|entry| {
+                                let (policy, frequency) = entry.split_once(':')?;
+                                let policy_id = policy.strip_prefix("policy")?.parse().ok()?;
+                                Some((policy_id, frequency.parse().ok()))
+                            })
+                            .collect();
+                        crate::chiri::energy_cost::cpu_dynamic_power_w_with_frequencies(
+                            &last_core_utils,
+                            &policy_frequencies,
+                        )
+                    } else {
+                        crate::chiri::energy_cost::cpu_dynamic_power_w(&last_core_utils)
+                    };
                     let resid_w = match (batt_power, cpu_dyn_w) {
                         (Some(p), Some(c)) => Some(p - c),
                         _ => None,
@@ -2067,10 +3055,9 @@ pub fn start_scheduler_thread(
                         });
                     }
                     // 开发记录 snap 行（1s）：开启 dev_record 才有 IO；前台包名行内自动填充
-                    if crate::logger::diag_active() {
+                    if let Some((cpu_cur, cpu_max, cpu_min, cpu_gov)) = cpu_snapshot {
                         // 频率/调速器快照只在诊断开启时采集（常态零开销，不缓存——内核会随时改值）CPU 每秒采；GPU 受 GPU_SNAPSHOT_ENABLED 总开关（当前关闭）控制，
                         // 开启时再叠加 gpu_snapshot_due() 的 10s 节流；关闭期间这 4 列恒为 "-"
-                        let (cpu_cur, cpu_max, cpu_min, cpu_gov) = crate::chiri::cpu_freq_snapshot();
                         let (gpu_cur, gpu_max, gpu_min, gpu_gov) = if GPU_SNAPSHOT_ENABLED
                             && gpu_snapshot_due()
                         {
@@ -2109,24 +3096,72 @@ pub fn start_scheduler_thread(
                         // 第二返回值为刷新帧标记，交由 logger 在帧头打 `full=1`。
                         // 采样间隔受 meta `devimp_aff_secs` 节流（息屏再乘倍率）：跳过的轮次不推进帧号，
                         // 且被管线程表只在真正要采时才取（省一轮快照拷贝）
-                        let (snap_top_n, snap_aff_secs) = {
-                            let m = &config_clone.read().unwrap().meta;
-                            (m.devimp_top_n, m.devimp_aff_secs)
-                        };
+                        // 读锁保留到身份冻结完成，热重载不能拆开配置与代际。
+                        let snapshot_configuration = config_clone.read().unwrap();
+                        let snap_top_n = snapshot_configuration.meta.devimp_top_n;
+                        let snap_aff_secs = snapshot_configuration.meta.devimp_aff_secs;
                         let aff_every =
                             snap_aff_secs * if is_screen_on { 1 } else { AFF_SNAP_OFFSCREEN_FACTOR };
                         if aff_snap_due(aff_every) {
                             // 被管线程表/进程集一次取完传入（build_aff_snapshot 已与 AffinityManager 解耦，见其 doc）
                             let th_diag = affinity_mgr.thread_diag();
                             let managed = affinity_mgr.managed_pids();
+                            // [B1/B3] @S 同步成本测量：端点严格按 before_build→after_build→after_write，
+                            // Build=(t0,t1)/(c0,c1)、Write=(t1,t2)/(c1,c2)，两段 CPU 区间不重叠；
+                            // 每次调用都入账，慢只节流告警。本块已由 diag_active ∩ aff_snap_due 门控，
+                            // 故只在真正采样时计时。写入经 aff_snapshot_dispatch（默认同步，D1 启用时交 worker）
+                            // [D1] 仅 worker 启用时才在**采样时点**（t0 之前）一次性冻结一致快照
+                            // （const false 时整段被优化掉，默认路径零开销）；同步路径的帧头 ts 仍在
+                            // **写出时刻**取（恢复原语义，字节不变）。快照的 fg_pid/fg_starttime 复用
+                            // 上方身份判定的同一次取值；generation/sequence 在此从 worker 一次取出并
+                            // 冻结——**晚于**身份判定（本 tick 检测到切换必已 bump），故不会「新 PID 配旧
+                            // generation」；config_identity 与 generation 同段读取（见 diag_sample_frame），
+                            // 故不会「旧配置指纹配新 generation」。dispatch 直接取快照里的 generation/
+                            // sequence，不再在交付时重读。序号在采样时点分配：与采样顺序一致；被丢弃的帧
+                            // 会留下序号空洞（可接受，离线按 generation+sequence 判序）。
+                            let sampled = if DIAG_WORKER_ENABLED {
+                                // 在同一段内克隆句柄并释放 DIAG_WORKER 锁（勿在别处再取一次锁）
+                                let worker = {
+                                    let g = DIAG_WORKER
+                                        .get_or_init(|| Mutex::new(None))
+                                        .lock()
+                                        .unwrap_or_else(|e| e.into_inner());
+                                    g.as_ref().map(Arc::clone)
+                                };
+                                worker.map(|w| {
+                                    diag_sample_frame(
+                                        crate::logger::aff_frame_ts(),
+                                        fg_pid_now,
+                                        fg_starttime_now,
+                                        &w,
+                                    )
+                                })
+                            } else {
+                                None
+                            };
+                            drop(snapshot_configuration);
+                            let t0 = Instant::now();
+                            let c0 = diag_cost::thread_cpu_ns();
+                            // 采样时点前台 pid：D1 时复用上方身份判定同一次取值（保证「身份/代际/帧」
+                            // 同源）；默认路径懒取一次，零额外开销。
+                            let fg_pid_for_build = if DIAG_WORKER_ENABLED {
+                                fg_pid_now
+                            } else {
+                                crate::monitor::app_detect::get_current_pid()
+                            };
                             let (rows, full) = build_aff_snapshot(
                                 &th_diag,
                                 &managed,
-                                crate::monitor::app_detect::get_current_pid(),
+                                fg_pid_for_build,
                                 &fg_package,
                                 snap_top_n,
                             );
-                            crate::logger::aff_snapshot(&rows, full);
+                            let t1 = Instant::now();
+                            let c1 = diag_cost::thread_cpu_ns();
+                            aff_snapshot_dispatch(rows, full, sampled);
+                            let t2 = Instant::now();
+                            let c2 = diag_cost::thread_cpu_ns();
+                            aff_cost_record(t0, c0, t1, c1, t2, c2);
                         }
                     }
                     if telemetry_log_counter % 20 == 0 && log::log_enabled!(log::Level::Debug) {
@@ -2150,7 +3185,38 @@ pub fn start_scheduler_thread(
 
                     // FAS 延迟退出巡检（1s）：到期完成退出并按记住的目标模式重新接管；延迟期内切回白名单应用由 activate 无缝续期，这里 no-op
                     // 停摆期不可达（DOWN 的 deactivate_all 已清 deadline）——改这段别破坏该不变量，否则停摆会被 FAS 重新接管
-                    if !halted && fas_mgr.tick() {
+                    if !halted {
+                        if !crate::common::fas_enabled() {
+                            window_probe.invalidate();
+                            confirmed_window_focus = None;
+                            // fas_enabled=false：实例已在别处注销；模式必须真正回到 default，
+                            // 否则 mode=fas / active=false 会让热保护与自愈同时留洞。
+                            fas_mgr.deactivate_all();
+                            fas_affinity_hook(&mut affinity_mgr, &mut corectl_mgr, false, 0);
+                            *mode_clone.lock().unwrap() = "default".to_string();
+                            crate::logger::set_diag_mode("default");
+                            mode_file.write("default");
+                            if !cpu_governor.is_active()
+                                && !ak_governor.is_active()
+                                && !fast_lock.is_active()
+                            {
+                                let state = config_clone.read().unwrap();
+                                let clg_configuration = get_clg_cfg(&state, "default");
+                                if clg_configuration.enabled {
+                                    cpu_governor.init_policies(&clg_configuration);
+                                }
+                            }
+                            pending_mode_after_fas = None;
+                        } else {
+                            reconcile_fas_focus(
+                                &mut fas_mgr, &window_probe, &mut confirmed_window_focus,
+                                &mut pending_mode_after_fas, is_screen_on,
+                            );
+                        }
+                    }
+                    if !halted && crate::common::fas_enabled() && fas_mgr.tick() {
+                        window_probe.invalidate();
+                        confirmed_window_focus = None;
                         if let Some(mode) = pending_mode_after_fas.take() {
                             *mode_clone.lock().unwrap() = mode.clone();
                             crate::logger::set_diag_mode(&mode);
@@ -2211,59 +3277,60 @@ pub fn start_scheduler_thread(
                         && mode_clone.lock().unwrap().as_str() == "fas"
                         && !crate::common::fas_enabled()
                     {
-                        // fas_enabled=false 热重载生效：立即注销全部 FAS 实例并按屏幕状态恢复接管；determine_mode 不再产生 fas 模式，
-                        // 无实例且 governor 已接管时为 no-op
-                        let had_instance = fas_mgr.has_any_instance();
-                        if had_instance {
-                            fas_mgr.deactivate_all();
-                            fas_affinity_hook(&mut affinity_mgr, &mut corectl_mgr, false, 0);
-                            log::warn!("{}", t("scheduler-fas-switch-off"));
-                        }
-                        // 恢复接管：有实例被注销，或三 governor 全停（启动残留/冷却期自愈）
-                        if had_instance
-                            || (!cpu_governor.is_active()
-                                && !ak_governor.is_active()
-                                && !fast_lock.is_active())
+                        // fas_enabled=false 且内存模式仍是 fas：上面的 1s 前哨已把模式写回
+                        // default 并交回 CLG；这里只兜住 mode=fas / active=false 的虚报态。
+                        fas_mgr.deactivate_all();
+                        fas_affinity_hook(&mut affinity_mgr, &mut corectl_mgr, false, 0);
+                        *mode_clone.lock().unwrap() = "default".to_string();
+                        crate::logger::set_diag_mode("default");
+                        mode_file.write("default");
+                        log::warn!("{}", t("scheduler-fas-switch-off"));
+                        if !cpu_governor.is_active()
+                            && !ak_governor.is_active()
+                            && !fast_lock.is_active()
                         {
-                            if is_screen_on {
-                                // 亮屏：CLG default 回退（与 FAS 初始化失败同口径）
-                                let config_lock = config_clone.read().unwrap();
-                                let clg_cfg = get_clg_cfg(&config_lock, "default");
-                                if clg_cfg.enabled {
-                                    cpu_governor.init_policies(&clg_cfg);
-                                }
-                            } else {
-                                // 息屏：交回 CLG doze（与息屏事件同款低功耗配置）
-                                ak_governor.release();
-                                fast_lock.release();
-                                let config_lock = config_clone.read().unwrap();
-                                let mut doze_cfg = get_clg_cfg(&config_lock, "reduce");
-                                doze_cfg.enabled = true;
-                                doze_cfg.perf_floor = 0.0;
-                                doze_cfg.perf_ceil = doze_cfg.perf_ceil.min(0.30);
-                                doze_cfg.smoothing_up = 0.10;
-                                doze_cfg.touch_boost_enabled = false;
-                                cpu_governor.init_policies(&doze_cfg);
+                            let config_lock = config_clone.read().unwrap();
+                            let clg_cfg = get_clg_cfg(&config_lock, "default");
+                            if clg_cfg.enabled {
+                                cpu_governor.init_policies(&clg_cfg);
                             }
                         }
-                    } else if !halted && mode_clone.lock().unwrap().as_str() == "fas" {
-                        // 取 Arc<str> 快照：只做引用计数递增，不再每次克隆 String
-                        let cur_pkg_arc = crate::monitor::app_detect::current_package_arc();
-                        let cur_pkg: &str = &cur_pkg_arc;
-                        if !cur_pkg.is_empty() {
+                    } else if !halted
+                        && crate::monitor::app_detect::last_determined_mode() == "fas"
+                        && crate::common::fas_enabled()
+                    {
+                        // 一致快照 + owner 进程判据；只有新会话才受 cooldown 限制。
+                        let snapshot = fas_foreground_snapshot();
+                        let raw_pkg = fas_raw_foreground_package();
+                        let cur_pkg = snapshot
+                            .as_ref()
+                            .filter(|snapshot| snapshot.is_valid())
+                            .map(|snapshot| snapshot.package.as_ref());
+                        let new_session_ready = fas_cooldown_until
+                            .is_none_or(|until| Instant::now() >= until);
+                        if let Some(cur_pkg) = cur_pkg.filter(|pkg| {
+                            raw_pkg.as_ref() == *pkg && fas_package_ready(pkg)
+                        }) {
+                            let Some(snapshot) = snapshot.as_ref() else { continue; };
+                            let owner_matches = fas_mgr
+                                .owner_matches_process(snapshot.pid, snapshot.process_starttime);
                             if fas_mgr.is_active() {
                                 if let Some(active) = fas_mgr.active_pkg().map(str::to_string) {
                                     // 同包（延迟期内切回同一白名单应用）：续期取消退出
-                                    if active == cur_pkg {
+                                    if active == cur_pkg && owner_matches {
                                         fas_mgr.renew_if_same_pkg(&cur_pkg);
+                                        fas_mgr.set_frame_feedback_enabled(is_screen_on);
+                                        pending_mode_after_fas = None;
                                     }
-                                    if active != cur_pkg {
+                                    if active != cur_pkg || !owner_matches {
                                         if crate::common::fas_whitelist_entry(&cur_pkg)
                                             .and_then(|cfg| crate::common::fas_app_config(cfg))
                                             .is_some()
                                         {
                                             fas_mgr.deactivate_active();
-                                            if !fas_mgr.activate(&cur_pkg, crate::monitor::app_detect::get_current_pid()) {
+                                            window_probe.invalidate();
+                                            confirmed_window_focus = None;
+                                            if !fas_mgr.activate(&cur_pkg, snapshot.pid) {
                                                 fas_mgr.deactivate_all();
                                                 fas_cooldown_until = Some(Instant::now() + FAS_COOLDOWN);
                                                 log::warn!("{}", t_with_args("scheduler-fas-init-failed", &fluent_args!("pkg" => cur_pkg)));
@@ -2272,14 +3339,21 @@ pub fn start_scheduler_thread(
                                                 let clg_cfg = get_clg_cfg(&config_lock, "default");
                                                 if clg_cfg.enabled { cpu_governor.init_policies(&clg_cfg); }
                                             } else {
+                                                window_probe.invalidate();
+                                                confirmed_window_focus = None;
+                                                pending_mode_after_fas = None;
+                                                fas_mgr.set_frame_feedback_enabled(is_screen_on);
+                                                *mode_clone.lock().unwrap() = "fas".to_string();
+                                                crate::logger::set_diag_mode("fas");
+                                                mode_file.write("fas");
                                                 fas_affinity_hook(&mut affinity_mgr, &mut corectl_mgr, true,
-                                                    crate::monitor::app_detect::get_current_pid());
+                                                    snapshot.pid);
                                             }
                                         }
                                     // 非白名单包（determine 门控保证不应出现）：忽略，ModeChange 会退出 fas
                                     }
                                 }
-                            } else if fas_cooldown_until.map_or(true, |until| Instant::now() >= until) {
+                                    } else if new_session_ready {
                                 if crate::common::fas_whitelist_entry(&cur_pkg)
                                     .and_then(|cfg| crate::common::fas_app_config(cfg))
                                     .is_some()
@@ -2309,7 +3383,12 @@ pub fn start_scheduler_thread(
                                     ak_governor.release();
                                     fast_lock.release();
                                     cpu_governor.release();
-                                    if !fas_mgr.activate(&cur_pkg, crate::monitor::app_detect::get_current_pid()) {
+                                    affinity_mgr.lab_static_deactivate();
+                                    governor_guard.release();
+                                    gpu_guard.release();
+                                    window_probe.invalidate();
+                                    confirmed_window_focus = None;
+                                    if !fas_mgr.activate(&cur_pkg, snapshot.pid) {
                                         fas_mgr.deactivate_all();
                                         fas_cooldown_until = Some(Instant::now() + FAS_COOLDOWN);
                                         log::warn!("{}", t_with_args("scheduler-fas-init-failed", &fluent_args!("pkg" => cur_pkg)));
@@ -2318,8 +3397,15 @@ pub fn start_scheduler_thread(
                                         let clg_cfg = get_clg_cfg(&config_lock, "default");
                                         if clg_cfg.enabled { cpu_governor.init_policies(&clg_cfg); }
                                     } else {
+                                        window_probe.invalidate();
+                                        confirmed_window_focus = None;
+                                        pending_mode_after_fas = None;
+                                        fas_mgr.set_frame_feedback_enabled(is_screen_on);
+                                        *mode_clone.lock().unwrap() = "fas".to_string();
+                                        crate::logger::set_diag_mode("fas");
+                                        mode_file.write("fas");
                                         fas_affinity_hook(&mut affinity_mgr, &mut corectl_mgr, true,
-                                            crate::monitor::app_detect::get_current_pid());
+                                            snapshot.pid);
                                     }
                                 } else if !cpu_governor.is_active() && !ak_governor.is_active() && !fast_lock.is_active() {
                                     // 启动残留 fas 模式且前台非 FAS 应用：CLG default 自愈接管
@@ -2531,6 +3617,14 @@ pub fn start_scheduler_thread(
                             "last" => is_screen_on.to_string()
                         )));
                         is_screen_on = screen_on;
+                        if !screen_on {
+                            fas_mgr.set_frame_feedback_enabled(false);
+                            window_probe.invalidate();
+                            confirmed_window_focus = None;
+                        } else if fas_mgr.is_active() {
+                            reconcile_fas_focus(&mut fas_mgr, &window_probe, &mut confirmed_window_focus,
+                                &mut pending_mode_after_fas, true);
+                        }
                         // 同步到进程级原子量：CLG 在接管那一刻要靠它判断能不能选 PowerBase 后端
                         // （它没有别的渠道拿到屏幕状态），必须与本地变量同点更新
                         crate::common::set_screen_on(is_screen_on);
@@ -2670,7 +3764,70 @@ pub fn start_scheduler_thread(
 
                     // [evt_mode]
                     // 前台模式切换事件
-                    DaemonEvent::ModeChange { package_name, pid, mode, temperature } => {
+                    DaemonEvent::ModeChange { package_name, pid, mode, temperature, detection_generation } => {
+                        // 事件必须与当前一致快照的 generation/package/PID 全同，旧代事件不接受。
+                        let snapshot = fas_foreground_snapshot();
+                        let event_matches = snapshot.as_ref().is_some_and(|snapshot| {
+                            fas_focus::event_matches_snapshot(
+                                &package_name,
+                                pid,
+                                detection_generation,
+                                &snapshot.package,
+                                snapshot.pid,
+                                snapshot.generation,
+                                manager_process_starttime(pid),
+                                snapshot.process_starttime,
+                            )
+                        });
+                        if !event_matches {
+                            continue;
+                        }
+                        let Some(snapshot) = snapshot else { continue; };
+                        let raw_package = fas_raw_foreground_package();
+                        let fas_ready = fas_package_ready(&package_name)
+                            && raw_package.as_ref() == package_name;
+                        // FAS 同包返回与换游戏必须先于模式去重；已持有实例不受 cooldown 限制。
+                        if mode == "fas" && fas_ready && fas_mgr.is_active() {
+                            let same_session = fas_mgr
+                                .owner_matches_process(pid, snapshot.process_starttime);
+                            if same_session {
+                                fas_mgr.renew_if_same_pkg(&package_name);
+                            } else {
+                                if fas_cooldown_until.is_some_and(|until| Instant::now() < until) {
+                                    continue;
+                                }
+                                fas_mgr.deactivate_active();
+                                window_probe.invalidate();
+                                confirmed_window_focus = None;
+                                if !fas_mgr.activate(&package_name, pid) {
+                                    fas_cooldown_until = Some(Instant::now() + FAS_COOLDOWN);
+                                    pending_mode_after_fas = None;
+                                    fas_affinity_hook(&mut affinity_mgr, &mut corectl_mgr, false, 0);
+                                    *mode_clone.lock().unwrap() = "default".to_string();
+                                    crate::logger::set_diag_mode("default");
+                                    mode_file.write("default");
+                                    let configuration = config_clone.read().unwrap();
+                                    let clg_configuration = get_clg_cfg(&configuration, "default");
+                                    if clg_configuration.enabled {
+                                        cpu_governor.init_policies(&clg_configuration);
+                                    }
+                                    continue;
+                                } else {
+                                    fas_affinity_hook(&mut affinity_mgr, &mut corectl_mgr, true, pid);
+                                }
+                            }
+                            if fas_mgr.is_active() {
+                                fas_mgr.set_frame_feedback_enabled(is_screen_on);
+                                pending_mode_after_fas = None;
+                                window_probe.invalidate();
+                                confirmed_window_focus = None;
+                            }
+                        }
+                        if mode == "fas" && !fas_ready {
+                            reconcile_fas_focus(&mut fas_mgr, &window_probe, &mut confirmed_window_focus,
+                                &mut pending_mode_after_fas, is_screen_on);
+                            continue;
+                        }
                         let mut current_mode_lock = mode_clone.lock().unwrap();
                         let old_mode = current_mode_lock.clone();
                         log::debug!("{}", t_with_args("scheduler-event-mode-change", &fluent_args!(
@@ -2681,7 +3838,7 @@ pub fn start_scheduler_thread(
                         )));
                         // 前台切换由 app_detect 直写 status.csv fg 行；ModeChange 仅模式变化时产生
 
-                        if old_mode != mode {
+                        if old_mode != mode || (mode == "fas" && !fas_mgr.is_active()) {
                             log::info!("{}", t_with_args("scheduler-mode-change-request", &fluent_args!(
                                 "old" => old_mode.clone(), "new" => mode.as_str(), "pkg" => package_name.as_str(), "temp" => temperature
                             )));
@@ -2690,8 +3847,11 @@ pub fn start_scheduler_thread(
                             // 到期由 1s tick 按 pending_mode_after_fas 重新接管mode_clone 不动，否则出现「文件写 default、FAS 还持着频率」
                             // 中间态
                             if old_mode == "fas" && mode != "fas" && fas_mgr.is_active() {
+                                fas_mgr.set_frame_feedback_enabled(false);
                                 fas_mgr.request_delayed_exit();
                                 pending_mode_after_fas = Some(mode.clone());
+                                reconcile_fas_focus(&mut fas_mgr, &window_probe, &mut confirmed_window_focus,
+                                    &mut pending_mode_after_fas, is_screen_on);
                                 drop(current_mode_lock);
                                 continue;
                             }
@@ -2734,12 +3894,12 @@ pub fn start_scheduler_thread(
                             // 屏幕状态不再影响 FAS 激活（息屏特殊分支已移除）
                             if mode == "fas" {
                                 // 防御复查：determine_mode 已门控白名单，此处兜底（不应发生）
-                                let fas_ready = crate::common::fas_whitelist_entry(&package_name)
-                                    .and_then(|cfg| crate::common::fas_app_config(cfg))
-                                    .is_some();
+                                let fas_ready = fas_package_ready(&package_name);
                                 let in_cooldown = fas_cooldown_until.map_or(false, |until| Instant::now() < until);
                                 // 防御性去激活（不应有活跃实例，无活跃时为无操作）
                                 fas_mgr.deactivate_active();
+                                window_probe.invalidate();
+                                confirmed_window_focus = None;
                                 if !fas_ready {
                                     log::warn!(
                                         "{}",
@@ -2776,6 +3936,10 @@ pub fn start_scheduler_thread(
                                         let clg_cfg = get_clg_cfg(&config_lock, "default");
                                         if clg_cfg.enabled { cpu_governor.init_policies(&clg_cfg); }
                                     } else {
+                                        pending_mode_after_fas = None;
+                                        window_probe.invalidate();
+                                        confirmed_window_focus = None;
+                                        fas_mgr.set_frame_feedback_enabled(is_screen_on);
                                         fas_affinity_hook(&mut affinity_mgr, &mut corectl_mgr, true, pid);
                                     }
                                 }
@@ -2854,21 +4018,52 @@ pub fn start_scheduler_thread(
 
                     // [evt_pkg_switch]
                     // 同模式前台包切换（fas→fas 热切换通路，ChiRi 专属）
-                    DaemonEvent::PackageSwitch { package_name, pid } => {
+                    DaemonEvent::PackageSwitch { package_name, pid, detection_generation } => {
+                        let snapshot = fas_foreground_snapshot();
+                        let event_matches = snapshot.as_ref().is_some_and(|snapshot| {
+                            fas_focus::event_matches_snapshot(
+                                &package_name,
+                                pid,
+                                detection_generation,
+                                &snapshot.package,
+                                snapshot.pid,
+                                snapshot.generation,
+                                manager_process_starttime(pid),
+                                snapshot.process_starttime,
+                            )
+                        });
+                        let raw_package = fas_raw_foreground_package();
+                        if !event_matches
+                            || raw_package.as_ref() != package_name
+                            || !fas_package_ready(&package_name)
+                        {
+                            reconcile_fas_focus(&mut fas_mgr, &window_probe, &mut confirmed_window_focus,
+                                &mut pending_mode_after_fas, is_screen_on);
+                            continue;
+                        }
+                        let Some(snapshot) = snapshot else { continue; };
                         let current_mode = mode_clone.lock().unwrap().clone();
                         // 同包去重前先续期：延迟期内同包回前台即时取消退出（1s 巡检兜底）
-                        if fas_mgr.active_pkg().is_some_and(|a| a == package_name.as_str()) {
+                        if fas_mgr.owner_matches_process(pid, snapshot.process_starttime) {
                             fas_mgr.renew_if_same_pkg(&package_name);
+                            fas_mgr.set_frame_feedback_enabled(is_screen_on);
+                            pending_mode_after_fas = None;
+                            window_probe.invalidate();
+                            confirmed_window_focus = None;
                         }
                         if current_mode == "fas" && fas_mgr.is_active() {
                             let switched = match fas_mgr.active_pkg() {
-                                Some(active) if active != package_name.as_str() => {
-                                    if crate::common::fas_whitelist_entry(&package_name)
-                                        .and_then(|cfg| crate::common::fas_app_config(cfg))
-                                        .is_some()
-                                    {
+                                Some(active) if active != package_name.as_str()
+                                    || !fas_mgr.owner_matches_process(pid, snapshot.process_starttime) => {
+                                    if fas_package_ready(&package_name) {
                                         fas_mgr.deactivate_active();
+                                        window_probe.invalidate();
+                                        confirmed_window_focus = None;
                                         if fas_mgr.activate(&package_name, pid) {
+                                            pending_mode_after_fas = None;
+                                            window_probe.invalidate();
+                                            confirmed_window_focus = None;
+                                            fas_mgr.set_frame_feedback_enabled(is_screen_on);
                                             fas_affinity_hook(&mut affinity_mgr, &mut corectl_mgr, true, pid);
                                             true
                                         } else {
@@ -2899,6 +4094,10 @@ pub fn start_scheduler_thread(
                     // [evt_load]
                     // CPU 负载事件 (eBPF 驱动)
                     DaemonEvent::SystemLoadUpdate { core_utils, foreground_max_util } => {
+                        if crate::common::fas_enabled() && fas_mgr.is_active() {
+                            reconcile_fas_focus(&mut fas_mgr, &window_probe, &mut confirmed_window_focus,
+                                &mut pending_mode_after_fas, is_screen_on);
+                        }
                         // 刷新看门狗心跳：只要有负载事件到达即视为负载源存活
                         last_load_event = Instant::now();
                         // 逐核 util 快照赋值延后到下方投喂之后：投喂分支只读借用 core_utils，延后可用
@@ -2912,7 +4111,17 @@ pub fn start_scheduler_thread(
                         // 负载投喂优先级链：FAS 活跃优先投喂（前台最重线程 util + 逐核 util）；否则特调（akmode）白名单前台投喂做动态限频（无档位负载直拉：
                         // max 随组内负载在[最低档, 硬件最高] 间连续变化）；否则 CLG 活跃时投喂 CLG（含息屏 Doze）
                         if fas_mgr.is_active() {
-                            fas_mgr.on_load_update(foreground_max_util, &core_utils);
+                            // 事件未带帧源身份：快照前台不是 owner 时不得把 overlay 前台线程
+                            // util 当游戏负载投喂，最小安全取 0（簇 util 仍照常投喂）。
+                            let owner_is_foreground = fas_foreground_snapshot().is_some_and(|snapshot| {
+                                fas_mgr.active_pkg() == Some(snapshot.package.as_ref())
+                            });
+                            let fas_foreground_util = if owner_is_foreground {
+                                foreground_max_util
+                            } else {
+                                0.0
+                            };
+                            fas_mgr.on_load_update(fas_foreground_util, &core_utils);
                         } else if ak_governor.is_active() {
                             ak_governor.on_load_update(&core_utils);
                         } else if cpu_governor.is_active() {
@@ -3115,10 +4324,19 @@ pub fn start_scheduler_thread(
 
                     // [evt_frame]
                     // 帧率事件 (eBPF 驱动)
-                    DaemonEvent::FrameUpdate { frame_delta_ns } => {
-                        // 帧事件喂给 FAS 活跃实例（内部含 3s 温度刷新）；息屏照常投喂（无帧则 no-op）
-                        if fas_mgr.is_active() {
-                            fas_mgr.on_frame(frame_delta_ns);
+                    DaemonEvent::FrameUpdate { frame_delta_ns, source_pid, source_generation } => {
+                        // 管理器复查 PID/generation；息屏与失焦会话只响应负载。
+                        if crate::common::fas_enabled() && fas_mgr.is_active() {
+                            let foreground = fas_foreground_snapshot();
+                            let raw_foreground = fas_raw_foreground_package();
+                            if !is_screen_on
+                                || fas_mgr.active_pkg() != foreground.as_ref().map(|snapshot| &*snapshot.package)
+                                || fas_mgr.active_pkg() != Some(raw_foreground.as_ref())
+                            {
+                                reconcile_fas_focus(&mut fas_mgr, &window_probe, &mut confirmed_window_focus,
+                                    &mut pending_mode_after_fas, is_screen_on);
+                            }
+                            fas_mgr.on_frame(frame_delta_ns, source_pid, source_generation);
                         }
                         if log::log_enabled!(log::Level::Debug) {
                             log::debug!("{}", t_with_args("scheduler-event-frame", &fluent_args!(
@@ -3236,6 +4454,9 @@ pub fn start_scheduler_thread(
                     std::process::exit(1);
                 }
                 // 重置状态机到亮屏安全态：真实屏幕状态由下一个 ScreenStateChange 事件纠正（必被处理）
+                pending_mode_after_fas = None;
+                confirmed_window_focus = None;
+                window_probe.invalidate();
                 is_screen_on = true;
                 crate::common::set_screen_on(true);
                 screen_off_at = None;
@@ -3286,6 +4507,9 @@ pub fn start_scheduler_thread(
                 );
             }
             log::warn!("{}", t("scheduler-channel-closed"));
+            // [selfcost] 停机收尾：若诊断会话仍开着，输出本线程 @S 自耗的不足 60s 尾窗并关闭
+            // selfcost/worker（幂等）；同一线程调用，thread_local 累计器有效
+            aff_cost_session_tick(false);
             // 收尾：无论 channel 关闭还是 panic，都恢复 CPU 控制状态，避免频率/governor 残留
             cpu_governor.release();
             ak_governor.release();
@@ -3301,4 +4525,464 @@ pub fn start_scheduler_thread(
         })?;
 
     Ok(())
+}
+
+// [tests]
+// 本仓库无 CI 执行 `cargo test`（Android target 未装），以下测试只保证编译通过并可作聚焦用例。
+// 仅覆盖**纯函数**：频率快照渲染、policy 发现缓存（TTL/重扫/增删/空结果）、槽级差分渲染。
+// 说明：`build_aff_snapshot` 内的差分**判定**与采样耦合、非纯函数，未单独断言（其可观测输出
+// 即 `render_t_row`，已在下方覆盖）；`pid_comm` 兜底的正确性由 `first_pid` 分支保证，属集成行为。
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── [C3] 频率快照渲染：格式/顺序/读不到写 `-` ──
+    #[test]
+    fn render_freq_snapshot_matches_legacy_format() {
+        let entries = vec![
+            (
+                0,
+                (
+                    "1000".to_string(),
+                    "2000".to_string(),
+                    "300".to_string(),
+                    "schedutil".to_string(),
+                ),
+            ),
+            (
+                4,
+                (
+                    "-".to_string(),
+                    "-".to_string(),
+                    "-".to_string(),
+                    "-".to_string(),
+                ),
+            ),
+        ];
+        let (cur, max, min, gov) = render_freq_snapshot(&entries);
+        assert_eq!(cur, "policy0:1000;policy4:-");
+        assert_eq!(max, "policy0:2000;policy4:-");
+        assert_eq!(min, "policy0:300;policy4:-");
+        assert_eq!(gov, "policy0:schedutil;policy4:-");
+    }
+
+    #[test]
+    fn render_freq_snapshot_empty_is_empty_strings() {
+        let (cur, max, min, gov) = render_freq_snapshot(&[]);
+        assert!(cur.is_empty() && max.is_empty() && min.is_empty() && gov.is_empty());
+    }
+
+    // ── [C3] policy 发现缓存：TTL 边界 ──
+    #[test]
+    fn policy_cache_needs_scan_without_cache() {
+        assert!(policy_cache_needs_scan(&None, Instant::now()));
+    }
+
+    #[test]
+    fn policy_cache_needs_scan_ttl_boundary_is_inclusive() {
+        let now = Instant::now();
+        // 刚好 TTL：需要重扫（>=）
+        let at_boundary = Some(PolicyBases::from_ids(
+            vec![0, 4],
+            now - POLICY_RESCAN_TTL,
+        ));
+        assert!(policy_cache_needs_scan(&at_boundary, now));
+        // 差 1ns 到 TTL：不重扫
+        let just_before = Some(PolicyBases::from_ids(
+            vec![0, 4],
+            now - POLICY_RESCAN_TTL + Duration::from_nanos(1),
+        ));
+        assert!(!policy_cache_needs_scan(&just_before, now));
+    }
+
+    // ── [C3] policy 发现缓存：合并（空不缓存/保留旧；增删重建；同列表刷新时刻）──
+    #[test]
+    fn policy_cache_merge_empty_does_not_cache_on_first() {
+        let mut cache: Option<PolicyBases> = None;
+        let t0 = Instant::now();
+        policy_cache_merge(&mut cache, Vec::new(), t0, t0);
+        assert!(cache.is_none(), "首次空结果不得永久缓存");
+        // 空期间每次调用都仍判定需要扫描
+        assert!(policy_cache_needs_scan(&cache, Instant::now()));
+    }
+
+    #[test]
+    fn policy_cache_merge_empty_retains_old_and_keeps_clock() {
+        let t0 = Instant::now();
+        let mut cache = Some(PolicyBases::from_ids(vec![0, 4], t0));
+        // 重扫失败/为空：保留旧 id、**不刷新**时刻（下次照常重试）
+        let t1 = t0 + Duration::from_secs(90);
+        policy_cache_merge(&mut cache, Vec::new(), t1, t1);
+        let c = cache.as_ref().unwrap();
+        assert_eq!(c.ids, vec![0, 4]);
+        assert_eq!(c.scanned_at, t0, "空结果不得推进扫描时刻");
+        assert_eq!(c.bases, vec!["/sys/devices/system/cpu/cpufreq/policy0".to_string(),
+                                 "/sys/devices/system/cpu/cpufreq/policy4".to_string()]);
+    }
+
+    #[test]
+    fn policy_cache_merge_same_ids_only_refreshes_clock() {
+        let t0 = Instant::now();
+        let t1 = t0 + Duration::from_secs(61);
+        let mut cache = Some(PolicyBases::from_ids(vec![0, 4], t0));
+        policy_cache_merge(&mut cache, vec![0, 4], t1, t1);
+        let c = cache.as_ref().unwrap();
+        assert_eq!(c.ids, vec![0, 4]);
+        assert_eq!(c.scanned_at, t1);
+    }
+
+    #[test]
+    fn policy_cache_merge_addition_rebuilds_bases() {
+        let t0 = Instant::now();
+        let t1 = t0 + Duration::from_secs(61);
+        let mut cache = Some(PolicyBases::from_ids(vec![0, 4], t0));
+        policy_cache_merge(&mut cache, vec![0, 4, 7], t1, t1);
+        let c = cache.as_ref().unwrap();
+        assert_eq!(c.ids, vec![0, 4, 7]);
+        assert_eq!(c.bases.len(), 3);
+        assert_eq!(c.bases[2], "/sys/devices/system/cpu/cpufreq/policy7");
+    }
+
+    /// 并发保护：扫描在锁外进行，先开始的「新扫描」结果不得被后完成的「旧扫描」覆盖
+    #[test]
+    fn policy_cache_merge_rejects_stale_concurrent_scan() {
+        let t_new = Instant::now();
+        let t_old = t_new - Duration::from_secs(5);
+        // 缓存由「开始于 t_new 的扫描」写入，时刻推进到 t_new
+        let mut cache = Some(PolicyBases::from_ids(vec![0, 4, 7], t_new));
+        // 另一线程「开始于 t_old 的扫描」后完成（t_new 之后才写）：必须被拒绝
+        policy_cache_merge(&mut cache, vec![0, 4], t_old, t_new + Duration::from_secs(1));
+        let c = cache.as_ref().unwrap();
+        assert_eq!(c.ids, vec![0, 4, 7], "旧扫描不得覆盖较新的结果");
+        assert_eq!(c.scanned_at, t_new);
+    }
+
+    // ── [C1] 槽级差分渲染：未变槽 `-`、尾部省略、真值 `-` 写 NaN、全未变只留标识 ──
+    #[test]
+    fn render_t_row_all_slots_unchanged_is_identifiers_only() {
+        // 全槽 None = 本帧无变化 → 只留标识（下游按缺省=未变合并）
+        let row = render_t_row(7, 9, None, None, None, None, None, None);
+        assert_eq!(row, "t 7 9");
+    }
+
+    #[test]
+    fn render_t_row_omits_trailing_unchanged_slots() {
+        // comm 未变(-)、util 变、core/home/pin/uclamp 未变 → 尾部整段省略
+        let row = render_t_row(1, 2, None, Some(5), None, None, None, None);
+        assert_eq!(row, "t 1 2 - u=5");
+    }
+
+    #[test]
+    fn render_t_row_dash_comm_renders_nan() {
+        // comm 真值为 `-`：写 NaN，与「未变」的 `-` 区分
+        let row = render_t_row(1, 2, Some("-"), None, None, None, None, None);
+        assert_eq!(row, "t 1 2 NaN");
+    }
+
+    #[test]
+    fn render_t_row_full_row_when_all_slots_present() {
+        let row = render_t_row(3, 4, Some("binder"), Some(50), Some(6), Some(4), Some(true), Some(-1));
+        assert_eq!(row, "t 3 4 binder u=50 core=6 home=4 pin=1 uclamp=-1");
+    }
+
+    #[test]
+    fn render_t_row_pin_false_is_zero() {
+        let row = render_t_row(1, 2, Some("x"), None, None, None, Some(false), None);
+        assert_eq!(row, "t 1 2 x - - - pin=0");
+    }
+
+    // ── [B1] 自耗累计：record 只入账、不因窗口未开而丢弃首帧 ──
+    #[test]
+    fn aff_cost_record_accumulates_without_flushing_first_frame() {
+        let t0 = Instant::now();
+        // 同一线程内连续两帧（thread_local 独占）
+        aff_cost_record(t0, None, t0, None, t0, None);
+        // 首次 record 只开窗、不结算：累计器保留本帧计数
+        AFF_COST.with(|cell| {
+            let st = cell.borrow();
+            assert_eq!(st.stats.stats(diag_cost::Block::Build).count, 1);
+            assert_eq!(st.stats.stats(diag_cost::Block::Write).count, 1);
+        });
+    }
+
+    // ── [D1] 配置身份串：同配置稳定、关键字段变化即不同 ──
+    #[test]
+    fn diag_config_identity_stable_and_sensitive_to_key_fields() {
+        let a = Config::default();
+        let b = Config::default();
+        assert_eq!(
+            diag_config_identity(&a),
+            diag_config_identity(&b),
+            "同一配置下身份串应稳定"
+        );
+        // 稳定性：同一实例多次调用结果相同（HashMap 迭代序不得影响指纹）
+        assert_eq!(
+            diag_config_identity(&a),
+            diag_config_identity(&a),
+            "同一配置多次调用结果应相同"
+        );
+        // HashMap 迭代序不应影响指纹：同一内容、不同插入顺序 → 指纹相同
+        let mut m1 = Config::default();
+        m1.sched
+            .params
+            .insert("k1".to_string(), "v1".to_string());
+        m1.sched
+            .params
+            .insert("k2".to_string(), "v2".to_string());
+        m1.tuned_profiles.insert(
+            "alpha".to_string(),
+            crate::chiri::config::SpecialTunedConfig::default(),
+        );
+        m1.tuned_profiles.insert(
+            "beta".to_string(),
+            crate::chiri::config::SpecialTunedConfig::default(),
+        );
+        let mut m2 = Config::default();
+        m2.tuned_profiles.insert(
+            "beta".to_string(),
+            crate::chiri::config::SpecialTunedConfig::default(),
+        );
+        m2.tuned_profiles.insert(
+            "alpha".to_string(),
+            crate::chiri::config::SpecialTunedConfig::default(),
+        );
+        m2.sched
+            .params
+            .insert("k2".to_string(), "v2".to_string());
+        m2.sched
+            .params
+            .insert("k1".to_string(), "v1".to_string());
+        assert_eq!(
+            diag_config_identity(&m1),
+            diag_config_identity(&m2),
+            "HashMap 插入序不同、内容相同应产生相同指纹"
+        );
+        // 敏感性：meta 关键字段
+        let mut c = Config::default();
+        c.meta.devimp_top_n = a.meta.devimp_top_n + 1;
+        assert_ne!(
+            diag_config_identity(&a),
+            diag_config_identity(&c),
+            "关键字段变化应改变身份串"
+        );
+        let mut d = Config::default();
+        d.meta.loglevel = "DEBUG".to_string();
+        assert_ne!(
+            diag_config_identity(&a),
+            diag_config_identity(&d),
+            "loglevel 变化应改变身份串"
+        );
+        // 敏感性：调度相关（非 meta）字段
+        let mut e = Config::default();
+        e.sched.enabled = !a.sched.enabled;
+        assert_ne!(
+            diag_config_identity(&a),
+            diag_config_identity(&e),
+            "调度相关字段变化应改变身份串"
+        );
+        let mut f = Config::default();
+        f.scene_mode_delay_secs = a.scene_mode_delay_secs.wrapping_add(1);
+        assert_ne!(
+            diag_config_identity(&a),
+            diag_config_identity(&f),
+            "调度相关字段变化应改变身份串"
+        );
+    }
+
+    // ── [D1] 前台身份变化判定：首次 / 包名变 / pid 变 / starttime 变 / 都不变 ──
+    #[test]
+    fn diag_identity_changed_covers_pkg_pid_and_first() {
+        let prev_none: Option<DiagIdentity> = None;
+        assert!(diag_identity_changed(
+            &prev_none,
+            &("com.foo".to_string(), 100, 1000)
+        ));
+        let prev: Option<DiagIdentity> = Some(("com.foo".to_string(), 100, 1000));
+        // 包名变
+        assert!(diag_identity_changed(
+            &prev,
+            &("com.bar".to_string(), 100, 1000)
+        ));
+        // pid 变（同包 PID 更换 / 进程重启）
+        assert!(diag_identity_changed(
+            &prev,
+            &("com.foo".to_string(), 200, 1000)
+        ));
+        // starttime 变（包名与 pid 均不变 → 同包同 PID 复用 / PID 回收）
+        assert!(diag_identity_changed(
+            &prev,
+            &("com.foo".to_string(), 100, 2000)
+        ));
+        // 都不变
+        assert!(!diag_identity_changed(
+            &prev,
+            &("com.foo".to_string(), 100, 1000)
+        ));
+    }
+
+    // ── [D1] 采样快照：generation 必须在「身份变化 → bump」之后取，才能取到新代际 ──
+    // 覆盖顺序不变式「同一 tick 内先 bump 后取 generation ⇒ 取到的是新代际」
+    // （消除「新 PID 配旧 generation」）。注：调度循环里「身份判定段先于采样段」这一先后
+    // 关系由代码位置保证，只能靠静态审查；此处对可运行的原语（generation/sequence）做
+    // 运行时验证。
+    #[test]
+    fn diag_sample_frame_takes_generation_after_bump() {
+        let w = diag_worker::DiagWorker::start();
+        let before = w.generation();
+        // 先：身份变化 → bump 代际
+        w.bump_generation();
+        // 后：采样时点构造快照（读 generation/sequence，并在同段读 config_identity）
+        let f = diag_sample_frame("0101-000000".to_string(), 1234, 987654, &w);
+        assert_eq!(
+            f.generation,
+            before + 1,
+            "快照必须取到 bump 后的新代际（先 bump 后取）"
+        );
+        assert_eq!(f.sequence, 0, "首个采样帧序号从 0 起");
+        assert_eq!(f.fg_pid, 1234);
+        assert_eq!(f.fg_starttime, 987654);
+        // 再采一帧：序号递增（与采样顺序一致）；未 bump 时代际保持不变
+        let f2 = diag_sample_frame("0101-000001".to_string(), 1234, 987654, &w);
+        assert_eq!(f2.sequence, 1);
+        assert_eq!(f2.generation, before + 1);
+        w.shutdown();
+    }
+
+    // ── [D1] canonical_debug：跨父节点交换值必须改变指纹（旧实现整体排序会碰撞）──
+    #[test]
+    fn canonical_debug_distinguishes_cross_parent_value_swap() {
+        // 两个 profile 的 params 值互换（**不同父节点**下）；两段文本行多重集相同。
+        let a = r#"Config {
+    tuned_profiles: {
+        "a": P {
+            params: {
+                "x": "1",
+            },
+        },
+        "b": P {
+            params: {
+                "x": "2",
+            },
+        },
+    },
+}"#;
+        let b = r#"Config {
+    tuned_profiles: {
+        "a": P {
+            params: {
+                "x": "2",
+            },
+        },
+        "b": P {
+            params: {
+                "x": "1",
+            },
+        },
+    },
+}"#;
+        // 先证明这是本缺陷的回归：旧实现（整体 sort_unstable）下两段文本无法区分。
+        let mut la: Vec<&str> = a.lines().collect();
+        la.sort_unstable();
+        let mut lb: Vec<&str> = b.lines().collect();
+        lb.sort_unstable();
+        assert_eq!(la, lb, "两段文本行多重集相同（旧实现确定性碰撞）");
+        // 新实现：层级保留，跨父节点交换值 → 指纹必须不同。
+        assert_ne!(canonical_debug(a), canonical_debug(b));
+    }
+
+    // ── [D1] canonical_debug：同层级 map 条目顺序颠倒（HashMap 迭代序）指纹不变 ──
+    #[test]
+    fn canonical_debug_is_map_iteration_order_independent() {
+        let first = r#"Config {
+    tuned_profiles: {
+        "a": P {
+            params: {
+                "x": "1",
+            },
+        },
+        "b": P {
+            params: {
+                "x": "2",
+            },
+        },
+    },
+}"#;
+        // 同一层级两条 map 条目顺序颠倒：语义相同 → 指纹必须相同。
+        let swapped = r#"Config {
+    tuned_profiles: {
+        "b": P {
+            params: {
+                "x": "2",
+            },
+        },
+        "a": P {
+            params: {
+                "x": "1",
+            },
+        },
+    },
+}"#;
+        assert_eq!(canonical_debug(first), canonical_debug(swapped));
+    }
+
+    #[test]
+    fn canonical_debug_preserves_ordered_list_priority() {
+        let first = "Config {\n    cpu_temp_zone_types: [\n        \"soc_max\",\n        \"cpuss\",\n    ],\n}";
+        let swapped = "Config {\n    cpu_temp_zone_types: [\n        \"cpuss\",\n        \"soc_max\",\n    ],\n}";
+        assert_ne!(canonical_debug(first), canonical_debug(swapped));
+    }
+
+    // ── [D1] canonical_debug：同一个值从一层移到另一层指纹必须不同（层级保留）──
+    #[test]
+    fn canonical_debug_preserves_hierarchy() {
+        let shallow = r#"Config {
+    "x": "1",
+    p: {
+    },
+}"#;
+        let deep = r#"Config {
+    p: {
+        "x": "1",
+    },
+}"#;
+        assert_ne!(canonical_debug(shallow), canonical_debug(deep));
+    }
+
+    // ── [D1] canonical_debug：同一输入两次调用结果相同；空输入不 panic ──
+    #[test]
+    fn canonical_debug_is_stable() {
+        let text = r#"Config {
+    sched: {
+        params: {
+            "k1": "v1",
+        },
+    },
+}"#;
+        assert_eq!(canonical_debug(text), canonical_debug(text));
+        assert_eq!(canonical_debug(""), "");
+    }
+
+    // ── [D1] diag_config_identity：交换不同 profile 的参数值必须改变指纹（缺陷直接体现）──
+    #[test]
+    fn diag_config_identity_distinguishes_cross_profile_value_swap() {
+        let mut p = crate::chiri::config::SpecialTunedConfig::default();
+        p.headroom = 1.11;
+        let mut q = crate::chiri::config::SpecialTunedConfig::default();
+        q.headroom = 2.22;
+
+        let mut a = Config::default();
+        a.tuned_profiles.insert("a".to_string(), p.clone());
+        a.tuned_profiles.insert("b".to_string(), q.clone());
+
+        // 交换 "a"/"b" 两个 profile 的 headroom 值（不同父节点下的同名叶子）。
+        let mut b = Config::default();
+        b.tuned_profiles.insert("a".to_string(), q);
+        b.tuned_profiles.insert("b".to_string(), p);
+
+        assert_ne!(
+            diag_config_identity(&a),
+            diag_config_identity(&b),
+            "交换不同 profile 的参数值必须改变指纹（旧实现整体排序会碰撞）"
+        );
+    }
 }

@@ -8,5 +8,9 @@
     "--target",
     "aarch64-linux-android"
   ],
-  "rust-analyzer.cargo.check.allTargets": false
+  "rust-analyzer.cargo.check.allTargets": false,
+
+  "python.analysis.diagnosticMode": "openFilesOnly",
+  "python.analysis.indexing": false,
+  "python.analysis.ignore": ["./**/*.py"]
 }

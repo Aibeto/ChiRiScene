@@ -24,6 +24,7 @@ pub struct PolicyController {
     cached_ratios: Vec<f32>,
     pub current_freq: u32,
     pub policy_id: usize,
+    pub(super) cpu_ids: Vec<usize>,
     pub cluster_profile: ClusterProfile,
     pub freq_hold_frames: u32,
     pub freq_min: f32,
@@ -78,6 +79,18 @@ impl PolicyController {
             cached_ratios,
             current_freq,
             policy_id,
+            cpu_ids: fs::read_to_string(format!(
+                "/sys/devices/system/cpu/cpufreq/policy{policy_id}/related_cpus"
+            ))
+            .or_else(|_| {
+                fs::read_to_string(format!(
+                    "/sys/devices/system/cpu/cpufreq/policy{policy_id}/affected_cpus"
+                ))
+            })
+            .unwrap_or_default()
+            .split_whitespace()
+            .filter_map(|cpu| cpu.parse().ok())
+            .collect(),
             cluster_profile,
             freq_hold_frames: 0,
             freq_min,

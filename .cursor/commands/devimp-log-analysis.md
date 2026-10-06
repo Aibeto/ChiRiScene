@@ -110,9 +110,9 @@ python scripts\devimp-analyze.py <解压目录> [--since MMDD-HHMMSS] [--min-n 3
 | `dvextract.py` | 解压（递归容忍 + 内容嗅探 + 完整性闸门 + `inventory.txt`）                                                                       | `python scripts\devimp\dvextract.py <logd_*.tar.gz> [--tag T] [--out-root devimpbin]` |
 | `dvmain.py`    | `main_*.log`：定版 / mode×package / decide-vs-actual / 热压制带 / snap 侧 / **播放态帧间隔直方图（`[7]`，活跃窗口 + 长尾率）** | `python scripts\devimp\dvmain.py <解压目录> [--since MMDD-HHMMSS] [--min-n 30]`       |
 | `dvaff.py`     | `aff_*.log`：`@A` 动作与 bulk、`@S` 差分帧累积（按 `full=1` 收敛存活集合、tid 复用作废）、绑定轨迹、`t` 行核分布与存活集合合并态（`--groups` 按机型分簇） | `python scripts\devimp\dvaff.py <解压目录> [--since MMDD-HHMMSS] [--groups "0-2,3-6,7"] [--core-top 8]` |
-| `dvstatus.py`  | `status.csv` + `daemon.log`：charge / 放电功率 / fps / FAS 证据 / 重启界标                                                       | `python scripts\devimp\dvstatus.py <解压目录>`                                        |
+| `dvstatus.py`  | `status.csv` + `daemon.log`：charge / 放电功率 / fps / FAS 证据 / 重启界标；按解析身份去重，FPS 空不等于未接管 | `python scripts\devimp\dvstatus.py <目录或 status.csv> [--since MMDD-HHMMSS] [--out 路径]` |
 | `dvpower.py`   | **按包功耗归因**：`status.csv` 权威（按 mode×package / 按包 / **按 mode 能量汇总 `[7]`**）+ 热档秒数 `[4]` + **档位迁移时间线 `[5]` / 档位温度区间 `[6]`** + **电量计尖峰剔除（`batt_power_w > 20 W` 计为异常读数，条数与最大值打在 `[3]` 后，不进均值/分位/Wh）** + devimp 侧交叉验证 `[8]` | `python scripts\devimp\dvpower.py <解压目录> [--since MMDD-HHMMSS]`                   |
-| `dvenergy.py`  | **功耗三层分解 + 外围基线剥离**（2026-10-05 新增）：`[1]` 总口/CPU 动态/残差三层能量账、`[2]` 同场景低负载分位的**外围基线**、`[3]` CPU 增量能量（调度改动该看这个）、`[4]` `batt_power_w ~ a + b·cpu_dyn_w` 回归（a=外围地板、R² 低说明总口被外围淹没）。依赖 status.csv 末两列 `cpu_dyn_w`/`resid_w`，老包（2026-10-05 前的 daemon）只报提示不产表 | `python scripts\devimp\dvenergy.py <解压目录>`（`--selftest` 自检）                  |
+| `dvenergy.py`  | **功耗三层分解 + 同基准增量**：总口 / 模型动态 / 残差；同一低分位子集的总口与模型基线分别扣除，未解释增量保留正负；按文件连续段、屏幕、模式、包名分组回归。区分缺列与全缺值，报告负残差、样本等效 Wh、短区间积分与缺口；截距不是实测外围地板 | `python scripts\devimp\dvenergy.py <目录或 status.csv> [--since MMDD-HHMMSS] [--out 路径]`（`--selftest` 自检） |
 | `dvlz4.py`     | 纯 python LZ4 解码（供 dvextract 用；有 `--selftest`）                                                                           | `python scripts\devimp\dvlz4.py --selftest`                                           |
 | `dvcommon.py`  | 共享工具（列定义、文件头解析、切行、统计、UTF-8 输出）                                                                           | （库，不直接跑）                                                                      |
 
@@ -136,6 +136,11 @@ python scripts\devimp-analyze.py <解压目录> [--since MMDD-HHMMSS] [--min-n 3
   N 突然变大先查帧格式，不要解读数据）。`--groups` 非法（非数字 / 端点倒置）与 `--core-top` 越界
   直接报错退出 2，不再静默产出空簇或反向切片。
 - 判读口径一律以本文档「判定要点」为准，脚本只做读数与统计，不另立解释。
+
+- **输入与时间口径**：`dvstatus` / `dvpower` / `dvenergy` 可接收单个 `status.csv`、单批次目录或解压根目录；根目录默认包含全部批次，不等于最新批次。`--since` 按父目录归档批次戳筛选，无批次戳则报错。`--out` 指定报告路径。
+- **能量与覆盖**：`sample-equivalent Wh = sum(W)/3600` 仅假设每条有效放电 snap 覆盖 1 s；`integrated Wh` 按明确的有效短区间 dt 积分，不外推长缺口、异常 dt 和末行。热档行数是样本数，不能等同完整墙钟秒数。coverage/gaps/max gap 与有效 dt 一起读，缺口原因未知。
+- **增量与回归**：低负载分位 baseline 是整机与模型的统计代理，不是纯外围；总口和模型必须各减同子集对应基线，再相减得到未解释项。回归按连续段、同包、同模式、同屏幕状态分组，但仍未控制内容/亮度/热状态与采样同步，不能把低 R² 单独归因为外围噪声或模型错误。
+- **自检**：`python -B scripts/devimp/test_accounting.py`；原始 CSV 与既有报告无需为测试覆盖重写。
 
 ## 二、列索引速查
 
@@ -234,9 +239,9 @@ python scripts\devimp-analyze.py <解压目录> [--since MMDD-HHMMSS] [--min-n 3
 - **`batt_power_w` 是电池端总功率，含屏幕 / modem / GPU / 静态漏电这些调度层碰不到的外围**（2026-10-05
   立此口径）：按包归因时「这个包耗电高」常常只是「这个包亮屏久」。要判定调度改动的效果，走
   `scripts\devimp\dvenergy.py` 的三层分解——`cpu_dyn_w`（能效表折算的 CPU 动态项，只含动态、
-  是下界）与 `resid_w` = `batt_power_w − cpu_dyn_w`（残差含外围 + CPU 静态 + GPU，**不是纯外围**）。
-  读法：先看 `[1]` 的 CPU 占比（低 = 外围主导，别拿总口归因），再用 `[2]` 的同场景低负载分位得到
-  外围基线，`[3]` 的增量能量才是调度该背的那份；`[4]` 回归的 R² 低即说明总口被外围噪声淹没。
+  未标定且不是逐秒物理下界）与 `resid_w` = `batt_power_w − cpu_dyn_w`（残差含外围 + CPU 静态 + GPU + 模型误差，**不是纯外围**）。
+  读法：`[1]` 的模型占比用于描述，负残差不夹零；`[2]` 同场景低负载分位给出整机与模型的统计基线，
+  `[3]` 分别扣基线后报告总增量、模型动态增量与未解释增量，不能全归因于调度；`[4]` 的低 R² 也可能来自混杂或采样不同步。
   两列只在有功耗表的 SoC（当前仅 8550）有值，其余恒 `-`；充电行的 `resid_w` 无意义
 - 模式语义：`clg_active=1` = CLG 在接管；`mode=fas` = FAS 接管；特调模式（playback/akmode）= tuned 接管；
   PowerBase 开启时替换 CLG（日志有 powerbase-activated）
@@ -256,8 +261,9 @@ python scripts\devimp-analyze.py <解压目录> [--since MMDD-HHMMSS] [--min-n 3
   校验），引擎侧 3 处写入一并换用。判读：改造后应看到 `P{pid} 调速器 schedutil -> performance` 成功行；
   若仍失败，日志会带出「读回已是目标值」的 debug 而不是 warn
 - FAS 验证看 `daemon.log` 的 `fas-gear-switch` / `fas-low-perf-upgrade` 与 snap 的 `mode=fas`；
-  `status.csv` 的 `fps` 列是 eBPF uprobe（`Surface::queueBuffer`）帧间隔，只在 FAS 段有值
-  （播放态不填该列，改走下面的 `playback_fps` 行）
+  `status.csv` 的 `fps` 列是 eBPF uprobe（`Surface::queueBuffer`）帧间隔；仅当前游戏有效帧反馈窗口有值。
+  FAS 活跃但叠加失焦、预热、无帧或探针失败时也可为 `-`，全空不等于未接管。
+  播放态不填该列，改走下面的 `playback_fps` 行。
 - **播放态帧信号（2026-09-27 起）：看 `event` 行的 `decision=playback_fps`**
   （只在该包里特调 `playback` 接管、且 `dev_record` 开启时才有；FAS 会话不产出——那一路走 FAS 自己的 fps）。口径：
   - `reason` = `n=<帧数>;b<档号>=<计数>;…`：档宽 **4ms**、档 0 = <4ms，只落非零档

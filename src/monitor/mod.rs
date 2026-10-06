@@ -15,6 +15,7 @@ pub mod cpu_monitor;
 pub mod fps_monitor;
 pub mod screen_detect;
 pub mod telemetry;
+pub mod window_visibility;
 
 use crate::common::DaemonEvent;
 use crate::fluent_args;
@@ -41,21 +42,25 @@ fn spawn_guarded<F: FnOnce() + Send + 'static>(name: &'static str, f: F) -> std:
 pub static CPU_HOTPLUG_DIRTY: AtomicBool = AtomicBool::new(false);
 
 // [fas_signal]
-/// FAS 前台激活信号：**FAS 激活瞬间本身可等待**生产方是 chiri 的 `FasManager`（activate/
-/// 续期 `set(true)`、`deactivate_active` `set(false)`），消费方是 fps 探针待机线程
-/// 等待对象必须是「激活」而非前台 PID：FAS 会在 PID 未变时重新激活（息屏释放回前台、15s
-/// 冷却期结束调度线程自行 activate），等 PID 的线程会漏掉这类激活、FAS 收不到帧
-/// **store 与 notify 必须同锁**：读标志与入睡拆开必有丢唤醒窗口（读到 false → 置位方 notify
-/// 时队列为空通知丢失 → 等待方入睡后漏唤醒）；同锁后仅剩两种不丢唤醒的交错，勿拆
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub struct FrameSource {
+    pub pid: u32,
+    pub generation: u64,
+    pub frame_feedback: bool,
+}
+
+/// FAS 所有权与帧反馈信号：load-only 仍 active，但不要求挂帧探针。
+/// 状态发布、等待谓词和通知共用互斥锁，PID 不变的反馈恢复也会唤醒。
 pub struct FasSignal {
     /// 状态本体。热路径只读原子量，与改造前的裸 `AtomicBool` 同价
     flag: AtomicBool,
+    frame_feedback: AtomicBool,
     /// **播放态旁路采样**谓词（2026-09-27）：特调 `playback` 接管时置位，让 fps 探针在非 FAS 会话里也挂帧源。
     /// 与 `flag` 分开存而非复用：`flag` 的语义被 FasManager/调度侧消费（FAS 是否接管），播放态混进去会让
     /// 「FAS 未激活」的判定失真；两者只在帧源门控处取或
     playback: AtomicBool,
-    /// 保护 `flag`/`playback` 的谓词判定（wait_until_frame_source）与置位+通知（set / set_playback）的互斥锁；无哨兵值仅互斥用，勿删（见类型注释丢唤醒说明）
-    lock: Mutex<()>,
+    /// 帧源快照与等待谓词共用锁；None 表示没有具名 FAS 帧源。
+    lock: Mutex<Option<FrameSource>>,
     /// 配合 `lock` 唤醒待机线程；`set`/`set_playback` 与等待谓词同锁，故不存在丢唤醒
     cvar: Condvar,
 }
@@ -65,8 +70,9 @@ impl FasSignal {
     pub const fn new(active: bool) -> Self {
         Self {
             flag: AtomicBool::new(active),
+            frame_feedback: AtomicBool::new(active),
             playback: AtomicBool::new(false),
-            lock: Mutex::new(()),
+            lock: Mutex::new(None),
             cvar: Condvar::new(),
         }
     }
@@ -76,10 +82,36 @@ impl FasSignal {
         self.flag.load(Ordering::Acquire)
     }
 
-    /// 置位/清零并唤醒全部等待者：store 与 notify_all 必须同锁（拆开即丢唤醒，见类型注释）；值未变也照常通知——幂等且无副作用
+    /// 兼容旧布尔入口；有具名帧源时保留其反馈门控，同值不通知。
     pub fn set(&self, active: bool) {
-        let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
-        self.flag.store(active, Ordering::Release);
+        let mut source = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        if !active {
+            *source = None;
+        }
+        let feedback = active && source.is_none_or(|owner| owner.frame_feedback);
+        let changed = self.flag.swap(active, Ordering::AcqRel) != active
+            || self.frame_feedback.load(Ordering::Acquire) != feedback;
+        self.frame_feedback.store(feedback, Ordering::Release);
+        if changed {
+            self.cvar.notify_all();
+        }
+    }
+
+    pub fn frame_source(&self) -> Option<FrameSource> {
+        *self.lock.lock().unwrap_or_else(|error| error.into_inner())
+    }
+
+    pub fn set_frame_source(&self, frame_source: Option<FrameSource>) {
+        let mut source = self.lock.lock().unwrap_or_else(|error| error.into_inner());
+        if *source == frame_source && self.is_active() == frame_source.is_some() {
+            return;
+        }
+        *source = frame_source;
+        self.flag.store(frame_source.is_some(), Ordering::Release);
+        self.frame_feedback.store(
+            frame_source.is_some_and(|owner| owner.frame_feedback),
+            Ordering::Release,
+        );
         self.cvar.notify_all();
     }
 
@@ -88,16 +120,17 @@ impl FasSignal {
         self.playback.load(Ordering::Acquire)
     }
 
-    /// 置位/清零播放态谓词并唤醒等待者：与 `set` 同款，store 与 notify 同锁、值未变也照常通知
+    /// 播放态谓词与通知同锁，同值不通知。
     pub fn set_playback(&self, on: bool) {
         let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
-        self.playback.store(on, Ordering::Release);
-        self.cvar.notify_all();
+        if self.playback.swap(on, Ordering::AcqRel) != on {
+            self.cvar.notify_all();
+        }
     }
 
-    /// 帧源是否需要采样 = FAS 激活 **或** 播放态旁路采样（fps 探针挂载门控用）
+    /// 帧源采样门控：FAS 反馈启用或播放态诊断采样。
     pub fn frame_source_active(&self) -> bool {
-        self.is_active() || self.playback_active()
+        self.frame_feedback.load(Ordering::Acquire) || self.playback_active()
     }
 
     /// 阻塞直到帧源需要采样（FAS 激活或播放态），或到达 `timeout`；`None` = 无限等待（纯待机 0 周期唤醒）。
@@ -122,6 +155,61 @@ impl FasSignal {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod fas_signal_tests {
+    use super::*;
+
+    #[test]
+    fn load_only_retains_owner_without_sampling() {
+        let signal = FasSignal::new(false);
+        let owner = FrameSource {
+            pid: 42,
+            generation: 7,
+            frame_feedback: false,
+        };
+        signal.set_frame_source(Some(owner));
+        assert!(signal.is_active());
+        assert!(!signal.frame_source_active());
+        assert_eq!(signal.frame_source(), Some(owner));
+        signal.set_playback(true);
+        assert!(signal.frame_source_active());
+        signal.set_playback(false);
+        assert!(!signal.frame_source_active());
+        signal.set_frame_source(None);
+        assert!(!signal.is_active());
+    }
+
+    #[test]
+    fn same_pid_feedback_resume_wakes_waiter() {
+        let signal = std::sync::Arc::new(FasSignal::new(false));
+        signal.set_frame_source(Some(FrameSource {
+            pid: 42,
+            generation: 7,
+            frame_feedback: false,
+        }));
+        let (completion_sender, completion_receiver) = std::sync::mpsc::channel();
+        let waiting_signal = signal.clone();
+        let waiter = std::thread::spawn(move || {
+            waiting_signal.wait_until_frame_source(None);
+            completion_sender.send(()).unwrap();
+        });
+        assert!(
+            completion_receiver
+                .recv_timeout(Duration::from_millis(20))
+                .is_err()
+        );
+        signal.set_frame_source(Some(FrameSource {
+            pid: 42,
+            generation: 8,
+            frame_feedback: true,
+        }));
+        completion_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        waiter.join().unwrap();
     }
 }
 

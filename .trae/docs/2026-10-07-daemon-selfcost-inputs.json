@@ -1,0 +1,31 @@
+{
+  "cases": [
+    {
+      "case_id": "P1-1006-180755",
+      "status_path": "devimpbin/1006-180755/x_1006-180717/status.csv",
+      "devimp_dir": "devimpbin/1006-180755/x_devimp_1006-180717",
+      "aff_path": "devimpbin/1006-180755/x_devimp_1006-180717/aff_1006-153607.log",
+      "version_identity": "ChiRi #3 Transition 相变 A01-08 (versionCode 30108) | SoC 8550 | model PHB110",
+      "config_identity": "unknown",
+      "session_id": "1006-180717"
+    },
+    {
+      "case_id": "P2-1005-170643",
+      "status_path": "devimpbin/1005-170643/x_1005-170636/status.csv",
+      "devimp_dir": "devimpbin/1005-170643/x_devimp_1005-170636",
+      "aff_path": "devimpbin/1005-170643/x_devimp_1005-170636/aff_1005-132236.log",
+      "version_identity": "ChiRi #3 Transition 相变 A01-08 (versionCode 30108) | SoC 8650 | model PJX110",
+      "config_identity": "unknown",
+      "session_id": "1005-170636"
+    },
+    {
+      "case_id": "P3-1006-131110",
+      "status_path": "devimpbin/1006-131110/x_1006-120018/status.csv",
+      "devimp_dir": "devimpbin/1006-131110/x_devimp_1006-120018",
+      "aff_path": "devimpbin/1006-131110/x_devimp_1006-120018/aff_1006-000939.log",
+      "version_identity": "ChiRi #3 Transition 相变 A01-08 (versionCode 30108) | SoC 8550 | model PHB110",
+      "config_identity": "unknown",
+      "session_id": "1006-120018"
+    }
+  ]
+}

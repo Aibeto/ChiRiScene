@@ -10,3 +10,6 @@ mod pid_jank;
 mod policy_mgmt;
 
 pub use controller::FasController;
+
+#[cfg(test)]
+pub(crate) use controller::tests::controller_with_policy;

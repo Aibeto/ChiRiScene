@@ -1,4 +1,4 @@
-//! power_base.rs: [types] [init] [tick] [touch] [release]
+//! power_base.rs: [types] [batt] [init] [tick] [touch] [release]
 //! PowerBase（Stardust 家族）：以**放电功耗**为指标的调频器，用来替换 CLG
 //! 与 CLG 的根本区别：CLG 只看「利用率够不够」，PowerBase 看「功耗超没超目标」（feature 的 target_power_w）——
 //! 功耗低于目标：升频放宽（up_headroom_below）；达到/超过：守住不再升频，除非满占用核心占比达
@@ -28,6 +28,10 @@ const PERF_DEADBAND: f32 = 0.05;
 const MAX_DOWN_STEP: f32 = 0.25;
 /// 档位阶梯级数：标准 → 触摸一级 → 触摸二级（绝对上限）
 const TIER_STEPS: usize = 3;
+/// 电池充放电状态缓存 TTL（2s）：负载 tick 是 160ms 级，逐 tick 真读 sysfs 无必要。
+/// 只在 PowerBase 侧缓存（`read_battery_charge_state` 本身与 status.csv / PowerAVG 取样门不动）；
+/// 延迟边界见 `PowerBase::battery_state`
+const BATT_STATUS_TTL: Duration = Duration::from_secs(2);
 
 // [types]
 /// 接管前的系统状态快照，release 时恢复
@@ -102,6 +106,9 @@ pub struct PowerBase {
     tier_idx: u8,
     /// 触摸窗口截止（None = 不在窗口内）：窗口内允许突破 `target_power_w`，且是升档的存续期
     touch_until: Option<Instant>,
+    /// 电池充放电状态缓存（TTL = `BATT_STATUS_TTL`）：**只缓存成功读到的有效值**，
+    /// `"-"`（节点缺失/未知值）不写缓存；init/release 清空（进入/退出 PowerBase 都重读）
+    batt_status: Option<(String, Instant)>,
 }
 
 impl Default for PowerBase {
@@ -122,11 +129,44 @@ impl PowerBase {
             tier_enabled: false,
             tier_idx: 0,
             touch_until: None,
+            batt_status: None,
         }
     }
 
     pub fn is_active(&self) -> bool {
         self.active
+    }
+
+    // [batt]
+    /// 取电池充放电状态（带 TTL 缓存）：TTL 内（`now - 缓存时刻 < BATT_STATUS_TTL`）直接复用缓存值；
+    /// 过期或未命中则**重新真读**并写缓存。只为省掉逐 tick 对 `/sys/class/power_supply/battery/status`
+    /// 的真读，判定语义与 `super::read_battery_charge_state()` 完全一致（返回归一化短词，`"-"` = 未知）。
+    ///
+    /// **只缓存成功读到的有效值**：读回 `"-"`（节点缺失或未知值）**不写缓存**，按原语义当「非放电」处理，
+    /// 下次调用立即重试。因此未知值告警的去重（`BATT_STATUS_UNKNOWN_WARNED`）仍由**实际读取**触发——
+    /// 真读没有被缓存吞掉，`"-"` 的告警语义自动保持。
+    ///
+    /// **行为边界**：缓存的充放电感知延迟**不是墙钟 2s**。在持续调用（每 tick，间隔远小于 TTL）条件下，
+    /// 一次状态切换最迟在「TTL + 下一次调用等待」内被感知（TTL 到期后的首次调用才真读）；若调用间隔本身
+    /// 大于 TTL，则每次调用都会真读，延迟回落到调用粒度。故只承诺「不超过 TTL 加下一调用等待」。
+    fn battery_state(&mut self, now: Instant, read: impl FnOnce() -> String) -> &str {
+        let expired = match &self.batt_status {
+            Some((_, at)) => now.saturating_duration_since(*at) >= BATT_STATUS_TTL,
+            None => true,
+        };
+        if expired {
+            let fresh = read();
+            if fresh == "-" {
+                // 未知值/节点缺失不缓存：下次调用立即重试（告警去重仍由实际读取触发）
+                self.batt_status = None;
+            } else {
+                self.batt_status = Some((fresh, now));
+            }
+        }
+        match &self.batt_status {
+            Some((v, _)) => v.as_str(),
+            None => "-",
+        }
     }
 
     // [init]
@@ -137,6 +177,7 @@ impl PowerBase {
     /// 起手取标准档（档位体系未启用时 = 硬件最高，与旧行为一致）：接管瞬间多有负载，先给足日常余量防掉帧，
     /// 紧随 tick 按功耗规则迅速压下；特需档只在触摸事件里瞬时放开
     pub fn init(&mut self, cfg: &PowerBaseConfig) {
+        // release 同时清空电池状态缓存：进入 PowerBase 时必然重读（见 [batt] battery_state）
         self.release();
         self.cfg = cfg.clone();
         self.cfg.normalize();
@@ -293,6 +334,7 @@ impl PowerBase {
     // [tick]
     /// 每个负载 tick 调用一次。`core_utils`：各 CPU 利用率（0..1）。
     /// 功耗读数是**自己取**的：仅放电时有效，否则视为「无读数」——此时不做功耗限制
+    /// 充放电状态走 `battery_state` 的 2s TTL 缓存（延迟边界见其文档），其余判定与分支顺序不变
     /// 返回距下次防篡改重写的剩余时间（非激活返回 None）
     pub fn on_load_update(&mut self, core_utils: &[f32]) -> Option<Duration> {
         if !self.active {
@@ -300,8 +342,10 @@ impl PowerBase {
         }
         let now = Instant::now();
         // 放电判定**不能看电流正负**（厂商节点方向不一，部分设备充放皆正），与 PowerAVG 同口径读 status；
-        // 非放电 = 无读数（充电功率压频无意义）
-        let power_w = if super::read_battery_charge_state() == "discharging" {
+        // 非放电 = 无读数（充电功率压频无意义）。真读经 TTL 缓存，`"-"` 不入缓存、下次立即重试
+        let is_discharging =
+            self.battery_state(now, super::read_battery_charge_state) == "discharging";
+        let power_w = if is_discharging {
             crate::monitor::telemetry::telemetry().batt_power_w()
         } else {
             None
@@ -475,6 +519,8 @@ impl PowerBase {
         self.tier_enabled = false;
         self.tier_idx = 0;
         self.touch_until = None;
+        // 清电池状态缓存：退出 PowerBase 后重入（init 首行即 release）都必然重读 [batt]
+        self.batt_status = None;
         self.active = false;
     }
 
@@ -514,6 +560,7 @@ impl PowerBase {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
 
     /// little 真机频表片段（升序）：307200 起、含 1017600（#13 落点档）与 1344000（#20 落点档）
     const FREQS: [u32; 8] = [
@@ -559,5 +606,117 @@ mod tests {
         assert_eq!(next_tier(0), Some(1));
         assert_eq!(next_tier(1), Some(2));
         assert_eq!(next_tier(2), None);
+    }
+
+    // [batt]
+    /// 电池状态 TTL 缓存的读写用「读」注入解耦真实 sysfs：`battery_state` 的 `read` 形参就是本文件内的注入点，
+    /// 生产路径仍传入 `super::read_battery_charge_state`，行为不变（见 [batt] 文档）。下面用 `Cell` 计真读次数。
+
+    /// TTL 内（< 2s）命中缓存：不重读 sysfs，即便底层状态已翻转也返回旧值
+    #[test]
+    fn batt_ttl_reuses_within_window() {
+        let mut pb = PowerBase::new();
+        let reads = Cell::new(0usize);
+        let t0 = Instant::now();
+        let first = pb
+            .battery_state(t0, || {
+                reads.set(reads.get() + 1);
+                "discharging".to_string()
+            })
+            .to_string();
+        assert_eq!(first, "discharging");
+        // 距上次真读 1.9s（< TTL=2s）：直接复用缓存，注入的读闭包不被调用
+        let second = pb
+            .battery_state(t0 + Duration::from_millis(1900), || {
+                reads.set(reads.get() + 1);
+                "charging".to_string()
+            })
+            .to_string();
+        assert_eq!(second, "discharging");
+        assert_eq!(reads.get(), 1);
+    }
+
+    /// TTL 过期（>= 2s 即失效）：重读并刷新缓存
+    #[test]
+    fn batt_ttl_rereads_after_expiry() {
+        let mut pb = PowerBase::new();
+        let reads = Cell::new(0usize);
+        let t0 = Instant::now();
+        let _ = pb
+            .battery_state(t0, || {
+                reads.set(reads.get() + 1);
+                "discharging".to_string()
+            })
+            .to_string();
+        // 恰好到 TTL（`>=` 即过期）：必须重读，"charging" 覆盖旧缓存
+        let after = pb
+            .battery_state(t0 + BATT_STATUS_TTL, || {
+                reads.set(reads.get() + 1);
+                "charging".to_string()
+            })
+            .to_string();
+        assert_eq!(after, "charging");
+        assert_eq!(reads.get(), 2);
+        assert_eq!(
+            pb.batt_status.as_ref().map(|(v, _)| v.as_str()),
+            Some("charging")
+        );
+    }
+
+    /// 读回 "-"（节点缺失/未知值）：按原「非放电」语义返回，且**不写缓存**，下次立即重试真读
+    #[test]
+    fn batt_unknown_value_not_cached() {
+        let mut pb = PowerBase::new();
+        let reads = Cell::new(0usize);
+        let t0 = Instant::now();
+        let unknown = pb
+            .battery_state(t0, || {
+                reads.set(reads.get() + 1);
+                "-".to_string()
+            })
+            .to_string();
+        assert_eq!(unknown, "-");
+        assert!(pb.batt_status.is_none());
+        // 同一时刻、远未到 TTL 的再次调用仍真读（"-" 未被缓存吞掉 → 告警去重语义仍由实际读取触发）
+        let fresh = pb
+            .battery_state(t0, || {
+                reads.set(reads.get() + 1);
+                "discharging".to_string()
+            })
+            .to_string();
+        assert_eq!(fresh, "discharging");
+        assert_eq!(reads.get(), 2);
+    }
+
+    /// 退出（release）与重入（init 首行即 release）都清空缓存：PowerBase 生命周期两端必然重读
+    #[test]
+    fn release_and_reinit_clear_batt_cache() {
+        let mut pb = PowerBase::new();
+        let _ = pb
+            .battery_state(Instant::now(), || "discharging".to_string())
+            .to_string();
+        assert!(pb.batt_status.is_some());
+        // 退出 PowerBase：缓存清空
+        pb.release();
+        assert!(pb.batt_status.is_none());
+
+        let _ = pb
+            .battery_state(Instant::now(), || "discharging".to_string())
+            .to_string();
+        assert!(pb.batt_status.is_some());
+        // 重新进入 PowerBase：缓存同样清空（档位体系关（三桶号 0），init 只做策略接管读取）
+        let cfg = PowerBaseConfig {
+            target_power_w: 5.0,
+            up_headroom_below: 1.05,
+            down_scale: 0.9,
+            overload_cores_pct: 100.0,
+            overload_hold_ms: 100,
+            touch_break_ms: 1000,
+            tier_standard: 0,
+            tier_touch: 0,
+            tier_max: 0,
+        };
+        pb.init(&cfg);
+        assert!(pb.batt_status.is_none());
     }
 }

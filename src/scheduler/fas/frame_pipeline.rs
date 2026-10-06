@@ -231,7 +231,7 @@ impl FasController {
     // Phase 2.5: 温度护栏（temp_threshold=0 禁用）
 
     /// 护栏锁存状态机：≥temp_threshold 进入、<temp_threshold-3℃ 退出（迟滞防阈值边缘振荡；温度源 3s 刷新，见 FasManager::refresh_temperature）
-    fn update_thermal_hold(&mut self) {
+    pub(super) fn update_thermal_hold(&mut self) {
         if self.temp_threshold <= 0.0 || self.current_temperature <= 0.0 {
             self.thermal_hold = false;
             return;
@@ -246,7 +246,7 @@ impl FasController {
     }
 
     /// 护栏激活期间的 perf 上限（None = 无护栏）
-    fn thermal_perf_cap(&self) -> Option<f32> {
+    pub(super) fn thermal_perf_cap(&self) -> Option<f32> {
         if self.temp_threshold > 0.0 && self.thermal_hold {
             Some(self.cfg.core_temp_throttle_perf)
         } else {
@@ -258,7 +258,7 @@ impl FasController {
     // update_frame — 主入口
 
     pub fn update_frame(&mut self, frame_delta_ns: u64) {
-        if frame_delta_ns == 0 || self.policies.is_empty() {
+        if !self.frame_feedback_enabled || frame_delta_ns == 0 || self.policies.is_empty() {
             return;
         }
 
@@ -268,6 +268,28 @@ impl FasController {
 
         if frame_delta_ns < self.min_frame_ns() {
             return;
+        }
+
+        if self
+            .last_frame_at
+            .is_some_and(|timestamp| timestamp.elapsed() >= std::time::Duration::from_millis(500))
+        {
+            self.reset_frame_feedback();
+        }
+        if self.warmup_remaining > 0 {
+            if frame_delta_ns > max_ns || actual_ms > self.cfg.app_switch_gap_ms {
+                return;
+            }
+            self.last_frame_at = Some(std::time::Instant::now());
+            self.fps_window
+                .push(1_000_000_000.0 / frame_delta_ns as f32);
+            // 阈值到达的这一帧仍按负载控制，下一有效帧才进入 PID。
+            self.update_load_control();
+            self.warmup_remaining -= 1;
+            return;
+        }
+        if frame_delta_ns <= max_ns && actual_ms <= self.cfg.app_switch_gap_ms {
+            self.last_frame_at = Some(std::time::Instant::now());
         }
 
         if self.handle_early_exit(actual_ms) {

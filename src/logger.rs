@@ -1165,7 +1165,7 @@ fn main_check(w: &mut MainWriter) -> bool {
     rotated
 }
 
-/// 容量清理：仅保留最近 DEVIMP_KEEP_FILES 份诊断文件（`main_*.log` 与 `aff_*.log` 两种前缀合并计数），从旧到新删除；`current` 为当前活跃文件名，不参与清理
+/// 容量清理：仅保留最近 DEVIMP_KEEP_FILES 份诊断文件（`main_*.log` / `aff_*.log` / `selfcost_*.log` 三种前缀合并计数），从旧到新删除；`current` 为当前活跃文件名，不参与清理
 /// 旧 `devimp_*.log` 不在过滤前缀内（不迁移，随启动归档自然过期淘汰）。文件名含包名段，字典序不再等于时间序，因此按文件 mtime 排序
 fn diag_prune(current: Option<&str>) {
     let dir = common::get_module_root().join(DEVIMP_DIR_REL);
@@ -1174,7 +1174,9 @@ fn diag_prune(current: Option<&str>) {
             rd.flatten()
                 .filter_map(|e| {
                     let name = e.file_name().to_string_lossy().into_owned();
-                    if !(name.starts_with("main_") || name.starts_with("aff_"))
+                    if !(name.starts_with("main_")
+                        || name.starts_with("aff_")
+                        || name.starts_with("selfcost_"))
                         || !name.ends_with(".log")
                     {
                         return None;
@@ -1336,47 +1338,211 @@ pub fn ensure_watchdog_pid_file() {
     let _ = fs::write(&pid_path, ppid.to_string());
 }
 
+// [tick_sig]
+/// tick 签名栈缓冲容量：常规字段（decision + u32 + 两位小数 f32）远小于此，溢出由调用方回退堆格式化
+const TICK_SIG_CAP: usize = 256;
+
+/// 栈上签名写入器：缓冲不足立即返回 Err（绝不写半截字段），由 `tick_sig` 回退完整堆格式化
+struct StackSigWriter {
+    buf: [u8; TICK_SIG_CAP],
+    len: usize,
+}
+
+impl StackSigWriter {
+    fn new() -> Self {
+        Self {
+            buf: [0u8; TICK_SIG_CAP],
+            len: 0,
+        }
+    }
+
+    /// 已写入字节（始终为合法 UTF-8，来源皆为 `&str`）
+    fn as_str(&self) -> &str {
+        std::str::from_utf8(&self.buf[..self.len]).unwrap_or("")
+    }
+}
+
+impl std::fmt::Write for StackSigWriter {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        let bytes = s.as_bytes();
+        if self.len + bytes.len() > self.buf.len() {
+            return Err(std::fmt::Error);
+        }
+        self.buf[self.len..self.len + bytes.len()].copy_from_slice(bytes);
+        self.len += bytes.len();
+        Ok(())
+    }
+}
+
+/// tick 去重签名（**格式化后字符串**，逐字节与旧 `format!` 一致）：`Some` 按旧精度（`tgt_perf`=`{:.2}`、`thermal_cap_pct`=`{:.0}`、
+/// 频率=`{}`），`None` 记 `-`；显式禁用 f32 位比较（负零/NaN 等保持格式化语义）
+#[allow(clippy::too_many_arguments)]
+fn fmt_tick_sig(
+    w: &mut impl std::fmt::Write,
+    decision: &str,
+    tgt_perf: Option<f32>,
+    cur_freq_khz: Option<u32>,
+    max_freq_khz: Option<u32>,
+    thermal_cap_pct: Option<f32>,
+    touch_active: bool,
+    deb_up: u32,
+    deb_down: u32,
+) -> std::fmt::Result {
+    w.write_str(decision)?;
+    w.write_char('|')?;
+    match tgt_perf {
+        Some(v) => write!(w, "{v:.2}")?,
+        None => w.write_char('-')?,
+    }
+    w.write_char('|')?;
+    match cur_freq_khz {
+        Some(v) => write!(w, "{v}")?,
+        None => w.write_char('-')?,
+    }
+    w.write_char('|')?;
+    match max_freq_khz {
+        Some(v) => write!(w, "{v}")?,
+        None => w.write_char('-')?,
+    }
+    w.write_char('|')?;
+    match thermal_cap_pct {
+        Some(v) => write!(w, "{v:.0}")?,
+        None => w.write_char('-')?,
+    }
+    w.write_char('|')?;
+    w.write_str(if touch_active { "true" } else { "false" })?;
+    write!(w, "|{deb_up}|{deb_down}")
+}
+
+/// tick 签名：栈缓冲优先（去重路径零堆分配）；缓冲不足时回退完整堆格式化（不截断不漏字段）
+enum TickSig {
+    Stack(StackSigWriter),
+    Heap(String),
+}
+
+impl TickSig {
+    fn as_str(&self) -> &str {
+        match self {
+            TickSig::Stack(w) => w.as_str(),
+            TickSig::Heap(s) => s.as_str(),
+        }
+    }
+}
+
+/// 生成 tick 去重签名（格式化后字符串）
+#[allow(clippy::too_many_arguments)]
+fn tick_sig(
+    decision: &str,
+    tgt_perf: Option<f32>,
+    cur_freq_khz: Option<u32>,
+    max_freq_khz: Option<u32>,
+    thermal_cap_pct: Option<f32>,
+    touch_active: bool,
+    deb_up: u32,
+    deb_down: u32,
+) -> TickSig {
+    let mut w = StackSigWriter::new();
+    if fmt_tick_sig(
+        &mut w,
+        decision,
+        tgt_perf,
+        cur_freq_khz,
+        max_freq_khz,
+        thermal_cap_pct,
+        touch_active,
+        deb_up,
+        deb_down,
+    )
+    .is_ok()
+    {
+        TickSig::Stack(w)
+    } else {
+        // 缓冲不足（常规字段不会发生）：完整堆格式化，不截断不漏字段
+        let mut s = String::with_capacity(TICK_SIG_CAP);
+        let _ = fmt_tick_sig(
+            &mut s,
+            decision,
+            tgt_perf,
+            cur_freq_khz,
+            max_freq_khz,
+            thermal_cap_pct,
+            touch_active,
+            deb_up,
+            deb_down,
+        );
+        TickSig::Heap(s)
+    }
+}
+
+/// tick 去重判定：签名相同且未到心跳间隔则不落行；否则更新节流状态并落行。`sig` 为格式化后签名串
+fn tick_decide(last_sig: &mut String, last_t: &mut Instant, sig: &str, now: Instant) -> bool {
+    if last_sig.as_str() == sig && now.duration_since(*last_t) < MAIN_TICK_HEARTBEAT {
+        false
+    } else {
+        *last_sig = sig.to_string();
+        *last_t = now;
+        true
+    }
+}
+
+/// `Some(v)` 按旧精度格式化、`None` 记 `-`（与旧调用点 `format!` / `"-"` 逐字节一致）
+fn opt_f32_str(v: Option<f32>, prec: usize) -> String {
+    match v {
+        Some(v) => format!("{:.*}", prec, v),
+        None => "-".to_string(),
+    }
+}
+
+/// `Some(v)` 十进制整数、`None` 记 `-`
+fn opt_u32_str(v: Option<u32>) -> String {
+    match v {
+        Some(v) => v.to_string(),
+        None => "-".to_string(),
+    }
+}
+
 /// tick 行：CLG/akmode 调频决策轨迹（每决策 tick × 每个 cpufreq policy 一行）。写入量控制：按 policy + cluster 节流——决策签名变化即写，无变化时每 2s 心跳一条；
-/// util/over/under 等逐 tick 抖动的观测值不触发写入；防抖与升降过渡期仍逐 tick 记录
+/// util/over/under 等逐 tick 抖动的观测值不触发写入；防抖与升降过渡期仍逐 tick 记录。
+/// 调用方传原始数值：参与去重 key 的字段（tgt_perf/频率/thermal）在栈缓冲内先格式化比较，确定落行后才格式化展示字段（max_util/cur_perf 等）
 #[allow(clippy::too_many_arguments)]
 pub fn main_tick(
     policy_id: i32,
     cluster: &str,
-    max_util: &str,
+    max_util: f32,
     over: u32,
     under: u32,
-    cur_perf: &str,
-    tgt_perf: &str,
-    cur_freq_khz: &str,
-    max_freq_khz: &str,
+    cur_perf: Option<f32>,
+    tgt_perf: Option<f32>,
+    cur_freq_khz: Option<u32>,
+    max_freq_khz: Option<u32>,
     decision: &str,
     deb_up: u32,
     deb_down: u32,
-    thermal_cap_pct: &str,
+    thermal_cap_pct: Option<f32>,
     touch_active: bool,
 ) {
     if !diag_active() {
         return;
     }
-    let sig = format!(
-        "{decision}|{tgt_perf}|{cur_freq_khz}|{max_freq_khz}|{thermal_cap_pct}|{touch_active}|{deb_up}|{deb_down}"
+    // 签名先在栈缓冲内格式化比较（无堆分配）；缓冲不足由 tick_sig 内部回退完整堆格式化
+    let sig = tick_sig(
+        decision,
+        tgt_perf,
+        cur_freq_khz,
+        max_freq_khz,
+        thermal_cap_pct,
+        touch_active,
+        deb_up,
+        deb_down,
     );
     let now = Instant::now();
     let should_write = {
         let mut st = main_tick_state().lock().unwrap_or_else(|p| p.into_inner());
         let inner = st.entry(policy_id).or_default();
         match inner.get_mut(cluster) {
-            Some((last_sig, last_t)) => {
-                if *last_sig == sig && now.duration_since(*last_t) < MAIN_TICK_HEARTBEAT {
-                    false
-                } else {
-                    *last_sig = sig;
-                    *last_t = now;
-                    true
-                }
-            }
+            Some((last_sig, last_t)) => tick_decide(last_sig, last_t, sig.as_str(), now),
             None => {
-                inner.insert(cluster.to_string(), (sig, now));
+                inner.insert(cluster.to_string(), (sig.as_str().to_string(), now));
                 true
             }
         }
@@ -1384,19 +1550,26 @@ pub fn main_tick(
     if !should_write {
         return;
     }
+    // 确定落行后才格式化展示字段（util 等抖动观测值不参与去重）
+    let max_util_s = format!("{max_util:.2}");
+    let cur_perf_s = opt_f32_str(cur_perf, 2);
+    let tgt_perf_s = opt_f32_str(tgt_perf, 2);
+    let cur_freq_s = opt_u32_str(cur_freq_khz);
+    let max_freq_s = opt_u32_str(max_freq_khz);
+    let thermal_s = opt_f32_str(thermal_cap_pct, 0);
     let mut r = MainRow::new("tick");
     r.set(DM_CLUSTER, cluster)
-        .set(DM_MAXUTIL, max_util)
+        .set(DM_MAXUTIL, max_util_s)
         .set(DM_OVER, over.to_string())
         .set(DM_UNDER, under.to_string())
-        .set(DM_CURPERF, cur_perf)
-        .set(DM_TGTPERF, tgt_perf)
-        .set(DM_CURFREQ, cur_freq_khz)
-        .set(DM_MAXFREQ, max_freq_khz)
+        .set(DM_CURPERF, cur_perf_s)
+        .set(DM_TGTPERF, tgt_perf_s)
+        .set(DM_CURFREQ, cur_freq_s)
+        .set(DM_MAXFREQ, max_freq_s)
         .set(DM_DECISION, decision)
         .set(DM_DEBUP, deb_up.to_string())
         .set(DM_DEBDOWN, deb_down.to_string())
-        .set(DM_THERMAL, thermal_cap_pct)
+        .set(DM_THERMAL, thermal_s)
         .set(DM_TOUCH, if touch_active { "1" } else { "0" });
     main_write_line(r);
 }
@@ -1564,38 +1737,47 @@ fn aff_check(w: &mut AffWriter) -> bool {
 }
 
 /// 写一个帧块（帧头 + payload 行，`block` 已含换行）到 aff_。`lines` 为块内行数（巡检计数用）。WRITER 临界区内只做文件 IO （锁序约定见 MAIN_WRITER 定义处）；
-/// 写失败重开重试一次，仍失败丢块
+/// 写失败重开重试一次，仍失败丢块。**入口经 `diag_active()` 门控**，关闭时不写出（零 IO）
 fn aff_write_block(block: &str, lines: u64) {
     if !diag_active() {
         return;
     }
-    let rotated = {
+    let _ = aff_write_block_checked(block, lines);
+}
+
+/// [`aff_write_block`] 的同一实现，但**不经 `diag_active()` 门控**并把写出结果返回调用方
+/// （首写失败重开重试后的最终结果）。仅供排空路径 [`aff_snapshot_drain`] 复用：那些帧在
+/// 诊断开启时合法采到，关开关后不得因门控丢弃。`aff_write_block` 转发本函数时忽略返回值，
+/// 两路的字节输出与巡检 / 记账口径完全一致
+fn aff_write_block_checked(block: &str, lines: u64) -> bool {
+    let (rotated, ok) = {
         let mut w = AFF_WRITER.lock().unwrap_or_else(|p| p.into_inner());
         if w.file.is_none() {
             let f = aff_open(&mut w);
             w.file = f;
         }
-        let write_ok = match w.file.as_mut() {
+        let mut ok = match w.file.as_mut() {
             Some(f) => f.write_all(block.as_bytes()).is_ok(),
             None => false,
         };
-        if !write_ok {
+        if !ok {
             // write_all 失败可能已落残块（不回滚）：弃用当前文件、换新时间戳文件重写整块，绝不把残块与重试块写进同一文件（防 @S 计数定界错位）
             w.file = None;
             w.cur_name = None;
             let f = aff_open(&mut w);
             w.file = f;
             if let Some(f) = w.file.as_mut() {
-                let _ = f.write_all(block.as_bytes());
+                ok = f.write_all(block.as_bytes()).is_ok();
             }
         }
         w.since_check += lines;
-        if w.since_check >= DEVIMP_CHECK_EVERY {
+        let rotated = if w.since_check >= DEVIMP_CHECK_EVERY {
             w.since_check = 0;
             aff_check(&mut w)
         } else {
             false
-        }
+        };
+        (rotated, ok)
     };
     if rotated {
         // 触顶即新增一个 128MB 级文件：顺手执行目录预算清理（logd/ 与 devimp/ 各自独立计量，与 main_write_line 同口径）
@@ -1603,22 +1785,36 @@ fn aff_write_block(block: &str, lines: u64) {
     }
     // 记账（WRITER 锁外，锁序约定）：devimp/ 目录预算与 128MB 归档门限共用
     note_write(&DEVIMP_BYTES_WRITTEN, "devimp/", block.len() as u64);
+    ok
 }
 
 /// 帧字段净化：空白/控制字符（含换行）替换为 `_`，防字段值破坏单行帧边界（comm 可能含空格；reason 为末字段且调用方传短 token，一并净化无损）
-pub(crate) fn aff_token(s: &str) -> String {
-    s.chars()
-        .map(|c| {
-            if c.is_whitespace() || c.is_control() {
-                '_'
-            } else {
-                c
-            }
-        })
-        .collect()
+/// 无空白/控制字符时借用原串（零分配快路径），需替换时逐字符应用原映射（不做 Unicode 转义、不特判空串或 `-`），返回值生命周期绑定入参，不得跨源串保存
+pub(crate) fn aff_token(s: &str) -> std::borrow::Cow<'_, str> {
+    if s.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        std::borrow::Cow::Owned(
+            s.chars()
+                .map(|c| {
+                    if c.is_whitespace() || c.is_control() {
+                        '_'
+                    } else {
+                        c
+                    }
+                })
+                .collect(),
+        )
+    } else {
+        std::borrow::Cow::Borrowed(s)
+    }
 }
 
 // [aff_api]
+/// 当前本地时间，格式 `MMDD-HHmmss`：供调用方在**采样时点**取帧时间戳，
+/// 使异步写出（D1 worker）仍保留采样时间语义。与 aff 文件名时间戳同源（同一 `filename_ts` 实现）。
+pub fn aff_frame_ts() -> String {
+    filename_ts()
+}
+
 /// `@A` 动作帧：线程/内核节点写入动作 + 结果（`result` 形如 `ok` 或 `e{errno}`）
 /// act 枚举见 [`AFF_HEADER`]；pid/tid 节点级动作填 0，pkg/comm 无主体填 "-"
 /// 关闭诊断（diag_active=false）时零分配直接返回
@@ -1651,19 +1847,21 @@ pub fn aff_action(
     aff_write_block(&line, 1);
 }
 
-/// `@S` 每秒快照帧：帧头计数由 `rows` 实际行反推（首字符 `p`/`t` 分别计入
-/// ntop/nfg，帧头与行数恒等）；rows 为调用方拼好的 p/t 行（不含换行）
-/// **`t` 行是槽级差分行**（见 `chiri::build_aff_snapshot` 文档）：只含本次变化的槽，
-/// 未变槽 `-`、尾部未变槽省略；**整行全未变则不落行**（缺失 tid = 与上次落盘相同）
-/// `full` 为刷新帧标记（首帧与每 30 帧一次，由调用方给）：帧头追加 ` full=1`，
-/// 下游据此重建存活集合并全量合并该帧的 t 行
-/// 帧头**每秒恒落**（即使本秒一行都没变化，`ntop=0 nfg=0`）：34 B/帧换「1 帧 = 1 秒」
-/// 这个既有假设不破——帧号不再等于秒数会让离线轨迹与帧距判读全部漂移，不值那点字节。
-/// 非 p/t 行不写入
-pub fn aff_snapshot(rows: &[String], full: bool) {
-    if !diag_active() {
-        return;
+/// 拼 `@S` 帧头（纯函数，不含行体、不做 IO）：`@S ts=<ts> ntop=<ntop> nfg=<nfg>[ full=1]\n`。
+/// 字段顺序冻结（`ts` / `ntop` / `nfg`，`full=1` 仅在刷新帧追加），`ts` 由调用方给定——
+/// 同步路径传写出时刻，排空路径传采样时点（见 [`aff_snapshot_drain`]）
+fn aff_header(ntop: u64, nfg: u64, full: bool, ts: &str) -> String {
+    if full {
+        format!("@S ts={ts} ntop={ntop} nfg={nfg} full=1\n")
+    } else {
+        format!("@S ts={ts} ntop={ntop} nfg={nfg}\n")
     }
+}
+
+/// 由 `rows` 拼完整 `@S` 帧块（帧头 + 保留的 p/t 行，每行尾部补 `\n`）：计数由行首字符反推
+/// （`p`→ntop、`t`→nfg，其它不计），返回 `(block, 计入巡检的行数)`，后者 = ntop + nfg + 1（帧头一行）。
+/// 纯函数（无 IO、不查 `diag_active`），便于测试 `ts` / 计数 / 非 p/t 行跳过边界
+fn aff_build_block(rows: &[String], full: bool, ts: &str) -> (String, u64) {
     let mut ntop = 0u64;
     let mut nfg = 0u64;
     for r in rows {
@@ -1673,11 +1871,7 @@ pub fn aff_snapshot(rows: &[String], full: bool) {
             _ => {}
         }
     }
-    let mut block = if full {
-        format!("@S ts={} ntop={ntop} nfg={nfg} full=1\n", filename_ts())
-    } else {
-        format!("@S ts={} ntop={ntop} nfg={nfg}\n", filename_ts())
-    };
+    let mut block = aff_header(ntop, nfg, full, ts);
     for r in rows {
         // 非 p/t 行（调用方错误）不写入：保持帧头计数与实际行数恒等
         if !matches!(r.as_bytes().first(), Some(b'p') | Some(b't')) {
@@ -1686,7 +1880,208 @@ pub fn aff_snapshot(rows: &[String], full: bool) {
         block.push_str(r);
         block.push('\n');
     }
-    aff_write_block(&block, ntop + nfg + 1);
+    (block, ntop + nfg + 1)
+}
+
+/// `@S` 每秒快照帧：帧头计数由 `rows` 实际行反推（首字符 `p`/`t` 分别计入
+/// ntop/nfg，帧头与行数恒等）；rows 为调用方拼好的 p/t 行（不含换行）
+/// **`t` 行是槽级差分行**（见 `chiri::build_aff_snapshot` 文档）：只含本次变化的槽，
+/// 未变槽 `-`、尾部未变槽省略；**整行全未变则不落行**（缺失 tid = 与上次落盘相同）
+/// `full` 为刷新帧标记（首帧与每 30 帧一次，由调用方给）：帧头追加 ` full=1`，
+/// 下游据此重建存活集合并全量合并该帧的 t 行
+/// 帧头**每秒恒落**（即使本秒一行都没变化，`ntop=0 nfg=0`）：34 B/帧换「1 帧 = 1 秒」
+/// 这个既有假设不破——帧号不再等于秒数会让离线轨迹与帧距判读全部漂移，不值那点字节。
+/// 非 p/t 行不写入
+/// **帧头 `@S ts=` 用写出时刻 [`filename_ts`]**（同步路径语义）；异步排空路径走
+/// [`aff_snapshot_drain`]（改用采样时点 ts）。
+pub fn aff_snapshot(rows: &[String], full: bool) {
+    // 先在闸门处早退：关闭诊断时不计算 ts（保留既有「关闭时零分配」性质，
+    // 否则会在 diag_active 判定之前先做一次 localtime_r + String 分配）
+    if !diag_active() {
+        return;
+    }
+    aff_snapshot_impl(rows, full);
+}
+
+/// [`aff_snapshot`] 的实现：帧头 `@S ts=` 用**写出时刻** [`filename_ts`]，帧块由纯函数
+/// [`aff_build_block`] 渲染（计数 / 非 p/t 行跳过 / `full=1` 追加规则与既有行为逐字节一致），
+/// 本函数只做 `diag_active` 闸门与 `aff_write_block` 整块原子写入。
+/// **不再暴露 ts 形参**：同步路径恒用写出时刻，异步排空路径走 [`aff_snapshot_drain`]
+fn aff_snapshot_impl(rows: &[String], full: bool) {
+    if !diag_active() {
+        return;
+    }
+    let (block, lines) = aff_build_block(rows, full, &filename_ts());
+    aff_write_block(&block, lines);
+}
+
+/// 排空写入：把**已经接收**的 @S 帧写出，不再受 `diag_active()` 门控。
+/// 用途仅限 D1 诊断 worker 处理「诊断已关闭、但队列里还有已采样帧」的排空——
+/// 这些帧是在诊断开启时合法采到的，用开关门控会把它们丢掉。
+/// 前置与 selfcost_write_line 同口径：只要求 devimp/ 目录已存在（关闭态不得留痕、不得建目录）。
+/// 帧头 ts 用**调用方给的 `ts`**（采样时点），保持异步写出的时序语义。
+/// **返回是否真的写出成功**（供 worker 判定「已写出」而不是「已提交」）。
+pub fn aff_snapshot_drain(rows: &[String], full: bool, ts: &str) -> bool {
+    if !drain_allowed(common::get_module_root().join(DEVIMP_DIR_REL).is_dir()) {
+        return false;
+    }
+    let (block, lines) = aff_build_block(rows, full, ts);
+    aff_write_block_checked(&block, lines)
+}
+
+/// 排空路径门控（纯函数，便于单测）：仅当 devimp/ 目录已存在时允许写出。关闭态不得留痕
+/// （含空目录），故绝不在本路径 create_dir_all——目录不存在即拒写
+fn drain_allowed(dir_exists: bool) -> bool {
+    dir_exists
+}
+
+// [aff_d1]
+/// D1 诊断线程化写入入口：把调用方渲染好的完整帧块（帧头 + 所有行，`block` 已含换行）直接转发给私有 `aff_write_block`。
+/// 保持帧批次原子写入、`lines` 巡检计数与写失败重开语义不变；`aff_snapshot` 现有行为与格式不受影响
+pub fn aff_block_write(block: &str, lines: u64) {
+    aff_write_block(block, lines);
+}
+
+// [selfcost]
+/// selfcost 摘要写入器：append 句柄 + 当前文件名 + 巡检计数。与 main_/aff_ 同住 devimp/ 但**独立锁**，
+/// 绝不与 MAIN_WRITER/AFF_WRITER 嵌套持有（写路径成环死锁风险，锁序约定见 MAIN_WRITER）
+struct SelfcostWriter {
+    file: Option<fs::File>,
+    /// 当前文件名（含创建时间戳；单滚动不分）
+    cur_name: Option<String>,
+    since_check: u64,
+}
+
+static SELFCOST_WRITER: Mutex<SelfcostWriter> = Mutex::new(SelfcostWriter {
+    file: None,
+    cur_name: None,
+    since_check: 0,
+});
+
+/// 生成新文件名：`selfcost_<MMDD-HHmmss>.log`（单滚动不分；同秒重开由 selfcost_open 的存在性检测补 -N 后缀去重）
+fn selfcost_new_name() -> String {
+    format!("selfcost_{}.log", filename_ts())
+}
+
+/// 打开（或重建）selfcost 摘要文件：create+append，空文件不写文件头（摘要行自带 schema 字段，由调用方渲染）。
+/// 返回 None 表示打开失败（下次写入再试）
+fn selfcost_open(w: &mut SelfcostWriter) -> Option<fs::File> {
+    let dir = common::get_module_root().join(DEVIMP_DIR_REL);
+    // devimp/ 目录的唯一创建者（含启动期）：同 main_open/aff_open，本函数只在 diag_active() 门控的写入路径上被调用
+    let _ = fs::create_dir_all(&dir);
+    let name = match w.cur_name.clone() {
+        Some(n) => n,
+        None => {
+            let base = selfcost_new_name();
+            let stem = base.strip_suffix(".log").unwrap_or(&base);
+            let mut name = base.clone();
+            for n in 1..100u32 {
+                let candidate = if n == 1 {
+                    base.clone()
+                } else {
+                    format!("{stem}-{n}.log")
+                };
+                if !dir.join(&candidate).exists() {
+                    name = candidate;
+                    break;
+                }
+                name = candidate;
+            }
+            w.cur_name = Some(name.clone());
+            name
+        }
+    };
+    fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join(&name))
+        .ok()
+}
+
+/// 巡检：触顶换新时间戳文件继续写、被删自愈（同名重建）、换新后容量清理。与 main_check/aff_check 同口径
+fn selfcost_check(w: &mut SelfcostWriter) -> bool {
+    let mut rotated = false;
+    if let Some(name) = w.cur_name.clone() {
+        let path = common::get_module_root().join(DEVIMP_DIR_REL).join(&name);
+        match fs::metadata(&path) {
+            Ok(m) if m.len() >= DEVIMP_MAX_BYTES => {
+                w.file = None;
+                w.cur_name = None;
+                rotated = true;
+            }
+            Ok(_) => {}
+            Err(_) => w.file = None,
+        }
+    }
+    if w.file.is_none() {
+        let f = selfcost_open(w);
+        w.file = f;
+        if rotated {
+            diag_prune(w.cur_name.as_deref());
+        }
+    }
+    rotated
+}
+
+/// 追加一行 selfcost 摘要到 `devimp/selfcost_<会话时间戳>.log`；自愈开文件、单文件轮转、
+/// devimp/ 目录预算与记账口径同 main_/aff_。返回是否写成功；失败只告警不阻断调用方。
+/// **不以 `diag_active()` 为门**：会话结束（真→假）的尾窗摘要必须先落盘再关开关，用开关门控会丢掉尾窗。
+/// 但 `devimp/` 整体属 dev_record 产物、关闭态不得留痕（含建空目录），故这里以「目录已存在」为前置。
+pub fn selfcost_write_line(line: &str) -> bool {
+    if !common::get_module_root().join(DEVIMP_DIR_REL).is_dir() {
+        return false;
+    }
+    let (rotated, ok, len) = {
+        let mut w = SELFCOST_WRITER.lock().unwrap_or_else(|p| p.into_inner());
+        if w.file.is_none() {
+            let f = selfcost_open(&mut w);
+            w.file = f;
+        }
+        let mut ok = match w.file.as_mut() {
+            Some(f) => f
+                .write_all(line.as_bytes())
+                .and_then(|_| f.write_all(b"\n"))
+                .is_ok(),
+            None => false,
+        };
+        if !ok {
+            // 写失败（磁盘/句柄异常）：重开重试一次，仍失败则丢弃本行
+            let f = selfcost_open(&mut w);
+            w.file = f;
+            if let Some(f) = w.file.as_mut() {
+                ok = f
+                    .write_all(line.as_bytes())
+                    .and_then(|_| f.write_all(b"\n"))
+                    .is_ok();
+            }
+        }
+        w.since_check += 1;
+        let rotated = if w.since_check >= DEVIMP_CHECK_EVERY {
+            w.since_check = 0;
+            selfcost_check(&mut w)
+        } else {
+            false
+        };
+        (rotated, ok, line.len())
+    };
+    if rotated {
+        // 触顶即新增一个 128MB 级文件：顺手执行目录预算清理（logd/ 与 devimp/ 各自独立计量，与 main_write_line 同口径）
+        enforce_dir_limits(&common::get_module_root());
+    }
+    // 记账（含换行）：devimp/ 累计增长达 128MB 触发重启打包（WRITER 锁外，锁序约定）
+    note_write(&DEVIMP_BYTES_WRITTEN, "devimp/", len as u64 + 1);
+    if !ok {
+        log::warn!("[selfcost] 摘要写入失败：句柄重建或写盘出错，本行丢弃，不阻断调用方");
+    }
+    ok
+}
+
+/// 关闭当前 selfcost 文件句柄（会话结束/热重载），下次写入重开新文件
+pub fn selfcost_close() {
+    let mut w = SELFCOST_WRITER.lock().unwrap_or_else(|p| p.into_inner());
+    w.file = None;
+    w.cur_name = None;
+    w.since_check = 0;
 }
 
 // 启动归档：logs/ → logd/<ts>.tar.lz4、devimp/ → logd/devimp_<ts>.tar.lz4
@@ -2011,15 +2406,20 @@ fn enforce_dir_limits(root: &Path) {
     );
 }
 
-/// 两个诊断写入器的当前活跃文件名（两把 WRITER 锁顺序短取、不嵌套——锁序约定；仅在未持任何写入器锁的上下文调用）
+/// 三个诊断写入器的当前活跃文件名（三把 WRITER 锁顺序短取、不嵌套——锁序约定；仅在未持任何写入器锁的上下文调用）
 fn active_diag_names() -> Vec<String> {
-    let mut out = Vec::with_capacity(2);
+    let mut out = Vec::with_capacity(3);
     if let Ok(w) = MAIN_WRITER.lock() {
         if let Some(n) = &w.cur_name {
             out.push(n.clone());
         }
     }
     if let Ok(w) = AFF_WRITER.lock() {
+        if let Some(n) = &w.cur_name {
+            out.push(n.clone());
+        }
+    }
+    if let Ok(w) = SELFCOST_WRITER.lock() {
         if let Some(n) = &w.cur_name {
             out.push(n.clone());
         }
@@ -2179,6 +2579,320 @@ fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+// [tests]
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::borrow::Cow;
+
+    /// 改动前的 `aff_token` 参考实现：逐字符净化（用于逐字节一致性对拍）
+    fn aff_token_old(s: &str) -> String {
+        s.chars()
+            .map(|c| {
+                if c.is_whitespace() || c.is_control() {
+                    '_'
+                } else {
+                    c
+                }
+            })
+            .collect()
+    }
+
+    /// 改动前的 tick 签名构造：调用方先格式化各字段，再拼字符串（用于签名逐字节对拍）
+    fn old_tick_sig(
+        decision: &str,
+        tgt_perf: Option<f32>,
+        cur_freq_khz: Option<u32>,
+        max_freq_khz: Option<u32>,
+        thermal_cap_pct: Option<f32>,
+        touch_active: bool,
+        deb_up: u32,
+        deb_down: u32,
+    ) -> String {
+        let tgt = match tgt_perf {
+            Some(v) => format!("{:.2}", v),
+            None => "-".to_string(),
+        };
+        let cf = match cur_freq_khz {
+            Some(v) => v.to_string(),
+            None => "-".to_string(),
+        };
+        let mf = match max_freq_khz {
+            Some(v) => v.to_string(),
+            None => "-".to_string(),
+        };
+        let th = match thermal_cap_pct {
+            Some(v) => format!("{:.0}", v),
+            None => "-".to_string(),
+        };
+        format!("{decision}|{tgt}|{cf}|{mf}|{th}|{touch_active}|{deb_up}|{deb_down}")
+    }
+
+    #[test]
+    fn aff_token_borrows_when_clean() {
+        // 无空白/控制字符 → 借用原串（零分配），含空串、真值 `-` 与非 ASCII 原样
+        for s in ["abc", "", "-", "中文", "pkg/name", "a:b_c", "3574"] {
+            match aff_token(s) {
+                Cow::Borrowed(b) => assert_eq!(b, s),
+                Cow::Owned(_) => panic!("expected Borrowed for {s:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn aff_token_owns_and_matches_old_on_dirty() {
+        for s in [
+            "a b", "a\nb", "a\tb", " lead", "trail ", "a\u{1}b", "a\u{7f}b", "中文 空格", "\n",
+            " ", "a  b", "\r\n", "a\u{0}b",
+        ] {
+            let got = aff_token(s);
+            assert!(matches!(got, Cow::Owned(_)), "expected Owned for {s:?}");
+            assert_eq!(got.as_ref(), aff_token_old(s), "mismatch for {s:?}");
+        }
+        // 与旧实现逐字节一致：脏输入下逐字符映射不引入 Unicode 转义
+        assert_eq!(aff_token("a b\nc").as_ref(), "a_b_c");
+    }
+
+    #[test]
+    fn aff_token_matches_old_for_all_ascii() {
+        for b in 0u8..=127 {
+            let s = String::from(b as char);
+            assert_eq!(aff_token(&s).as_ref(), aff_token_old(&s), "ascii byte {b}");
+        }
+    }
+
+    #[test]
+    fn tick_sig_matches_old_literal_cases() {
+        // 旧实现期望写成字面量断言
+        assert_eq!(
+            tick_sig("hold", Some(80.0), Some(1_200_000), Some(1_800_000), Some(60.0), true, 2, 3)
+                .as_str(),
+            "hold|80.00|1200000|1800000|60|true|2|3"
+        );
+        assert_eq!(
+            tick_sig("down_wait", None, None, None, None, false, 0, 0).as_str(),
+            "down_wait|-|-|-|-|false|0|0"
+        );
+        assert_eq!(
+            tick_sig("up", Some(-0.0), Some(0), Some(0), Some(100.0), false, 5, 7).as_str(),
+            "up|-0.00|0|0|100|false|5|7"
+        );
+    }
+
+    #[test]
+    fn tick_sig_matches_old_all_combinations() {
+        let decisions = ["hold", "up", "down", "down_wait"];
+        let tgts = [None, Some(1.5f32), Some(0.0), Some(-0.0), Some(2.0)];
+        let freqs = [None, Some(0u32), Some(1_800_000)];
+        let his = [None, Some(0u32), Some(2_400_000)];
+        let ths = [None, Some(60.0f32), Some(79.6), Some(100.0)];
+        for &d in &decisions {
+            for &t in &tgts {
+                for &cf in &freqs {
+                    for &mf in &his {
+                        for &th in &ths {
+                            for touch in [false, true] {
+                                for (du, dd) in [(0u32, 0u32), (1, 2), (u32::MAX, 3)] {
+                                    let got = tick_sig(d, t, cf, mf, th, touch, du, dd);
+                                    assert_eq!(
+                                        got.as_str(),
+                                        old_tick_sig(d, t, cf, mf, th, touch, du, dd),
+                                        "decision={d} tgt={t:?} cf={cf:?} mf={mf:?} th={th:?} touch={touch}"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tick_sig_handles_nan_and_inf_like_old_format() {
+        // 非有限值走格式化路径（显式禁用 f32 位比较）
+        for v in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let got = tick_sig("up", Some(v), Some(100), Some(200), Some(v), false, 0, 0);
+            assert_eq!(
+                got.as_str(),
+                old_tick_sig("up", Some(v), Some(100), Some(200), Some(v), false, 0, 0)
+            );
+        }
+    }
+
+    #[test]
+    fn tick_sig_stays_on_stack_for_worst_case_fields() {
+        // 常规字段最大值（u32::MAX 频率、两位小数 f32）仍落在栈缓冲内
+        let got = tick_sig(
+            "down_wait",
+            Some(1.0),
+            Some(u32::MAX),
+            Some(u32::MAX),
+            Some(100.0),
+            false,
+            u32::MAX,
+            u32::MAX,
+        );
+        assert!(matches!(got, TickSig::Stack(_)));
+        assert_eq!(
+            got.as_str(),
+            old_tick_sig(
+                "down_wait",
+                Some(1.0),
+                Some(u32::MAX),
+                Some(u32::MAX),
+                Some(100.0),
+                false,
+                u32::MAX,
+                u32::MAX
+            )
+        );
+    }
+
+    #[test]
+    fn tick_sig_falls_back_on_overflow() {
+        // 超大 decision：栈缓冲不足 → 回退完整堆格式化，签名与旧实现一致（不截断不漏字段）
+        let big = "x".repeat(TICK_SIG_CAP * 2);
+        let got = tick_sig(&big, Some(1.0), Some(2), Some(3), Some(4.0), true, 1, 2);
+        assert!(matches!(got, TickSig::Heap(_)));
+        assert_eq!(
+            got.as_str(),
+            old_tick_sig(&big, Some(1.0), Some(2), Some(3), Some(4.0), true, 1, 2)
+        );
+    }
+
+    #[test]
+    fn tick_decide_matches_old_gate() {
+        let t0 = Instant::now();
+        let mut last_sig = String::from("a|b");
+        let mut last_t = t0;
+        // 相同签名 + 未到心跳 → 不落行，状态不变
+        assert!(!tick_decide(&mut last_sig, &mut last_t, "a|b", t0 + Duration::from_millis(100)));
+        assert_eq!(last_sig, "a|b");
+        // 相同签名 + 越过心跳 → 落行并刷新时刻
+        let later = t0 + Duration::from_secs(5);
+        assert!(tick_decide(&mut last_sig, &mut last_t, "a|b", later));
+        assert_eq!(last_t, later);
+        // 签名变化 → 立即落行（不等心跳）
+        let chg = t0 + Duration::from_secs(6);
+        assert!(tick_decide(&mut last_sig, &mut last_t, "c|d", chg));
+        assert_eq!(last_sig, "c|d");
+        assert_eq!(last_t, chg);
+    }
+
+    #[test]
+    fn display_helpers_match_old_format() {
+        assert_eq!(opt_f32_str(Some(1.5), 2), format!("{:.2}", 1.5f32));
+        assert_eq!(opt_f32_str(Some(-0.0), 2), format!("{:.2}", -0.0f32));
+        assert_eq!(opt_f32_str(Some(79.6), 0), format!("{:.0}", 79.6f32));
+        assert_eq!(opt_f32_str(None, 2), "-");
+        assert_eq!(opt_u32_str(Some(1_800_000)), "1800000");
+        assert_eq!(opt_u32_str(None), "-");
+        assert_eq!(format!("{:.2}", 1.5f32), "1.50");
+        assert_eq!(format!("{:.0}", 79.6f32), "80");
+    }
+
+    #[test]
+    fn aff_header_uses_given_ts_and_frozen_field_order() {
+        // 帧头 ts 恒等于传入的 ts（异步路径据此保留采样时点），字段顺序冻结
+        assert_eq!(
+            aff_header(1, 2, false, "1007-120000"),
+            "@S ts=1007-120000 ntop=1 nfg=2\n"
+        );
+        // full=1 仅在刷新帧追加
+        assert_eq!(
+            aff_header(0, 0, true, "0101-000000"),
+            "@S ts=0101-000000 ntop=0 nfg=0 full=1\n"
+        );
+        // 不同 ts 只改 ts 段，其余逐字节一致
+        assert_eq!(
+            aff_header(3, 5, false, "1231-235959"),
+            "@S ts=1231-235959 ntop=3 nfg=5\n"
+        );
+    }
+
+    #[test]
+    fn aff_build_block_counts_skips_and_formats() {
+        // 计数按行首字符反推，非 p/t 行既不计数也不落块；每行补换行；ts 取传入值
+        let rows = vec![
+            "p 0 123 com.x".to_string(),
+            "junk line".to_string(),
+            "t 123 456 comm=foo".to_string(),
+            "t 789 1011".to_string(),
+        ];
+        let (block, lines) = aff_build_block(&rows, false, "1007-120000");
+        assert_eq!(
+            block,
+            "@S ts=1007-120000 ntop=1 nfg=2\n\
+             p 0 123 com.x\n\
+             t 123 456 comm=foo\n\
+             t 789 1011\n"
+        );
+        // 计入巡检的行数 = ntop + nfg + 1（帧头一行）
+        assert_eq!(lines, 4);
+        // full=1 只影响帧头
+        let (block_full, lines_full) = aff_build_block(&rows, true, "1007-120000");
+        assert!(block_full.starts_with("@S ts=1007-120000 ntop=1 nfg=2 full=1\n"));
+        assert_eq!(lines_full, 4);
+    }
+
+    #[test]
+    fn aff_build_block_empty_and_p_only_edges() {
+        // 空帧：帧头恒落，ntop/nfg 均为 0，行数 1
+        let (block, lines) = aff_build_block(&[], false, "1007-000000");
+        assert_eq!(block, "@S ts=1007-000000 ntop=0 nfg=0\n");
+        assert_eq!(lines, 1);
+        // 只有非法行：同样只剩帧头，非法行全部跳过
+        let bad = vec!["x 1 2".to_string(), "# comment".to_string(), "".to_string()];
+        let (block, lines) = aff_build_block(&bad, false, "1007-000001");
+        assert_eq!(block, "@S ts=1007-000001 ntop=0 nfg=0\n");
+        assert_eq!(lines, 1);
+        // 首字符判定：`p`/`t` 开头即计入（无论后续内容）
+        let mixed = vec!["p".to_string(), "t".to_string(), "pt".to_string()];
+        let (block, lines) = aff_build_block(&mixed, false, "1007-000002");
+        assert_eq!(
+            block,
+            "@S ts=1007-000002 ntop=2 nfg=1\np\nt\npt\n"
+        );
+        assert_eq!(lines, 4);
+    }
+
+    #[test]
+    fn drain_allowed_requires_existing_dir() {
+        // 排空路径门控：devimp/ 目录不存在即拒写（关闭态不得留痕、不建目录）；
+        // 目录已存在才允许写出。
+        assert!(!drain_allowed(false));
+        assert!(drain_allowed(true));
+    }
+
+    #[test]
+    fn aff_snapshot_and_drain_blocks_identical_same_ts() {
+        // 同步写出（aff_snapshot 路径）与排空写出（aff_snapshot_drain 路径）共用同一纯函数
+        // aff_build_block：给定同一 ts，两条路径生成的帧块必须逐字节相同（只差 ts 取值来源——
+        // 同步用写出时刻 filename_ts，排空用采样时点 ts）
+        let rows = vec![
+            "p 0 123 com.x".to_string(),
+            "junk line".to_string(),
+            "t 123 456 comm=foo".to_string(),
+        ];
+        let (sync_block, sync_lines) = aff_build_block(&rows, false, "1007-120000");
+        let (drain_block, drain_lines) = aff_build_block(&rows, false, "1007-120000");
+        assert_eq!(sync_block, drain_block);
+        assert_eq!(sync_lines, drain_lines);
+        // 且等于预期字面量（帧头字段顺序冻结，非 p/t 行跳过，行尾补换行）
+        assert_eq!(
+            drain_block,
+            "@S ts=1007-120000 ntop=1 nfg=1\np 0 123 com.x\nt 123 456 comm=foo\n"
+        );
+        assert_eq!(drain_lines, 3);
+        // full=1 也只影响帧头，两路仍逐字节相同
+        let (sync_full, _) = aff_build_block(&rows, true, "1007-120000");
+        let (drain_full, _) = aff_build_block(&rows, true, "1007-120000");
+        assert_eq!(sync_full, drain_full);
+        assert!(drain_full.starts_with("@S ts=1007-120000 ntop=1 nfg=1 full=1\n"));
+    }
 }
 
 /// 调用外部打包脚本 `scripts/pack.sh`（对外暴露的稳定接口，构建流程不得修改）把 staging 目录打成**无压缩 tar**（优先模块自带 core/bin/tar，回退系统 tar；

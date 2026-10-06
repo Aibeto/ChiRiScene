@@ -16,7 +16,9 @@ r"""dvcommon.py —— devimp 日志分析脚本的共享工具（纯标准库�
 """
 
 import collections
+import csv
 import glob
+import math
 import os
 import re
 import sys
@@ -153,10 +155,127 @@ def batches(files):
     return dict(g)
 
 
+def status_files(target, since="0000-000000"):
+    """Select a status file, batch, or root; since filters archive stamps, not row time."""
+    if not re.fullmatch(r"\d{4}-\d{6}", since):
+        raise ValueError("--since requires MMDD-HHMMSS")
+    paths = [os.fspath(target)] if os.path.isfile(target) else glob.glob(
+        os.path.join(target, "**", "status.csv"), recursive=True)
+    selected = []
+    for path in sorted(paths):
+        if os.path.basename(path) != "status.csv":
+            continue
+        stamp = re.search(r"(?:^x_(?:devimp_)?)(\d{4}-\d{6})$",
+                          os.path.basename(os.path.dirname(path)))
+        if since != "0000-000000" and stamp is None:
+            raise ValueError("--since cannot filter a status file without an archive batch stamp")
+        if stamp is None or stamp.group(1) >= since:
+            selected.append(path)
+    return selected
+
+
+def read_status_file(path):
+    """Return header and timestamped records without relying on column positions."""
+    with open(path, encoding="utf-8", errors="replace", newline="") as stream:
+        reader = csv.DictReader(stream)
+        columns = reader.fieldnames or []
+        records = [row for row in reader if TS_RE.match(
+            (row.get("timestamp") or row.get("ts") or "") + ",")]
+    return columns, records
+
+
+def sampling_intervals(records, max_interval=10.0, boundary_key=None):
+    """Left rectangles on 0 < dt < max_interval; no final sample or gap extrapolation.
+
+    boundary_key 给定时，相邻行 key 不同视为窗口边界：左端区间归零（不跨窗口归因），
+    该段时长单列 boundary_dt。coverage 仍按「采样是否存在」（非缺口）计算，
+    与是否跨窗口无关。
+    """
+    intervals = [0.0] * len(records)
+    summary = dict(valid_dt=0.0, span=0.0, gap_dt=0.0, gaps=0, max_gap=0.0,
+                   invalid_dt=0, boundary_dt=0.0)
+    def seconds(record):
+        stamp = record.get("timestamp") or record.get("ts") or ""
+        try:
+            hours, minutes, seconds_value = map(float, stamp.split(":"))
+            if not (0 <= hours < 24 and 0 <= minutes < 60 and 0 <= seconds_value < 60):
+                return None
+            return hours * 3600 + minutes * 60 + seconds_value
+        except (ValueError, TypeError):
+            return None
+    for index in range(len(records) - 1):
+        previous = seconds(records[index])
+        current = seconds(records[index + 1])
+        if previous is None or current is None:
+            summary["invalid_dt"] += 1
+            continue
+        elapsed = current - previous
+        if previous >= 18 * 3600 and current <= 6 * 3600 and elapsed < 0:
+            elapsed += 86400
+        if elapsed <= 0:
+            summary["invalid_dt"] += 1
+            continue
+        summary["span"] += elapsed
+        if elapsed >= max_interval:
+            summary["gaps"] += 1
+            summary["max_gap"] = max(summary["max_gap"], elapsed)
+            summary["gap_dt"] += elapsed
+            continue
+        if boundary_key is not None and boundary_key(records[index]) != boundary_key(records[index + 1]):
+            summary["boundary_dt"] += elapsed
+            continue
+        intervals[index] = elapsed
+        summary["valid_dt"] += elapsed
+    covered = summary["span"] - summary["gap_dt"]
+    summary["coverage"] = covered / summary["span"] if summary["span"] else 0.0
+    return intervals, summary
+
+
+def sampling_report(path, records):
+    intervals, summary = sampling_intervals(records)
+    return (f"  {path}: n={len(records)} valid_dt={summary['valid_dt']:.3f}s "
+            f"span={summary['span']:.3f}s coverage={summary['coverage']:.2%} "
+            f"gaps={summary['gaps']} max_gap={summary['max_gap']:.3f}s "
+            f"invalid_dt={summary['invalid_dt']}")
+
+
+# 非身份占位：logger 缺字段时的空/-/unknown 等，不能当真实取值参与冲突判定
+_IDENTITY_PLACEHOLDERS = {"", "-", "--", "unknown", "n/a", "na", "null", "none"}
+
+
+def clean_identity_value(value):
+    """去掉占位值：空串、`-`、`unknown` 等返回 None，视作字段缺失。"""
+    text = (value or "").strip()
+    return text if text and text.lower() not in _IDENTITY_PLACEHOLDERS else None
+
+
+def parse_daemon_version(line):
+    """Parse available identity fields; timestamps and restart count are not identity."""
+    line = strip_isolates(line)
+    if "模块版本:" not in line:
+        return {}
+    content = line.split("模块版本:", 1)[1].strip()
+    identity = {}
+    module = clean_identity_value(re.split(r"\s*\(versionCode\b|\s*\|", content, maxsplit=1)[0])
+    if module:
+        identity["module"] = module
+    code = re.search(r"versionCode\s*[:=]?\s*(\d+)", content)
+    if code:
+        identity["versionCode"] = code.group(1)
+    for field, label in (("soc", "SoC"), ("model", "model|机型"),
+                         ("android", "Android|android"), ("kernel", "kernel")):
+        match = re.search(r"(?:^|\|)\s*(?:" + label + r")(?:\s*[:=]\s*|\s+)([^|]+)", content)
+        value = clean_identity_value(match.group(1)) if match else None
+        if value:
+            identity[field] = value
+    return identity
+
+
 # [stats]
 def num(v):
     try:
-        return float(v)
+        value = float(v)
+        return value if math.isfinite(value) else None
     except Exception:
         return None
 

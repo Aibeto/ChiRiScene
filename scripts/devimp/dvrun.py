@@ -38,12 +38,18 @@ PY = sys.executable or "python"
 
 
 def run_stage(name, func):
-    """跑一个阶段，返回 (ok, 摘要行 list, 报错文本 or None)。"""
+    """跑一个阶段，返回 (ok, 摘要行 list, 报错文本 or None)。
+
+    SystemExit（如 argparse parser.error 的退出码 2）必须在此被隔离成阶段失败，
+    否则会绕过整条链的失败隔离直接终止；KeyboardInterrupt 不在捕获范围，仍向上传播。
+    """
     t0 = time.time()
     try:
         rc, lines = func()
         ok = rc == 0
         return ok, lines, None if ok else f"退出码 {rc}", time.time() - t0
+    except SystemExit as e:
+        return False, [], f"SystemExit(退出码 {e.code})", time.time() - t0
     except Exception as e:
         return False, [], f"{type(e).__name__}: {e}", time.time() - t0
 
@@ -193,7 +199,7 @@ def main(argv=None):
             import contextlib
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
-                rc = dvstatus.main([outdir])
+                rc = dvstatus.main([outdir, "--since", a.since])
             head = [l.strip() for l in buf.getvalue().splitlines() if l.strip()]
             return rc, head
         ok, lines, err, dt = run_stage("status", _status)
@@ -254,9 +260,9 @@ def main(argv=None):
                "# 四个探针",
                f"python scripts/devimp/dvmain.py devimpbin/{tag} --since {a.since} --min-n {a.min_n}",
                f"python scripts/devimp/dvaff.py devimpbin/{tag} --since {a.since}",
-               f"python scripts/devimp/dvstatus.py devimpbin/{tag}",
+               f"python scripts/devimp/dvstatus.py devimpbin/{tag} --since {a.since}",
                f"python scripts/devimp/dvpower.py devimpbin/{tag} --since {a.since}",
-               f"python scripts/devimp/dvenergy.py devimpbin/{tag}",
+               f"python scripts/devimp/dvenergy.py devimpbin/{tag} --since {a.since}",
                "# 或一次性全跑",
                f"python scripts/devimp/dvrun.py {a.input} --tag {tag}",
                "```", ""]

@@ -681,18 +681,18 @@ impl CoreGroupWorker {
             crate::logger::main_tick(
                 self.cluster.policy_id,
                 name,
-                &format!("{:.2}", self.dev_raw_util),
+                self.dev_raw_util,
                 self.dev_over,
                 self.dev_under,
-                &format!("{:.2}", self.dev_prev_perf),
-                &format!("{:.2}", self.dev_tgt_perf),
+                Some(self.dev_prev_perf),
+                Some(self.dev_tgt_perf),
                 // main_ 列口径：cur_freq_khz / max_freq_khz 均为原始 kHz
-                &self.cluster.current_freq.to_string(),
-                &self.restore.hw_max.to_string(),
+                Some(self.cluster.current_freq),
+                Some(self.restore.hw_max),
                 self.dev_decision,
                 self.cluster.up_wait,
                 self.cluster.down_wait,
-                &format!("{:.0}", cap * 100.0),
+                Some(cap * 100.0),
                 touch_active,
             );
         }

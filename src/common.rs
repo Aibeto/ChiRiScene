@@ -23,16 +23,21 @@ pub enum DaemonEvent {
         pid: i32,
         mode: String,
         temperature: f64,
+        detection_generation: u64,
     },
     /// 同模式前台包切换（模式不变、应用变化，ChiRi 侧 FAS fas→fas 热切换消费）
     PackageSwitch {
         package_name: String,
         pid: i32,
+        detection_generation: u64,
     },
     /// 高频事件：eBPF 捕获到的底层渲染帧数据
     FrameUpdate {
         /// 纳秒级帧间隔
         frame_delta_ns: u64,
+        /// 采集时绑定的游戏进程与控制会话
+        source_pid: u32,
+        source_generation: u64,
     },
     /// eBPF 全局系统负载更新 (每 X 毫秒触发一次)
     SystemLoadUpdate {

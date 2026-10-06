@@ -2,7 +2,7 @@
 //! 区块索引: [types] [activate] [deactivate] [delayed_exit] [events]
 //! 白名单前台判断 + 延迟进出：进白名单前台 → activate（governor 切 performance + 接管频率）；
 //! 失去前台不立即退出：request_delayed_exit 进入延迟期（时长来自应用配置 deactivate_delay_secs，夹 1..=600s），
-//! 期间仍持有接管（mode 保持 fas、频率停在最后状态）；切回白名单 activate 即取消延迟无缝续期；
+//! 期间仍持有接管（mode 保持 fas、按负载控制）；切回白名单 activate 即取消延迟续期；
 //! 超时由 tick()（1s 周期）真正退出：恢复频率 + governor 快照，返回 true 让调用方按延迟期记住的目标模式重新接管
 //! governor（performance）归 GovernorGuard 管、频率归 FasController 管：GovernorGuard 必须**先于**引擎 load_policies 快照——
 //! 引擎自身也会快照 governor 再写 performance，本层若在其后快照会拿到 performance，退出时「引擎 reset_all_freqs 先写 performance、
@@ -17,8 +17,13 @@ use log::info;
 use crate::chiri::governor::GovernorGuard;
 use crate::fluent_args;
 use crate::i18n::t_with_args;
-use crate::monitor::FasSignal;
+use crate::monitor::{FasSignal, FrameSource};
 use crate::scheduler::fas::FasController;
+
+// 进程身份取证单独成文件（PID 复用/存活判定）；#[path] 引入以免改主线 chiri/mod.rs 注册
+#[path = "fas_process.rs"]
+mod fas_process;
+use fas_process::ProcessIdentity;
 
 /// 活跃实例温度刷新周期（喂给 FAS 引擎内部限温逻辑，core_temp_threshold=0 时无效）
 const FAS_TEMP_REFRESH: Duration = Duration::from_secs(3);
@@ -37,6 +42,9 @@ const PERFMGR_ENABLE_PATHS: [&str; 2] = [
 // [types]
 struct FasInstance {
     package: String,
+    frame_source: FrameSource,
+    /// owner 进程身份（starttime + 可选 pidfd）：同包 PID 复用与存活判定的依据
+    identity: ProcessIdentity,
     controller: FasController,
     /// 接管前 `sched_migration_cost_ns` 原值，deactivate 写回（None = 未写或读不到）
     migration_cost_restore: Option<String>,
@@ -61,6 +69,7 @@ pub struct FasManager {
     /// FAS 前台激活信号（monitor 层 fps_monitor 等待消费）：activate 置位、deactivate 清零——fps_monitor 据此推迟/摘除 eBPF uprobe（反偷跑门控），
     /// 置位瞬间唤醒待机线程（见 `crate::monitor::FasSignal`）
     fas_signal: Arc<FasSignal>,
+    generation: u64,
 }
 
 impl FasManager {
@@ -76,14 +85,18 @@ impl FasManager {
             last_temp_read: Instant::now(),
             temp_path,
             fas_signal,
+            generation: 0,
         }
     }
 
-    /// C1：激活返回 false = 白名单/配置不可用或 load_policies 后无可用 policy（调用方走冷却回退）同一包 → 仅刷新 set_game（不重复打点）；
+    /// C1：激活返回 false = 白名单/配置不可用或无可用 policy；同包同 PID 仅续期，PID 替换重建帧会话。
     /// 另一白名单包 → fas→fas 热切换（打点 scheduler-fas-switch）；首次 → FasController::new + load_policies
     /// 激活同时接管 governor（performance）；延迟退出请求在此被取消（无缝续期）
     // [activate]
     pub fn activate(&mut self, pkg: &str, pid: i32) -> bool {
+        if pid <= 0 {
+            return false;
+        }
         // 白名单复查：包名 → 白名单配置名 → FAS 规则（'static，normalize 已在缓存时完成）
         let Some(rules) = crate::common::fas_whitelist_entry(pkg)
             .and_then(|cfg| crate::common::fas_app_config(cfg))
@@ -103,9 +116,26 @@ impl FasManager {
         }
 
         if let Some(inst) = self.instance.as_mut() {
-            inst.controller.set_game(pid, pkg);
+            // 同包同 PID 仍需核对进程身份：PID 复用（starttime 变化）要当新会话，不能沿用旧帧控制状态；
+            // 同 identity 续期仅取消 deadline，不重置窗口/齿轮，也不重复 set_game 打点。
+            let same_identity = inst.frame_source.pid == pid as u32
+                && inst
+                    .identity
+                    .matches_starttime(fas_process::read_process_starttime(pid));
+            if !same_identity {
+                self.generation = self
+                    .generation
+                    .checked_add(1)
+                    .expect("FAS generation exhausted");
+                inst.identity = ProcessIdentity::attach(pid);
+                inst.frame_source.pid = pid as u32;
+                inst.frame_source.generation = self.generation;
+                inst.controller.set_game(pid, pkg);
+                inst.controller.reset_frame_feedback();
+            }
             self.exit_deadline = None;
-            self.fas_signal.set(true);
+            self.set_frame_feedback_enabled(true);
+            self.fas_signal.set_frame_source(self.frame_source());
             return true;
         }
 
@@ -133,16 +163,27 @@ impl FasManager {
                 Some(orig)
             });
         controller.set_game(pid, pkg);
+        controller.reset_frame_feedback();
         controller.set_temperature(self.last_temp);
         controller.set_temp_threshold(rules.core_temp_threshold);
+        self.generation = self
+            .generation
+            .checked_add(1)
+            .expect("FAS generation exhausted");
         self.instance = Some(FasInstance {
             package: pkg.to_string(),
+            frame_source: FrameSource {
+                pid: pid as u32,
+                generation: self.generation,
+                frame_feedback: true,
+            },
+            identity: ProcessIdentity::attach(pid),
             controller,
             migration_cost_restore,
             perfmgr_restore,
         });
         self.exit_deadline = None;
-        self.fas_signal.set(true);
+        self.fas_signal.set_frame_source(self.frame_source());
         match switch_from.as_deref() {
             Some(old) => info!(
                 "{}",
@@ -171,7 +212,7 @@ impl FasManager {
             return;
         };
         self.exit_deadline = None;
-        self.fas_signal.set(false);
+        self.fas_signal.set_frame_source(None);
         // 迁移成本与 perfmgr 先于频率恢复，让后续 governor 快照到系统原状
         if let Some(orig) = inst.migration_cost_restore.take() {
             let _ = crate::utils::try_write_file(MIGRATION_COST_PATH, &orig);
@@ -206,6 +247,55 @@ impl FasManager {
         self.instance.as_ref().map(|i| i.package.as_str())
     }
 
+    pub fn active_pid(&self) -> Option<i32> {
+        self.frame_source().map(|source| source.pid as i32)
+    }
+
+    pub fn frame_source(&self) -> Option<FrameSource> {
+        self.instance.as_ref().map(|instance| instance.frame_source)
+    }
+
+    /// 当前 owner 是否就是该 pid/starttime 进程：供主线同 session 门控（快事件只喂同一会话）。
+    /// fail-closed：pid 不同或任一侧 starttime 未知都判 false，绝不把无法取证的事件算作同一会话。
+    pub fn owner_matches_process(&self, pid: i32, process_starttime: Option<u64>) -> bool {
+        self.instance.as_ref().is_some_and(|instance| {
+            instance.frame_source.pid == pid as u32
+                && instance.identity.matches_starttime(process_starttime)
+        })
+    }
+
+    /// owner 进程是否仍存活：pidfd 零 poll 优先；回退路径读一次 /proc（仅供主线低频 reconcile，
+    /// 不要放进每帧路径）。无实例 = 无 owner，返回 false，调用方走退出。
+    pub fn owner_is_alive(&self) -> bool {
+        self.instance.as_ref().is_some_and(|instance| {
+            let Ok(pid) = i32::try_from(instance.frame_source.pid) else {
+                return false;
+            };
+            instance
+                .identity
+                .cheap_alive()
+                .unwrap_or_else(|| instance.identity.is_alive(pid))
+        })
+    }
+
+    pub fn set_frame_feedback_enabled(&mut self, enabled: bool) {
+        let Some(instance) = self.instance.as_mut() else {
+            return;
+        };
+        if instance.frame_source.frame_feedback == enabled {
+            return;
+        }
+        self.generation = self
+            .generation
+            .checked_add(1)
+            .expect("FAS generation exhausted");
+        instance.frame_source.generation = self.generation;
+        instance.frame_source.frame_feedback = enabled;
+        instance.controller.set_frame_feedback_enabled(enabled);
+        self.fas_signal
+            .set_frame_source(Some(instance.frame_source));
+    }
+
     /// 是否存在 FAS 接管（含延迟退出期）scenemode 入口门控依据：接管期间禁止进入，延迟到期退出后自动放行
     pub fn has_any_instance(&self) -> bool {
         self.instance.is_some()
@@ -214,9 +304,13 @@ impl FasManager {
     // [delayed_exit]
     /// 失去白名单前台：进入延迟退出期（FAS 仍持有接管，mode 保持 fas）；期间 activate（切回白名单）会取消延迟。未活跃时无操作
     pub fn request_delayed_exit(&mut self) {
-        if self.instance.is_some() {
+        if self.instance.is_some() && self.exit_deadline.is_none() {
             self.exit_deadline = Some(Instant::now() + self.exit_delay);
         }
+    }
+
+    pub fn cancel_delayed_exit(&mut self) {
+        self.exit_deadline = None;
     }
 
     /// 同包回到前台：取消延迟退出。延迟期内切回**同一个**白名单应用不走 activate（PackageSwitch 同包去重 / 1s 巡检同包 no-op），必须由调用方显式续期，
@@ -241,8 +335,18 @@ impl FasManager {
 
     /// 帧事件（仅活跃实例）：内部每 FAS_TEMP_REFRESH 读一次 temp_path（按全局预识别刻度换算后存 last_temp 并 set_temperature）
     // [events]
-    pub fn on_frame(&mut self, delta_ns: u64) {
-        if !self.is_active() {
+    pub fn on_frame(&mut self, delta_ns: u64, source_pid: u32, generation: u64) {
+        // 入队旧帧前拒死 owner：有 pidfd 时零 poll 廉价；无 pidfd 不在此读 /proc（主线 owner_is_alive 兜底）
+        if self
+            .instance
+            .as_ref()
+            .is_some_and(|instance| instance.identity.cheap_alive() == Some(false))
+        {
+            return;
+        }
+        if !self.frame_source().is_some_and(|source| {
+            source.frame_feedback && source.pid == source_pid && source.generation == generation
+        }) {
             return;
         }
         self.refresh_temperature();
@@ -253,9 +357,16 @@ impl FasManager {
 
     /// 负载事件（仅活跃实例）update_cpu_util(fg_util) + update_core_utils(core_utils)
     pub fn on_load_update(&mut self, fg_util: f32, core_utils: &[f32]) {
+        if !self.is_active() {
+            return;
+        }
+        self.refresh_temperature();
         if let Some(inst) = self.instance.as_mut() {
-            inst.controller.update_cpu_util(fg_util);
+            if inst.frame_source.frame_feedback {
+                inst.controller.update_cpu_util(fg_util);
+            }
             inst.controller.update_core_utils(core_utils);
+            inst.controller.update_load_control();
         }
     }
 
@@ -304,5 +415,182 @@ fn snapshot_perfmgr_enable() -> Vec<(String, String)> {
 fn restore_perfmgr_enable(snap: &[(String, String)]) {
     for (path, val) in snap {
         let _ = crate::utils::try_write_file(path, val);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn active_manager() -> FasManager {
+        let mut manager = FasManager::new(None, Arc::new(FasSignal::new(false)));
+        manager.instance = Some(FasInstance {
+            package: "game".to_string(),
+            frame_source: FrameSource {
+                pid: 100,
+                generation: 0,
+                frame_feedback: true,
+            },
+            identity: ProcessIdentity::for_test(Some(1234)),
+            controller: FasController::new(),
+            migration_cost_restore: None,
+            perfmgr_restore: Vec::new(),
+        });
+        manager
+    }
+
+    #[test]
+    fn owner_matches_process_uses_starttime() {
+        let manager = active_manager();
+        assert!(manager.owner_matches_process(100, Some(1234)));
+        assert!(!manager.owner_matches_process(100, Some(9999)));
+        assert!(!manager.owner_matches_process(101, Some(1234)));
+        // fail-closed：请求侧 starttime 未知时不认同一会话
+        assert!(!manager.owner_matches_process(100, None));
+    }
+
+    #[test]
+    fn owner_is_alive_reconciles_without_pidfd() {
+        let manager = active_manager();
+        // 有 starttime 基准、真实 /proc 无此 pid → 判死（PID 复用/已退出）；无实例 → false
+        assert!(!manager.owner_is_alive());
+        let mut unknown_baseline = FasManager::new(None, Arc::new(FasSignal::new(false)));
+        unknown_baseline.instance = Some(FasInstance {
+            package: "game".to_string(),
+            frame_source: FrameSource {
+                pid: 100,
+                generation: 0,
+                frame_feedback: true,
+            },
+            identity: ProcessIdentity::for_test(None),
+            controller: FasController::new(),
+            migration_cost_restore: None,
+            perfmgr_restore: Vec::new(),
+        });
+        // 基准未知：fail-closed 判死，交主线退出
+        assert!(!unknown_baseline.owner_is_alive());
+        let mut empty = FasManager::new(None, Arc::new(FasSignal::new(false)));
+        assert!(!empty.owner_is_alive());
+        empty.instance = None;
+    }
+
+    #[test]
+    fn activate_same_pid_unknown_starttime_is_new_session_fail_closed() {
+        let mut manager = FasManager::new(None, Arc::new(FasSignal::new(false)));
+        // 取一个几乎不可能存在的 pid，确保 starttime 读取为 None（不依赖环境是否占用某 pid）
+        let absent_pid = 2_000_000;
+        assert!(manager.activate("game", absent_pid));
+        let first = manager.frame_source().unwrap();
+        assert_eq!(first.generation, 1);
+        // 真实 /proc 无该 pid → starttime 未知；fail-closed 视为新会话：递增 generation 并重置帧控制
+        assert!(manager.activate("game", absent_pid));
+        let second = manager.frame_source().unwrap();
+        assert_eq!(second.pid, absent_pid as u32);
+        assert!(second.generation > first.generation);
+    }
+
+    #[test]
+    fn repeated_departure_does_not_extend_deadline() {
+        let mut manager = active_manager();
+        manager.request_delayed_exit();
+        let original_deadline = manager.exit_deadline;
+        manager.request_delayed_exit();
+        assert_eq!(manager.exit_deadline, original_deadline);
+    }
+
+    #[test]
+    fn same_package_return_at_deadline_prevents_expiry() {
+        let mut manager = active_manager();
+        manager.exit_deadline = Some(Instant::now());
+        manager.renew_if_same_pkg("other");
+        assert!(manager.exit_deadline.is_some());
+        manager.renew_if_same_pkg("game");
+        assert!(!manager.tick());
+        assert!(manager.is_active());
+    }
+
+    #[test]
+    fn feedback_transitions_invalidate_sessions_but_preserve_owner() {
+        let mut manager = active_manager();
+        let initial = manager.frame_source().unwrap();
+        manager.set_frame_feedback_enabled(false);
+        let suspended = manager.frame_source().unwrap();
+        assert!(suspended.generation > initial.generation);
+        assert_eq!(manager.active_pid(), Some(100));
+        assert!(manager.fas_signal.is_active());
+        assert!(!manager.fas_signal.frame_source_active());
+        manager.set_frame_feedback_enabled(false);
+        assert_eq!(manager.frame_source(), Some(suspended));
+        manager.set_frame_feedback_enabled(true);
+        let resumed = manager.frame_source().unwrap();
+        assert!(resumed.generation > suspended.generation);
+        assert!(manager.fas_signal.frame_source_active());
+    }
+
+    #[test]
+    fn old_generation_and_foreign_pid_cannot_feed_resumed_game() {
+        let mut manager = active_manager();
+        manager.instance.as_mut().unwrap().controller =
+            crate::scheduler::fas::controller_with_policy();
+        let initial = manager.frame_source().unwrap();
+        manager.set_frame_feedback_enabled(false);
+        manager.on_frame(16_666_667, initial.pid, initial.generation);
+        assert_eq!(manager.current_fps(), None);
+        manager.set_frame_feedback_enabled(true);
+        let resumed = manager.frame_source().unwrap();
+        manager.on_frame(16_666_667, initial.pid, initial.generation);
+        manager.on_frame(16_666_667, resumed.pid + 1, resumed.generation);
+        assert_eq!(manager.current_fps(), None);
+        // 预热期间 current_fps 仍为 None，需喂满预热帧后才暴露窗口均值
+        for _ in 0..12 {
+            manager.on_frame(16_666_667, resumed.pid, resumed.generation);
+        }
+        assert!(manager.current_fps().is_some());
+    }
+
+    #[test]
+    fn overlay_keepalive_cancels_deadline_without_resuming_feedback() {
+        let mut manager = active_manager();
+        manager.set_frame_feedback_enabled(false);
+        manager.request_delayed_exit();
+        let suspended = manager.frame_source();
+        manager.cancel_delayed_exit();
+        assert!(!manager.tick());
+        assert_eq!(manager.frame_source(), suspended);
+        assert!(manager.exit_deadline.is_none());
+    }
+
+    #[test]
+    fn deadline_equality_expires_and_clears_frame_source() {
+        let mut manager = active_manager();
+        manager.exit_deadline = Some(Instant::now());
+        assert!(manager.tick());
+        assert!(!manager.is_active());
+        assert_eq!(manager.frame_source(), None);
+        assert_eq!(manager.fas_signal.frame_source(), None);
+        assert!(!manager.tick());
+    }
+
+    #[test]
+    fn repeated_activate_same_pid_keeps_frame_session() {
+        let mut manager = FasManager::new(None, Arc::new(FasSignal::new(false)));
+        assert!(manager.activate("game", 100));
+        let first = manager.frame_source().unwrap();
+        assert!(manager.activate("game", 100));
+        assert_eq!(manager.frame_source(), Some(first));
+        assert_eq!(manager.active_pid(), Some(100));
+        assert_eq!(manager.generation, 1);
+    }
+
+    #[test]
+    fn same_package_pid_replacement_advances_generation() {
+        let mut manager = FasManager::new(None, Arc::new(FasSignal::new(false)));
+        assert!(manager.activate("game", 100));
+        let first = manager.frame_source().unwrap();
+        assert!(manager.activate("game", 200));
+        let replaced = manager.frame_source().unwrap();
+        assert_eq!(replaced.pid, 200);
+        assert!(replaced.generation > first.generation);
+        assert_eq!(manager.active_pid(), Some(200));
     }
 }
