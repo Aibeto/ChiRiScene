@@ -6,13 +6,20 @@
 
 ### 性能与探针（perf-report backlog）
 
+- **本轮进展（2026-10-09，代码已落、验证待定；不销旧专项）**：
+  - `normal_busy`/`normal_press` 真实 `EINVAL` 按 starttime + 目标 CPU 列表退避 4/8/16/32s 封顶，成功/目标/身份变化清除，释放与 reload 失效。TODO: 同版本真机观察失败重试与恢复；两处真实 reload 入口清缓存，不在 2s apply 清。
+  - 仅 restricted `cpu.uclamp.max` 真实 `ENOENT` 负缓存 600s，目标值与 max 恢复不破缓存；background 60s 守卫不变，到期可绕过同值 guard，reload 清。TODO: 构造性自检与自然观察到期、节点恢复及 reload 行为，不做开关实验。
+  - `diag_build_cost.rs` 新增 `selfcost-build/1 parent=build` 四类子块 + residual，失败调用也 count，父账不变、父子不可相加；60s/关闭尾窗复用输出，会话独占，窗口 reset 留 errors、session reset 全清。TODO: 核对有效分母、异常非假零及观察者成本，保持 worker 默认关、不降采样、不摘 K3。独立审查完成，无剩余阻断发现；编译/运行验证仍受阻，待主线补验证结果与同版本真机观察，静态审查不等于测试通过；未测得省电收益。
+  - **验证限制（主线回传）**：Android `cargo check` 已尝试，仅输出 `Compiling chiri`、无 `Checking chiri`，因 `build.rs` eBPF 的 `-Z` 仅 nightly 允许而当前 stable 失败；纯模块 `rustc --test` 因项目内 TMPDIR 只读失败，测试未执行。主线已将两真实模块加入 `scripts/tests/rust_regression.rs` 持久入口，尚未重跑；`ReadLints totalFiles=0` 不构成有效验证。`mod.rs` 单测 `aff_cost_record` 缺第 7 参已补 `None` 并经同一独立审查员复核有效；独立审查完成，无剩余阻断发现，编译/运行验证仍受阻。
+  - **用户提供的 1009 汇总（非本轮复算）**：build CPU 3221s / daemon CPU 8889s（36.2%），94,922 次调用 / 3842s 墙钟，真实慢帧 19.2%；仅作归因背景，不当作本轮改动收益。
+
 - [K3] 摘除纯遥测探针需 meta 开关：wakeups/migrations 被 WebUI 消费（status.csv 第 19/20 列 wakeups/migrations + devimp snap + telemetry-summary），属数据面变更——需显式开关 + 关时写 `-` + WebUI null 展示同步。
 - [C3] 构建剖面（opt-level z/s/3 + thin LTO，比体积与 8550 实测功耗）——原 A/B 手段作废，待裁决：改同版本观察或直接作废。
 - [E3] logdr events buffer（liblog 协议 150-250 行 + SELinux 可达性验证）；[E4] pid_watcher 并入 app_detect（时延 500ms→1.5s 取舍待拍板）。
   - **[E1] 内容比对短路已定案不做（2026-10-01）**：`app_detect.rs` 显式注明「刻意不做内容未变则复用」——冷启动期间 pid 先入组、exec 后 cmdline 才可读，缓存会漏检这类前台切换。
 - 自测量基线：**status.csv 末尾两列 `daemon_utime_ms`/`daemon_stime_ms` 已落地（2026-10-01，1s 采样读 `/proc/self/stat`）**；`cargo bench` 三纯函数仍未做（需先定哪三个 + 新建 benches/ 基础设施）。
   - **首包实测（`devimpbin/1005-021253`，A01-06 / 8550 / 24.7 h）**：daemon 自身 **5.36% 单核（亮屏）/ 4.63%（息屏）/ 6.96%（screen_prop=4）**，五段合计 3381 s CPU 时间。大头是 `@S` 帧的前台线程逐帧 stat 下钻（帧头 `nfg` 峰值 1036）。
-  - **降开销手段已落地（2026-10-05）**：meta `devimp_aff_secs`（缺省 1，clamp 1..=60）+ 息屏固定倍率 `AFF_SNAP_OFFSCREEN_FACTOR`=5。**TODO: 验证收益**——比的是「关 dev_record」与「开 dev_record + 各档 `devimp_aff_secs`」的 `daemon_utime_ms` 差分，属守护进程自身开销的构造性自检，**不是功耗 A/B**；目标把息屏侧压到 2% 以内。
+  - **采样节奏配置已落地（2026-10-05）**：meta `devimp_aff_secs`（缺省 1，clamp 1..=60）+ 息屏固定倍率 `AFF_SNAP_OFFSCREEN_FACTOR`=5。**TODO: 同版本自然观察与构造性自检**——保持现有诊断开关与 `aff_secs`，核对 selfcost 的计数、有效分母与窗口边界；不主动关闭诊断、不调档做开关对照，不承诺占用或功耗降幅。
   - **功耗分解两列已落地（2026-10-05）**：status.csv 末尾追加 `cpu_dyn_w` / `resid_w`（`energy_cost::cpu_dynamic_power_w`），离线分解走 `scripts/devimp/dvenergy.py`。**TODO: 标定复核**——用 8550 下个包看 `[4]` 回归的截距 a（外围地板，亮屏期望 1.5~2.5 W）与 R²；a 明显偏离或 R² < 0.3 说明能效表与真机量纲对不上，需回 `mdocs/8550/sm8550-freq-power.md` §3 复核电压来源。
   - **「核秒」口径开销评估（2026-10-01，只评估未实现）**：核秒**不能**从 aff 的 `t` 行积分——`t` 行是槽级差分 +
     冷长尾降采样 + 每 30 帧刷新帧（`full=1`）放大行数，缺失行 = 未变，只能证明采样状态占比、不是核秒。

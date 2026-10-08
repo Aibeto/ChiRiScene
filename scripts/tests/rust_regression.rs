@@ -1,5 +1,5 @@
 //! rust_regression.rs: [modules]
-//! Portable checks of the real window parser and foreground decision modules.
+//! Portable checks of window visibility, foreground decisions, retry caches and build accounting.
 
 #![allow(dead_code)]
 
@@ -16,3 +16,9 @@ mod fas_focus;
 
 #[path = "../../src/chiri/fas_process.rs"]
 mod fas_process;
+
+#[path = "../../src/chiri/affinity_retry.rs"]
+mod affinity_retry;
+
+#[path = "../../src/chiri/diag_build_cost.rs"]
+mod diag_build_cost;

@@ -42,6 +42,10 @@
 
 **selfcost 读法补充（2026-10-07 第四轮修订，均未验证）**：① **配置指纹层级保留**——旧实现把 pretty-Debug 输出**整体排序**，丢掉字段所属层级，交换两个 profile 的参数值即可得到**完全相同**的指纹（**确定性碰撞**，不是「极低概率」），实际配置变化却不递增代际；现改为 `canonical_debug`：按缩进还原层级树、**只对同一父节点下的直接子项排序**，层级与父节点自身行不变。指纹仍**不含版本信息**（`Config` 无版本字段、仅 `Debug`），日后若补 `Serialize` 应改用 `serde_yaml::to_string`。② **采样快照一致性**——`SampledFrame` 在**采样入口一次性取齐** `ts / fg_pid / fg_starttime / config_identity / generation / sequence`，同一 tick 内**先**「身份变化→bump 代际」**后**构造快照；`dispatch` **不再**重新读取代际（消除「新 PID 配旧 generation」「旧配置指纹配新 generation」）。快照只保证**采样那一刻**彼此一致；采样到 dispatch 之间的前台切换会让整帧略滞后于真实当前前台（设计取舍）。③ **panic 排空顺序**——排空改为**逐帧 `catch_unwind`**（写入器二次 panic 只损失**当帧记账**、不中断排空、不让其余已入队帧失去记账）；`submit` 在 `failed` 态**先等待 `drain_finished` 再返回 `Err(task)`**，以此保证**先旧后新**——**不要**说成「文件锁保证顺序」（锁只保证单帧原子写入）；等待**有界**，超时仍返回 `Err` 但须记 error 声明顺序可能被破坏。**运行证据**：`diag_cost.rs` 16 passed、`diag_worker.rs` **15 passed**、阶段 A Python 30 passed；本轮 `mod.rs` 接线与 `logger.rs` 测试**未运行**。
 
+**selfcost build 子账读法（2026-10-09，代码已落、验证待定）**：同一 selfcost 输出中新增 `schema=selfcost-build/1 parent=build`，分 `get_thread_tids`、`tid_stat`（读 stat 含解析）、`snapshot_procs`、`sched_affinity` 与 `residual`。`count` 包括所有实际失败调用，CPU/墙钟均值分别除以 `cpu_valid_count`/`wall_valid_count`；分母为 0 表示该账不可用，不把缺时钟、负残差或溢出读成零成本，须同时报告 `clock_errors`/`residual_errors`/`write_errors`。旧 `selfcost/1` 父账不变，子账只解释 build 内部，**父子绝不可相加**。residual 包含组装/渲染及未归子块的 observer 成本，子块端点读钟也有部分自身成本，不能把 residual 全归为业务热点。60s 输出与关闭尾窗复用现有 selfcost，会话独占；窗口 reset 保留 errors，session reset 全清。worker 仍默认关闭，不降采样、不摘 K3。本轮验证限制见下段，独立审查完成，无剩余阻断发现；编译/运行验证仍受阻，静态审查与旧轮测试记录都不是本轮测试通过证据，真机成本与收益待观察。
+
+**本轮验证限制（主线回传）**：Android `cargo check` 已尝试，只有 `Compiling chiri`、无 `Checking chiri`；`build.rs` eBPF 的 `-Z` 仅 nightly 允许，当前 stable 导致失败。纯模块 `rustc --test` 因项目内 TMPDIR 只读权限失败，测试未执行；两真实模块已由主线加入 `scripts/tests/rust_regression.rs` 持久入口，尚未重跑。`ReadLints totalFiles=0` 不构成有效验证。`mod.rs` 单测 `aff_cost_record` 缺第 7 参已补 `None` 并经同一独立审查员复核有效；独立审查完成，无剩余阻断发现，编译/运行验证仍受阻。
+
 **不接受「计划完整 = 优化完成」（计划 §10）**：专项计划的复选框全部填满**不等于**优化已交付——每阶段必须记录**实际改动 + 静态/测试/设备验收状态 + 受阻项**；未验证项一律标「未验证」，收益未测得时写未验证，不把「计划写全」当作「优化完成」或「编译/测试通过」。未知的非诊断成本可继续未知，但已授权的确定任务必须给出完成或受阻原因。
 
 **判读口径（易踩）**：

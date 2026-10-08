@@ -183,6 +183,7 @@ pub mod scheduler;
 pub mod affinity;
 pub mod core_ctl;
 pub mod cpu_load_governor;
+mod diag_build_cost;
 pub mod diag_cost;
 pub mod diag_worker;
 pub mod energy_cost;
@@ -927,6 +928,7 @@ fn aff_snap_due(every: usize) -> bool {
 #[derive(Default)]
 struct AffCostState {
     stats: diag_cost::CostStats,
+    build_stats: diag_build_cost::BuildCostStats,
     /// 会话标识（进入会话时取一次 epoch 秒，窗口内稳定不变）
     session: String,
     /// 当前窗口起点（None = 未开始计时）
@@ -1006,6 +1008,16 @@ fn aff_cost_flush(st: &mut AffCostState) {
                 ok = false;
             }
         }
+        for block in diag_build_cost::BuildBlock::ALL {
+            if st.build_stats.stats(block).count == 0 {
+                continue;
+            }
+            let line = st.build_stats.summary_line(&st.session, &cur_ws, &cur_we, block);
+            if !crate::logger::selfcost_write_line(&line) {
+                st.build_stats.note_write_error();
+                ok = false;
+            }
+        }
         let sc1 = diag_cost::thread_cpu_ns();
         let summary_cpu = match (sc0, sc1) {
             (Some(a), Some(b)) => Some(b.saturating_sub(a)),
@@ -1043,6 +1055,7 @@ fn aff_cost_flush(st: &mut AffCostState) {
     } else {
         st.stats.reset();
     }
+    st.build_stats.reset();
     // 5. 开下一个窗口
     st.window_open_at = Some(Instant::now());
     st.window_open_epoch = window_end_epoch;
@@ -1066,6 +1079,7 @@ fn aff_cost_drain_tail(st: &mut AffCostState) {
         }
     }
     st.stats.reset_session();
+    st.build_stats.reset_session();
 }
 
 /// [B1] 记一帧 @S 的 build/write 两段成本（**两段 CPU 区间不重叠**：build=c0→c1、write=c1→c2），
@@ -1078,6 +1092,7 @@ fn aff_cost_record(
     c1: Option<u64>,
     t2: Instant,
     c2: Option<u64>,
+    build_stats: Option<diag_build_cost::BuildCostStats>,
 ) {
     AFF_COST.with(|cell| {
         let mut st = cell.borrow_mut();
@@ -1099,6 +1114,10 @@ fn aff_cost_record(
         };
         st.stats.record(diag_cost::Block::Build, wall_build, build_cpu);
         st.stats.record(diag_cost::Block::Write, wall_write, write_cpu);
+        if let Some(mut build_stats) = build_stats {
+            build_stats.finish(wall_build, c0.zip(c1).and_then(|(start, end)| end.checked_sub(start)));
+            st.build_stats.absorb(&build_stats);
+        }
         // 慢调用只做节流告警（不影响入账）；不额外读 /proc
         if (wall_build >= diag_cost::SLOW_NS || wall_write >= diag_cost::SLOW_NS)
             && st
@@ -1148,6 +1167,7 @@ fn aff_cost_session_tick(diag_now: bool) {
                 st.window_open_at = Some(Instant::now());
                 st.window_open_epoch = now_epoch;
                 st.stats.reset_session();
+                st.build_stats.reset_session();
                 diag_worker_start();
                 diag_worker_bump_generation();
             }
@@ -1584,8 +1604,10 @@ fn clk_tck() -> f32 {
 // （线程所在核 processor 由 affinity::sample_one_tid 同一次 stat 读取顺带解析，不再单独读 /proc/<tid>/stat——见 ThreadSample::processor）
 
 /// 核占用掩码 hex 位图：`read_tid_mask` 给出允许核列表（如 0..7 全核），转成位图 hex（8 核全占 = `ff`）；查不到（线程消亡等）写 `-`
-fn mask_hex(pid: i32) -> String {
-    let Some(cpus) = affinity::read_tid_mask(pid) else {
+fn mask_hex(pid: i32, costs: &mut Option<diag_build_cost::BuildCostStats>) -> String {
+    let Some(cpus) = measure_build_block(costs, diag_build_cost::BuildBlock::SchedAffinity, || {
+        affinity::read_tid_mask(pid)
+    }) else {
         return "-".to_string();
     };
     let mut bits: u64 = 0;
@@ -1595,6 +1617,24 @@ fn mask_hex(pid: i32) -> String {
         }
     }
     format!("{bits:x}")
+}
+
+/// 子块只包原取数调用；两端读钟和固定数组记账均在父 build 内，无逐调用分配。
+fn measure_build_block<Output>(
+    costs: &mut Option<diag_build_cost::BuildCostStats>,
+    block: diag_build_cost::BuildBlock,
+    operation: impl FnOnce() -> Output,
+) -> Output {
+    let Some(costs) = costs.as_mut() else {
+        return operation();
+    };
+    let wall_start = Instant::now();
+    let cpu_start = diag_cost::thread_cpu_ns();
+    let output = operation();
+    let cpu_end = diag_cost::thread_cpu_ns();
+    let wall_ns = wall_start.elapsed().as_nanos() as u64;
+    costs.record(block, wall_ns, cpu_start, cpu_end);
+    output
 }
 
 /// @S 每秒进程/线程快照帧（`devimp/aff_<ts>.log`）组装：top-N 进程 + 前台树/
@@ -1638,8 +1678,9 @@ fn build_aff_snapshot(
     fg_pid: i32,
     fg_pkg: &str,
     top_n: usize,
-) -> (Vec<String>, bool) {
+) -> (Vec<String>, bool, Option<diag_build_cost::BuildCostStats>) {
     use std::collections::{HashMap, HashSet};
+    let mut costs = crate::logger::diag_active().then(diag_build_cost::BuildCostStats::default);
 
     // 被管线程状态（home/pin）一次取完；进程级 home 从这里派生
     let mut th_state: HashMap<u32, (i16, bool)> = HashMap::with_capacity(th_diag.len());
@@ -1659,7 +1700,11 @@ fn build_aff_snapshot(
     let mut tids: Vec<(u32, u32, bool)> = Vec::new(); // (pid, tid, full)
     let mut seen_tid: HashSet<u32> = HashSet::new();
     if fg_pid > 0 {
-        for tid in crate::monitor::cpu_monitor::get_thread_tids(fg_pid as u32) {
+        let foreground_tids = measure_build_block(
+            &mut costs, diag_build_cost::BuildBlock::ThreadTids,
+            || crate::monitor::cpu_monitor::get_thread_tids(fg_pid as u32),
+        );
+        for tid in foreground_tids {
             if seen_tid.insert(tid) {
                 tids.push((fg_pid as u32, tid, true));
             }
@@ -1703,7 +1748,10 @@ fn build_aff_snapshot(
             if !full && !refresh && !st.base.get(&tid).is_some_and(|e| e.hot_until >= frame) {
                 continue;
             }
-            let Some(s) = affinity::sample_one_tid(tid as i32) else {
+            let Some(s) = measure_build_block(
+                &mut costs, diag_build_cost::BuildBlock::TidStat,
+                || affinity::sample_one_tid(tid as i32),
+            ) else {
                 // 线程已退出：顺手回收基线（原地 remove，不整表重建）
                 st.base.remove(&tid);
                 continue;
@@ -1845,7 +1893,10 @@ fn build_aff_snapshot(
     }
 
     // ── 进程集合：util top-N ∪ 前台进程 ∪ 被管进程 ──
-    let mut procs = crate::monitor::cpu_monitor::snapshot_procs();
+    let mut procs = measure_build_block(
+        &mut costs, diag_build_cost::BuildBlock::ProcessMap,
+        crate::monitor::cpu_monitor::snapshot_procs,
+    );
     // util 降序 + pid 升序 tie-break：等 util（常见于大量 util=0 的冷进程）时行序与 top-N 成员不随 BPF map 遍历序逐帧抖动
     procs.sort_by(|a, b| {
         b.util
@@ -1890,7 +1941,7 @@ fn build_aff_snapshot(
             p.pid,
             name,
             p.util.round() as i32,
-            mask_hex(p.pid as i32),
+            mask_hex(p.pid as i32, &mut costs),
             pid_home.get(&p.pid).copied().unwrap_or(-1),
         ));
     }
@@ -1911,13 +1962,13 @@ fn build_aff_snapshot(
         let u = util.round() as i32;
         rows.push(format!(
             "p 0 {pid} {name} u={u} mask={} home={}",
-            mask_hex(pid as i32),
+            mask_hex(pid as i32, &mut costs),
             pid_home.get(&pid).copied().unwrap_or(-1),
         ));
     }
     // t 行已在上方按槽级差分渲染好：`None` = 全槽未变（省行），`Some` = 本帧要落的差异行
     rows.extend(th_rows.into_iter().filter_map(|(_, _, _, row)| row));
-    (rows, refresh)
+    (rows, refresh, costs)
 }
 
 // [affinity]
@@ -2101,6 +2152,7 @@ pub fn start_diag_thread(config_path: std::path::PathBuf) -> Result<()> {
 
                 // 关闭态：零采样零写入（不读包名/屏幕、不读温度），仅保留 1s 节拍等开关重开
                 if !dev_record {
+                    aff_cost_session_tick(false);
                     prev_screen_on = None;
                     prev_mode = None;
                     thread::sleep(Duration::from_secs(1));
@@ -2119,6 +2171,7 @@ pub fn start_diag_thread(config_path: std::path::PathBuf) -> Result<()> {
                     }
                 };
                 crate::logger::set_diag_mode(&mode);
+                aff_cost_session_tick(crate::logger::diag_active());
                 // 诊断日志按前台包名分组：变化即切换 main_ 文件（内部去重，空包名不切换）
                 crate::logger::set_diag_package(&fg_pkg);
 
@@ -2203,14 +2256,23 @@ pub fn start_diag_thread(config_path: std::path::PathBuf) -> Result<()> {
                 // 采样间隔受 meta `devimp_aff_secs` 节流（息屏再乘倍率）：跳过的轮次不推进帧号
                 let aff_every = aff_secs * if is_screen_on { 1 } else { AFF_SNAP_OFFSCREEN_FACTOR };
                 if aff_snap_due(aff_every) {
-                    let (rows, full) = build_aff_snapshot(
+                    let before_build = crate::logger::diag_active()
+                        .then(|| (Instant::now(), diag_cost::thread_cpu_ns()));
+                    let (rows, full, build_stats) = build_aff_snapshot(
                         &[],
                         &[],
                         crate::monitor::app_detect::get_current_pid(),
                         &fg_pkg,
                         top_n,
                     );
+                    let after_build = before_build
+                        .map(|_| (Instant::now(), diag_cost::thread_cpu_ns()));
                     crate::logger::aff_snapshot(&rows, full);
+                    if let (Some((t0, c0)), Some((t1, c1))) = (before_build, after_build) {
+                        let t2 = Instant::now();
+                        let c2 = diag_cost::thread_cpu_ns();
+                        aff_cost_record(t0, c0, t1, c1, t2, c2, build_stats);
+                    }
                 }
 
                 thread::sleep(Duration::from_secs(1));
@@ -2218,6 +2280,7 @@ pub fn start_diag_thread(config_path: std::path::PathBuf) -> Result<()> {
         }))
         .is_err()
         {
+            aff_cost_session_tick(false);
             log::error!("{}", t("main-diag-thread-panic"));
         }
         })?;
@@ -2805,6 +2868,7 @@ pub fn start_scheduler_thread(
                 // 停摆期照重载（日志开关等仍生效）只是不下发
                 let config_dirty = dirty_ipc.swap(false, Ordering::AcqRel);
                 if config_dirty {
+                    affinity_mgr.invalidate_retry_caches();
                     // 诊断采集开关与停摆无关（停摆只停调度）：无条件同步，改 meta.dev_record 即时生效
                     let cfg = config_clone.read().unwrap();
                     crate::logger::set_diag_active(cfg.meta.dev_record);
@@ -3149,7 +3213,7 @@ pub fn start_scheduler_thread(
                             } else {
                                 crate::monitor::app_detect::get_current_pid()
                             };
-                            let (rows, full) = build_aff_snapshot(
+                            let (rows, full, build_stats) = build_aff_snapshot(
                                 &th_diag,
                                 &managed,
                                 fg_pid_for_build,
@@ -3161,7 +3225,7 @@ pub fn start_scheduler_thread(
                             aff_snapshot_dispatch(rows, full, sampled);
                             let t2 = Instant::now();
                             let c2 = diag_cost::thread_cpu_ns();
-                            aff_cost_record(t0, c0, t1, c1, t2, c2);
+                            aff_cost_record(t0, c0, t1, c1, t2, c2, build_stats);
                         }
                     }
                     if telemetry_log_counter % 20 == 0 && log::log_enabled!(log::Level::Debug) {
@@ -4348,6 +4412,7 @@ pub fn start_scheduler_thread(
                     // [evt_reload]
                     // 热重载配置事件
                     DaemonEvent::ConfigReload(_new_rules) => {
+                        affinity_mgr.invalidate_retry_caches();
                         let current_mode = mode_clone.lock().unwrap().clone();
                         log::debug!("{}", t_with_args("scheduler-event-config-reload", &fluent_args!(
                             "mode" => current_mode.clone(),
@@ -4696,7 +4761,7 @@ mod tests {
     fn aff_cost_record_accumulates_without_flushing_first_frame() {
         let t0 = Instant::now();
         // 同一线程内连续两帧（thread_local 独占）
-        aff_cost_record(t0, None, t0, None, t0, None);
+        aff_cost_record(t0, None, t0, None, t0, None, None);
         // 首次 record 只开窗、不结算：累计器保留本帧计数
         AFF_COST.with(|cell| {
             let st = cell.borrow();

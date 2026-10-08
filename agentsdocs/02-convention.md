@@ -50,6 +50,11 @@
     - **二进制扩展位**：帧首字符 `\x01` 保留给未来二进制帧，本版不实现。
   - **共用数据减小开销**：电池/CPU 温度在 1s snap 块读一次存入 `last_batt_temp/last_cpu_temp`，status.csv、main\_ snap、thermal（2s）三处共用（thermal 复用 ≤1s 旧值，带回滞的秒级判定无影响）；affinity 的逐核 util/在线位图/线程 comm 均为缓存复用。
 
+- **亲和失败重试缓存（2026-10-09，代码已落、验证待定）**：`normal_busy`/`normal_press` 仅对真实 `EINVAL` 按线程 starttime + 目标 CPU 列表退避 4/8/16/32s（32s 封顶）；成功、目标或身份变化清除，释放与配置 reload 使缓存失效。仅 `restricted/cpu.uclamp.max` 的真实 `ENOENT` 进入 600s 负缓存，目标值变化与 max 恢复不打破该缓存；background 原 60s 同值守卫不变，负缓存到期可绕过同值 guard 重试。`mod.rs` 两处真实 `config_dirty`/`ConfigReload` 入口调用 `invalidate_retry_caches`，不是每 2s apply 时清除。
+
+- **selfcost build 子账（2026-10-09，代码已落、验证待定）**：`diag_build_cost.rs` 新增 `selfcost-build/1 parent=build`，四类子块为 `get_thread_tids`、`tid_stat`（含解析）、`snapshot_procs`、`sched_affinity`，另列 `residual`；所有实际调用（含失败）均计入 `count`，分别报告 `cpu_valid_count`/`wall_valid_count` 与 `clock_errors`/`residual_errors`/`write_errors`。旧 `selfcost/1` 父账不变，父子绝不可相加；CPU 缺时钟、负残差或溢出不得伪装为 0。residual 包含组装、渲染与未归入子块的 observer 成本，子块端点读钟也含部分自身成本。子账复用 selfcost 的 60s 输出与关闭尾窗，会话独占，窗口 reset 保留 errors、session reset 全清；worker 默认关闭，不降采样、不摘 K3。本轮验证限制见下条；独立审查完成，无剩余阻断发现，`mod.rs` 单测 `aff_cost_record` 缺第 7 参已补 `None` 并由同一独立审查员复核有效。编译/运行验证仍受阻，静态审查不等于测试通过或省电收益。
+- **本轮验证限制（主线回传）**：Android `cargo check` 已尝试，输出 `Compiling chiri` 但无 `Checking chiri`；`build.rs` eBPF 的 `-Z` 仅 nightly 允许，当前 stable 导致失败。纯模块 `rustc --test` 因项目内 TMPDIR 只读权限失败，测试未执行。主线已将两真实模块加入 `scripts/tests/rust_regression.rs` 持久入口，尚未重跑；`ReadLints totalFiles=0` 不构成有效验证。
+
 - **时间戳统一为设备本地时间（2026-09-11）**：status.csv / devimp 的 ts 列此前经 `as_secs()%86400` 输出 UTC，与 daemon.log、devimp 文件名（本地时间）相差时区，离线对齐必须人工换算（8550 整夜功耗分析踩坑）。现 `logger::format_now` 经 `libc::localtime_r` 走系统时区（非 unix 回退 UTC）；两文件的 ts 口径并不相同——main* 的 ts 列是 `format_now`（HH:MM:SS.mmm，文件头注释 `# ts-column=local format_now`），aff* 帧的 `ts=` 字段是 `MMDD-HHmmss`（与文件名同款）。`localtime_r` 失败时文件名时间戳退化为 `t<hex>`；包名段经字符过滤（仅字母数字与 .\_-）、截断 64。新增任何日志流一律本地时间，勿再引入第二时区。
 
 - main*/aff* 两文件的文件头 `soc/board/model`（2026-09-17 修复，现适用于两文件）：`model` 等跨分区属性（`ro.product.model` 在 /product、/vendor 分区）**必须走 `common::getprop`**（调 `getprop` 命令拿合并视图），直接读 `/system/build.prop` 会读空、头里显示 `-`；getprop 为空时回退 build.prop 解析。

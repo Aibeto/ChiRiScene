@@ -26,6 +26,10 @@ use std::time::{Duration, Instant};
 use crate::fluent_args;
 use crate::i18n::{t, t_with_args};
 
+#[path = "affinity_retry.rs"]
+mod affinity_retry;
+use affinity_retry::{InvalidMaskRetry, MissingNodeCache};
+
 // [consts]
 const KIND_NONE: u8 = 0;
 const KIND_BOOST: u8 = 1;
@@ -53,6 +57,8 @@ const BG_DEMOTE_GROUPS: [&str; 2] = ["background", "restricted"];
 static BG_UCLAMP_CODE: AtomicU64 = AtomicU64::new(0);
 /// 上次**实际**写入时刻（相对 `BG_UCLAMP_EPOCH` 的毫秒；`Instant` 不能进原子量）
 static BG_UCLAMP_AT_MS: AtomicU64 = AtomicU64::new(0);
+/// restricted 缺失节点冷却；目标值变化和恢复请求不清除。
+static RESTRICTED_UCLAMP_MISSING: MissingNodeCache = MissingNodeCache::new();
 /// 计时基准（首次调用时初始化一次）
 static BG_UCLAMP_EPOCH: OnceLock<Instant> = OnceLock::new();
 
@@ -82,7 +88,7 @@ fn bg_uclamp_code(val: &str) -> u64 {
 }
 
 /// 写后台组 cpu.uclamp.max：候选组逐个写、不预判存在性（restricted 由 init 按需创建，写入失败即「该组不可用」的权威证据）；日志口径见 utils::write_nodes，
-/// 每节点补 @A uclamp 帧真实内核写入，守卫与 dev_record 开关无关：值未变且距上次实写 < BG_UCLAMP_REASSERT 整段跳过
+/// 每节点仅实写补 @A 帧；同值 60s 再断言，restricted ENOENT 冷却 600s，到期不受同值守卫阻挡。
 fn write_bg_uclamp_max(val: &str, reason: &str) {
     let code = bg_uclamp_code(val);
     let now = Instant::now();
@@ -90,25 +96,40 @@ fn write_bg_uclamp_max(val: &str, reason: &str) {
         .duration_since(*BG_UCLAMP_EPOCH.get_or_init(|| now))
         .as_millis() as u64;
     let last_ms = BG_UCLAMP_AT_MS.load(Ordering::Relaxed);
-    if code != 0
+    let normal_write_due = !(code != 0
         && code == BG_UCLAMP_CODE.load(Ordering::Relaxed)
-        && now_ms.saturating_sub(last_ms) < BG_UCLAMP_REASSERT.as_millis() as u64
-    {
+        && now_ms.saturating_sub(last_ms) < BG_UCLAMP_REASSERT.as_millis() as u64);
+    let restricted_probe_due = RESTRICTED_UCLAMP_MISSING.probe_due(now_ms);
+    if !normal_write_due && !restricted_probe_due {
         return;
     }
     let items: Vec<(String, String)> = BG_DEMOTE_GROUPS
         .iter()
+        .filter(|group| {
+            if **group == "restricted" {
+                RESTRICTED_UCLAMP_MISSING.allows_write(normal_write_due, now_ms)
+            } else {
+                normal_write_due
+            }
+        })
         .map(|g| (format!("/dev/cpuctl/{g}/cpu.uclamp.max"), val.to_string()))
         .collect();
     let outcomes = crate::utils::write_nodes_verbose(&items, "bg-uclamp-max");
+    for (path, outcome) in &outcomes {
+        if path == "/dev/cpuctl/restricted/cpu.uclamp.max" {
+            RESTRICTED_UCLAMP_MISSING.record(outcome.as_ref().err().copied().flatten(), now_ms);
+        }
+    }
     // A8：写失败计数（汇总观测），失败组仍在 @A 帧 e0/errno 可见
     UCLAMP_WRITE_FAILS.fetch_add(
         outcomes.iter().filter(|(_, o)| o.is_err()).count() as u64,
         Ordering::Relaxed,
     );
     // 状态在写之后更新；写失败也更新：同值下周期即跳过，60s 兜底再断言，失败组在 @A 帧 e0 可见
-    BG_UCLAMP_CODE.store(code, Ordering::Relaxed);
-    BG_UCLAMP_AT_MS.store(now_ms, Ordering::Relaxed);
+    if normal_write_due {
+        BG_UCLAMP_CODE.store(code, Ordering::Relaxed);
+        BG_UCLAMP_AT_MS.store(now_ms, Ordering::Relaxed);
+    }
     // 打点与写入同门控：跳过写入时也不产生帧，否则同值重写仍会把 aff 文件刷满
     // result 写**真实 errno**（如 `e2`=ENOENT 节点缺失，机型无该组属常态），不再一律记 `e0`——
     // 否则离线成功率表会把「半个候选组不存在」误读成 50% 写失败
@@ -693,6 +714,8 @@ fn logged_write(path: &str, val: &str) -> std::io::Result<()> {
 pub struct ThreadSample {
     pub comm: String,
     pub ticks: u64,
+    /// /proc stat 第 22 字段；仅供失败退避的线程身份核验。
+    pub starttime: Option<u64>,
     /// 当前所在核（stat 的 processor 字段，`)` 后第 36 段 0 基）；读不到 -1，与 comm/ticks 同次读取顺带解析
     pub processor: i32,
 }
@@ -708,11 +731,13 @@ pub fn sample_one_tid(tid: i32) -> Option<ThreadSample> {
     let mut utime: Option<u64> = None;
     let mut stime: Option<u64> = None;
     let mut processor: Option<i32> = None;
+    let mut starttime: Option<u64> = None;
     let mut count = 0usize;
     for (i, tok) in rest.split_whitespace().enumerate() {
         match i {
             11 => utime = tok.parse().ok(),
             12 => stime = tok.parse().ok(),
+            19 => starttime = tok.parse().ok(),
             36 => processor = tok.parse().ok(),
             _ => {}
         }
@@ -725,6 +750,7 @@ pub fn sample_one_tid(tid: i32) -> Option<ThreadSample> {
     Some(ThreadSample {
         comm: text[open + 1..close].to_string(),
         ticks,
+        starttime,
         processor: processor.unwrap_or(-1),
     })
 }
@@ -777,6 +803,8 @@ struct ThreadState {
     elf32: bool,
     /// A10 写去重：最近一次掩码写入的 (目标 tag, 时刻)；同 tag 在 repin_debounce 内不再重写
     last_mask_write: Option<(u64, Instant)>,
+    starttime: Option<u64>,
+    normal_bind_retry: InvalidMaskRetry,
 }
 
 /// A10 掩码写入目标 tag：区分单核钉定（tag = core 号）与两种组掩码，供同目标去重判断
@@ -1158,6 +1186,29 @@ impl AffinityManager {
     fn record_mask_write(&mut self, tid: i32, tag: u64, now: Instant) {
         if let Some(st) = self.threads.get_mut(&tid) {
             st.last_mask_write = Some((tag, now));
+            st.normal_bind_retry.clear();
+        }
+    }
+
+    /// normal 组绑定的真实写入结果；身份未知时不建立退避。
+    fn record_normal_bind_result(
+        &mut self,
+        tid: i32,
+        cpus: &[usize],
+        result: &std::io::Result<()>,
+        now: Instant,
+    ) {
+        if let Some(state) = self.threads.get_mut(&tid) {
+            if let Some(starttime) = state.starttime {
+                state.normal_bind_retry.record(
+                    result.as_ref().err().and_then(|error| error.raw_os_error()),
+                    starttime,
+                    cpus,
+                    now,
+                );
+            } else {
+                state.normal_bind_retry.clear();
+            }
         }
     }
 
@@ -1182,7 +1233,27 @@ impl AffinityManager {
             }
             return false;
         }
-        !self.mask_write_skip(tid, MASK_TAG_PERF, Instant::now())
+        let now = Instant::now();
+        if matches!(reason, "normal_busy" | "normal_press")
+            && self
+                .threads
+                .get(&tid)
+                .is_some_and(|state| state.normal_bind_retry.is_active())
+        {
+            // 仅失败线程额外读 stat；身份不可核验时放行，不压制可能复用的 TID。
+            let starttime = sample_one_tid(tid).and_then(|sample| sample.starttime);
+            if let Some(state) = self.threads.get_mut(&tid) {
+                state.starttime = starttime;
+                match starttime {
+                    Some(starttime) if state.normal_bind_retry.should_skip(starttime, cpus, now) => {
+                        return false;
+                    }
+                    None => state.normal_bind_retry.clear(),
+                    _ => {}
+                }
+            }
+        }
+        !self.mask_write_skip(tid, MASK_TAG_PERF, now)
     }
 
     /// 钉线程到单核。`pkg` 由调用方传入（前台为缓存 fg_cmdline，后台 "-"），避免重读 cmdline。成败均落 @A 帧；失败保持原语义直接 return（不置状态，下次重试）
@@ -1352,6 +1423,9 @@ impl AffinityManager {
     /// 清理线程（单条）：迁回原组 + 恢复全核 + 移除状态，返回 (首个失败 errno, 是否「无副作用条目」) 交 cleanup_threads 汇总恢复写失败且线程仍在（非 ESRCH）
     /// 时保留状态条目待 departed/gone/stale 路径重试，防状态表与内核永久分叉
     fn cleanup_thread(&mut self, tid: i32, reason: &str) -> (Option<i32>, bool) {
+        if let Some(state) = self.threads.get_mut(&tid) {
+            state.normal_bind_retry.clear();
+        }
         let (moved, orig, home, pid, group_bind) = match self.threads.get(&tid) {
             Some(st) => (
                 st.moved_group,
@@ -1573,6 +1647,8 @@ impl AffinityManager {
                                 pin_incapable: false,
                                 elf32,
                                 last_mask_write: None,
+                                starttime: None,
+                                normal_bind_retry: InvalidMaskRetry::default(),
                             });
                             // 归属变化（前台换 PID 后复用 tid，或后台候选被前台收养）视作新线程：`!is_fg` 覆盖后者——后台候选身份仍是后台，收养后必须按前台身份重新采样
                             if !st.is_fg || st.pid != fg_pid {
@@ -1589,6 +1665,8 @@ impl AffinityManager {
                                 st.last_ticks = 0;
                                 st.last_busy = None;
                                 st.low_streak = 0;
+                                st.starttime = None;
+                                st.normal_bind_retry.clear();
                             }
                             st.last_seen = now;
                             // 新增线程才读 stat（判关键线程 / 建档 ticks + comm 缓存）
@@ -1598,6 +1676,7 @@ impl AffinityManager {
                                     st.comm = s.comm;
                                     st.last_ticks = s.ticks;
                                     st.last_sample = now;
+                                    st.starttime = s.starttime;
                                 }
                             }
                             let (home, is_key, group_bind) = (st.home, st.is_key, st.group_bind);
@@ -1741,6 +1820,7 @@ impl AffinityManager {
                                 // EAS 组内自调度
                                 let now_bind = Instant::now();
                                 let res = set_tid_affinity(tid, &perf_pool);
+                                self.record_normal_bind_result(tid, &perf_pool, &res, now_bind);
                                 if crate::logger::diag_active() {
                                     let comm = self.thread_comm(tid);
                                     crate::logger::aff_action(
@@ -2002,6 +2082,8 @@ impl AffinityManager {
                                         pin_incapable: false,
                                         elf32,
                                         last_mask_write: None,
+                                        starttime: s.starttime,
+                                        normal_bind_retry: InvalidMaskRetry::default(),
                                     },
                                 );
                                 continue;
@@ -2288,6 +2370,7 @@ impl AffinityManager {
                 // 抬到性能核组（不钉单核，组内交给 EAS 自调度）；perf_pool 本就是切片参数
                 let now_bind = Instant::now();
                 let res = set_tid_affinity(tid, perf_pool);
+                self.record_normal_bind_result(tid, perf_pool, &res, now_bind);
                 if crate::logger::diag_active() {
                     let comm = self.thread_comm(tid);
                     crate::logger::aff_action(
@@ -2307,12 +2390,6 @@ impl AffinityManager {
                         st.group_bind = GroupBind::Busy;
                     }
                     self.record_mask_write(tid, MASK_TAG_PERF, now_bind);
-                } else if let Some(libc::EINVAL) = res.as_ref().err().and_then(|e| e.raw_os_error())
-                {
-                    // 目标掩码与线程允许核交集为空（未知/异常情况兜底；已知 32 位已在 group_bind_precheck 拦下）：内核不会放行，重试纯开销，标记后跳过后续尝试
-                    if let Some(st) = self.threads.get_mut(&tid) {
-                        st.pin_incapable = true;
-                    }
                 }
             } else if bound && low >= self.tuning.demote_streak {
                 // 空闲回落：恢复全核掩码（restore 内清 group_bind）
@@ -2687,6 +2764,16 @@ impl AffinityManager {
 
     pub fn release(&mut self) {
         self.release_impl("release");
+    }
+
+    /// 配置重载清除失败抑制；同值守卫同步失效以允许立即写入。
+    pub fn invalidate_retry_caches(&mut self) {
+        RESTRICTED_UCLAMP_MISSING.clear();
+        BG_UCLAMP_CODE.store(0, Ordering::Relaxed);
+        BG_UCLAMP_AT_MS.store(0, Ordering::Relaxed);
+        for state in self.threads.values_mut() {
+            state.normal_bind_retry.clear();
+        }
     }
 
     /// 释放（reason 按场景区分：常规收尾 "release"、总闸关闭 "disabled"）。各恢复动作的帧由 write_cpuset_paths_items / restore_* /
