@@ -2,9 +2,6 @@
 /target
 xtask/target
 yumi-ebpf/target
-# 根目录 npm init 误生成，刻意忽略不提交（webui/package.json 已跟踪，不受影响）
-/package.json
-/package-lock.json
 
 # IDE
 # .idea/
@@ -42,6 +39,7 @@ android_kernel_oneplus_sm8550/
 
 # devimp
 devimpbin/
+.Trash-0/
 
 # WebUI（原 webui/.gitignore 合并于此，2026-09-22）
 webui/logs
@@ -81,3 +79,8 @@ module/core/bin/chiri
 
 # Python 缓存
 __pycache__/
+
+# VitePress
+docs/.vitepress/cache/
+docs/.vitepress/dist/
+docs/.vitepress/temp/

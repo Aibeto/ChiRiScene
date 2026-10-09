@@ -3,13 +3,33 @@ name: Build ChiRi
 
 # 触发条件：当推送到 main 分支，或者发布 tag 时触发。
 # workflow_dispatch 允许在 GitHub 网页端手动点击运行。
+# paths-ignore：以下目录不参与构建产物，纯文档/元信息提交不再触发整套交叉编译；
+# tag 发布不受影响（path 过滤只比对分支提交的文件差异），必要时仍可 workflow_dispatch 手跑。
 on:
   push:
     branches: ["main"]
     tags:
       - "v*"
+    paths-ignore:
+      - "docs/**"
+      - "agentsdocs/**"
+      - "mdocs/**"
+      - ".archive/**"
+      - ".trae/**"
+      - ".cursor/**"
+      - ".codebuddy/**"
+      - ".workbuddy/**"
   pull_request:
     branches: ["main"]
+    paths-ignore:
+      - "docs/**"
+      - "agentsdocs/**"
+      - "mdocs/**"
+      - ".archive/**"
+      - ".trae/**"
+      - ".cursor/**"
+      - ".codebuddy/**"
+      - ".workbuddy/**"
   workflow_dispatch:
 # 跳过机制：同一 ref（分支/PR）上有新运行进入时，取消仍在跑的旧运行，
 # 避免连续 push 造成的排队与重复构建。tag 构建（发布产物）不取消。
@@ -52,7 +72,13 @@ jobs:
           targets: aarch64-linux-android
           components: rust-src # build-std 需要用到 (含 bpfel-unknown-none)
 
-      # 5. 安装 bpf-linker（官方预编译二进制，静态链接 LLVM，无系统依赖）。
+      # 5. 缓存 Rust 依赖与编译产物（含 -Z build-std 的 core 与 eBPF 产物）。
+      #    纯加速步骤，不改构建语义：key 含 rustc 版本与 Cargo.lock，
+      #    nightly 更新或依赖变更时自动冷启一次。
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+
+      # 6. 安装 bpf-linker（官方预编译二进制，静态链接 LLVM，无系统依赖）。
       #    背景：bpf-linker 0.11 依赖 LLVM 21+，源码编译需要系统 LLVM 21+
       #    （ubuntu runner 无可用包）；cargo-binstall 因 asset 平台匹配问题回退到
       #    cargo install 而失败。因此直接经 GitHub API 解析官方 release asset 下载。
@@ -76,20 +102,36 @@ jobs:
           sudo find /tmp/bpf-linker -type f -name bpf-linker -exec install -m 755 {} /usr/local/bin/bpf-linker \;
           bpf-linker --version
 
-      # 6. 安装 Android NDK
+      # 7. 安装 Android NDK
       - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
         id: setup-ndk
         with:
           ndk-version: r29
 
-      # 7. 配置 NDK 环境变量并安装 cargo-ndk
-      - name: Setup cargo-ndk
-        run: |
-          echo "ANDROID_NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}" >> $GITHUB_ENV
-          cargo install cargo-ndk
+      # 8. 导出 NDK 路径给后续步骤（cargo-ndk 依据 ANDROID_NDK_HOME 定位 NDK）
+      - name: Setup NDK environment
+        run: echo "ANDROID_NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}" >> $GITHUB_ENV
 
-      # 8. 删除模块文本文件中的注释行（编译打包前）
+      # 9. 安装 cargo-ndk（官方预编译二进制，替代 `cargo install` 的源码编译）。
+      #    与 bpf-linker 同理：带 GITHUB_TOKEN 调 API 解析 release asset，
+      #    避免未鉴权时 runner 共享 IP 被 rate limit（响应体无 assets 字段）。
+      #    注意该二进制只认 `cargo ndk` 调用方式，不能直接执行做 --version。
+      - name: Install cargo-ndk (prebuilt)
+        run: |
+          ASSET=$(curl -sSfL \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/bbqsrc/cargo-ndk/releases/tags/v4.1.2" \
+            | python3 -c "import sys,json;d=json.load(sys.stdin);a=d.get('assets') or sys.exit('release JSON 无 assets 字段: %r' % d);print(next(x['browser_download_url'] for x in a if x['name'].startswith('cargo-ndk-x86_64-unknown-linux-gnu-')))")
+          echo "Downloading $ASSET"
+          curl -L -o /tmp/cargo-ndk.tar.gz "$ASSET"
+          mkdir -p /tmp/cargo-ndk
+          tar -xzf /tmp/cargo-ndk.tar.gz -C /tmp/cargo-ndk
+          sudo find /tmp/cargo-ndk -type f -name cargo-ndk -exec install -m 755 {} /usr/local/bin/cargo-ndk \;
+          cargo ndk --version
+
+      # 10. 删除模块文本文件中的注释行（编译打包前）
       #    仅处理会打进模块包的文本文件（sh/yaml/ftl）中的整行 # 注释；
       #    保留 shebang（#!），并排除 META-INF（updater-script 的 #MAGISK 为必需
       #    标记）与无扩展名的标记文件。
@@ -104,11 +146,11 @@ jobs:
             perl -i -ne 'print if /^\s*#!/ || !/^\s*#/' "$f"
           done
 
-      # 9. 运行 xtask 构建（仅组装目录，不预打包 zip；GitHub 下载产物时会自动压缩）
+      # 11. 运行 xtask 构建（仅组装目录，不预打包 zip；GitHub 下载产物时会自动压缩）
       - name: Run xtask build
         run: cargo xtask build --no-pack
 
-      # 10. 动态获取 xtask 生成的模块目录（按 module.prop 命名）
+      # 12. 动态获取 xtask 生成的模块目录（按 module.prop 命名）
       - name: Resolve Artifact Directory
         id: artifact
         run: |
@@ -120,7 +162,7 @@ jobs:
           echo "name=$DIR_NAME" >> "$GITHUB_OUTPUT"
           echo "path=$DIR_PATH" >> "$GITHUB_OUTPUT"
 
-      # 11. 上传整个模块目录（不做预打包，交由 GitHub 统一压缩成 <name>.zip）
+      # 13. 上传整个模块目录（不做预打包，交由 GitHub 统一压缩成 <name>.zip）
       - name: Upload Build Artifact
         uses: actions/upload-artifact@v7
         with:

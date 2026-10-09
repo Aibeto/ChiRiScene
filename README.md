@@ -2,6 +2,8 @@
 
 > English support is currently suspended
 
+> 本文档已部分过时
+
 # ChiRi 调度
 
 **古法（？） CPU 调度：eBPF + Rust + FAS 帧感知调度 + CLG 负载调速器**

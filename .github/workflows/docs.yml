@@ -1,0 +1,78 @@
+# docs.yml: [triggers] [permissions] [build-job] [deploy-job]
+name: Deploy Docs
+
+# 触发条件：docs/ 下的内容或本工作流变动并推送到 main 时构建部署；
+# workflow_dispatch 允许在 GitHub 网页端手动点击运行（首次开通 Pages 后手动跑一次）。
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "docs/**"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+# Pages 只允许一个并发部署，且不取消进行中的部署（避免发布半成品）。
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+# 部署到 Pages 所需的最小权限（OIDC 令牌由 deploy 步骤使用）。
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build:
+    name: Build Docs
+    # 纯 Node 构建，无工具链约束，用稳定的 LTS runner。
+    runs-on: ubuntu-24.04
+    steps:
+      # 1. 拉取代码
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      # 2. 配置 Node.js 环境
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+
+      # 3. 安装文档站依赖（锁定 package-lock.json）
+      - name: Install docs dependencies
+        working-directory: ./docs
+        run: npm ci
+
+      # 4. 构建 VitePress 站点。
+      #    项目页部署在 <user>.github.io/<repo>/ 下，base 必须是 /<repo>/，
+      #    否则静态资源 404。用仓库名动态拼 base，经 --base 覆盖（不改 config.mts）。
+      - name: Build VitePress site
+        working-directory: ./docs
+        run: npm run docs:build -- --base=/${{ github.event.repository.name }}/
+
+      # 5. 初始化 Pages 配置
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      # 6. 上传构建产物作为 Pages artifact（VitePress 默认输出目录）
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/.vitepress/dist
+
+  deploy:
+    name: Deploy Docs
+    needs: build
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
