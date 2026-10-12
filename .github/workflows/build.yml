@@ -168,10 +168,19 @@ jobs:
           sudo find /tmp/cargo-ndk -type f -name cargo-ndk -exec install -m 755 {} /usr/local/bin/cargo-ndk \;
           cargo ndk --version
 
-      # 9.5. lint 后置：NDK 就绪后按 android target 跑 check/clippy（zstd-sys 的 C 编译需要 NDK clang）。
+      # 9.5. lint 后置：NDK 就绪后按 android target 跑 check/clippy。
+      #    zstd-sys 是全仓唯一 cc 编译依赖，裸 cargo check 找不到 NDK 裸名 clang
+      #    （r29 的 bin 只有 API 后缀版 aarch64-linux-android26-clang），须照
+      #    cargo-ndk build_env 注入 CC/AR/CFLAGS（NDK r28+ 16KB 页无需 LDFLAGS）。
       #    在完整构建前暴露类型/借用/clippy 错误；存量 clippy 警告暂不强制失败。
       - name: Lint (check + clippy)
         run: |
+          NDK_BIN="${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export CC_aarch64_linux_android="$NDK_BIN/clang" \
+                 CXX_aarch64_linux_android="$NDK_BIN/clang++" \
+                 AR_aarch64_linux_android="$NDK_BIN/llvm-ar" \
+                 RANLIB_aarch64_linux_android="$NDK_BIN/llvm-ranlib" \
+                 CFLAGS_aarch64_linux_android="--target=aarch64-linux-android26"
           cargo check --workspace --all-targets --target aarch64-linux-android
           cargo clippy --workspace --all-targets --target aarch64-linux-android --no-deps
         env: { YUMI_SKIP_EBPF: "1" }

@@ -51,7 +51,7 @@
       ],
       "createdAt": "2026-10-11T07:34:23.575Z",
       "updatedAt": "2026-10-11T07:34:23.575Z",
-      "lastAccessedAt": "2026-10-12T10:32:04.044Z",
+      "lastAccessedAt": "2026-10-12T17:30:32.433Z",
       "revision": 1,
       "contentHash": "b264b49ef87ae91a4b39665f8ca7471a0c84087be8bd4b6a2e80c1f32182fa89",
       "sizeBytes": 6331,
@@ -122,7 +122,7 @@
       ],
       "createdAt": "2026-10-12T09:25:01.694Z",
       "updatedAt": "2026-10-12T09:25:01.694Z",
-      "lastAccessedAt": "2026-10-12T10:32:04.044Z",
+      "lastAccessedAt": "2026-10-12T17:30:32.433Z",
       "revision": 1,
       "contentHash": "f71813ccf87a3fe60f18d4788feb7e61386625a256d25d5b7266b9370910526b",
       "sizeBytes": 2793,
@@ -147,10 +147,33 @@
       ],
       "createdAt": "2026-10-12T14:31:42.672Z",
       "updatedAt": "2026-10-12T14:31:42.672Z",
-      "lastAccessedAt": "2026-10-12T14:31:42.672Z",
+      "lastAccessedAt": "2026-10-12T17:30:32.433Z",
       "revision": 1,
       "contentHash": "5140297acea3640d73e1cd675a9632284eab0db1d7a8e7e5342b14201e247815",
       "sizeBytes": 3721,
+      "memoryBodyIds": []
+    },
+    {
+      "id": "3aaf385e-eaf7-4ff3-8a03-102d0c3fd881",
+      "title": "ChiRi CI lint zstd-sys C 编译排查与 NDK 工具链注入修复（2026-10-13）",
+      "description": "CI lint 裸 cargo check 缺 NDK clang 环境致 zstd-sys 编译失败的根因、唯一 C 依赖审计与 build.yml 修复（commit 590d14b）",
+      "status": "active",
+      "filename": "chiri-ci-lint-zstd-sys-c-ndk-2026-10-13-3aaf385e.md",
+      "relativePath": "documents/active/chiri-ci-lint-zstd-sys-c-ndk-2026-10-13-3aaf385e.md",
+      "sourcePaths": [
+        ".github/workflows/build.yml",
+        "Cargo.toml",
+        "xtask/src/main.rs"
+      ],
+      "sessionIds": [
+        "ba111ff9-b85c-4c9d-a075-f652058fc0f2"
+      ],
+      "createdAt": "2026-10-12T17:32:23.656Z",
+      "updatedAt": "2026-10-12T17:32:23.656Z",
+      "lastAccessedAt": "2026-10-12T17:32:23.656Z",
+      "revision": 1,
+      "contentHash": "b123eed90a8bc14937a894cadfd53a12dde0d93ee34c66aff21d7b0464a0586a",
+      "sizeBytes": 3534,
       "memoryBodyIds": []
     }
   ]
