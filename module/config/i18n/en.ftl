@@ -107,7 +107,7 @@ scheduler-ipc-panic = [Scheduler] IPC thread panicked, releasing CPU control.
 scheduler-ipc-restart = [Scheduler] Cleaned up and restarting scheduler loop (attempt { $count }).
 scheduler-ipc-restart-giveup = [Scheduler] { $count } consecutive panics, giving up on scheduler loop restart.
 scheduler-doze-enable = [Scheduler] Screen OFF.
-scheduler-doze-special-keep = [Scheduler] Screen OFF: Special tuned mode keeps control, skipping CLG doze.
+scheduler-doze-special-keep = [Scheduler] Screen OFF: Special tuned mode keeps control, skipping CLG.
 scheduler-doze-restore = [Scheduler] Screen ON: Restoring previous performance constraints.
 scheduler-clg-init = [Scheduler] CPU Load Governor: initialized at startup (mode={ $mode })
 scheduler-event-screen = [Scheduler] screen event received: on={ $on } (last={ $last })

@@ -16,7 +16,7 @@ IO_Settings:
 CpuIdle:
   current_governor: "menu"
 
-scene_mode_delay_secs: 300
+scene_mode_delay_secs: 3000
 
 # [affinity]
 Affinity:

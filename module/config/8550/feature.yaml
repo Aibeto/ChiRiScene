@@ -17,7 +17,7 @@ IO_Settings:
 CpuIdle:
   current_governor: "menu"
 
-scene_mode_delay_secs: 300
+scene_mode_delay_secs: 3000
 
 # [affinity]
 Affinity:
@@ -231,9 +231,11 @@ default:
     # 写频 −30%；alpha 0.35 可再降但上限均值抬升更多，取 0.5 折中）。boost 不开。
     util_smoothing: 0.5
     # 降频确认 tick 数（越小回落越快）
-    down_rate_limit_ticks: 2
+    # TODO(P3): 实机观察回落/翻转；回退 down_rate=2、down_fast=0.30。
+    down_rate_limit_ticks: 1
     # 升频确认 tick 数（越大越难升）
-    up_rate_limit_ticks: 3
+    # TODO(P2): 实机复核启动/重载响应；回退 up_rate=3、up_jump=0.45、spike_jump=0.40。
+    up_rate_limit_ticks: 4
     # target = util × headroom；1.0 = 贴负载，不给余量放大
     headroom_factor: 1.00
     # headroom 的过渡带宽：util 从 (up_threshold − ramp) 爬到 up_threshold 期间
@@ -244,7 +246,7 @@ default:
     # 控功耗靠「升频门槛 + 升频速率」（up_threshold / rate limit / smoothing / jump），
     # 不靠砍上限；需要单独收紧的簇走 per_cluster 覆盖（本档不覆盖任何簇）。
     perf_ceil: 1.00
-    # 稳态下探取点：T = up_threshold(0.88) × 0.90 = 0.79。与代码缺省一致，显式写出便于与 reduce/boost 对照。
+    # 稳态下探取点：T = up_threshold(0.88) × 0.90 = 0.792。与代码缺省一致，显式写出便于与 reduce/boost 对照。
     steady_decay_target_ratio: 0.90
     # 接管起始性能，同时是触摸升频地板的基线（floor = perf_init + tiers × 0.05）
     perf_init: 0.35
@@ -269,12 +271,13 @@ default:
         up_threshold: 0.95
     # 跳变门槛：target 相对当前跳升超过该值才算「显著跳变」而立即升频，
     # 否则走滞回带慢速爬升（提高它 = 尖峰更难把上限瞬间拉到高频）
-    up_jump_threshold: 0.45
+    up_jump_threshold: 0.55
     # 滞回带内的升频速度系数（配合 smoothing_up）
     slow_up_scale: 0.02
     # 低于该 util 立即降频（跳过 down_wait 确认期）
-    down_fast_threshold: 0.30
-    spike_jump_threshold: 0.40
+    # 与稳态下探的退出条件共用：0.30~0.40 带清 decay；ratio 保留 0.90，目标 0.792 不变。
+    down_fast_threshold: 0.40
+    spike_jump_threshold: 0.50
     # 单 tick 尖峰只保留 10% 增量（削 p95 尖峰，不动稳态）
     spike_decay: 0.10
     touch_boost_enabled: true

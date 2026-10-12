@@ -1804,7 +1804,7 @@ pub struct SchedTuning {
     pub params: std::collections::HashMap<String, String>,
 }
 
-/// scenemode 延迟缺省值：5 分钟
+/// scenemode 延迟缺省值：50 分钟（与 module/config/*/feature.yaml 的 scene_mode_delay_secs 保持一致）
 fn default_scene_mode_delay_secs() -> u64 {
     3000
 }

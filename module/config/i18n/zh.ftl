@@ -107,7 +107,7 @@ scheduler-ipc-panic = [Scheduler] IPC 线程发生 panic，正在释放 CPU 控�
 scheduler-ipc-restart = [Scheduler] 已清理到安全态并重启调度循环（第 { $count } 次）。
 scheduler-ipc-restart-giveup = [Scheduler] 连续 { $count } 次 panic，放弃重启调度循环。
 scheduler-doze-enable = [Scheduler] 息屏: 计时器启动。
-scheduler-doze-special-keep = [Scheduler] 息屏: 特调模式保持接管，不切换 CLG doze。
+scheduler-doze-special-keep = [Scheduler] 息屏: 特调模式保持接管，不切换 CLG。
 scheduler-doze-restore = [Scheduler] 亮屏: 恢复之前的性能限制。
 scheduler-clg-init = [Scheduler] CPU 负载调频器: 在启动时初始化 (模式={ $mode })
 scheduler-event-screen = [Scheduler] 收到屏幕状态事件: on={ $on } (此前 last={ $last })
