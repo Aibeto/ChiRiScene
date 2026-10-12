@@ -10,7 +10,7 @@
   },
   "enabled": {
     "holographic": true,
-    "byterover": true
+    "byterover": false
   },
   "bodies": [
     {
@@ -26,21 +26,7 @@
         "minTrust": 0.3
       },
       "createdAt": "2026-10-11T05:43:34.836Z",
-      "updatedAt": "2026-10-11T05:43:34.836Z"
-    },
-    {
-      "id": "byterover-0474a598497307a653dfb88a",
-      "externalId": "/home/aibeto/code/ChiRi/.mnemon/state/byterover/default",
-      "name": "default",
-      "description": "ByteRover knowledge directory at /home/aibeto/code/ChiRi/.mnemon/state/byterover/default",
-      "metadataSource": "provider",
-      "active": true,
-      "providerId": "byterover",
-      "connection": {
-        "workingDirectory": "/home/aibeto/code/ChiRi/.mnemon/state/byterover/default"
-      },
-      "createdAt": "2026-10-11T05:44:36.483Z",
-      "updatedAt": "2026-10-11T05:44:36.483Z"
+      "updatedAt": "2026-10-12T20:21:01.275Z"
     }
   ]
 }

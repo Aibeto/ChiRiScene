@@ -100,7 +100,7 @@
       ],
       "createdAt": "2026-10-11T22:07:53.772Z",
       "updatedAt": "2026-10-11T22:07:53.772Z",
-      "lastAccessedAt": "2026-10-12T09:23:38.069Z",
+      "lastAccessedAt": "2026-10-12T18:39:18.112Z",
       "revision": 1,
       "contentHash": "350739cb2b5a563478c89b6f48734c866a39260bcf7813de6ddca41721ac8e45",
       "sizeBytes": 4233,
@@ -131,7 +131,7 @@
     {
       "id": "ba43ec02-61de-470c-9d56-68789fae4585",
       "title": "ChiRi 日志归档迁移 tar.zst：实现、zstd-sys 构建链核查与缓存清理（2026-10-12）",
-      "description": "zstd 压缩迁移实现与构建链核查证据、遗留验证项（2026-10-12）",
+      "description": "级别/线程口径修订 + 导出纯 tar + main.rs 事故记录",
       "status": "active",
       "filename": "chiri-tar-zst-zstd-sys-2026-10-12-ba43ec02.md",
       "relativePath": "documents/active/chiri-tar-zst-zstd-sys-2026-10-12-ba43ec02.md",
@@ -139,18 +139,19 @@
         "Cargo.toml",
         "src/logger.rs",
         "src/main.rs",
-        ".github/workflows/build.yml",
-        "xtask/src/main.rs"
+        "module/scripts/pack.sh",
+        "webui/src/contract/export.ts"
       ],
       "sessionIds": [
-        "638c579c-25e7-4748-a104-5653f9b37da0"
+        "638c579c-25e7-4748-a104-5653f9b37da0",
+        "session-99a33dad-84de-4a99-955c-804d51610e16"
       ],
       "createdAt": "2026-10-12T14:31:42.672Z",
-      "updatedAt": "2026-10-12T14:31:42.672Z",
-      "lastAccessedAt": "2026-10-12T17:30:32.433Z",
-      "revision": 1,
-      "contentHash": "5140297acea3640d73e1cd675a9632284eab0db1d7a8e7e5342b14201e247815",
-      "sizeBytes": 3721,
+      "updatedAt": "2026-10-12T19:48:58.602Z",
+      "lastAccessedAt": "2026-10-12T19:48:58.602Z",
+      "revision": 2,
+      "contentHash": "c395522cc593e80ad6cbfcb47c91858e7b613628f100c3dc062a2ba771178cd8",
+      "sizeBytes": 5798,
       "memoryBodyIds": []
     },
     {
@@ -170,7 +171,7 @@
       ],
       "createdAt": "2026-10-12T17:32:23.656Z",
       "updatedAt": "2026-10-12T17:32:23.656Z",
-      "lastAccessedAt": "2026-10-12T17:32:23.656Z",
+      "lastAccessedAt": "2026-10-12T18:39:18.112Z",
       "revision": 1,
       "contentHash": "b123eed90a8bc14937a894cadfd53a12dde0d93ee34c66aff21d7b0464a0586a",
       "sizeBytes": 3534,

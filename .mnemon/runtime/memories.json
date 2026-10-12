@@ -44,39 +44,11 @@
       "importance": "normal"
     },
     {
-      "content": "ChiRi .codebuddy 不归档要点（简短保留）： - 2026-09-28 aff v20 槽级差分压缩 25.6%/31.8%，4215 万+6917 万 checks 0 失配（comm 槽 NaN→'-' 哨兵语义）。 - 2026-09-29 SocConfig.cpu_governors 缺省 performance 兜底（soc.yaml 末位）。 - 2026-10-02 8650/zumapro 适配沿用 8550 同代际；PF/FDP 保持关闭；8650 tick 密度是其他机型 2~7 倍需除因子。 - 2026-10-05 logd_1005：息屏 355/亮屏 354 翻转 = 709 次 doze 重建头号问题；scenemode 饱和退出没回滞；可动 1.5~3.5 Wh/46.9 Wh。",
-      "created_at": "2026-10-12T11:37:36.469Z",
-      "updated_at": "2026-10-12T11:37:36.469Z",
-      "target": "memory",
-      "importance": "normal"
-    },
-    {
       "content": "ChiRi P1 落地状态翻转（critical）：P1 取消二段式息屏已落地（2026-10-12 c48a06c）：doze 段 4 行专用覆盖已删（src/chiri/mod.rs 原 :3725/:3728/:3729/:3730 及 :3321-3329、:4222-4233 同口径），息屏后 CLG 即 reduce 同参；五机型 feature.yaml scene_mode_delay_secs 300→3000，config.rs 缺省同步 3000（含 2026-10-05 7e14783 的预活）。回退 = 恢复 doze 覆盖构造 + YAML 改回 300。净收益口径沿用 logd_1011 定稿（保守 +0.36 / 中枢 +1.59 / 乐观 +3.08 Wh）。",
       "created_at": "2026-10-12T11:38:11.892Z",
       "updated_at": "2026-10-12T11:38:11.892Z",
       "target": "memory",
       "importance": "critical"
-    },
-    {
-      "content": "ChiRi CLG 参数契约（c48a06c 落地，方案 P2/P3）：8550 feature.yaml down_rate_limit_ticks 2→1（P3）、up_rate_limit_ticks 3→4（P2）、up_jump_threshold 0.45→0.55、down_fast_threshold 0.30→0.40、spike_jump_threshold 0.40→0.50；YAML 注释保留回退值，TODO(P2) 实机复核启动/重载响应、TODO(P3) 实机观察回落/翻转。代码缺省 d_clg_*() 参照 src/chiri/cpu_load_governor.rs 消费点 :449/:475/:526/:534/:563-566。",
-      "created_at": "2026-10-12T11:38:11.900Z",
-      "updated_at": "2026-10-12T11:38:11.900Z",
-      "target": "memory",
-      "importance": "normal"
-    },
-    {
-      "content": "ChiRi agentsdocs 关键契约（01-07 提炼，非重叠者）： ①yumi-ebpf 独立 no_std workspace：只可用 bpfel-unknown-none + `-Z build-std=core` 检查，禁带 std 目标会有 unwinding panic 与 #[panic_handler] 冲突报 duplicate lang item；Windows 无 bpf-linker 时 build.rs 走 write_ebpf_stub() 回退。 ②devimp 六锁（DIAG_MODE/DIAG_FG_PKG/MAIN_TICK_STATE/MAIN_WRITER/AFF_WRITER/AFF_TH_STATE）一律不嵌套持有，WRITER 临界区只做文件 IO；status.csv 新列一律末尾追加（WebUI STATUS_COLUMNS 按列数滤残行）。 ③锁频写序契约：升频先写 max 后写 min、降频先 min 后 max——反序 min>max 被内核拒、静默失效 ZERO 报错；frozen/PowerBase 接管首拍已踩。 ④normalize 会静默抬参数吃掉合法省电值（headroom 下限 1.0 吞 0.95、free_above 抬到 cap+0.10）：新增 normalize 约束先验证省电方向取值不被钳。",
-      "created_at": "2026-10-12T11:46:03.618Z",
-      "updated_at": "2026-10-12T11:46:03.618Z",
-      "target": "memory",
-      "importance": "normal"
-    },
-    {
-      "content": "ChiRi agentsdocs 中骨事实（02-07，P1/P5-a 验证口口径全已抹去此 entry）： ①全局调速器选型契约：soc.yaml [cpu_governors] 左→右优先级与真机 scaling_available_governors 求交，全不可用回 schedutil；启动一次算定。 ②FAS/CLG 热护栏不互通 P1（07-todos.md 实证）：FAS 仅 45℃ 单点护栏，CLG 41/43/45 三级 cap 不互通（lolm 53.6% 贴中限带、仅 4.6% 触发护栏）；TODO 统一 thermal_cap 与 effective_perf 取 min。 ③8650/zumapro 内核 /proc/sys/kernel/sched_* 仅 12 节点 & 无 sched_migration_cost_ns/nr_migrate：勿当 bug 查。 ④AI 分工契约（2026-09-26）：分析数据与改进调度由主线程亲自做；子代理只解包/整理/只读审查；主线程严禁全量读取，必须 head_limit+精确路径。 ⑤devimpbin/ 被 gitignore → glob/ripgrep 默认跳过：必须 rg -uu --no-ignore 或 Grep 显式给路径。",
-      "created_at": "2026-10-12T11:46:03.624Z",
-      "updated_at": "2026-10-12T11:46:03.624Z",
-      "target": "memory",
-      "importance": "normal"
     },
     {
       "content": "ChiRi commit 归属审计（eae6bc89 L2 终审，2026-10-12）：严重问题——P1 代码（三处 doze 删覆盖 +102/-54 mod.rs）实际被夹带于 0e87784「feat(chiri): 亲和快照构建分片」commit 内，message 影响栏仅写「遥测快照路径」失实。P1 在 git 历史无显式归属 commit。其他 commit 归属清晰：c48a06c=P2/P3/P5-a(参数+场景延迟+i18n 夹带)、9c3412f=P5-b(cpuset 预检)、f444f47=docs、4415c95=CI。push 前必先提交工作树 4 处修复（affinity.rs +4、config.rs:1766 注释、en.ftl logger-append-failed、affinity_cpuset.rs +3 测试 case），否则推送内容与验证状态（plans:8 全回归过）不一致。",
@@ -91,6 +63,20 @@
       "updated_at": "2026-10-12T11:49:55.168Z",
       "target": "memory",
       "importance": "critical"
+    },
+    {
+      "content": "审查口径（2026-10-13 用户定）：① 审查时必须避让他人正在进行的修改——只检查本会话自己改的部分（git diff 中自己负责的文件/行），不碰不评判他人 WIP 文件（如 src/chiri/config.rs、cpu_load_governor.rs、feature.yaml、clg_replay.rs 等并行改动）；② 审查默认不包含构建测试（cargo check / svelte-check / vitest 不属于审查动作，除非用户点名要求），审查 = 静态读 diff + 逻辑核对 + 必要的最小功能验证。",
+      "created_at": "2026-10-12T20:21:01.280Z",
+      "updated_at": "2026-10-12T20:21:01.280Z",
+      "target": "memory",
+      "importance": "normal"
+    },
+    {
+      "content": "ChiRi 提交规范：读 .trae/rules/git-commit-message.md——type(scope) 中文祈使句主题行，scope 用 chiri/clg 等子作用域；提交信息长文案先 Write 到 devimpbin/_tmp/*.txt 再 git commit -F。2026-10-13 高位升频门槛 + 温度列关闭已提交 ebfe0c3（9 文件 +195/−6），仅限本轮改动文件，未动用户 WIP（package-lock、agentsdocs 等 5 项遗留未提交）。",
+      "created_at": "2026-10-12T20:46:12.322Z",
+      "updated_at": "2026-10-12T20:46:12.322Z",
+      "target": "memory",
+      "importance": "normal"
     }
   ]
 }

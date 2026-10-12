@@ -40,13 +40,14 @@ python scripts\devimp\dvpower.py   devimpbin\<tag> [--since MMDD-HHMMSS]
 python scripts\devimp\dvenergy.py  devimpbin\<tag>
 ```
 
-**内层归档格式 2026-09-25 起多了一种（重要）**：`module/scripts/pack.sh` 的 `archive`
-分支现在把内层归档压成 **`.tar.lz4`**（`lz4 -f` 帧格式）；设备上没有 lz4 时**回落保留 `.tar`**。
-所以外层包里的内层成员可能是 `<ts>.tar` / `<ts>.tar.lz4` / `devimp_<ts>.tar` /
-`devimp_<ts>.tar.lz4` 四种，**扩展名还可能骗人**（实测出现过 LZ4 负载却叫 `.tar`）。
-`dvextract.py` 一律按**前 4 字节内容嗅探**（`0x184D2204` 帧 / `0x184C2102` 遗留 / 否则当 raw tar）
-并在 LZ4 解出后校验结果确实像 tar；**不要按文件名判断，手写解压脚本时同理**。本机未装
-`lz4` python 模块，走 `scripts/devimp/dvlz4.py` 的纯 python 解码器。
+**内层归档格式（2026-10-13 起主力为 `.tar.zst`，历史上还有 lz4/gzip/tar）**：`module/scripts/pack.sh`
+的 `archive` 分支由 daemon 内置 zstd 压成 **`.tar.zst`**（级别 2、6 线程；2026-10-12 前是 `.tar.lz4`，
+zstd/lz4 落盘失败一律回落保留 `.tar`）。所以外层包里的内层成员可能是 `<ts>.tar.zst` / `<ts>.tar.lz4` /
+`devimp_<ts>.tar.zst` / `devimp_<ts>.tar.lz4` / 老包 `.tar`，**扩展名还可能骗人**（实测出现过 LZ4 负载
+却叫 `.tar`）。`dvextract.py` 一律按**前 4 字节内容嗅探**（`0x184D2204` lz4 帧 / `0x184C2102` lz4 遗留 /
+`0xFD2FB528` zstd / 否则当 raw tar），lz4/zstd 解出后校验结果确实像 tar；**不要按文件名判断，手写解压
+脚本时同理**。zstd 解码走 `compression.zstd`（py3.14+）→ `zstandard` 库 → 系统 `zstd` CLI 三级兜底；
+本机未装 `lz4` python 模块，lz4 走 `scripts/devimp/dvlz4.py` 的纯 python 解码器。
 
 解压与校验都交给 `dvextract.py`：它会写 `inventory.txt`（每个文件 + 大小 + 嵌套层 + 检出压缩），并核对每个 devimp 批次至少解出 `main_*`/`aff_*`、对缺 logd 侧的批次告警（老包降级口径见「五、已知坑」12）。
 
@@ -355,10 +356,11 @@ python scripts\devimp-analyze.py <解压目录> [--since MMDD-HHMMSS] [--min-n 3
       所以**新文件的开头不保证是刷新帧**（且旧文件可能已被预算清理掉）。从会话中段（或其后的轮转文件）
       开始读，头 ≤30 s 只能拿到残缺状态——`final_bound`/末态直方图不受影响（它们在文件末尾），
       要完整重建就等下一个刷新帧或从会话第一个 `aff_` 文件读起。
-15. **内层归档 2026-09-25 起可能是 `.tar.lz4`**（`pack.sh` 的 `archive` 分支 `lz4 -f`；
-    设备无 lz4 时回落 `.tar`）：外层包内层成员四种形态都可能出现，且**扩展名可能骗人**
-    （实测 LZ4 负载叫 `.tar`）。一律**按前 4 字节内容嗅探**，别按文件名判；本机没装 `lz4`
-    python 模块，走 `scripts/devimp/dvlz4.py` 的纯 python 解码器（`dvextract.py` 已封装）。
+15. **内层归档 2026-10-12 起可能是 `.tar.zst`（zstd，主力）／2026-09-25 起可能是 `.tar.lz4`（老包）**：
+    设备压缩失败一律回落 `.tar`。外层包内层成员多种形态都可能出现，且**扩展名可能骗人**
+    （实测 LZ4 负载叫 `.tar`）。一律**按前 4 字节内容嗅探**，别按文件名判；zstd 解码三级兜底
+    （`compression.zstd` → `zstandard` 库 → 系统 `zstd` CLI，`dvextract.py` 已封装）；本机没装 `lz4`
+    python 模块，lz4 走 `scripts/devimp/dvlz4.py` 的纯 python 解码器（`dvextract.py` 已封装）。
 16. **PowerShell 重定向会毁掉 python stdout 的中文**：按控制台代码页重编码，产出 mojibake
     （2026-09-25 实测）。预设脚本因此**自己写 UTF-8 结果文件**（`main.txt` 等），stdout 只留
     短摘要；分析这些脚本的输出**看文件，不要看终端回显**。
