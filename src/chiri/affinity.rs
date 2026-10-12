@@ -29,6 +29,9 @@ use crate::i18n::{t, t_with_args};
 #[path = "affinity_retry.rs"]
 mod affinity_retry;
 use affinity_retry::{InvalidMaskRetry, MissingNodeCache};
+#[path = "affinity_cpuset.rs"]
+mod affinity_cpuset;
+use affinity_cpuset::{CpusetCheck, check_group_cpuset};
 
 // [consts]
 const KIND_NONE: u8 = 0;
@@ -1234,6 +1237,36 @@ impl AffinityManager {
             return false;
         }
         let now = Instant::now();
+        if self.mask_write_skip(tid, MASK_TAG_PERF, now) {
+            // NOTE(P5-b): dedup hit intentionally skips cpuset re-read within the debounce window.
+            // The last write in the window still passed the cpuset precheck; re-reading here would
+            // multiply IO without changing semantics. Group/identity changes outside the window
+            // still trigger a fresh check on the next candidate cycle.
+            return false;
+        }
+        // [group_cpuset] Preserve the candidate identity before retry refresh can replace it.
+        // Keep the original target/retry key; the kernel applies partial intersections.
+        let expected = self.threads.get(&tid).and_then(|state| state.starttime);
+        match check_group_cpuset(
+            tid,
+            cpus,
+            expected,
+            |path| std::fs::read_to_string(path).ok(),
+            || sample_one_tid(tid).and_then(|sample| sample.starttime),
+        ) {
+            CpusetCheck::IdentityChanged => {
+                // Rebuild on the next scan; never carry old comm/busy/retry state to a reused TID.
+                if let Some(state) = self.threads.remove(&tid) {
+                    if state.home >= 0 {
+                        self.add_pinned(state.home as usize, -1);
+                    }
+                }
+                return false;
+            }
+            CpusetCheck::EmptyIntersection | CpusetCheck::GroupChanged => return false,
+            // Unknown is not an empty set or a syscall failure: retain existing fallback.
+            CpusetCheck::Allowed | CpusetCheck::Unknown => {}
+        }
         if matches!(reason, "normal_busy" | "normal_press")
             && self
                 .threads
@@ -1253,7 +1286,7 @@ impl AffinityManager {
                 }
             }
         }
-        !self.mask_write_skip(tid, MASK_TAG_PERF, now)
+        true
     }
 
     /// 钉线程到单核。`pkg` 由调用方传入（前台为缓存 fg_cmdline，后台 "-"），避免重读 cmdline。成败均落 @A 帧；失败保持原语义直接 return（不置状态，下次重试）
