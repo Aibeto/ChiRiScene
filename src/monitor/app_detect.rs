@@ -463,6 +463,7 @@ fn determine_mode(config: &RulesConfig, current_package: &str) -> String {
         return global_mode;
     }
     // 特调为 ChiRi 专属且仅白名单应用生效：非 ChiRi SoC 或非白名单包名映射到特调模式时回退全局模式并告警（WebUI 扫描后会同步清理非法条目）规则表匹配：
+    // [rules]
     // 前台名与规则键都已归一为主包名（见 set_current_package / config.rs），此处为精确查表，不做回退链
     let app_mode = config.app_modes.get(current_package);
     if let Some(mode) = app_mode {

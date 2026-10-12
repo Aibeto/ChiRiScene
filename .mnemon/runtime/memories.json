@@ -30,11 +30,67 @@
       "importance": "normal"
     },
     {
-      "content": "ChiRi 进行中工作（2026-10-12 更新）：唯一权威计划 = .cursor/plans/2026-10-11-调度改进方案.md（经 13 轮迭代+两轮 GLM 子代理审查）。**P1 与 P5-a 已于 2026-10-12 落地**：src/chiri/mod.rs 三处删 doze 覆盖（原 :3326/:3728/:4226 的 perf_ceil.min(0.30)/perf_floor 0.0/smoothing_up 0.10/touch_boost=false），基座保持 reduce 不换 default、饱和退出保持退 reduce，变量改名 doze_cfg→clg_cfg；五机型 feature.yaml 的 scene_mode_delay_secs 300→3000；config.rs:1807 注释「5 分钟」→「50 分钟」；i18n zh/en.ftl 的 special-keep 去掉 doze 措辞（key 名保留）。cargo check -p chiri --target aarch64-linux-android 通过（9 warnings 与基线一致，无新增）。**P2/P3/P4/P5-b 仍是计划未动**（阈值调优与代码重构，须先离线重放+实机验证）。净收益口径：保守 +0.36 / 中枢 +1.59 / 乐观 +3.08 Wh（P2 对外区间 1.38~2.77 Wh，两端均含热态 4% 折扣；0.93 是漏乘 AMP 的旧口径已废）。",
+      "content": "ChiRi 进行中工作（2026-10-12 终稿）：唯一权威计划 = .cursor/plans/2026-10-11-调度改进方案.md。P1+P5-a 于 10-12 落地；P2/P3/P4/P5-b 也已实施并全回归过（rust_regression 34/34、affinity_cpuset 17/17、clg_tuning 4/4、diag_slice 6/6、Python 70+1、replay_clg 真实数据 dry run OK、cargo check 9 warnings 基线一致），实机 adb 未连功耗验收未做。两轮审查：30 L2 首审 + 15 L2 复核修复；BLOCKER×2 修毕（affinity.rs fg_cursor %=n 除零 +4 行；config.rs:1766 注释 300s→3000s doc-bug）；重要×5 复核确认、附带改用判定不修（end<1024 硬编码、dedup 组迁移沿用、mod.rs 三处 doze 删后语义差异、replay_clg.py None 防御——全部判定保持现状）。落地 4 处修复：affinity.rs +4 行守卫、config.rs:1766 注释、en.ftl 补 logger-append-failed、affinity_cpuset.rs 内 mod tests +3 case（1000-2000/1023/空 cpus）。agentsdocs/03-chiri.md doze 语义同步属文档欠款待办。",
       "created_at": "2026-10-11T09:51:51.670Z",
-      "updated_at": "2026-10-11T20:36:30.235Z",
+      "updated_at": "2026-10-12T11:33:26.210Z",
       "target": "memory",
       "importance": "normal"
+    },
+    {
+      "content": "ChiRi 历史教训补遗（.codebuddy 2026-09-13~09-23 + .trae 归并）： ①子代理注释修改必须按同一文件单批一次，禁止分两批按原行号重放（曾因行号错位吞行恢复，2026-09-26）。②8650 status.csv batt_power_w 全程 ~1e-3~1e-6W 真相：非 oplus_chg 阶段走标准节点不可靠；oplus_chg 开启后 config/8650/meta.yaml 的 voltage/current_divisor 需改 1000（勿改仓库嵌入默认值，改磁盘机）。 ③devimp 状态口径：息屏均值 0.93W 不可与 0.45W 基线比；息屏期间前台包名不可信；8550 场景能效口径 = 每 mW 能提供多少算力，跨簇取舍看 46 点下凸前沿。 ④tick 节流 key 两级结构 MAIN_TICK_STATE（主tick 首参加 policy_id）。⑤统一能效词汇表：能效 = 算力/mW 正向写法。",
+      "created_at": "2026-10-12T11:37:36.461Z",
+      "updated_at": "2026-10-12T11:37:36.461Z",
+      "target": "memory",
+      "importance": "normal"
+    },
+    {
+      "content": "ChiRi .codebuddy 不归档要点（简短保留）： - 2026-09-28 aff v20 槽级差分压缩 25.6%/31.8%，4215 万+6917 万 checks 0 失配（comm 槽 NaN→'-' 哨兵语义）。 - 2026-09-29 SocConfig.cpu_governors 缺省 performance 兜底（soc.yaml 末位）。 - 2026-10-02 8650/zumapro 适配沿用 8550 同代际；PF/FDP 保持关闭；8650 tick 密度是其他机型 2~7 倍需除因子。 - 2026-10-05 logd_1005：息屏 355/亮屏 354 翻转 = 709 次 doze 重建头号问题；scenemode 饱和退出没回滞；可动 1.5~3.5 Wh/46.9 Wh。",
+      "created_at": "2026-10-12T11:37:36.469Z",
+      "updated_at": "2026-10-12T11:37:36.469Z",
+      "target": "memory",
+      "importance": "normal"
+    },
+    {
+      "content": "ChiRi P1 落地状态翻转（critical）：P1 取消二段式息屏已落地（2026-10-12 c48a06c）：doze 段 4 行专用覆盖已删（src/chiri/mod.rs 原 :3725/:3728/:3729/:3730 及 :3321-3329、:4222-4233 同口径），息屏后 CLG 即 reduce 同参；五机型 feature.yaml scene_mode_delay_secs 300→3000，config.rs 缺省同步 3000（含 2026-10-05 7e14783 的预活）。回退 = 恢复 doze 覆盖构造 + YAML 改回 300。净收益口径沿用 logd_1011 定稿（保守 +0.36 / 中枢 +1.59 / 乐观 +3.08 Wh）。",
+      "created_at": "2026-10-12T11:38:11.892Z",
+      "updated_at": "2026-10-12T11:38:11.892Z",
+      "target": "memory",
+      "importance": "critical"
+    },
+    {
+      "content": "ChiRi CLG 参数契约（c48a06c 落地，方案 P2/P3）：8550 feature.yaml down_rate_limit_ticks 2→1（P3）、up_rate_limit_ticks 3→4（P2）、up_jump_threshold 0.45→0.55、down_fast_threshold 0.30→0.40、spike_jump_threshold 0.40→0.50；YAML 注释保留回退值，TODO(P2) 实机复核启动/重载响应、TODO(P3) 实机观察回落/翻转。代码缺省 d_clg_*() 参照 src/chiri/cpu_load_governor.rs 消费点 :449/:475/:526/:534/:563-566。",
+      "created_at": "2026-10-12T11:38:11.900Z",
+      "updated_at": "2026-10-12T11:38:11.900Z",
+      "target": "memory",
+      "importance": "normal"
+    },
+    {
+      "content": "ChiRi agentsdocs 关键契约（01-07 提炼，非重叠者）： ①yumi-ebpf 独立 no_std workspace：只可用 bpfel-unknown-none + `-Z build-std=core` 检查，禁带 std 目标会有 unwinding panic 与 #[panic_handler] 冲突报 duplicate lang item；Windows 无 bpf-linker 时 build.rs 走 write_ebpf_stub() 回退。 ②devimp 六锁（DIAG_MODE/DIAG_FG_PKG/MAIN_TICK_STATE/MAIN_WRITER/AFF_WRITER/AFF_TH_STATE）一律不嵌套持有，WRITER 临界区只做文件 IO；status.csv 新列一律末尾追加（WebUI STATUS_COLUMNS 按列数滤残行）。 ③锁频写序契约：升频先写 max 后写 min、降频先 min 后 max——反序 min>max 被内核拒、静默失效 ZERO 报错；frozen/PowerBase 接管首拍已踩。 ④normalize 会静默抬参数吃掉合法省电值（headroom 下限 1.0 吞 0.95、free_above 抬到 cap+0.10）：新增 normalize 约束先验证省电方向取值不被钳。",
+      "created_at": "2026-10-12T11:46:03.618Z",
+      "updated_at": "2026-10-12T11:46:03.618Z",
+      "target": "memory",
+      "importance": "normal"
+    },
+    {
+      "content": "ChiRi agentsdocs 中骨事实（02-07，P1/P5-a 验证口口径全已抹去此 entry）： ①全局调速器选型契约：soc.yaml [cpu_governors] 左→右优先级与真机 scaling_available_governors 求交，全不可用回 schedutil；启动一次算定。 ②FAS/CLG 热护栏不互通 P1（07-todos.md 实证）：FAS 仅 45℃ 单点护栏，CLG 41/43/45 三级 cap 不互通（lolm 53.6% 贴中限带、仅 4.6% 触发护栏）；TODO 统一 thermal_cap 与 effective_perf 取 min。 ③8650/zumapro 内核 /proc/sys/kernel/sched_* 仅 12 节点 & 无 sched_migration_cost_ns/nr_migrate：勿当 bug 查。 ④AI 分工契约（2026-09-26）：分析数据与改进调度由主线程亲自做；子代理只解包/整理/只读审查；主线程严禁全量读取，必须 head_limit+精确路径。 ⑤devimpbin/ 被 gitignore → glob/ripgrep 默认跳过：必须 rg -uu --no-ignore 或 Grep 显式给路径。",
+      "created_at": "2026-10-12T11:46:03.624Z",
+      "updated_at": "2026-10-12T11:46:03.624Z",
+      "target": "memory",
+      "importance": "normal"
+    },
+    {
+      "content": "ChiRi commit 归属审计（eae6bc89 L2 终审，2026-10-12）：严重问题——P1 代码（三处 doze 删覆盖 +102/-54 mod.rs）实际被夹带于 0e87784「feat(chiri): 亲和快照构建分片」commit 内，message 影响栏仅写「遥测快照路径」失实。P1 在 git 历史无显式归属 commit。其他 commit 归属清晰：c48a06c=P2/P3/P5-a(参数+场景延迟+i18n 夹带)、9c3412f=P5-b(cpuset 预检)、f444f47=docs、4415c95=CI。push 前必先提交工作树 4 处修复（affinity.rs +4、config.rs:1766 注释、en.ftl logger-append-failed、affinity_cpuset.rs +3 测试 case），否则推送内容与验证状态（plans:8 全回归过）不一致。",
+      "created_at": "2026-10-12T11:49:29.937Z",
+      "updated_at": "2026-10-12T11:49:29.937Z",
+      "target": "memory",
+      "importance": "critical"
+    },
+    {
+      "content": "ChiRi 未 commit 工作区修复清单（2026-10-12 eae6bc89 标记 push 风险）：4 处未提交修复 ① src/chiri/affinity.rs +4 行（promote_busy_foreground n==0 守卫 + bind_release fg_cursor=0） ② src/chiri/config.rs:1766 注释「300s」→「3000s（50 分钟）」 ③ module/config/i18n/en.ftl +1 key logger-append-failed ④ src/chiri/affinity_cpuset.rs mod tests +3 case（1000-2000/1023/空 cpus &[]） push 前须全部 commit，否则与 plans:8「全回归过」状态不一致。",
+      "created_at": "2026-10-12T11:49:55.168Z",
+      "updated_at": "2026-10-12T11:49:55.168Z",
+      "target": "memory",
+      "importance": "critical"
     }
   ]
 }

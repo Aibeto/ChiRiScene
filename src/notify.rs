@@ -251,6 +251,7 @@ fn handle_cancel(force: bool) {
 
 /// 按候选命令行顺序尝试投递（各 ROM 对 `cmd notification` 旗标支持不同）：
 /// ① 渠道+常驻（-c/-o）→ ② 去渠道 → ③ 最简形式；单条失败记 debug，全部失败才 warn（本进程一次）
+// [post]
 fn post(title: &str, text: &str) -> bool {
     let attempts: [Vec<&str>; 3] = [
         vec![

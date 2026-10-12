@@ -9,6 +9,7 @@ type PidFd = std::os::fd::OwnedFd;
 #[cfg(not(all(not(test), any(target_os = "linux", target_os = "android"))))]
 type PidFd = ();
 
+// [read]
 /// 读取进程 starttime（`/proc/<pid>/stat` 第 22 字段，pid 后第 20 项）；Z/X 僵尸或读取失败返回 None。
 pub fn read_process_starttime(pid: i32) -> Option<u64> {
     if pid <= 0 {

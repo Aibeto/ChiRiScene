@@ -2366,6 +2366,9 @@ impl AffinityManager {
     ) {
         let clk = clk_tck();
         let n = scan_pool.len();
+        if n == 0 {
+            return;
+        }
         self.fg_cursor %= n;
         let end = (self.fg_cursor + FG_SCAN_WINDOW).min(n);
         let pkg = self.fg_cmdline.clone();
@@ -2824,6 +2827,7 @@ impl AffinityManager {
         self.last_fg_pid = 0;
         self.last_boost = false;
         self.bg_cursor = 0;
+        self.fg_cursor = 0;
         self.bg_checked.clear();
         if crate::logger::diag_active() {
             let result = match err {

@@ -479,6 +479,7 @@ fn parse_windows(snapshot: &str, request: &WindowRequest, uid: u32) -> WindowVis
     }
 }
 
+// [tests]
 #[cfg(test)]
 mod tests {
     use super::*;

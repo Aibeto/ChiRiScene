@@ -299,6 +299,34 @@ mod tests {
         );
     }
 
+    // [regression s12]
+    #[test]
+    fn large_range_end_1024_beyond_is_unknown() {
+        // Some("1000-2000") → Unknown: end>=1024 range filter rejects it
+        assert_eq!(
+            check(&[500], Some("1000-2000")),
+            CpusetCheck::Unknown
+        );
+    }
+
+    #[test]
+    fn upper_bound_1023_is_allowed() {
+        // Some("1023") → Allowed: positive upper bound prevents < to <= regression
+        assert_eq!(
+            check(&[1023], Some("1023")),
+            CpusetCheck::Allowed
+        );
+    }
+
+    #[test]
+    fn empty_cpus_is_empty_intersection() {
+        // empty cpus &[] → EmptyIntersection
+        assert_eq!(
+            check(&[], Some("0-1023")),
+            CpusetCheck::EmptyIntersection
+        );
+    }
+
     #[test]
     fn root_cpuset_and_fresh_group_membership_are_read_each_attempt() {
         let mut group = "/";

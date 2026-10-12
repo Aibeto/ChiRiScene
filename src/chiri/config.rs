@@ -1763,7 +1763,7 @@ pub struct Config {
     /// 息屏场景模式（scenemode）：屏幕熄灭超过 `scene_mode_delay_secs` 秒后切换到的低功耗配置（压低频率上限、禁止主动升频），亮屏后恢复原模式；未定义时回退 CLG 默认参数
     #[serde(default)]
     pub scenemode: Mode,
-    /// 息屏进入 scenemode 的延迟（秒）：默认 300s（5 分钟），YAML 可覆盖
+    /// 息屏进入 scenemode 的延迟（秒）：默认 3000s（50 分钟），YAML 可覆盖
     #[serde(default = "default_scene_mode_delay_secs")]
     pub scene_mode_delay_secs: u64,
 
