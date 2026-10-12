@@ -184,6 +184,7 @@ pub mod affinity;
 pub mod core_ctl;
 pub mod cpu_load_governor;
 mod diag_build_cost;
+mod diag_slice;
 pub mod diag_cost;
 pub mod diag_worker;
 pub mod energy_cost;
@@ -1577,6 +1578,8 @@ struct ThSnap {
     comm: String,
     /// 热窗截止帧号：`frame <= hot_until` 时逐帧采样（见上方的常量说明）
     hot_until: u64,
+    /// Complete serialization is built lazily, reused only while all slots and identity match.
+    full_row: diag_slice::FullRowCache,
 }
 
 /// @S 线程下钻的 stat 差分状态：上次采样时刻 + 帧序号 + 每 tid 基线
@@ -1591,6 +1594,17 @@ struct AffThState {
     base: std::collections::HashMap<u32, ThSnap>,
 }
 static AFF_TH_STATE: std::sync::OnceLock<Mutex<AffThState>> = std::sync::OnceLock::new();
+
+impl ThSnap {
+    fn full_row(&mut self, tid: u32) -> String {
+        let Self { pid, comm, util, core, home, pin, full_row, .. } = self;
+        full_row.get_or_render(|| {
+            let token = crate::logger::aff_token(comm);
+            render_t_row(*pid, tid, Some(&token), Some(*util), Some(*core),
+                Some(*home), Some(*pin), Some(AFF_UCLAMP_RESERVED))
+        }).to_owned()
+    }
+}
 
 /// stat ticks → 秒的换算（USER_HZ，Android 恒 100）：只探测一次
 fn clk_tck() -> f32 {
@@ -1680,6 +1694,7 @@ fn build_aff_snapshot(
     top_n: usize,
 ) -> (Vec<String>, bool, Option<diag_build_cost::BuildCostStats>) {
     use std::collections::{HashMap, HashSet};
+    let build_started = Instant::now();
     let mut costs = crate::logger::diag_active().then(diag_build_cost::BuildCostStats::default);
 
     // 被管线程状态（home/pin）一次取完；进程级 home 从这里派生
@@ -1725,27 +1740,38 @@ fn build_aff_snapshot(
     let mut th_rows: Vec<(u32, u32, Cow<'static, str>, Option<String>)> =
         Vec::with_capacity(tids.len());
     // 本帧是否刷新帧（帧头据此打 `full=1`，下游按它重建存活集合）
-    let refresh;
+    let mut refresh;
+    let now;
+    let frame;
+    let mut sampled_tids = HashSet::new();
+    let mut cold_tids = Vec::new();
     {
         let mut st = AFF_TH_STATE
             .get_or_init(|| Mutex::new(AffThState::default()))
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let now = Instant::now();
+        now = Instant::now();
         let first = st.last_at.is_none();
         st.last_at = Some(now);
         st.frame += 1;
-        let frame = st.frame;
+        frame = st.frame;
         // 刷新帧：首帧必全量（全建基线、util 全 0），此后每 30 帧一次（防漂移）
         refresh = first || frame % AFF_SNAP_REFRESH_FRAMES == 0;
         // [C1] 本帧「已采样到的 pid」集合：用于判定每 pid 本帧首条线程——其净化 comm 是补位
         // p 行的兜底来源，即使该线程本帧省行也必须保留 token（把旧实现「所有线程都带 token」
         // 的隐式依赖显式化，保证下方 `pid_comm` 兜底仍取到每 pid 首条的净化 comm）
         let mut seen_pid_frame: HashSet<u32> = HashSet::new();
-        for &(pid, tid, full) in &tids {
+        for (index, &(pid, tid, full)) in tids.iter().enumerate() {
+            if diag_slice::slice_due(index) {
+                thread::yield_now();
+            }
+            // Switch only the encoding, never the candidate set or sampling frequency.
+            // Do not pre-switch: a slow burst must not suppress later rows in the same frame.
+
             let (home, pinned) = th_state.get(&tid).copied().unwrap_or((-1, false));
             // 长尾且已退冷：本轮**不采样、不落行**（省 stat 读与行；语义由「缺失行 = 与上次落盘相同」承载）。刷新帧或热窗内的仍逐帧采样
             if !full && !refresh && !st.base.get(&tid).is_some_and(|e| e.hot_until >= frame) {
+                cold_tids.push((pid, tid));
                 continue;
             }
             let Some(s) = measure_build_block(
@@ -1758,6 +1784,7 @@ fn build_aff_snapshot(
             };
             // [C1] 本帧该 pid 首条被采样线程（见上方 seen_pid_frame 说明）：即使本线程省行，
             // 也要为它保留净化 comm，供 p 行兜底
+            sampled_tids.insert(tid);
             let first_pid = seen_pid_frame.insert(pid);
             // [C1] 净化 comm 并落成 `'static`：`aff_token` 可能借用 `s.comm`，而 token 要跨迭代
             // 存进 th_rows，故必须 `into_owned()`（借用不跨迭代保存）。此闭包只在需要时调用，
@@ -1797,6 +1824,7 @@ fn build_aff_snapshot(
                     let any_ch = slot_ch || pid_ch;
                     // 有变化即续热窗 30 帧：之后仍逐帧采样（差分判定要看「本帧 u」）；静默满 30 帧自然退冷，回到 30 帧一次的刷新采样
                     if any_ch {
+                        e.full_row.invalidate();
                         e.hot_until = frame + AFF_SNAP_REFRESH_FRAMES;
                         // comm 只在真变了才改写，复用 String 容量、稳态零分配
                         if comm_ch {
@@ -1814,16 +1842,7 @@ fn build_aff_snapshot(
                     if refresh {
                         // 刷新帧：全量重锚（下游据此重建存活集合），不做槽级省略；comm 必构造
                         comm_tok = Some(clean_comm(&s.comm));
-                        Some(render_t_row(
-                            pid,
-                            tid,
-                            comm_tok.as_ref().map(|c| &**c),
-                            Some(util),
-                            Some(s.processor),
-                            Some(home),
-                            Some(pinned),
-                            Some(AFF_UCLAMP_RESERVED),
-                        ))
+                        Some(e.full_row(tid))
                     } else if any_ch {
                         // 常态：只写变化的那部分，未变槽 `-`、尾部未变槽整段省略；
                         // [C1] 仅 comm 真变化时才构造 token（其余槽变化不构造）
@@ -1858,19 +1877,21 @@ fn build_aff_snapshot(
                             pid,
                             comm: s.comm.clone(),
                             hot_until: frame + AFF_SNAP_REFRESH_FRAMES,
+                            full_row: diag_slice::FullRowCache::default(),
                         },
                     );
                     comm_tok = Some(clean_comm(&s.comm));
-                    Some(render_t_row(
-                        pid,
-                        tid,
-                        comm_tok.as_ref().map(|c| &**c),
-                        Some(util),
-                        Some(s.processor),
-                        Some(home),
-                        Some(pinned),
-                        Some(AFF_UCLAMP_RESERVED),
-                    ))
+                    if refresh {
+                        Some(render_t_row(
+                            pid, tid, comm_tok.as_ref().map(|c| &**c), Some(util),
+                            Some(s.processor), Some(home), Some(pinned), Some(AFF_UCLAMP_RESERVED),
+                        ))
+                    } else {
+                        Some(render_t_row(
+                            pid, tid, comm_tok.as_ref().map(|c| &**c), Some(util),
+                            Some(s.processor), Some(home), Some(pinned), Some(AFF_UCLAMP_RESERVED),
+                        ))
+                    }
                 }
             };
             // [C1] 每 pid 本帧首条线程：即便上面未构造 token（该线程全槽未变、本帧省行），
@@ -1966,8 +1987,49 @@ fn build_aff_snapshot(
             pid_home.get(&pid).copied().unwrap_or(-1),
         ));
     }
-    // t 行已在上方按槽级差分渲染好：`None` = 全槽未变（省行），`Some` = 本帧要落的差异行
-    rows.extend(th_rows.into_iter().filter_map(|(_, _, _, row)| row));
+    // [slow_anchor] Final check also covers snapshot_procs/mask IO, not just tid stat.
+    refresh |= diag_slice::slow_anchor(build_started.elapsed());
+    if refresh {
+        thread::yield_now();
+        let mut st = AFF_TH_STATE.get().expect("initialized by sampling").lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // Complete unsampled foreground/managed candidates once: never serialize an unsampled baseline.
+        cold_tids.extend(tids.iter().filter_map(|&(pid, tid, full)| {
+            (full && !sampled_tids.contains(&tid)).then_some((pid, tid))
+        }));
+        cold_tids.sort_unstable_by_key(|&(pid, tid)| (tid, pid));
+        cold_tids.dedup();
+        for (index, (pid, tid)) in cold_tids.into_iter().enumerate() {
+            if diag_slice::slice_due(index) { thread::yield_now(); }
+            let Some(sample) = measure_build_block(&mut costs,
+                diag_build_cost::BuildBlock::TidStat, || affinity::sample_one_tid(tid as i32)) else {
+                st.base.remove(&tid);
+                continue;
+            };
+            let (home, pin) = th_state.get(&tid).copied().unwrap_or((-1, false));
+            let util = match st.base.get(&tid) {
+                Some(e) if now > e.at && sample.ticks >= e.ticks => {
+                    (((sample.ticks - e.ticks) as f32 / clk_tck()) /
+                        now.duration_since(e.at).as_secs_f32() * 100.0).clamp(0.0, 100.0).round() as i32
+                }
+                _ => 0,
+            };
+            st.base.insert(tid, ThSnap {
+                ticks: sample.ticks, at: now, util, core: sample.processor, home, pin, pid,
+                comm: sample.comm, hot_until: frame + AFF_SNAP_REFRESH_FRAMES,
+                full_row: diag_slice::FullRowCache::default(),
+            });
+            sampled_tids.insert(tid);
+        }
+        rows.extend(diag_slice::anchor_rows(tids.iter().enumerate(), |(index, &(_, tid, _))| {
+            if diag_slice::slice_due(index) { thread::yield_now(); }
+            if !sampled_tids.contains(&tid) { return None; }
+            st.base.get_mut(&tid).map(|entry| entry.full_row(tid))
+        }));
+    } else {
+        // Normal frames retain the original slot-level differences and row order.
+        rows.extend(th_rows.into_iter().filter_map(|(_, _, _, row)| row));
+    }
     (rows, refresh, costs)
 }
 
@@ -3318,15 +3380,12 @@ pub fn start_scheduler_thread(
                                     &mut fast_lock,
                                 );
                             } else {
-                                // 息屏：FAS 退出后交 CLG doze（同款低功耗配置），避免延迟期结束到亮屏间零接管
+                                // 息屏：FAS 退出后交 CLG 接管，避免延迟期结束到亮屏间零接管。
+                                // 直接用 reduce 档参数（与息屏窗口内同口径），不再叠息屏专用覆盖。
                                 let cfg = config_clone.read().unwrap();
-                                let mut doze_cfg = get_clg_cfg(&cfg, "reduce");
-                                doze_cfg.enabled = true;
-                                doze_cfg.perf_floor = 0.0;
-                                doze_cfg.perf_ceil = doze_cfg.perf_ceil.min(0.30);
-                                doze_cfg.smoothing_up = 0.10;
-                                doze_cfg.touch_boost_enabled = false;
-                                cpu_governor.init_policies(&doze_cfg);
+                                let mut clg_cfg = get_clg_cfg(&cfg, "reduce");
+                                clg_cfg.enabled = true; // reduce 缺省即 true，显式写出确保息屏必有接管
+                                cpu_governor.init_policies(&clg_cfg);
                             }
                             log::info!("{}", t_with_args(
                                 "scheduler-fas-delayed-exit",
@@ -3712,24 +3771,17 @@ pub fn start_scheduler_thread(
                                 // akmode 继续运行，CLG 保持释放状态
                                 log::info!("{}", t("scheduler-doze-special-keep"));
                             } else if current_mode == "fas" && fas_mgr.is_active() {
-                                // FAS 息屏保持接管：不释放实例、不切 CLG doze（与特调同语义）；FAS 失效（看门狗释放/初始化冷却）时走下方分支由 doze 接管
+                                // FAS 息屏保持接管：不释放实例、不切 CLG（与特调同语义）；FAS 失效（看门狗释放/初始化冷却）时走下方分支由 CLG 接管
                             } else {
                                 // 非特调模式：交回 CLG 处理深度睡眠本分支仅在非 fas 模式或 FAS 未活跃（看门狗释放/冷却）时执行；不可写低频锁——锁屏无帧事件时将永久锁死最低频
                                 ak_governor.release();
                                 fast_lock.release();
 
-                                // 让 CLG 接管，动态生成一个低功耗配置
+                                // 让 CLG 接管：直接用 reduce 档参数（与息屏窗口内同口径），不再叠息屏专用覆盖
                                 let config_lock = config_clone.read().unwrap();
-                                let mut doze_cfg = get_clg_cfg(&config_lock, "reduce");
-                                doze_cfg.enabled = true;
-                                doze_cfg.perf_floor = 0.0;
-                            // 息屏 doze 天花板 0.30：后台任务（sync/JobScheduler）突发时允许短暂借力，但压住"口袋发热"；5 分钟后 scenemode 进一步压到 0.
-                            // 15 smoothing_up=0.10 升频极迟钝；touch_boost 关闭（息屏无触摸）
-                                doze_cfg.perf_ceil = doze_cfg.perf_ceil.min(0.30);
-                                doze_cfg.smoothing_up = 0.10;
-                                doze_cfg.touch_boost_enabled = false;
-
-                                cpu_governor.init_policies(&doze_cfg);
+                                let mut clg_cfg = get_clg_cfg(&config_lock, "reduce");
+                                clg_cfg.enabled = true; // reduce 缺省即 true，显式写出确保息屏必有接管
+                                cpu_governor.init_policies(&clg_cfg);
                             }
                             // 亲和/core_ctl 跟随息屏：top-app 恢复快照、后台压小核（特调保持 boost 布局）
                             {
@@ -4220,16 +4272,12 @@ pub fn start_scheduler_thread(
                                 );
                             }
                             let config_lock = config_clone.read().unwrap();
-                            let mut doze_cfg = get_clg_cfg(&config_lock, "reduce");
-                            doze_cfg.enabled = true;
-                            doze_cfg.perf_floor = 0.0;
-                            doze_cfg.perf_ceil = doze_cfg.perf_ceil.min(0.30);
-                            doze_cfg.smoothing_up = 0.10;
-                            doze_cfg.touch_boost_enabled = false;
+                            let mut clg_cfg = get_clg_cfg(&config_lock, "reduce");
+                            clg_cfg.enabled = true; // reduce 缺省即 true，显式写出确保息屏必有接管
                             if cpu_governor.is_active() {
-                                cpu_governor.reload_config(&doze_cfg);
+                                cpu_governor.reload_config(&clg_cfg);
                             } else {
-                                cpu_governor.init_policies(&doze_cfg);
+                                cpu_governor.init_policies(&clg_cfg);
                             }
                             log::info!("{}", t("scheduler-scene-mode-exit-switch"));
                             crate::logger::main_event("scene_exit", "-", "switch_off");
