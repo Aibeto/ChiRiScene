@@ -329,7 +329,10 @@ impl DiagWorker {
 
     /// 等待排空并仅 join 一次；句柄锁串行化所有等待者，worker 不使用此锁。
     fn await_drain(&self) {
-        let mut handle = self.handle.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut handle = self
+            .handle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(worker_handle) = handle.take() {
             let _ = worker_handle.join();
         }
@@ -505,8 +508,8 @@ mod tests {
             })
             .collect();
         for id in &ids {
-            assert!(w
-                .submit(FrameTask {
+            assert!(
+                w.submit(FrameTask {
                     id: *id,
                     sampled_at: Instant::now(),
                     ts: "0101-000000".to_string(),
@@ -516,7 +519,8 @@ mod tests {
                     fg_starttime: 987654,
                     config_identity: "cfg-test".to_string(),
                 })
-                .is_ok());
+                .is_ok()
+            );
         }
         // shutdown 排空已提交任务并 join：最后写出帧即最后提交帧（保序 + 无丢帧）
         w.shutdown();
@@ -536,8 +540,8 @@ mod tests {
         let tss = ["0101-000001", "0101-000002", "0101-000003"];
         for (id, ts) in ids.iter().zip(tss.iter()) {
             // ts 可随任务逐帧携带且各自独立，不影响入队顺序
-            assert!(w
-                .submit(FrameTask {
+            assert!(
+                w.submit(FrameTask {
                     id: *id,
                     sampled_at: Instant::now(),
                     ts: (*ts).to_string(),
@@ -547,7 +551,8 @@ mod tests {
                     fg_starttime: 987654,
                     config_identity: "cfg-test".to_string(),
                 })
-                .is_ok());
+                .is_ok()
+            );
         }
         // 保序：last_written 为最后提交帧，携带的 ts 未扰动写出顺序
         w.shutdown();
@@ -766,7 +771,10 @@ mod tests {
                     let _ = go_rx.recv();
                     panic!("injected writer panic on first frame");
                 }
-                order.lock().unwrap_or_else(|p| p.into_inner()).push(t.id.sequence);
+                order
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .push(t.id.sequence);
                 true
             })
         };
@@ -795,7 +803,11 @@ mod tests {
                 assert_eq!(back.rows, vec!["p1 - - -".to_string()]);
                 // submit 返回 Err 时：排空已完成、旧帧（seq 1、2）已按序写出（先旧后新）
                 assert!(w.drain_finished(), "submit 返回 Err 时排空须已完成");
-                assert_eq!(w.recovered_frames(), 2, "submit 返回 Err 时旧帧须已全部写出");
+                assert_eq!(
+                    w.recovered_frames(),
+                    2,
+                    "submit 返回 Err 时旧帧须已全部写出"
+                );
                 assert_eq!(
                     *order.lock().unwrap_or_else(|p| p.into_inner()),
                     vec![1, 2],
@@ -852,7 +864,8 @@ mod tests {
             assert!(matches!(early_return, Err(mpsc::RecvTimeoutError::Timeout)));
             let mut returned_sequences = Vec::new();
             for _ in 0..2 {
-                let (result, drain_finished) = returned_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+                let (result, drain_finished) =
+                    returned_rx.recv_timeout(Duration::from_secs(2)).unwrap();
                 let returned_task = match result {
                     Err(returned_task) => returned_task,
                     Ok(()) => panic!("失败态下 submit 必须交还任务"),
@@ -888,14 +901,20 @@ mod tests {
         assert!(worker.submit(task(0, 0)).is_ok());
         assert!(worker.submit(task(0, 1)).is_ok());
         panic_tx.send(()).unwrap();
-        assert_eq!(recovered_rx.recv_timeout(Duration::from_secs(2)).unwrap(), 1);
+        assert_eq!(
+            recovered_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            1
+        );
         let premature_finish = worker.drain_finished();
         let late_send = admitted_sender.send(task(0, 2));
         drop(admitted_sender);
         worker.shutdown();
         assert!(!premature_finish, "发送端尚未释放，排空不得提前完成");
         assert!(late_send.is_ok());
-        assert_eq!(recovered_rx.recv_timeout(Duration::from_secs(2)).unwrap(), 2);
+        assert_eq!(
+            recovered_rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+            2
+        );
         assert_eq!(worker.recovered_frames(), 2);
         assert_eq!(worker.lost_frames(), 1);
         assert!(worker.drain_finished());

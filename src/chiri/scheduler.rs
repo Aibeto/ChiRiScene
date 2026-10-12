@@ -156,11 +156,7 @@ impl CpuScheduler {
             let path = format!("/proc/sys/kernel/{key}");
             let _ = Self::snapshot_write(&path, value);
             applied += 1;
-            log::debug!(
-                "SchedTuning: wrote {} = {}",
-                path,
-                value
-            );
+            log::debug!("SchedTuning: wrote {} = {}", path, value);
         }
         log::info!(
             "{}",
@@ -283,7 +279,10 @@ impl CpuScheduler {
         for path in &written {
             log::debug!(
                 "{}",
-                t_with_args("touch-boost-disable-node", &fluent_args!("path" => path.clone()))
+                t_with_args(
+                    "touch-boost-disable-node",
+                    &fluent_args!("path" => path.clone())
+                )
             );
         }
         if !written.is_empty() {

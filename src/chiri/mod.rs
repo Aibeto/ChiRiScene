@@ -184,8 +184,8 @@ pub mod affinity;
 pub mod core_ctl;
 pub mod cpu_load_governor;
 mod diag_build_cost;
-mod diag_slice;
 pub mod diag_cost;
+mod diag_slice;
 pub mod diag_worker;
 pub mod energy_cost;
 mod fas_focus;
@@ -279,7 +279,9 @@ fn reconcile_fas_focus(
     };
     let owner = owner.to_string();
     if !screen_on {
-        let feedback_changed = manager.frame_source().is_some_and(|source| source.frame_feedback);
+        let feedback_changed = manager
+            .frame_source()
+            .is_some_and(|source| source.frame_feedback);
         manager.set_frame_feedback_enabled(false);
         let had_confirmation = confirmed_focus.take().is_some();
         if feedback_changed || had_confirmation {
@@ -298,12 +300,12 @@ fn reconcile_fas_focus(
     let foreground_is_owner = snapshot
         .as_ref()
         .is_some_and(|snapshot| snapshot.is_valid() && snapshot.package.as_ref() == owner);
-    let fast_same = foreground_is_owner
-        && raw_foreground.as_ref() == owner
-        && owner_matches
-        && owner_allowed;
+    let fast_same =
+        foreground_is_owner && raw_foreground.as_ref() == owner && owner_matches && owner_allowed;
     if fast_same {
-        let feedback_changed = manager.frame_source().is_some_and(|source| !source.frame_feedback);
+        let feedback_changed = manager
+            .frame_source()
+            .is_some_and(|source| !source.frame_feedback);
         manager.set_frame_feedback_enabled(true);
         manager.cancel_delayed_exit();
         *pending_mode = None;
@@ -322,7 +324,9 @@ fn reconcile_fas_focus(
         generation: source.generation,
         foreground: raw_foreground.to_string(),
     };
-    let Some(source) = manager.frame_source() else { return; };
+    let Some(source) = manager.frame_source() else {
+        return;
+    };
     let initial_request = make_request(source);
     let previous_focus = probe
         .latest(&initial_request)
@@ -344,7 +348,9 @@ fn reconcile_fas_focus(
     if previous_focus.is_none() {
         manager.set_frame_feedback_enabled(false);
     }
-    let Some(source) = manager.frame_source() else { return; };
+    let Some(source) = manager.frame_source() else {
+        return;
+    };
     let request = make_request(source);
     probe.request(request.clone());
     let observation = probe.latest(&request);
@@ -416,9 +422,8 @@ fn fas_delayed_exit_target(
 ) -> String {
     let owner = manager.active_pkg();
     let determined = fas_last_determined_mode().unwrap_or_default();
-    let snapshot_is_owner = snapshot.is_some_and(|snapshot| {
-        owner.is_some_and(|owner| snapshot.package.as_ref() == owner)
-    });
+    let snapshot_is_owner = snapshot
+        .is_some_and(|snapshot| owner.is_some_and(|owner| snapshot.package.as_ref() == owner));
     if snapshot_is_owner || determined.is_empty() || determined == "fas" {
         return "default".to_string();
     }
@@ -1013,7 +1018,9 @@ fn aff_cost_flush(st: &mut AffCostState) {
             if st.build_stats.stats(block).count == 0 {
                 continue;
             }
-            let line = st.build_stats.summary_line(&st.session, &cur_ws, &cur_we, block);
+            let line = st
+                .build_stats
+                .summary_line(&st.session, &cur_ws, &cur_we, block);
             if !crate::logger::selfcost_write_line(&line) {
                 st.build_stats.note_write_error();
                 ok = false;
@@ -1072,9 +1079,12 @@ fn aff_cost_drain_tail(st: &mut AffCostState) {
         st.stats.absorb(diag_cost::Block::Summary, &bs);
         let window_start = ws.to_string();
         let window_end = we.to_string();
-        let line = st
-            .stats
-            .summary_line(&st.session, &window_start, &window_end, diag_cost::Block::Summary);
+        let line = st.stats.summary_line(
+            &st.session,
+            &window_start,
+            &window_end,
+            diag_cost::Block::Summary,
+        );
         if !crate::logger::selfcost_write_line(&line) {
             log::warn!("[selfcost] 会话尾窗残留摘要写入失败（会话={}）", st.session);
         }
@@ -1113,10 +1123,15 @@ fn aff_cost_record(
                 None
             }
         };
-        st.stats.record(diag_cost::Block::Build, wall_build, build_cpu);
-        st.stats.record(diag_cost::Block::Write, wall_write, write_cpu);
+        st.stats
+            .record(diag_cost::Block::Build, wall_build, build_cpu);
+        st.stats
+            .record(diag_cost::Block::Write, wall_write, write_cpu);
         if let Some(mut build_stats) = build_stats {
-            build_stats.finish(wall_build, c0.zip(c1).and_then(|(start, end)| end.checked_sub(start)));
+            build_stats.finish(
+                wall_build,
+                c0.zip(c1).and_then(|(start, end)| end.checked_sub(start)),
+            );
             st.build_stats.absorb(&build_stats);
         }
         // 慢调用只做节流告警（不影响入账）；不额外读 /proc
@@ -1315,9 +1330,7 @@ fn canonical_debug(dbg: &str) -> String {
         // Debug 的匿名花括号容器是 map；列表和命名结构保持原序。
         let parent_line = nodes[idx].line.trim();
         if parent_line == "{" || parent_line.ends_with(": {") {
-            kids.sort_by(|&left, &right| {
-                nodes[left].line.trim().cmp(nodes[right].line.trim())
-            });
+            kids.sort_by(|&left, &right| nodes[left].line.trim().cmp(nodes[right].line.trim()));
         }
         for &k in kids.iter().rev() {
             visit.push(k);
@@ -1597,12 +1610,31 @@ static AFF_TH_STATE: std::sync::OnceLock<Mutex<AffThState>> = std::sync::OnceLoc
 
 impl ThSnap {
     fn full_row(&mut self, tid: u32) -> String {
-        let Self { pid, comm, util, core, home, pin, full_row, .. } = self;
-        full_row.get_or_render(|| {
-            let token = crate::logger::aff_token(comm);
-            render_t_row(*pid, tid, Some(&token), Some(*util), Some(*core),
-                Some(*home), Some(*pin), Some(AFF_UCLAMP_RESERVED))
-        }).to_owned()
+        let Self {
+            pid,
+            comm,
+            util,
+            core,
+            home,
+            pin,
+            full_row,
+            ..
+        } = self;
+        full_row
+            .get_or_render(|| {
+                let token = crate::logger::aff_token(comm);
+                render_t_row(
+                    *pid,
+                    tid,
+                    Some(&token),
+                    Some(*util),
+                    Some(*core),
+                    Some(*home),
+                    Some(*pin),
+                    Some(AFF_UCLAMP_RESERVED),
+                )
+            })
+            .to_owned()
     }
 }
 
@@ -1715,10 +1747,10 @@ fn build_aff_snapshot(
     let mut tids: Vec<(u32, u32, bool)> = Vec::new(); // (pid, tid, full)
     let mut seen_tid: HashSet<u32> = HashSet::new();
     if fg_pid > 0 {
-        let foreground_tids = measure_build_block(
-            &mut costs, diag_build_cost::BuildBlock::ThreadTids,
-            || crate::monitor::cpu_monitor::get_thread_tids(fg_pid as u32),
-        );
+        let foreground_tids =
+            measure_build_block(&mut costs, diag_build_cost::BuildBlock::ThreadTids, || {
+                crate::monitor::cpu_monitor::get_thread_tids(fg_pid as u32)
+            });
         for tid in foreground_tids {
             if seen_tid.insert(tid) {
                 tids.push((fg_pid as u32, tid, true));
@@ -1774,10 +1806,11 @@ fn build_aff_snapshot(
                 cold_tids.push((pid, tid));
                 continue;
             }
-            let Some(s) = measure_build_block(
-                &mut costs, diag_build_cost::BuildBlock::TidStat,
-                || affinity::sample_one_tid(tid as i32),
-            ) else {
+            let Some(s) =
+                measure_build_block(&mut costs, diag_build_cost::BuildBlock::TidStat, || {
+                    affinity::sample_one_tid(tid as i32)
+                })
+            else {
                 // 线程已退出：顺手回收基线（原地 remove，不整表重建）
                 st.base.remove(&tid);
                 continue;
@@ -1791,9 +1824,8 @@ fn build_aff_snapshot(
             // 常态省行路径完全不构造——**注意**：一旦构造就必然分配一次，
             // 所以 C1 的实际收益是「减少需要构造 token 的线程数」，不是快照内部零分配。
             // `ThSnap.comm` 的比对仍用**原始** `s.comm`（不参与本 token）
-            let clean_comm = |c: &str| -> Cow<'static, str> {
-                crate::logger::aff_token(c).into_owned().into()
-            };
+            let clean_comm =
+                |c: &str| -> Cow<'static, str> { crate::logger::aff_token(c).into_owned().into() };
             // 窗口分母取该 tid 自己的上次采样时刻：冷长尾跨刷新帧时窗口 = 实际间隔
             let win_secs = match st.base.get(&tid) {
                 Some(e) => now.duration_since(e.at).as_secs_f32(),
@@ -1883,13 +1915,25 @@ fn build_aff_snapshot(
                     comm_tok = Some(clean_comm(&s.comm));
                     if refresh {
                         Some(render_t_row(
-                            pid, tid, comm_tok.as_ref().map(|c| &**c), Some(util),
-                            Some(s.processor), Some(home), Some(pinned), Some(AFF_UCLAMP_RESERVED),
+                            pid,
+                            tid,
+                            comm_tok.as_ref().map(|c| &**c),
+                            Some(util),
+                            Some(s.processor),
+                            Some(home),
+                            Some(pinned),
+                            Some(AFF_UCLAMP_RESERVED),
                         ))
                     } else {
                         Some(render_t_row(
-                            pid, tid, comm_tok.as_ref().map(|c| &**c), Some(util),
-                            Some(s.processor), Some(home), Some(pinned), Some(AFF_UCLAMP_RESERVED),
+                            pid,
+                            tid,
+                            comm_tok.as_ref().map(|c| &**c),
+                            Some(util),
+                            Some(s.processor),
+                            Some(home),
+                            Some(pinned),
+                            Some(AFF_UCLAMP_RESERVED),
                         ))
                     }
                 }
@@ -1915,7 +1959,8 @@ fn build_aff_snapshot(
 
     // ── 进程集合：util top-N ∪ 前台进程 ∪ 被管进程 ──
     let mut procs = measure_build_block(
-        &mut costs, diag_build_cost::BuildBlock::ProcessMap,
+        &mut costs,
+        diag_build_cost::BuildBlock::ProcessMap,
         crate::monitor::cpu_monitor::snapshot_procs,
     );
     // util 降序 + pid 升序 tie-break：等 util（常见于大量 util=0 的冷进程）时行序与 top-N 成员不随 BPF map 遍历序逐帧抖动
@@ -1991,7 +2036,10 @@ fn build_aff_snapshot(
     refresh |= diag_slice::slow_anchor(build_started.elapsed());
     if refresh {
         thread::yield_now();
-        let mut st = AFF_TH_STATE.get().expect("initialized by sampling").lock()
+        let mut st = AFF_TH_STATE
+            .get()
+            .expect("initialized by sampling")
+            .lock()
             .unwrap_or_else(|e| e.into_inner());
         // Complete unsampled foreground/managed candidates once: never serialize an unsampled baseline.
         cold_tids.extend(tids.iter().filter_map(|&(pid, tid, full)| {
@@ -2000,32 +2048,57 @@ fn build_aff_snapshot(
         cold_tids.sort_unstable_by_key(|&(pid, tid)| (tid, pid));
         cold_tids.dedup();
         for (index, (pid, tid)) in cold_tids.into_iter().enumerate() {
-            if diag_slice::slice_due(index) { thread::yield_now(); }
-            let Some(sample) = measure_build_block(&mut costs,
-                diag_build_cost::BuildBlock::TidStat, || affinity::sample_one_tid(tid as i32)) else {
+            if diag_slice::slice_due(index) {
+                thread::yield_now();
+            }
+            let Some(sample) =
+                measure_build_block(&mut costs, diag_build_cost::BuildBlock::TidStat, || {
+                    affinity::sample_one_tid(tid as i32)
+                })
+            else {
                 st.base.remove(&tid);
                 continue;
             };
             let (home, pin) = th_state.get(&tid).copied().unwrap_or((-1, false));
             let util = match st.base.get(&tid) {
                 Some(e) if now > e.at && sample.ticks >= e.ticks => {
-                    (((sample.ticks - e.ticks) as f32 / clk_tck()) /
-                        now.duration_since(e.at).as_secs_f32() * 100.0).clamp(0.0, 100.0).round() as i32
+                    (((sample.ticks - e.ticks) as f32 / clk_tck())
+                        / now.duration_since(e.at).as_secs_f32()
+                        * 100.0)
+                        .clamp(0.0, 100.0)
+                        .round() as i32
                 }
                 _ => 0,
             };
-            st.base.insert(tid, ThSnap {
-                ticks: sample.ticks, at: now, util, core: sample.processor, home, pin, pid,
-                comm: sample.comm, hot_until: frame + AFF_SNAP_REFRESH_FRAMES,
-                full_row: diag_slice::FullRowCache::default(),
-            });
+            st.base.insert(
+                tid,
+                ThSnap {
+                    ticks: sample.ticks,
+                    at: now,
+                    util,
+                    core: sample.processor,
+                    home,
+                    pin,
+                    pid,
+                    comm: sample.comm,
+                    hot_until: frame + AFF_SNAP_REFRESH_FRAMES,
+                    full_row: diag_slice::FullRowCache::default(),
+                },
+            );
             sampled_tids.insert(tid);
         }
-        rows.extend(diag_slice::anchor_rows(tids.iter().enumerate(), |(index, &(_, tid, _))| {
-            if diag_slice::slice_due(index) { thread::yield_now(); }
-            if !sampled_tids.contains(&tid) { return None; }
-            st.base.get_mut(&tid).map(|entry| entry.full_row(tid))
-        }));
+        rows.extend(diag_slice::anchor_rows(
+            tids.iter().enumerate(),
+            |(index, &(_, tid, _))| {
+                if diag_slice::slice_due(index) {
+                    thread::yield_now();
+                }
+                if !sampled_tids.contains(&tid) {
+                    return None;
+                }
+                st.base.get_mut(&tid).map(|entry| entry.full_row(tid))
+            },
+        ));
     } else {
         // Normal frames retain the original slot-level differences and row order.
         rows.extend(th_rows.into_iter().filter_map(|(_, _, _, row)| row));
@@ -2191,160 +2264,165 @@ pub fn start_diag_thread(config_path: std::path::PathBuf) -> Result<()> {
     thread::Builder::new()
         .name("diag_writer".to_string())
         .spawn(move || {
-        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mut last_cfg_sync: Option<Instant> = None;
-            let mut dev_record = false;
-            let mut top_n: usize = 10;
-            let mut aff_secs: usize = 1;
-            // 变化跟踪（null = 无基准，重开后首帧按「已变化」处理）
-            let mut prev_screen_on: Option<bool> = None;
-            let mut prev_mode: Option<String> = None;
+            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut last_cfg_sync: Option<Instant> = None;
+                let mut dev_record = false;
+                let mut top_n: usize = 10;
+                let mut aff_secs: usize = 1;
+                // 变化跟踪（null = 无基准，重开后首帧按「已变化」处理）
+                let mut prev_screen_on: Option<bool> = None;
+                let mut prev_mode: Option<String> = None;
 
-            loop {
-                // 每 5s 重读 meta：dev_record / devimp_top_n / devimp_aff_secs 热重载生效（与调度线程同口径）
-                if last_cfg_sync.map_or(true, |t| t.elapsed() >= Duration::from_secs(5)) {
-                    last_cfg_sync = Some(Instant::now());
-                    if let Ok(cfg) = Config::load(config_path.to_str().unwrap_or_default()) {
-                        dev_record = cfg.meta.dev_record;
-                        top_n = cfg.meta.devimp_top_n;
-                        aff_secs = cfg.meta.devimp_aff_secs;
+                loop {
+                    // 每 5s 重读 meta：dev_record / devimp_top_n / devimp_aff_secs 热重载生效（与调度线程同口径）
+                    if last_cfg_sync.map_or(true, |t| t.elapsed() >= Duration::from_secs(5)) {
+                        last_cfg_sync = Some(Instant::now());
+                        if let Ok(cfg) = Config::load(config_path.to_str().unwrap_or_default()) {
+                            dev_record = cfg.meta.dev_record;
+                            top_n = cfg.meta.devimp_top_n;
+                            aff_secs = cfg.meta.devimp_aff_secs;
+                        }
                     }
-                }
-                crate::logger::set_diag_active(dev_record);
+                    crate::logger::set_diag_active(dev_record);
 
-                // 关闭态：零采样零写入（不读包名/屏幕、不读温度），仅保留 1s 节拍等开关重开
-                if !dev_record {
-                    aff_cost_session_tick(false);
-                    prev_screen_on = None;
-                    prev_mode = None;
-                    thread::sleep(Duration::from_secs(1));
-                    continue;
-                }
-
-                let fg_pkg = crate::monitor::app_detect::get_current_package();
-                let is_screen_on = crate::common::screen_on();
-                // 模式列：非 ChiRi 无调度接管，取 app_detect 判定结果；空（未判定/息屏清空）回退 rules 全局模式
-                let mode = {
-                    let m = crate::monitor::app_detect::last_determined_mode();
-                    if m.is_empty() {
-                        fallback_mode.clone()
-                    } else {
-                        m
+                    // 关闭态：零采样零写入（不读包名/屏幕、不读温度），仅保留 1s 节拍等开关重开
+                    if !dev_record {
+                        aff_cost_session_tick(false);
+                        prev_screen_on = None;
+                        prev_mode = None;
+                        thread::sleep(Duration::from_secs(1));
+                        continue;
                     }
-                };
-                crate::logger::set_diag_mode(&mode);
-                aff_cost_session_tick(crate::logger::diag_active());
-                // 诊断日志按前台包名分组：变化即切换 main_ 文件（内部去重，空包名不切换）
-                crate::logger::set_diag_package(&fg_pkg);
 
-                // 状态变化事件（与 ChiRi 同口径，decision 列记事件名）。首帧只建立基准不报事件：
-                // 初始 screen/mode 已由每秒 snap 行承载，事件行只表达「变化」
-                if let Some(prev) = prev_screen_on {
-                    if prev != is_screen_on {
-                        crate::logger::main_event(
-                            "screen",
-                            "-",
-                            if is_screen_on { "on" } else { "off" },
-                        );
-                    }
-                }
-                prev_screen_on = Some(is_screen_on);
-                if let Some(prev) = prev_mode.as_deref() {
-                    if prev != mode.as_str() {
-                        crate::logger::main_event("mode_change", &fg_pkg, &mode);
-                    }
-                }
-                prev_mode = Some(mode);
-
-                // 温度本秒读一次（原始值；本线程无热判定，不做调度侧滤波）
-                let batt_temp = if batt_sensor_exists {
-                    crate::utils::read_battery_temp_celsius()
-                } else {
-                    None
-                };
-                let cpu_temp = temp_sensor_path
-                    .as_ref()
-                    .and_then(|p| crate::utils::read_f64_from_file(p).ok())
-                    .map(|v| (v / 1000.0) as f32);
-
-                let tm = crate::monitor::telemetry::telemetry();
-                let fmt_opt = |v: Option<f32>, digits: usize| {
-                    v.map(|x| format!("{:.*}", digits, x))
-                        .unwrap_or_else(|| "-".to_string())
-                };
-                // 电池三元组本秒只读一次（同一快照），各列共用
-                let (batt_voltage, batt_current, batt_power) = tm.batt_sample();
-                let (cpu_cur, cpu_max, cpu_min, cpu_gov) = crate::chiri::cpu_freq_snapshot();
-                let (gpu_cur, gpu_max, gpu_min, gpu_gov) =
-                    if GPU_SNAPSHOT_ENABLED && gpu_snapshot_due() {
-                        crate::chiri::gpu::devfreq_snapshot()
-                    } else {
-                        (
-                            "-".to_string(),
-                            "-".to_string(),
-                            "-".to_string(),
-                            "-".to_string(),
-                        )
+                    let fg_pkg = crate::monitor::app_detect::get_current_package();
+                    let is_screen_on = crate::common::screen_on();
+                    // 模式列：非 ChiRi 无调度接管，取 app_detect 判定结果；空（未判定/息屏清空）回退 rules 全局模式
+                    let mode = {
+                        let m = crate::monitor::app_detect::last_determined_mode();
+                        if m.is_empty() {
+                            fallback_mode.clone()
+                        } else {
+                            m
+                        }
                     };
+                    crate::logger::set_diag_mode(&mode);
+                    aff_cost_session_tick(crate::logger::diag_active());
+                    // 诊断日志按前台包名分组：变化即切换 main_ 文件（内部去重，空包名不切换）
+                    crate::logger::set_diag_package(&fg_pkg);
 
-                // snap 行（1s）：thermal/clg 为 ChiRi 专属语义，非 ChiRi 写中性值
-                crate::logger::main_snap(
-                    is_screen_on,
-                    &fmt_opt(batt_temp, 1),
-                    &fmt_opt(cpu_temp, 1),
-                    "100",
-                    false,
-                    &fmt_opt(Some(tm.psi_cpu_some()), 2),
-                    &fmt_opt(Some(tm.psi_io_some()), 2),
-                    &fmt_opt(Some(tm.psi_mem_some()), 2),
-                    &fmt_opt(tm.gpu_busy(), 0),
-                    &fmt_opt(batt_voltage, 3),
-                    &fmt_opt(batt_current, 0),
-                    &fmt_opt(batt_power, 2),
-                    0,
-                    0,
-                    0,
-                    &cpu_cur,
-                    &cpu_max,
-                    &cpu_min,
-                    &cpu_gov,
-                    &gpu_cur,
-                    &gpu_max,
-                    &gpu_min,
-                    &gpu_gov,
-                );
-                // @S 进程/线程快照（aff_* 线程流文件）：非 ChiRi 无亲和接管，
-                // 被管线程表与被管进程集传空 → 仅 top-N 进程 + 前台线程。
-                // 采样间隔受 meta `devimp_aff_secs` 节流（息屏再乘倍率）：跳过的轮次不推进帧号
-                let aff_every = aff_secs * if is_screen_on { 1 } else { AFF_SNAP_OFFSCREEN_FACTOR };
-                if aff_snap_due(aff_every) {
-                    let before_build = crate::logger::diag_active()
-                        .then(|| (Instant::now(), diag_cost::thread_cpu_ns()));
-                    let (rows, full, build_stats) = build_aff_snapshot(
-                        &[],
-                        &[],
-                        crate::monitor::app_detect::get_current_pid(),
-                        &fg_pkg,
-                        top_n,
-                    );
-                    let after_build = before_build
-                        .map(|_| (Instant::now(), diag_cost::thread_cpu_ns()));
-                    crate::logger::aff_snapshot(&rows, full);
-                    if let (Some((t0, c0)), Some((t1, c1))) = (before_build, after_build) {
-                        let t2 = Instant::now();
-                        let c2 = diag_cost::thread_cpu_ns();
-                        aff_cost_record(t0, c0, t1, c1, t2, c2, build_stats);
+                    // 状态变化事件（与 ChiRi 同口径，decision 列记事件名）。首帧只建立基准不报事件：
+                    // 初始 screen/mode 已由每秒 snap 行承载，事件行只表达「变化」
+                    if let Some(prev) = prev_screen_on {
+                        if prev != is_screen_on {
+                            crate::logger::main_event(
+                                "screen",
+                                "-",
+                                if is_screen_on { "on" } else { "off" },
+                            );
+                        }
                     }
-                }
+                    prev_screen_on = Some(is_screen_on);
+                    if let Some(prev) = prev_mode.as_deref() {
+                        if prev != mode.as_str() {
+                            crate::logger::main_event("mode_change", &fg_pkg, &mode);
+                        }
+                    }
+                    prev_mode = Some(mode);
 
-                thread::sleep(Duration::from_secs(1));
+                    // 温度本秒读一次（原始值；本线程无热判定，不做调度侧滤波）
+                    let batt_temp = if batt_sensor_exists {
+                        crate::utils::read_battery_temp_celsius()
+                    } else {
+                        None
+                    };
+                    let cpu_temp = temp_sensor_path
+                        .as_ref()
+                        .and_then(|p| crate::utils::read_f64_from_file(p).ok())
+                        .map(|v| (v / 1000.0) as f32);
+
+                    let tm = crate::monitor::telemetry::telemetry();
+                    let fmt_opt = |v: Option<f32>, digits: usize| {
+                        v.map(|x| format!("{:.*}", digits, x))
+                            .unwrap_or_else(|| "-".to_string())
+                    };
+                    // 电池三元组本秒只读一次（同一快照），各列共用
+                    let (batt_voltage, batt_current, batt_power) = tm.batt_sample();
+                    let (cpu_cur, cpu_max, cpu_min, cpu_gov) = crate::chiri::cpu_freq_snapshot();
+                    let (gpu_cur, gpu_max, gpu_min, gpu_gov) =
+                        if GPU_SNAPSHOT_ENABLED && gpu_snapshot_due() {
+                            crate::chiri::gpu::devfreq_snapshot()
+                        } else {
+                            (
+                                "-".to_string(),
+                                "-".to_string(),
+                                "-".to_string(),
+                                "-".to_string(),
+                            )
+                        };
+
+                    // snap 行（1s）：thermal/clg 为 ChiRi 专属语义，非 ChiRi 写中性值
+                    crate::logger::main_snap(
+                        is_screen_on,
+                        &fmt_opt(batt_temp, 1),
+                        &fmt_opt(cpu_temp, 1),
+                        "100",
+                        false,
+                        &fmt_opt(Some(tm.psi_cpu_some()), 2),
+                        &fmt_opt(Some(tm.psi_io_some()), 2),
+                        &fmt_opt(Some(tm.psi_mem_some()), 2),
+                        &fmt_opt(tm.gpu_busy(), 0),
+                        &fmt_opt(batt_voltage, 3),
+                        &fmt_opt(batt_current, 0),
+                        &fmt_opt(batt_power, 2),
+                        0,
+                        0,
+                        0,
+                        &cpu_cur,
+                        &cpu_max,
+                        &cpu_min,
+                        &cpu_gov,
+                        &gpu_cur,
+                        &gpu_max,
+                        &gpu_min,
+                        &gpu_gov,
+                    );
+                    // @S 进程/线程快照（aff_* 线程流文件）：非 ChiRi 无亲和接管，
+                    // 被管线程表与被管进程集传空 → 仅 top-N 进程 + 前台线程。
+                    // 采样间隔受 meta `devimp_aff_secs` 节流（息屏再乘倍率）：跳过的轮次不推进帧号
+                    let aff_every = aff_secs
+                        * if is_screen_on {
+                            1
+                        } else {
+                            AFF_SNAP_OFFSCREEN_FACTOR
+                        };
+                    if aff_snap_due(aff_every) {
+                        let before_build = crate::logger::diag_active()
+                            .then(|| (Instant::now(), diag_cost::thread_cpu_ns()));
+                        let (rows, full, build_stats) = build_aff_snapshot(
+                            &[],
+                            &[],
+                            crate::monitor::app_detect::get_current_pid(),
+                            &fg_pkg,
+                            top_n,
+                        );
+                        let after_build =
+                            before_build.map(|_| (Instant::now(), diag_cost::thread_cpu_ns()));
+                        crate::logger::aff_snapshot(&rows, full);
+                        if let (Some((t0, c0)), Some((t1, c1))) = (before_build, after_build) {
+                            let t2 = Instant::now();
+                            let c2 = diag_cost::thread_cpu_ns();
+                            aff_cost_record(t0, c0, t1, c1, t2, c2, build_stats);
+                        }
+                    }
+
+                    thread::sleep(Duration::from_secs(1));
+                }
+            }))
+            .is_err()
+            {
+                aff_cost_session_tick(false);
+                log::error!("{}", t("main-diag-thread-panic"));
             }
-        }))
-        .is_err()
-        {
-            aff_cost_session_tick(false);
-            log::error!("{}", t("main-diag-thread-panic"));
-        }
         })?;
     Ok(())
 }
@@ -4695,10 +4773,7 @@ mod tests {
     fn policy_cache_needs_scan_ttl_boundary_is_inclusive() {
         let now = Instant::now();
         // 刚好 TTL：需要重扫（>=）
-        let at_boundary = Some(PolicyBases::from_ids(
-            vec![0, 4],
-            now - POLICY_RESCAN_TTL,
-        ));
+        let at_boundary = Some(PolicyBases::from_ids(vec![0, 4], now - POLICY_RESCAN_TTL));
         assert!(policy_cache_needs_scan(&at_boundary, now));
         // 差 1ns 到 TTL：不重扫
         let just_before = Some(PolicyBases::from_ids(
@@ -4729,8 +4804,13 @@ mod tests {
         let c = cache.as_ref().unwrap();
         assert_eq!(c.ids, vec![0, 4]);
         assert_eq!(c.scanned_at, t0, "空结果不得推进扫描时刻");
-        assert_eq!(c.bases, vec!["/sys/devices/system/cpu/cpufreq/policy0".to_string(),
-                                 "/sys/devices/system/cpu/cpufreq/policy4".to_string()]);
+        assert_eq!(
+            c.bases,
+            vec![
+                "/sys/devices/system/cpu/cpufreq/policy0".to_string(),
+                "/sys/devices/system/cpu/cpufreq/policy4".to_string()
+            ]
+        );
     }
 
     #[test]
@@ -4764,7 +4844,12 @@ mod tests {
         // 缓存由「开始于 t_new 的扫描」写入，时刻推进到 t_new
         let mut cache = Some(PolicyBases::from_ids(vec![0, 4, 7], t_new));
         // 另一线程「开始于 t_old 的扫描」后完成（t_new 之后才写）：必须被拒绝
-        policy_cache_merge(&mut cache, vec![0, 4], t_old, t_new + Duration::from_secs(1));
+        policy_cache_merge(
+            &mut cache,
+            vec![0, 4],
+            t_old,
+            t_new + Duration::from_secs(1),
+        );
         let c = cache.as_ref().unwrap();
         assert_eq!(c.ids, vec![0, 4, 7], "旧扫描不得覆盖较新的结果");
         assert_eq!(c.scanned_at, t_new);
@@ -4794,7 +4879,16 @@ mod tests {
 
     #[test]
     fn render_t_row_full_row_when_all_slots_present() {
-        let row = render_t_row(3, 4, Some("binder"), Some(50), Some(6), Some(4), Some(true), Some(-1));
+        let row = render_t_row(
+            3,
+            4,
+            Some("binder"),
+            Some(50),
+            Some(6),
+            Some(4),
+            Some(true),
+            Some(-1),
+        );
         assert_eq!(row, "t 3 4 binder u=50 core=6 home=4 pin=1 uclamp=-1");
     }
 
@@ -4836,12 +4930,8 @@ mod tests {
         );
         // HashMap 迭代序不应影响指纹：同一内容、不同插入顺序 → 指纹相同
         let mut m1 = Config::default();
-        m1.sched
-            .params
-            .insert("k1".to_string(), "v1".to_string());
-        m1.sched
-            .params
-            .insert("k2".to_string(), "v2".to_string());
+        m1.sched.params.insert("k1".to_string(), "v1".to_string());
+        m1.sched.params.insert("k2".to_string(), "v2".to_string());
         m1.tuned_profiles.insert(
             "alpha".to_string(),
             crate::chiri::config::SpecialTunedConfig::default(),
@@ -4859,12 +4949,8 @@ mod tests {
             "alpha".to_string(),
             crate::chiri::config::SpecialTunedConfig::default(),
         );
-        m2.sched
-            .params
-            .insert("k2".to_string(), "v2".to_string());
-        m2.sched
-            .params
-            .insert("k1".to_string(), "v1".to_string());
+        m2.sched.params.insert("k2".to_string(), "v2".to_string());
+        m2.sched.params.insert("k1".to_string(), "v1".to_string());
         assert_eq!(
             diag_config_identity(&m1),
             diag_config_identity(&m2),

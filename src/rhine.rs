@@ -50,7 +50,7 @@ pub struct RhineModeDef {
     /// 运行时开关：false = 关闭所有场景特调（akmode 白名单判定失效）
     #[serde(default)]
     pub special_tuned: Option<bool>,
-/// 改写生效 meta.yaml 的 thread_bind（实验室 frozen 专用）：false = 交还线程亲和/绑核与 core_ctl
+    /// 改写生效 meta.yaml 的 thread_bind（实验室 frozen 专用）：false = 交还线程亲和/绑核与 core_ctl
     #[serde(default)]
     pub thread_bind: Option<bool>,
 }
@@ -78,7 +78,7 @@ enum State {
     Off,
     /// 已启用，值为模式 key
     On(String),
-/// 显式强制关闭（保留字 `off`）：清掉锁定标记后按正常路径还原；空文件在锁定期间会被挡回
+    /// 显式强制关闭（保留字 `off`）：清掉锁定标记后按正常路径还原；空文件在锁定期间会被挡回
     ForceOff,
     /// 内容不是合法 YAML 标量，或写了未定义的模式名
     Bad,
@@ -302,7 +302,7 @@ fn apply(root: &Path, meta_path: &Path, key: &str) -> Result<(), String> {
     let Some(def) = defs().get(key) else {
         return Err(format!("unknown lab mode: {key}"));
     };
-// fas/scenemode 的原值从磁盘 meta.yaml 读（与 Config::load 同源）；读不到就放弃套用——宁可没生效，也不要还原不了的改动
+    // fas/scenemode 的原值从磁盘 meta.yaml 读（与 Config::load 同源）；读不到就放弃套用——宁可没生效，也不要还原不了的改动
     let Some(meta) = common::read_external_meta(meta_path) else {
         return Err(format!("meta.yaml unreadable: {}", meta_path.display()));
     };
@@ -481,7 +481,7 @@ fn restore(root: &Path, meta_path: &Path) -> Option<String> {
             (String::new(), ok)
         }
     };
-// meta.yaml 没还原成功就**保留快照**：原值只在快照里，删掉就再也回不去；留着幂等，下次启动会再走一遍还原
+    // meta.yaml 没还原成功就**保留快照**：原值只在快照里，删掉就再也回不去；留着幂等，下次启动会再走一遍还原
     if meta_ok {
         let _ = fs::remove_file(&path);
         // 还原成功 = 实验室已关闭，锁定标记不该再留着（正常路径下它已随重启消失）
@@ -533,17 +533,17 @@ fn converge_from(
     state_fix: Option<StateFix>,
 ) -> Converged {
     let mut out = Converged::default();
-// 本轮这份「未启用」是刚被重置出来的：原因已记 state-reset，锁定分支不要再当关闭请求（写回仍要做）
+    // 本轮这份「未启用」是刚被重置出来的：原因已记 state-reset，锁定分支不要再当关闭请求（写回仍要做）
     let just_reset = matches!(state_fix, Some(StateFix::Reset(_)));
     out.state_fix = state_fix;
-// 保留字 `off` 是一次性的强制关闭请求：**无论有无锁定标记**都按正常路径还原，并在本轮写回「未启用」非锁定态也要写回——重启后标记已消失，但 off 还留在文件里，不写回界面会停在「已提交强制关闭」中间态
+    // 保留字 `off` 是一次性的强制关闭请求：**无论有无锁定标记**都按正常路径还原，并在本轮写回「未启用」非锁定态也要写回——重启后标记已消失，但 off 还留在文件里，不写回界面会停在「已提交强制关闭」中间态
     let force_off = matches!(state, State::ForceOff);
     if force_off {
         out.forced = true;
     }
 
     // ── 锁定期间：不接受关闭，也不做还原 ──
-// 标记还在 = 本次开机后启用过实验室，关闭与还原只能靠重启；这里只做重新断言：拉回 rhine.chr 与运行时覆盖
+    // 标记还在 = 本次开机后启用过实验室，关闭与还原只能靠重启；这里只做重新断言：拉回 rhine.chr 与运行时覆盖
     if lock_exists() {
         if force_off {
             // 强制关闭（保留字 off）：清掉标记后**不 return**，落到下面正常还原路径（恢复原地调度）日志不在这里打（启动期早于 logger::init），
@@ -583,7 +583,7 @@ fn converge_from(
     }
 
     out.restored = restore(root, meta_path);
-        // 强制关闭后写回「未启用」（内置模板只有注释）：off 是一次性请求，留在文件里会被反复解释、界面停在第三态写回自身会触发一次监听事件，但那时 next == current == None，不会再收敛一轮
+    // 强制关闭后写回「未启用」（内置模板只有注释）：off 是一次性请求，留在文件里会被反复解释、界面停在第三态写回自身会触发一次监听事件，但那时 next == current == None，不会再收敛一轮
     if force_off {
         common::write_file_no_panic(&root.join(RHINE_CHR), RHINE_DEFAULT_CHR.as_bytes());
     }

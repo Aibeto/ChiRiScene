@@ -162,7 +162,10 @@ impl FasController {
     fn apply_steady_decay(&mut self, avg_fps: f32) {
         let floor = self.effective_perf_floor();
         let ceil = self.effective_perf_ceil();
-        let thresh = scale_frames(self.cfg.steady_decay_frame_threshold, self.current_target_fps);
+        let thresh = scale_frames(
+            self.cfg.steady_decay_frame_threshold,
+            self.current_target_fps,
+        );
         let high_fps_factor = (self.current_target_fps / 60.0).powf(0.70).max(1.0);
         let adjusted_thresh = (thresh as f32 * high_fps_factor) as u32;
 

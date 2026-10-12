@@ -66,7 +66,9 @@ impl BuildCostStats {
         end: Option<u64>,
     ) {
         self.clock_errors += u64::from(start.is_none()) + u64::from(end.is_none());
-        let cpu_ns = start.zip(end).and_then(|(start, end)| end.checked_sub(start));
+        let cpu_ns = start
+            .zip(end)
+            .and_then(|(start, end)| end.checked_sub(start));
         if start.is_some() && end.is_some() && cpu_ns.is_none() {
             self.clock_errors += 1;
         }
@@ -89,9 +91,9 @@ impl BuildCostStats {
     /// 每帧仅结算一次；缺失时钟、溢出和负残差均不产生有效零值。
     pub fn finish(&mut self, wall_ns: u64, cpu_ns: Option<u64>) {
         let children = &self.blocks[..BuildBlock::Residual.slot()];
-        let wall_sum = children.iter().try_fold(0u64, |total, block| {
-            total.checked_add(block.wall_ns_sum)
-        });
+        let wall_sum = children
+            .iter()
+            .try_fold(0u64, |total, block| total.checked_add(block.wall_ns_sum));
         let cpu_sum = children.iter().try_fold(0u64, |total, block| {
             (block.count == block.cpu_valid_count)
                 .then_some(())
@@ -100,7 +102,8 @@ impl BuildCostStats {
         let residual_wall = wall_sum
             .filter(|_| !self.wall_overflow)
             .and_then(|sum| wall_ns.checked_sub(sum));
-        let residual_cpu = cpu_ns.zip(cpu_sum)
+        let residual_cpu = cpu_ns
+            .zip(cpu_sum)
             .filter(|_| !self.cpu_overflow)
             .and_then(|(total, sum)| total.checked_sub(sum));
         let stats = &mut self.blocks[BuildBlock::Residual.slot()];
@@ -122,9 +125,13 @@ impl BuildCostStats {
     pub fn absorb(&mut self, other: &Self) {
         for (target, source) in self.blocks.iter_mut().zip(&other.blocks) {
             target.count = target.count.saturating_add(source.count);
-            target.wall_valid_count = target.wall_valid_count.saturating_add(source.wall_valid_count);
+            target.wall_valid_count = target
+                .wall_valid_count
+                .saturating_add(source.wall_valid_count);
             target.wall_ns_sum = target.wall_ns_sum.saturating_add(source.wall_ns_sum);
-            target.cpu_valid_count = target.cpu_valid_count.saturating_add(source.cpu_valid_count);
+            target.cpu_valid_count = target
+                .cpu_valid_count
+                .saturating_add(source.cpu_valid_count);
             target.cpu_ns_sum = target.cpu_ns_sum.saturating_add(source.cpu_ns_sum);
         }
         self.clock_errors = self.clock_errors.saturating_add(other.clock_errors);
@@ -157,9 +164,15 @@ impl BuildCostStats {
             "schema=selfcost-build/1 session={session} window_start={start} window_end={end} \
              parent=build block={} count={} wall_valid_count={} wall_ns_sum={} \
              cpu_valid_count={} cpu_ns_sum={} clock_errors={} residual_errors={} write_errors={}",
-            block.name(), stats.count, stats.wall_valid_count, stats.wall_ns_sum,
-            stats.cpu_valid_count, stats.cpu_ns_sum, self.clock_errors,
-            self.residual_errors, self.write_errors,
+            block.name(),
+            stats.count,
+            stats.wall_valid_count,
+            stats.wall_ns_sum,
+            stats.cpu_valid_count,
+            stats.cpu_ns_sum,
+            self.clock_errors,
+            self.residual_errors,
+            self.write_errors,
         )
     }
 }
@@ -243,8 +256,18 @@ mod tests {
         same_block_overflow.record(BuildBlock::TidStat, u64::MAX, Some(0), Some(u64::MAX));
         same_block_overflow.record(BuildBlock::TidStat, 1, Some(0), Some(1));
         same_block_overflow.finish(u64::MAX, Some(u64::MAX));
-        assert_eq!(same_block_overflow.stats(BuildBlock::Residual).cpu_valid_count, 0);
-        assert_eq!(same_block_overflow.stats(BuildBlock::Residual).wall_valid_count, 0);
+        assert_eq!(
+            same_block_overflow
+                .stats(BuildBlock::Residual)
+                .cpu_valid_count,
+            0
+        );
+        assert_eq!(
+            same_block_overflow
+                .stats(BuildBlock::Residual)
+                .wall_valid_count,
+            0
+        );
     }
 
     #[test]
@@ -258,10 +281,16 @@ mod tests {
         assert!(line.contains("cpu_valid_count=0 cpu_ns_sum=0 clock_errors=2"));
         frame.note_write_error();
         frame.reset();
-        assert!(frame.summary_line("session", "2", "3", BuildBlock::Residual)
-            .ends_with("write_errors=1"));
+        assert!(
+            frame
+                .summary_line("session", "2", "3", BuildBlock::Residual)
+                .ends_with("write_errors=1")
+        );
         frame.reset_session();
-        assert!(frame.summary_line("session", "3", "4", BuildBlock::Residual)
-            .ends_with("write_errors=0"));
+        assert!(
+            frame
+                .summary_line("session", "3", "4", BuildBlock::Residual)
+                .ends_with("write_errors=0")
+        );
     }
 }

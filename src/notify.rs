@@ -88,12 +88,14 @@ fn family_adds_info(family: &str) -> bool {
 
 /// 温度格式化（缺测写 -，与 status.csv 同口径）
 fn fmt_temp(v: Option<f32>) -> String {
-    v.map(|x| format!("{x:.1}")).unwrap_or_else(|| "-".to_string())
+    v.map(|x| format!("{x:.1}"))
+        .unwrap_or_else(|| "-".to_string())
 }
 
 /// 功耗格式化（缺测写 -）
 fn fmt_power(v: Option<f32>) -> String {
-    v.map(|x| format!("{x:.2}")).unwrap_or_else(|| "-".to_string())
+    v.map(|x| format!("{x:.2}"))
+        .unwrap_or_else(|| "-".to_string())
 }
 
 /// 正文各参数之间的分隔符（单行展示）
@@ -211,7 +213,10 @@ fn handle_post(title: &str, text: &str) {
     }
     {
         let fail = LAST_FAIL.lock().unwrap_or_else(|e| e.into_inner());
-        if (*fail).map(|at| at.elapsed() < FAIL_COOLDOWN).unwrap_or(false) {
+        if (*fail)
+            .map(|at| at.elapsed() < FAIL_COOLDOWN)
+            .unwrap_or(false)
+        {
             return;
         }
     }
@@ -255,9 +260,29 @@ fn handle_cancel(force: bool) {
 fn post(title: &str, text: &str) -> bool {
     let attempts: [Vec<&str>; 3] = [
         vec![
-            "notification", "post", "-S", "bigtext", "-t", title, "-c", CHANNEL, "-o", TAG, text,
+            "notification",
+            "post",
+            "-S",
+            "bigtext",
+            "-t",
+            title,
+            "-c",
+            CHANNEL,
+            "-o",
+            TAG,
+            text,
         ],
-        vec!["notification", "post", "-S", "bigtext", "-t", title, "-o", TAG, text],
+        vec![
+            "notification",
+            "post",
+            "-S",
+            "bigtext",
+            "-t",
+            title,
+            "-o",
+            TAG,
+            text,
+        ],
         vec!["notification", "post", "-t", title, TAG, text],
     ];
     for args in attempts {

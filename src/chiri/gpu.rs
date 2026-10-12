@@ -18,7 +18,7 @@ fn read_u32(path: &str) -> Option<u32> {
 }
 
 fn read_freq_range(dir: &str) -> Option<(u32, u32)> {
-// available_frequencies 是唯一可信来源：max 是硬件上限、min 是硬件最低频（release 残留防护的兜底恢复值）；devfreq 的 max_freq/min_freq 只是当前限值
+    // available_frequencies 是唯一可信来源：max 是硬件上限、min 是硬件最低频（release 残留防护的兜底恢复值）；devfreq 的 max_freq/min_freq 只是当前限值
     let mut freqs: Vec<u32> = fs::read_to_string(format!("{dir}/available_frequencies"))
         .ok()?
         .split_whitespace()
@@ -35,12 +35,13 @@ fn probe_devfreq(dir: &str, out: &mut Vec<GpuNode>) {
     // available_frequencies 缺失时，Adreno 用 max_gpu_clk 兜底硬件上限
     let (hw_min, hw_max) = match read_freq_range(dir) {
         Some(r) => r,
-        None if dir.contains("kgsl") => {
-            match read_u32(ADRENO_MAX_CLK) {
-                Some(hw_max) => (read_u32(&format!("{dir}/min_freq")).unwrap_or(hw_max), hw_max),
-                None => return,
-            }
-        }
+        None if dir.contains("kgsl") => match read_u32(ADRENO_MAX_CLK) {
+            Some(hw_max) => (
+                read_u32(&format!("{dir}/min_freq")).unwrap_or(hw_max),
+                hw_max,
+            ),
+            None => return,
+        },
         None => return,
     };
     if hw_max == 0 || hw_min == 0 || hw_min > hw_max {
@@ -105,7 +106,11 @@ pub fn devfreq_snapshot() -> (String, String, String, String) {
         }
     }
     if std::path::Path::new(ADRENO_DIR).exists() {
-        let lb = ADRENO_DIR.rsplit('/').next().unwrap_or(ADRENO_DIR).to_string();
+        let lb = ADRENO_DIR
+            .rsplit('/')
+            .next()
+            .unwrap_or(ADRENO_DIR)
+            .to_string();
         if !seen.contains(&lb) {
             dirs.push((ADRENO_DIR.to_string(), false));
         }
@@ -128,7 +133,7 @@ pub fn devfreq_snapshot() -> (String, String, String, String) {
         }
         "-".to_string()
     };
-// 调速器：只在标准 devfreq 下读（Adreno 私有目录里的同名节点可能是频率值，不是 governor 名）；读到的内容整体是数字也判定无效
+    // 调速器：只在标准 devfreq 下读（Adreno 私有目录里的同名节点可能是频率值，不是 governor 名）；读到的内容整体是数字也判定无效
     let read_gov = |dir: &str, is_devfreq: bool| -> String {
         if !is_devfreq {
             return "-".to_string();
@@ -146,12 +151,8 @@ pub fn devfreq_snapshot() -> (String, String, String, String) {
         }
     };
 
-    let (mut cur, mut max, mut min, mut gov) = (
-        String::new(),
-        String::new(),
-        String::new(),
-        String::new(),
-    );
+    let (mut cur, mut max, mut min, mut gov) =
+        (String::new(), String::new(), String::new(), String::new());
     for (dir, is_devfreq) in dirs {
         let label = dir.rsplit('/').next().unwrap_or("gpu").to_string();
         let push = |dst: &mut String, v: String| {
@@ -198,7 +199,7 @@ impl GpuGuard {
     }
 
     // [lock]
-/// min=max 锁到硬件最高频先升 max 再升 min（避免 min>max 被内核拒绝）重复激活/无节点均 no-op（探测已打过 warn）
+    /// min=max 锁到硬件最高频先升 max 再升 min（避免 min>max 被内核拒绝）重复激活/无节点均 no-op（探测已打过 warn）
     pub fn lock(&mut self) {
         if self.active || self.nodes.is_empty() {
             return;
@@ -236,7 +237,7 @@ impl GpuGuard {
         }
         for node in &mut self.nodes {
             if let (Some(min), Some(orig)) = (&mut node.min_writer, &node.orig_min) {
-// 残留防护：orig_min 若等于 hw_max（上次 SIGKILL 残留 min=max 锁频），恢复硬件最低频而不是把残留值当「原值」固化
+                // 残留防护：orig_min 若等于 hw_max（上次 SIGKILL 残留 min=max 锁频），恢复硬件最低频而不是把残留值当「原值」固化
                 let restore_min = match orig.parse::<u32>() {
                     Ok(v) if v != node.hw_max => v,
                     _ => node.hw_min,

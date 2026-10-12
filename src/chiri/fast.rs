@@ -127,7 +127,10 @@ impl FastLock {
                 hw_max,
             });
 
-            let _ = crate::utils::try_write_file(&gov_path, crate::common::cpu_governor_for_policy(pid));
+            let _ = crate::utils::try_write_file(
+                &gov_path,
+                crate::common::cpu_governor_for_policy(pid),
+            );
 
             let max_writer = FastWriter::new(format!(
                 "/sys/devices/system/cpu/cpufreq/policy{}/scaling_max_freq",
@@ -159,7 +162,7 @@ impl FastLock {
                 min_writer,
                 current_freq: 0,
             };
-// 首次锁频：升频「先 max 后 min」、降频「先 min 后 max」，保证写的过程不出现 min > max（内核会直接拒绝）
+            // 首次锁频：升频「先 max 后 min」、降频「先 min 后 max」，保证写的过程不出现 min > max（内核会直接拒绝）
             let ok = if lock_min {
                 locked.min_writer.write_value_force(target)
                     && locked.max_writer.write_value_force(target)
@@ -215,7 +218,7 @@ impl FastLock {
         self.last_write = std::time::Instant::now();
 
         for p in &mut self.policies {
-// 直接写 target，不走 current_freq 去重——tick 本身就是「重写」
+            // 直接写 target，不走 current_freq 去重——tick 本身就是「重写」
             let ok = p.max_writer.write_value_force(p.target)
                 && p.min_writer.write_value_force(p.target);
             if ok {
@@ -235,7 +238,7 @@ impl FastLock {
         Some(REWRITE_INTERVAL)
     }
 
-/// 将单个 policy 恢复为接管前的原始状态。返回是否全部写入成功；失败时调用方保留快照以便重试
+    /// 将单个 policy 恢复为接管前的原始状态。返回是否全部写入成功；失败时调用方保留快照以便重试
     fn restore_policy(r: &PolicySnapshot) -> bool {
         let gov_path = format!(
             "/sys/devices/system/cpu/cpufreq/policy{}/scaling_governor",
@@ -251,7 +254,7 @@ impl FastLock {
         );
 
         let mut all_ok = true;
-// 恢复写序保证任意中间状态满足 min <= max：1) governor；2) max 先放宽到 hw_max；3) min；4) max
+        // 恢复写序保证任意中间状态满足 min <= max：1) governor；2) max 先放宽到 hw_max；3) min；4) max
         if let Some(gov) = &r.governor {
             if crate::utils::write_to_file(&gov_path, gov.as_bytes()).is_err() {
                 all_ok = false;

@@ -2646,8 +2646,19 @@ mod tests {
     #[test]
     fn aff_token_owns_and_matches_old_on_dirty() {
         for s in [
-            "a b", "a\nb", "a\tb", " lead", "trail ", "a\u{1}b", "a\u{7f}b", "中文 空格", "\n",
-            " ", "a  b", "\r\n", "a\u{0}b",
+            "a b",
+            "a\nb",
+            "a\tb",
+            " lead",
+            "trail ",
+            "a\u{1}b",
+            "a\u{7f}b",
+            "中文 空格",
+            "\n",
+            " ",
+            "a  b",
+            "\r\n",
+            "a\u{0}b",
         ] {
             let got = aff_token(s);
             assert!(matches!(got, Cow::Owned(_)), "expected Owned for {s:?}");
@@ -2669,8 +2680,17 @@ mod tests {
     fn tick_sig_matches_old_literal_cases() {
         // 旧实现期望写成字面量断言
         assert_eq!(
-            tick_sig("hold", Some(80.0), Some(1_200_000), Some(1_800_000), Some(60.0), true, 2, 3)
-                .as_str(),
+            tick_sig(
+                "hold",
+                Some(80.0),
+                Some(1_200_000),
+                Some(1_800_000),
+                Some(60.0),
+                true,
+                2,
+                3
+            )
+            .as_str(),
             "hold|80.00|1200000|1800000|60|true|2|3"
         );
         assert_eq!(
@@ -2771,7 +2791,12 @@ mod tests {
         let mut last_sig = String::from("a|b");
         let mut last_t = t0;
         // 相同签名 + 未到心跳 → 不落行，状态不变
-        assert!(!tick_decide(&mut last_sig, &mut last_t, "a|b", t0 + Duration::from_millis(100)));
+        assert!(!tick_decide(
+            &mut last_sig,
+            &mut last_t,
+            "a|b",
+            t0 + Duration::from_millis(100)
+        ));
         assert_eq!(last_sig, "a|b");
         // 相同签名 + 越过心跳 → 落行并刷新时刻
         let later = t0 + Duration::from_secs(5);
@@ -2854,10 +2879,7 @@ mod tests {
         // 首字符判定：`p`/`t` 开头即计入（无论后续内容）
         let mixed = vec!["p".to_string(), "t".to_string(), "pt".to_string()];
         let (block, lines) = aff_build_block(&mixed, false, "1007-000002");
-        assert_eq!(
-            block,
-            "@S ts=1007-000002 ntop=2 nfg=1\np\nt\npt\n"
-        );
+        assert_eq!(block, "@S ts=1007-000002 ntop=2 nfg=1\np\nt\npt\n");
         assert_eq!(lines, 4);
     }
 

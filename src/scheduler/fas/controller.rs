@@ -202,7 +202,11 @@ impl FasController {
     pub fn reset_frame_feedback(&mut self) {
         // set_game 已按 per-app 齿轮集合选定目标；这里只抬高非法目标，全局齿轮情形下保持既定 target 语义
         let max_gear = self.max_gear();
-        if !self.fps_gears.iter().any(|gear| (gear - self.current_target_fps).abs() < 0.5) {
+        if !self
+            .fps_gears
+            .iter()
+            .any(|gear| (gear - self.current_target_fps).abs() < 0.5)
+        {
             self.current_target_fps = max_gear;
         }
         self.reset_runtime();

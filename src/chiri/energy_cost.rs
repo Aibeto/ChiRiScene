@@ -566,7 +566,12 @@ mod tests {
             interp(&[1_000_000, 2_000_000], &[2.0, 4.0], frequency_khz)
         };
         assert_eq!(
-            sum_cpu_dynamic_power_w(&[1.0, 0.0, 1.0, 0.5], &spans, &frequencies, power_at_frequency),
+            sum_cpu_dynamic_power_w(
+                &[1.0, 0.0, 1.0, 0.5],
+                &spans,
+                &frequencies,
+                power_at_frequency
+            ),
             Some(3.0)
         );
         assert_eq!(

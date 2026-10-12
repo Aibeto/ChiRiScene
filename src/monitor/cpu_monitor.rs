@@ -74,7 +74,7 @@ pub async fn start_cpu_loop(
     ak_active: Arc<AtomicBool>,
     sample_ms_normal: u64,
 ) -> Result<(), anyhow::Error> {
-// 与 fps_monitor 一致：debug 构建嵌 debug 产物，release 嵌 release 产物
+    // 与 fps_monitor 一致：debug 构建嵌 debug 产物，release 嵌 release 产物
     #[cfg(debug_assertions)]
     let bpf = Box::leak(Box::new(Ebpf::load(include_bytes!(concat!(
         env!("OUT_DIR"),
@@ -90,12 +90,12 @@ pub async fn start_cpu_loop(
     program.attach("sched", "sched_switch")?;
     info!("{}", t("cpu-monitor-started"));
 
-// FAS 恢复前台利用率计算：仅 ChiRi 且 FAS 配置可用时置位（非 ChiRi 恒 false，调度器忽略该字段）
+    // FAS 恢复前台利用率计算：仅 ChiRi 且 FAS 配置可用时置位（非 ChiRi 恒 false，调度器忽略该字段）
     if crate::common::is_chiri_soc() && crate::common::fas_available() {
         FAS_FG_UTIL_ENABLED.store(true, Ordering::Relaxed);
     }
 
-// ChiRi 专属可选扩展探针（唤醒/迁移/频切计数，遥测用）：仅 ChiRi 尝试挂载；内核缺对应 tracepoint 时 warn 一次后跳过，不影响主探针
+    // ChiRi 专属可选扩展探针（唤醒/迁移/频切计数，遥测用）：仅 ChiRi 尝试挂载；内核缺对应 tracepoint 时 warn 一次后跳过，不影响主探针
     let chiri_telemetry = crate::common::is_chiri_soc();
     if chiri_telemetry {
         for (name, cat, tp) in [
@@ -133,7 +133,7 @@ pub async fn start_cpu_loop(
         }
     }
 
-// 获取物理在线核心列表
+    // 获取物理在线核心列表
     let online_cpus_list = online_cpus().map_err(|e| {
         anyhow::anyhow!(
             "{}",
@@ -154,8 +154,8 @@ pub async fn start_cpu_loop(
 
     let bpf_ptr = bpf as *mut Ebpf;
 
-// TGID_RUN_TIME 句柄全链只读（写入只在内核侧），不对同一 MapData 活 &mut；Ebpf 已 Box::leak 常驻、地址稳定，
-// snapshot_procs 从静态量重建只读句柄（见 SNAP_TGID_MAP 注释）
+    // TGID_RUN_TIME 句柄全链只读（写入只在内核侧），不对同一 MapData 活 &mut；Ebpf 已 Box::leak 常驻、地址稳定，
+    // snapshot_procs 从静态量重建只读句柄（见 SNAP_TGID_MAP 注释）
     let tgid_map_ref: Option<&aya::maps::Map> = unsafe { &*bpf_ptr }.map("TGID_RUN_TIME");
     SNAP_TGID_MAP.store(
         tgid_map_ref
@@ -164,16 +164,16 @@ pub async fn start_cpu_loop(
         Ordering::Release,
     );
 
-// 逐核运行时状态（合并后单 map，布局见 CoreState）
+    // 逐核运行时状态（合并后单 map，布局见 CoreState）
     let core_state_map: PerCpuArray<_, CoreState> =
         PerCpuArray::try_from(unsafe { &mut *bpf_ptr }.map_mut("CORE_STATE").unwrap())?;
     let thread_run_map: BpfHashMap<_, u32, u64> =
         BpfHashMap::try_from(unsafe { &mut *bpf_ptr }.map_mut("THREAD_RUN_TIME").unwrap())?;
 
-// TGID 级聚合运行时间 map（只读视图，同 SNAP_TGID_MAP，全链无 &mut）
+    // TGID 级聚合运行时间 map（只读视图，同 SNAP_TGID_MAP，全链无 &mut）
     let tgid_run_map: BpfHashMap<_, u32, u64> = BpfHashMap::try_from(tgid_map_ref.unwrap())?;
 
-// 扩展探针计数 map：可选语义——ELF 缺失（产物偏差）时计数恒 0 并 warn 一次，绝不 panic
+    // 扩展探针计数 map：可选语义——ELF 缺失（产物偏差）时计数恒 0 并 warn 一次，绝不 panic
     let fetch_counter_map =
         |name: &'static str| -> Option<PerCpuArray<&mut aya::maps::MapData, u64>> {
             match unsafe { &mut *bpf_ptr }
@@ -194,8 +194,8 @@ pub async fn start_cpu_loop(
     let migrate_map = fetch_counter_map("MIGRATE_COUNT");
     let freq_trans_map = fetch_counter_map("FREQ_TRANS_COUNT");
 
-// 线程级记账开关（K2）：与 FAS_FG_UTIL_ENABLED 同条件置位，只被「TGID 主路径失败」的降级路径消费，关闭时探针侧跳过 THREAD_RUN_TIME 查找/插入；旧产物缺此 map 时仅告警、
-// 探针保持恒记账，版本偏差无行为差异
+    // 线程级记账开关（K2）：与 FAS_FG_UTIL_ENABLED 同条件置位，只被「TGID 主路径失败」的降级路径消费，关闭时探针侧跳过 THREAD_RUN_TIME 查找/插入；旧产物缺此 map 时仅告警、
+    // 探针保持恒记账，版本偏差无行为差异
     if FAS_FG_UTIL_ENABLED.load(Ordering::Relaxed) {
         match unsafe { &mut *bpf_ptr }.map_mut("THREAD_ACCT") {
             Some(m) => match Array::<&mut aya::maps::MapData, u32>::try_from(m) {
@@ -214,7 +214,7 @@ pub async fn start_cpu_loop(
 
     tokio::spawn(async move {
         let mut rx_pid = rx_pid;
-// 前台 PID 由 app_detect 在 `set_current_package` 生效处即时广播（原 500ms 轮询已删），这里只消费最新值
+        // 前台 PID 由 app_detect 在 `set_current_package` 生效处即时广播（原 500ms 轮询已删），这里只消费最新值
         let mut fg_pid: u32 = *rx_pid.borrow();
         // 根据最大 CPU ID 初始化历史记录向量，避免越界
         let mut last_idle_times = vec![0u64; max_cpu_id + 1];
@@ -232,16 +232,16 @@ pub async fn start_cpu_loop(
             )
         );
 
-// TGID 级聚合：per-PID 的 adj（raw+pending）差分基线
+        // TGID 级聚合：per-PID 的 adj（raw+pending）差分基线
         let mut last_tgid_adj: u64 = 0;
-let mut last_tgid_pid: u32 = 0;
-// 备用：线程级数据（TGID 主路径失败时降级用）
+        let mut last_tgid_pid: u32 = 0;
+        // 备用：线程级数据（TGID 主路径失败时降级用）
         let mut last_thread_run: std::collections::HashMap<u32, u64> =
             std::collections::HashMap::new();
 
         let mut log_counter: u32 = 0;
 
-// 扩展探针统计：2s 读一次累计计数，发周期增量事件（ChiRi 专属）
+        // 扩展探针统计：2s 读一次累计计数，发周期增量事件（ChiRi 专属）
         const STATS_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
         let mut last_stats_check = std::time::Instant::now();
         let mut last_wakeup_total: u64 = 0;
@@ -253,7 +253,7 @@ let mut last_tgid_pid: u32 = 0;
 
         loop {
             interval.tick().await;
-// 消费前台 PID 广播（推送源 = app_detect 变化点，无轮询延迟；160/40ms 节奏下足够及时）
+            // 消费前台 PID 广播（推送源 = app_detect 变化点，无轮询延迟；160/40ms 节奏下足够及时）
             if rx_pid.has_changed().unwrap_or(false) {
                 fg_pid = *rx_pid.borrow_and_update();
             }
@@ -271,13 +271,13 @@ let mut last_tgid_pid: u32 = 0;
 
             let mut core_utils = vec![0.0_f32; max_cpu_id + 1];
 
-// [global-util]
-// 1. 全局单核利用率计算（含实时状态补偿）core_utils 按真实 CPU ID 索引（长度 max_cpu_id+1）与 CLG 端一致；
-// 若按在线列表顺序 push，在线核不连续（如 [0,2,4,6]）时 CLG 取错核、负载归零
+            // [global-util]
+            // 1. 全局单核利用率计算（含实时状态补偿）core_utils 按真实 CPU ID 索引（长度 max_cpu_id+1）与 CLG 端一致；
+            // 若按在线列表顺序 push，在线核不连续（如 [0,2,4,6]）时 CLG 取错核、负载归零
             for &cpu_id in &online_cpus_list {
                 let idx = cpu_id as usize;
 
-// 单次取值：四字段同源 CoreState（map/该核缺失按 0，与原逐字段 unwrap_or(0) 一致）
+                // 单次取值：四字段同源 CoreState（map/该核缺失按 0，与原逐字段 unwrap_or(0) 一致）
                 let (raw_idle, raw_busy, last_switch_time, current_tid) = per_cpu_state
                     .as_ref()
                     .ok()
@@ -287,10 +287,10 @@ let mut last_tgid_pid: u32 = 0;
                 let mut adj_idle = raw_idle;
                 let mut adj_busy = raw_busy;
 
-// 计算当前任务已积累但未提交 sched_switch 的 pending 时间（>1s 异常值剔为 0）
+                // 计算当前任务已积累但未提交 sched_switch 的 pending 时间（>1s 异常值剔为 0）
                 let mut pending_delta = now_ktime.saturating_sub(last_switch_time);
                 if pending_delta > 1_000_000_000 {
-pending_delta = 0;
+                    pending_delta = 0;
                 }
 
                 if current_tid == 0 {
@@ -314,14 +314,14 @@ pending_delta = 0;
                 last_busy_times[idx] = adj_busy;
             }
 
-// [fg-util]
-// 2. 前台利用率：主路径查 1 个 TGID key（不受 thread_run_time HASH 驱逐影响）；
-// FAS 禁用时 foreground_max_util 无消费方，跳过计算（见 FAS_FG_UTIL_ENABLED）
+            // [fg-util]
+            // 2. 前台利用率：主路径查 1 个 TGID key（不受 thread_run_time HASH 驱逐影响）；
+            // FAS 禁用时 foreground_max_util 无消费方，跳过计算（见 FAS_FG_UTIL_ENABLED）
             let foreground_max_util = if FAS_FG_UTIL_ENABLED.load(Ordering::Relaxed) {
                 if fg_pid == 0 {
                     0.0_f32
                 } else {
-// PID 切换时重置 TGID 基线，避免跨进程累计值比较
+                    // PID 切换时重置 TGID 基线，避免跨进程累计值比较
                     if fg_pid != last_tgid_pid {
                         debug!(
                             "{}",
@@ -335,7 +335,7 @@ pending_delta = 0;
                         );
                         last_tgid_adj = 0;
                         last_tgid_pid = fg_pid;
-// 同时清空线程级缓存（PID 变了，旧 TID 无意义）
+                        // 同时清空线程级缓存（PID 变了，旧 TID 无意义）
                         last_thread_run.clear();
                     }
 
@@ -353,7 +353,7 @@ pending_delta = 0;
                     if let Some(util) = tgid_util {
                         util
                     } else {
-// ── 降级路径：逐 TID 遍历（原始逻辑，fallback）──
+                        // ── 降级路径：逐 TID 遍历（原始逻辑，fallback）──
                         debug!(
                             "{}",
                             t_with_args(
@@ -380,7 +380,7 @@ pending_delta = 0;
             };
 
             log_counter += 1;
-// format! 在宏外求值，log_enabled! 门控省掉 INFO 级别下的分配
+            // format! 在宏外求值，log_enabled! 门控省掉 INFO 级别下的分配
             if log_counter % 25 == 0 && log::log_enabled!(log::Level::Debug) {
                 let cores_str = core_utils
                     .iter()
@@ -414,8 +414,8 @@ pending_delta = 0;
                 break;
             }
 
-// [telemetry]
-// ChiRi 遥测：读扩展探针累计计数发周期增量；探针未挂载时增量恒 0、事件照发保下游 CSV 列对齐（watchdog 不消费）
+            // [telemetry]
+            // ChiRi 遥测：读扩展探针累计计数发周期增量；探针未挂载时增量恒 0、事件照发保下游 CSV 列对齐（watchdog 不消费）
             if chiri_telemetry && last_stats_check.elapsed() >= STATS_INTERVAL {
                 last_stats_check = std::time::Instant::now();
                 let w = percpu_total(wakeup_map.as_ref());
@@ -435,8 +435,8 @@ pending_delta = 0;
                 }
             }
 
-// [interval]
-// 按特调状态切采样周期：akmode 激活 40ms 快速跟随，否则常规间隔（ChiRi 160 / 非 ChiRi 200ms）；切换时按新周期重建
+            // [interval]
+            // 按特调状态切采样周期：akmode 激活 40ms 快速跟随，否则常规间隔（ChiRi 160 / 非 ChiRi 200ms）；切换时按新周期重建
             let target = if ak_active.load(Ordering::Relaxed) {
                 std::time::Duration::from_millis(SAMPLE_MS_TUNED)
             } else {
@@ -495,10 +495,10 @@ static SNAP_TGID_MAP: AtomicPtr<aya::maps::Map> = AtomicPtr::new(std::ptr::null_
 pub fn snapshot_procs() -> Vec<ProcSnap> {
     let ptr = SNAP_TGID_MAP.load(Ordering::Acquire);
     if ptr.is_null() {
-// start_cpu_loop 尚未注册句柄 / map 缺失：无数据可采
+        // start_cpu_loop 尚未注册句柄 / map 缺失：无数据可采
         return Vec::new();
     }
-// SAFETY: 指针指向 Box::leak 常驻 Ebpf 内的 Map（见 SNAP_TGID_MAP），生命周期覆盖进程；只构造只读句柄，不写入
+    // SAFETY: 指针指向 Box::leak 常驻 Ebpf 内的 Map（见 SNAP_TGID_MAP），生命周期覆盖进程；只构造只读句柄，不写入
     let map: &aya::maps::Map = unsafe { &*ptr };
     let Ok(tgid_run_map) = BpfHashMap::<&aya::maps::MapData, u32, u64>::try_from(map) else {
         return Vec::new();
@@ -561,7 +561,7 @@ fn compute_tgid_util(
     real_delta_ns: u64,
     last_tgid_adj: &mut u64,
 ) -> Option<f32> {
-// 读取 TGID 累计运行时间（BPF 侧只在 sched_switch 更新）
+    // 读取 TGID 累计运行时间（BPF 侧只在 sched_switch 更新）
     let raw_tgid_time = tgid_run_map.get(&fg_pid, 0).unwrap_or(0);
 
     // 如果 TGID 在 map 中完全不存在，且没有历史基线
@@ -569,7 +569,7 @@ fn compute_tgid_util(
         return None;
     }
 
-// pending：正在核心上运行但未经过 sched_switch 的时间（瞬时快照值，随 adj 进入基线差分，不单独累积）
+    // pending：正在核心上运行但未经过 sched_switch 的时间（瞬时快照值，随 adj 进入基线差分，不单独累积）
     let mut current_pending: u64 = 0;
     if let Ok(states) = per_cpu_state.as_ref() {
         for &cpu_id in online_cpus {
@@ -585,17 +585,17 @@ fn compute_tgid_util(
         }
     }
 
-// adj = raw + pending：此刻该 TGID 已消耗的总 CPU 时间（含未提交时段）
+    // adj = raw + pending：此刻该 TGID 已消耗的总 CPU 时间（含未提交时段）
     let adj = raw_tgid_time + current_pending;
     let prev_adj = *last_tgid_adj;
     *last_tgid_adj = adj;
 
     if prev_adj == 0 {
-// 首次采样（PID 刚切换或首次运行），只建基线
+        // 首次采样（PID 刚切换或首次运行），只建基线
         return Some(0.0);
     }
 
-// adj 理论单调增；回退 = map 重置/条目驱逐重建，或 pending>1s 被守卫剔除的小幅回退，均本轮记 0
+    // adj 理论单调增；回退 = map 重置/条目驱逐重建，或 pending>1s 被守卫剔除的小幅回退，均本轮记 0
     if adj < prev_adj {
         return Some(0.0);
     }
@@ -603,7 +603,7 @@ fn compute_tgid_util(
     // 总增量 = adj 差分 = raw 增量 + pending 增量（不是 + 当前 pending）
     let total_delta = adj - prev_adj;
 
-// 利用率 = 总增量 / 墙钟时间
+    // 利用率 = 总增量 / 墙钟时间
     let util = (total_delta as f32 / real_delta_ns as f32).clamp(0.0, 1.0);
 
     Some(util)
@@ -626,7 +626,7 @@ fn compute_thread_level_util(
     for &tid in &tids {
         let mut adj_thread_time = thread_run_map.get(&tid, 0).unwrap_or(0);
 
-// 线程正在某核上跑：补上其 pending delta
+        // 线程正在某核上跑：补上其 pending delta
         for &cpu_id in online_cpus {
             let idx = cpu_id as usize;
             let Some(s) = per_cpu_state.as_ref().ok().and_then(|v| v.get(idx)) else {
@@ -644,7 +644,7 @@ fn compute_thread_level_util(
         current_thread_run.insert(tid, adj_thread_time);
 
         if let Some(&last_run) = last_thread_run.get(&tid) {
-// 防驱逐：新值 < 旧值说明 HASH 条目被驱逐重建、数据不连续，跳过此 TID 本轮计算
+            // 防驱逐：新值 < 旧值说明 HASH 条目被驱逐重建、数据不连续，跳过此 TID 本轮计算
             if adj_thread_time >= last_run {
                 let thread_delta = adj_thread_time - last_run;
                 let util = (thread_delta as f32 / real_delta_ns as f32).clamp(0.0, 1.0);

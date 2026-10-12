@@ -47,12 +47,12 @@ pub enum DaemonEvent {
         foreground_max_util: f32,
     },
 
-/// 装箱：RulesConfig 是最大变体，内联会让 40ms 一次的 SystemLoadUpdate 按整枚举尺寸搬内存
+    /// 装箱：RulesConfig 是最大变体，内联会让 40ms 一次的 SystemLoadUpdate 按整枚举尺寸搬内存
     ConfigReload(Box<RulesConfig>),
 
     ScreenStateChange(bool),
 
-/// eBPF 扩展探针周期统计（仅 ChiRi SoC 的 cpu_monitor 可选探针产生），字段为 2s 发送周期内增量
+    /// eBPF 扩展探针周期统计（仅 ChiRi SoC 的 cpu_monitor 可选探针产生），字段为 2s 发送周期内增量
     BpfStats {
         /// sched_wakeup 唤醒次数：调度唤醒链活跃度
         wakeups: u32,
@@ -79,7 +79,7 @@ pub struct ProcSnap {
 pub fn get_module_root() -> PathBuf {
     let exe_path = env::current_exe().unwrap_or_else(|_| PathBuf::from("/"));
 
-// 回溯两级：core/bin/chiri -> <模块根>
+    // 回溯两级：core/bin/chiri -> <模块根>
     exe_path
         .parent()
         .unwrap_or(&exe_path) // .../core/bin
@@ -927,7 +927,7 @@ fn parse_special_tuned(text: &str) -> Vec<SpecialTunedEntry> {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-// 注意：先摘 "re:" 前缀再切分——直接整行 splitn(3,':') 会让包名变字面量 "re" 永不命中并混入假模式名（正则体按 yaml 约定不含冒号）
+        // 注意：先摘 "re:" 前缀再切分——直接整行 splitn(3,':') 会让包名变字面量 "re" 永不命中并混入假模式名（正则体按 yaml 约定不含冒号）
         let (is_regex, body) = match line.strip_prefix("re:") {
             Some(rest) => (true, rest),
             None => (false, line),
@@ -999,7 +999,7 @@ pub fn special_tuned_entry(pkg: &str) -> Option<&'static SpecialTunedEntry> {
     if lab_special_tuned_disabled() {
         return None;
     }
-// [exact_index] 两段式查找顺序不变：先精确段（等价原「文件顺序第一条」），未命中再按文件顺序线性匹配正则条目，行为不变
+    // [exact_index] 两段式查找顺序不变：先精确段（等价原「文件顺序第一条」），未命中再按文件顺序线性匹配正则条目，行为不变
     special_tuned_exact()
         .get(pkg)
         .copied()
@@ -1322,7 +1322,7 @@ struct MetaYamlFile {
     language: Option<String>,
     loglevel: Option<String>,
     dev_record: Option<bool>,
-/// aff `@S` 每秒快照帧的 top-N 进程数（手改字段，WebUI 无开关），详见 ExternalMetaOverrides 同名字段
+    /// aff `@S` 每秒快照帧的 top-N 进程数（手改字段，WebUI 无开关），详见 ExternalMetaOverrides 同名字段
     devimp_top_n: Option<usize>,
     /// aff `@S` 快照帧的采样间隔秒数（手改字段，WebUI 无开关），详见 ExternalMetaOverrides 同名字段
     devimp_aff_secs: Option<usize>,
@@ -1330,7 +1330,7 @@ struct MetaYamlFile {
     scenemode_enabled: Option<bool>,
     /// 线程摆放总开关（affinity + core_ctl），详见 ExternalMetaOverrides
     thread_bind: Option<bool>,
-/// PowerBase 总开关（缺省 false）必须与本结构同步注册：deny_unknown_fields 下 WebUI 直写键不在这里会让整个 meta.yaml 被判非法并整体重置
+    /// PowerBase 总开关（缺省 false）必须与本结构同步注册：deny_unknown_fields 下 WebUI 直写键不在这里会让整个 meta.yaml 被判非法并整体重置
     powerbase_enabled: Option<bool>,
     /// 功耗口径开关（PowerAVG.chr），详见 ExternalMetaOverrides（缺省 false）
     power_avg: Option<bool>,
@@ -1360,48 +1360,48 @@ pub struct ExternalMetaOverrides {
     pub loglevel: Option<String>,
     pub language: Option<String>,
     pub dev_record: Option<bool>,
-/// aff @S 每秒快照 top-N 进程数（缺省 10）：每秒按 util 降序落盘前 N 个进程；前台树与被管进程不受 N 截断、恒定落盘消费点：Config::load 合并后由 Meta::
-/// normalize 钳到 1..=64（超限 clamp，不判文件非法）
+    /// aff @S 每秒快照 top-N 进程数（缺省 10）：每秒按 util 降序落盘前 N 个进程；前台树与被管进程不受 N 截断、恒定落盘消费点：Config::load 合并后由 Meta::
+    /// normalize 钳到 1..=64（超限 clamp，不判文件非法）
     pub devimp_top_n: Option<usize>,
     /// aff @S 快照帧采样间隔秒数（缺省 1）：每 N 秒采一帧，息屏再乘 `AFF_SNAP_OFFSCREEN_FACTOR`。
     /// 调大即线性减少 stat 采样与写盘——守护进程自身的常驻开销主要就花在前台线程逐帧下钻上
     pub devimp_aff_secs: Option<usize>,
     pub fas_enabled: Option<bool>,
     pub scenemode_enabled: Option<bool>,
-/// 线程摆放总闸（`thread_bind`）：实验室 frozen 专用机制——用户侧开关已移除，仅 frozen 模式写 false 交还线程亲和/绑核与 core_ctl。 与机型内嵌 feature
-/// yaml 的两个子开关取「与」，见 chiri/config.rs::Config::load
+    /// 线程摆放总闸（`thread_bind`）：实验室 frozen 专用机制——用户侧开关已移除，仅 frozen 模式写 false 交还线程亲和/绑核与 core_ctl。 与机型内嵌 feature
+    /// yaml 的两个子开关取「与」，见 chiri/config.rs::Config::load
     pub thread_bind: Option<bool>,
-/// PowerBase 总开关（缺省 false）：开启后原由 CLG 接管的亮屏日常场合改由 PowerBase 接管（以放电功耗为指标）消费点：Config::
-/// load 合并后 set_powerbase_enabled 同步原子量
+    /// PowerBase 总开关（缺省 false）：开启后原由 CLG 接管的亮屏日常场合改由 PowerBase 接管（以放电功耗为指标）消费点：Config::
+    /// load 合并后 set_powerbase_enabled 同步原子量
     pub powerbase_enabled: Option<bool>,
-/// 功耗口径开关（PowerAVG.chr）：false（默认）= 参考值（旧值先乘 10 再按 10:1 加权递推，偏历史，含息屏样本）；true = 累计平均（等权全史，仅亮屏放电样本）两者都只在放电时取样；
-/// 仅 ChiRi 1s 状态采样消费；写侧走单次读-改-写顶层行替换，见 WebUI contract/meta.ts
+    /// 功耗口径开关（PowerAVG.chr）：false（默认）= 参考值（旧值先乘 10 再按 10:1 加权递推，偏历史，含息屏样本）；true = 累计平均（等权全史，仅亮屏放电样本）两者都只在放电时取样；
+    /// 仅 ChiRi 1s 状态采样消费；写侧走单次读-改-写顶层行替换，见 WebUI contract/meta.ts
     pub power_avg: Option<bool>,
-/// 常驻状态通知开关（notify，默认 true）：daemon 每 5s 把调度状态（前台包名/模式/家族/子模式/温度/功耗）写进常驻通知，见 src/notify.rs
-/// false = 不投递并撤销已投递通知；仅 ChiRi 1s 循环消费
+    /// 常驻状态通知开关（notify，默认 true）：daemon 每 5s 把调度状态（前台包名/模式/家族/子模式/温度/功耗）写进常驻通知，见 src/notify.rs
+    /// false = 不投递并撤销已投递通知；仅 ChiRi 1s 循环消费
     pub notify: Option<bool>,
-/// OPlus 私有电压/电流节点（`oplus_chg`，默认 false）：true = 优先读 `/sys/class/oplus_chg/battery/bcc_parms`（下标 6 电芯电压0、8 电流、11 电芯电压1，
-/// mV/mA），读不到回退标准 power_supply 节点。仅 OPlus 机型有意义
+    /// OPlus 私有电压/电流节点（`oplus_chg`，默认 false）：true = 优先读 `/sys/class/oplus_chg/battery/bcc_parms`（下标 6 电芯电压0、8 电流、11 电芯电压1，
+    /// mV/mA），读不到回退标准 power_supply 节点。仅 OPlus 机型有意义
     pub oplus_chg: Option<bool>,
-/// OPlus 双电芯（默认 false）：私有节点按两节并联读——电压取两节平均（下标 6 与 11）、电流 ×2（下标 8 为单节支路）；仅在 oplus_chg 打开时生效
+    /// OPlus 双电芯（默认 false）：私有节点按两节并联读——电压取两节平均（下标 6 与 11）、电流 ×2（下标 8 为单节支路）；仅在 oplus_chg 打开时生效
     pub oplus_dual_cell: Option<bool>,
-/// 倍电压（默认 false）：标准节点电压 ×2（双电芯机型标准节点只报单节值）；与 oplus_chg 互斥，私有开关打开时被强制关闭
+    /// 倍电压（默认 false）：标准节点电压 ×2（双电芯机型标准节点只报单节值）；与 oplus_chg 互斥，私有开关打开时被强制关闭
     pub voltage_double: Option<bool>,
     /// 倍电流（`current_double`，默认 false）：标准节点路径电流 ×2，互斥关系同上
     pub current_double: Option<bool>,
-/// 电压校准除数（默认 1000000，须 > 0）：节点原始值 ÷ 该值 = V，读取层不做换算缺省 = 标准 Android ABI 的 µV 口径；OPlus 私有节点报 mV，
-/// 安装脚本检测到该节点时写入 1000（customize.sh [battery-detect]）
+    /// 电压校准除数（默认 1000000，须 > 0）：节点原始值 ÷ 该值 = V，读取层不做换算缺省 = 标准 Android ABI 的 µV 口径；OPlus 私有节点报 mV，
+    /// 安装脚本检测到该节点时写入 1000（customize.sh [battery-detect]）
     pub voltage_divisor: Option<f32>,
-/// 电流校准除数（默认 1000000，须 > 0）：节点原始值 ÷ 该值 = 安培；标准节点 µA → 1000000，OPlus 私有节点 mA → 1000（安装脚本自动写入）
-/// 与电压分开：两个量未必同时错单位，分开才能单独校正（W = |A| × V 保持自洽）
+    /// 电流校准除数（默认 1000000，须 > 0）：节点原始值 ÷ 该值 = 安培；标准节点 µA → 1000000，OPlus 私有节点 mA → 1000（安装脚本自动写入）
+    /// 与电压分开：两个量未必同时错单位，分开才能单独校正（W = |A| × V 保持自洽）
     pub current_divisor: Option<f32>,
-/// 「不改」开关（nofix，默认 false 且模板不写）：true = 启动时跳过所有覆盖类操作——webui 资产还原（restore_webroot）与 meta
-/// yaml 快照自愈（sync_meta_snapshot）用户自担文件被篡改风险；rhine 实验与 WebUI 写入不受影响
+    /// 「不改」开关（nofix，默认 false 且模板不写）：true = 启动时跳过所有覆盖类操作——webui 资产还原（restore_webroot）与 meta
+    /// yaml 快照自愈（sync_meta_snapshot）用户自担文件被篡改风险；rhine 实验与 WebUI 写入不受影响
     pub nofix: Option<bool>,
-/// 耗电读数满量程 W（power_max_w，缺省 12）：只影响 WebUI 状态页仪表盘进度换算，不参与任何调度决策
+    /// 耗电读数满量程 W（power_max_w，缺省 12）：只影响 WebUI 状态页仪表盘进度换算，不参与任何调度决策
     pub power_max_w: Option<f32>,
-/// 息屏判定值（screen_off_value，缺省 1）：debug.tracing.screen_state 等于该值视为息屏；取值仅 0/1，其它值在 parse_disk_meta 回退默认（不判整文件非法）消费点：
-/// Config::load 合并后 set_screen_off_value 同步原子量；customize.sh [screen-detect] 安装期按属性实测值翻转该字段
+    /// 息屏判定值（screen_off_value，缺省 1）：debug.tracing.screen_state 等于该值视为息屏；取值仅 0/1，其它值在 parse_disk_meta 回退默认（不判整文件非法）消费点：
+    /// Config::load 合并后 set_screen_off_value 同步原子量；customize.sh [screen-detect] 安装期按属性实测值翻转该字段
     pub screen_off_value: Option<u32>,
 }
 
@@ -1476,7 +1476,7 @@ fn parse_disk_meta(text: &str) -> Option<ExternalMetaOverrides> {
     {
         return None;
     }
-// 满量程：非有限/非正/超 200 视为写错，回退内嵌默认 12——单个数笔误不判整文件非法（WebUI 写入侧另有 1..=200 校验）
+    // 满量程：非有限/非正/超 200 视为写错，回退内嵌默认 12——单个数笔误不判整文件非法（WebUI 写入侧另有 1..=200 校验）
     let power_max_w = f.power_max_w.map(|v| {
         if v.is_finite() && v > 0.0 && v <= 200.0 {
             v
@@ -1484,7 +1484,7 @@ fn parse_disk_meta(text: &str) -> Option<ExternalMetaOverrides> {
             crate::utils::default_power_max_w()
         }
     });
-// 单位校准：非有限/非正视为写错，回退内嵌默认（同 power_max_w 口径，单个数笔误不判整文件非法；WebUI 侧另有 > 0 校验）；旧键 unit_divisor 仍接收作电压校准兜底
+    // 单位校准：非有限/非正视为写错，回退内嵌默认（同 power_max_w 口径，单个数笔误不判整文件非法；WebUI 侧另有 > 0 校验）；旧键 unit_divisor 仍接收作电压校准兜底
     let sane = |v: f32| {
         if v.is_finite() && v > 0.0 {
             v
@@ -1494,7 +1494,7 @@ fn parse_disk_meta(text: &str) -> Option<ExternalMetaOverrides> {
     };
     let voltage_divisor = f.voltage_divisor.or(f.unit_divisor).map(sane);
     let current_divisor = f.current_divisor.map(sane);
-// 息屏判定值：仅 0/1 合法，其它回退默认 1（同 power_max_w 口径，单字段笔误不判整文件非法）
+    // 息屏判定值：仅 0/1 合法，其它回退默认 1（同 power_max_w 口径，单字段笔误不判整文件非法）
     let screen_off_value = f.screen_off_value.map(|v| if v <= 1 { v } else { 1 });
     Some(ExternalMetaOverrides {
         loglevel: match f.loglevel.as_deref() {

@@ -20,9 +20,9 @@ pub struct Telemetry {
     psi_mem_some: AtomicU32,
     /// GPU 利用率（%），NaN = 节点不可用
     gpu_busy: AtomicU32,
-/// 电池电流（**节点原始值**：私有节点 mV/mA、标准节点 µA 口径；负值常见于放电方向），UNAVAIL = 不可用
+    /// 电池电流（**节点原始值**：私有节点 mV/mA、标准节点 µA 口径；负值常见于放电方向），UNAVAIL = 不可用
     batt_current_raw: AtomicI32,
-/// 电池电压（**节点原始值**：私有节点 mV、标准节点 µV 口径），UNAVAIL = 不可用
+    /// 电池电压（**节点原始值**：私有节点 mV、标准节点 µV 口径），UNAVAIL = 不可用
     batt_voltage_raw: AtomicI32,
 }
 
@@ -128,13 +128,13 @@ impl Telemetry {
         let v = f32::from_bits(self.gpu_busy.load(Ordering::Relaxed));
         if v.is_nan() { None } else { Some(v) }
     }
-/// 电池电流（**单位安培**，保留方向符号；函数名里的 ma 与 status.csv 的 `batt_current_ma` 列均为历史遗留）
-/// = 节点原始值 ÷ current_divisor（标准节点 µA 填 1000000 缺省、私有节点 mA 填 1000 安装脚本写入）；`batt_power_w` 按安培使用本值（× 电压得瓦）
+    /// 电池电流（**单位安培**，保留方向符号；函数名里的 ma 与 status.csv 的 `batt_current_ma` 列均为历史遗留）
+    /// = 节点原始值 ÷ current_divisor（标准节点 µA 填 1000000 缺省、私有节点 mA 填 1000 安装脚本写入）；`batt_power_w` 按安培使用本值（× 电压得瓦）
     pub fn batt_current_ma(&self) -> Option<f32> {
         let v = self.batt_current_raw.load(Ordering::Relaxed);
         (v != UNAVAIL).then(|| v as f32 / current_divisor())
     }
-/// 电池电压（V）；None = 不可用。`节点原始值 ÷ voltage_divisor`（口径同电流，见 [`Self::batt_current_ma`]）
+    /// 电池电压（V）；None = 不可用。`节点原始值 ÷ voltage_divisor`（口径同电流，见 [`Self::batt_current_ma`]）
     pub fn batt_voltage_v(&self) -> Option<f32> {
         let v = self.batt_voltage_raw.load(Ordering::Relaxed);
         (v != UNAVAIL).then(|| v as f32 / voltage_divisor())
@@ -213,10 +213,10 @@ fn read_oplus_bcc(dual_cell: bool) -> Option<(i32, i32)> {
     if v0 == 0 && cur == 0 {
         return None;
     }
-// 双电芯（oplus_dual_cell）= 两节**并联**（2P）：电压取两节**平均**（同压域），电流 **×2**——下标 8 是单节支路
-// 电流，整包 = 两节之和不取电压和（那是 2S 串压口径，同机型标准节点只报 ~4V 时功率会翻倍）；
-// 下标 11 缺失或非正视为单电芯布局：电压退回下标 6、电流不翻倍
-// TODO: 自检私有节点功率应与「标准节点 V × I」同量级（±20%）
+    // 双电芯（oplus_dual_cell）= 两节**并联**（2P）：电压取两节**平均**（同压域），电流 **×2**——下标 8 是单节支路
+    // 电流，整包 = 两节之和不取电压和（那是 2S 串压口径，同机型标准节点只报 ~4V 时功率会翻倍）；
+    // 下标 11 缺失或非正视为单电芯布局：电压退回下标 6、电流不翻倍
+    // TODO: 自检私有节点功率应与「标准节点 V × I」同量级（±20%）
     let (v_raw, i_raw) = if dual_cell {
         let v1: i64 = f.get(11).and_then(|s| s.parse().ok()).unwrap_or(0);
         if v1 > 0 {
@@ -265,9 +265,9 @@ pub fn telemetry_loop() {
             cell.store(v.to_bits(), Ordering::Relaxed);
         }
 
-// --- GPU busy% ---
-// 候选（Adreno kgsl → MTK GED）按存在性取首个；全部不存在 = 机型无可读节点：报一条 warn 说明
-// GPU 列恒「-」是机型限制而非读取故障（只报一次）
+        // --- GPU busy% ---
+        // 候选（Adreno kgsl → MTK GED）按存在性取首个；全部不存在 = 机型无可读节点：报一条 warn 说明
+        // GPU 列恒「-」是机型限制而非读取故障（只报一次）
         if gpu_path.is_none() {
             gpu_path = gpu_candidates
                 .iter()
@@ -306,7 +306,7 @@ pub fn telemetry_loop() {
             bcc_probed_at = Some(std::time::Instant::now());
         }
         let (mut current, mut voltage) = if use_oplus && bcc_available == Some(true) {
-// 私有节点**存在且有效**（可解析、非全零）时只认它不回退——标准节点单位/刷新周期不可信；存在却无效才回退（此刻它是唯一能给数的来源），无效原因由 read_oplus_bcc 内 warn 打点
+            // 私有节点**存在且有效**（可解析、非全零）时只认它不回退——标准节点单位/刷新周期不可信；存在却无效才回退（此刻它是唯一能给数的来源），无效原因由 read_oplus_bcc 内 warn 打点
             match read_oplus_bcc(OPLUS_DUAL_CELL.load(Ordering::Relaxed)) {
                 Some((v, i)) => {
                     // 首次读到私有节点：把原始值与当前校准值打一条 info，单位对不对看这几个数
@@ -331,7 +331,7 @@ pub fn telemetry_loop() {
         } else {
             read_standard_battery()
         };
-// 倍压/倍流：只作用于标准节点路径（私有开关打开时 UI 已强制关闭，这里再判一次，手改 meta 也挡得住）
+        // 倍压/倍流：只作用于标准节点路径（私有开关打开时 UI 已强制关闭，这里再判一次，手改 meta 也挡得住）
         if !use_oplus {
             if voltage != UNAVAIL && VOLTAGE_DOUBLE.load(Ordering::Relaxed) {
                 voltage = voltage.saturating_mul(2);
@@ -340,7 +340,7 @@ pub fn telemetry_loop() {
                 current = current.saturating_mul(2);
             }
         }
-// 候选全失效（BCC 与标准节点都读不到）报一条 warn，恢复后重新武装；逐候选失败不单独打点——1s 轮询会刷屏
+        // 候选全失效（BCC 与标准节点都读不到）报一条 warn，恢复后重新武装；逐候选失败不单独打点——1s 轮询会刷屏
         if current == UNAVAIL || voltage == UNAVAIL {
             if !BATT_UNAVAIL_WARNED.swap(true, Ordering::Relaxed) {
                 log::warn!("{}", crate::i18n::t("telemetry-battery-unavailable"));

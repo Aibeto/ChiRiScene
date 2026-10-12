@@ -70,7 +70,7 @@ fn main() -> Result<()> {
         }
     }
 
-// [env_init] 1. 环境初始化
+    // [env_init] 1. 环境初始化
     let chdir_path = std::env::args().nth(1);
     if let Some(path) = &chdir_path {
         nix::unistd::chdir(path.as_str())?;
@@ -106,17 +106,17 @@ fn main() -> Result<()> {
     // log 线程流），归档时一并进 devimp_<ts>.tar.zst必须在 create_dir_all(log_dir)/logger::init 之前执行
     let (archived_zip, archived_devimp) = logger::archive_on_startup(&root);
     std::fs::create_dir_all(&log_dir)?;
-// devimp/ 不在这里创建（dev_record 关闭时不得产生任何数据，含空目录）：写入路径（logger 的main_open / aff_open）
-// 会自行 create_dir_all 且仅在 diag_active 下走到；此处只对「已存在的devimp/」 做容量清理兜底（归档 rename 失败时旧文件仍在原目录）
+    // devimp/ 不在这里创建（dev_record 关闭时不得产生任何数据，含空目录）：写入路径（logger 的main_open / aff_open）
+    // 会自行 create_dir_all 且仅在 diag_active 下走到；此处只对「已存在的devimp/」 做容量清理兜底（归档 rename 失败时旧文件仍在原目录）
     logger::diag_prepare();
 
-// [soc_check] 2. 检测到列表中的特定处理器时启用 Chiri 专用调度器
+    // [soc_check] 2. 检测到列表中的特定处理器时启用 Chiri 专用调度器
     let chiri_active = common::is_chiri_soc();
 
-// [config_path] 3. 解析配置路径：8550 等 Chiri 目标 SoC 优先用处理器子目录 config/{soc}/meta.yaml，
-// 其余机型回退默认 config/meta.yaml（可修改抬头；调优段 feature.yaml 仅存于二进制）
+    // [config_path] 3. 解析配置路径：8550 等 Chiri 目标 SoC 优先用处理器子目录 config/{soc}/meta.yaml，
+    // 其余机型回退默认 config/meta.yaml（可修改抬头；调优段 feature.yaml 仅存于二进制）
     let config_path = common::get_config_path();
-// 写生效 meta.yaml 相对 config 目录的路径，WebUI 拼接 `config/{相对路径}` 读取同一份文件，避免改错文件
+    // 写生效 meta.yaml 相对 config 目录的路径，WebUI 拼接 `config/{相对路径}` 读取同一份文件，避免改错文件
     let config_rel = config_path
         .strip_prefix(root.join("config"))
         .unwrap_or(&config_path);
@@ -125,8 +125,8 @@ fn main() -> Result<()> {
         root.join("active_config.chr"),
         config_rel.to_string_lossy().as_bytes(),
     );
-// [pf_chr] 写本机 CLG 是否启用帕累托前沿落点（`1` = 启用，仅 8550；`0` = 未启用）：静态资产（soc.yaml 编入二进制、
-// SoC 硬件固定）→ 启动写一次即定，与 active_config.chr 同口径只作 WebUI 只读接触点（家族名显示 CLG-PF，与 daemon 日志前缀一致）
+    // [pf_chr] 写本机 CLG 是否启用帕累托前沿落点（`1` = 启用，仅 8550；`0` = 未启用）：静态资产（soc.yaml 编入二进制、
+    // SoC 硬件固定）→ 启动写一次即定，与 active_config.chr 同口径只作 WebUI 只读接触点（家族名显示 CLG-PF，与 daemon 日志前缀一致）
     let _ = utils::try_write_file(
         root.join("pf.chr"),
         if common::soc_frontier_policy().is_some() {
@@ -139,7 +139,7 @@ fn main() -> Result<()> {
     // meta.yaml 快照自愈：可修改字段的基准是编译期嵌入的 meta.yaml，启动时校验磁盘副本——字段非法用嵌入默认整体覆盖并在文件尾追加警告注释；文件缺失则原子重建（不加注释）「不改」开关（meta
     // yaml 可选字段 nofix）= true 时跳过所有覆盖类操作（meta 自愈 +webui 资产还原），必须在自愈之前读——晚了文件可能已被覆盖、开关本身先丢了
     let nofix = common::read_nofix_flag(&config_path);
-// 置进程级标志：热重载路径的自愈与资产还原都读它，避免各入口重复读磁盘（与 FAS_ENABLED 同范式）
+    // 置进程级标志：热重载路径的自愈与资产还原都读它，避免各入口重复读磁盘（与 FAS_ENABLED 同范式）
     common::set_nofix(nofix);
     if !nofix {
         common::sync_meta_snapshot(&config_path);
@@ -155,14 +155,14 @@ fn main() -> Result<()> {
         }
     }
 
-// rules.yaml 快照复制：rules.yaml 同样编译期嵌入（只读，运行时一律读嵌入值），启动时复制到模块根作对外展示副本（被篡改不影响调度，下次启动还原；写失败经重写兜底后跳过，绝不 panic）
-// 同属「二进制内容对外部文件的覆盖类操作」，nofix 开启时交还用户
+    // rules.yaml 快照复制：rules.yaml 同样编译期嵌入（只读，运行时一律读嵌入值），启动时复制到模块根作对外展示副本（被篡改不影响调度，下次启动还原；写失败经重写兜底后跳过，绝不 panic）
+    // 同属「二进制内容对外部文件的覆盖类操作」，nofix 开启时交还用户
     if !nofix {
         common::sync_rules_snapshot(&root.join("rules.yaml"));
     }
 
-// 导出内部特调白名单（编译期嵌入）供 WebUI 展示「特调」标签与专属选项：每行一条`包名:特调模式列表(逗号分隔):优先回退模式`，只导出精确包名条目（正则条目无法精确查找）；WebUI 只读、无修改入口，
-// daemon 不读磁盘仅 Chiri 激活时导出（非 Chiri 机型不生成，WebUI 据此隐藏特调功能）；日志延后到 logger::init 之后输出
+    // 导出内部特调白名单（编译期嵌入）供 WebUI 展示「特调」标签与专属选项：每行一条`包名:特调模式列表(逗号分隔):优先回退模式`，只导出精确包名条目（正则条目无法精确查找）；WebUI 只读、无修改入口，
+    // daemon 不读磁盘仅 Chiri 激活时导出（非 Chiri 机型不生成，WebUI 据此隐藏特调功能）；日志延后到 logger::init 之后输出
     let mut exported_special: Option<usize> = None;
     let mut exported_fas: Option<usize> = None;
     if chiri_active {
@@ -190,15 +190,15 @@ fn main() -> Result<()> {
         }
     }
 
-// [rhine] 实验室启动期处理：先按 rhine-back.chr 还原上次改动，再按 rhine.chr 决定要不要重新套用必须排在下面首次 Config::load 之前——还原写的就是 meta.yaml，
-// 晚了本轮读到旧值开机路径：service.sh 已清空 rhine.chr，唯一信号是残留的 rhine-back.chr。只有 Chiri 走这条
+    // [rhine] 实验室启动期处理：先按 rhine-back.chr 还原上次改动，再按 rhine.chr 决定要不要重新套用必须排在下面首次 Config::load 之前——还原写的就是 meta.yaml，
+    // 晚了本轮读到旧值开机路径：service.sh 已清空 rhine.chr，唯一信号是残留的 rhine-back.chr。只有 Chiri 走这条
     let rhine_report = if chiri_active {
         rhine::on_startup(&root, &config_path)
     } else {
         rhine::StartupReport::default()
     };
 
-// [lang_logger] 4. 立即加载语言与日志（meta 读取统一走 chiri::config，非 ChiRi 机型同样适用）
+    // [lang_logger] 4. 立即加载语言与日志（meta 读取统一走 chiri::config，非 ChiRi 机型同样适用）
     let (language, loglevel) = {
         let cfg = chiri::config::Config::load(config_path.to_str().unwrap()).unwrap_or_default();
         (cfg.meta.language, cfg.meta.loglevel)
@@ -206,8 +206,8 @@ fn main() -> Result<()> {
     load_language(&language);
     logger::init(&loglevel)?;
 
-// [webui_restore] 内嵌 WebUI 资产还原：把编译期嵌入的 webui/dist 覆盖回模块 webroot/，界面文件被改/删的部分每次开机回到出厂内容（与 meta 自愈同属覆盖类操作」，nofix:
-// true 一并跳过）
+    // [webui_restore] 内嵌 WebUI 资产还原：把编译期嵌入的 webui/dist 覆盖回模块 webroot/，界面文件被改/删的部分每次开机回到出厂内容（与 meta 自愈同属覆盖类操作」，nofix:
+    // true 一并跳过）
     if nofix {
         log::info!("{}", t("main-nofix-skip"));
     } else if !webui_asset::EMBEDDED {
@@ -225,7 +225,7 @@ fn main() -> Result<()> {
         }
     }
 
-// [power_avg] 启动清空 PowerAVG.chr：它是「本次运行」的输出记录（不读回），上次运行的值在本次取样前是过期数据、WebUI 会当有效读数展示；置空后回到 — 直到首个放电采样写回
+    // [power_avg] 启动清空 PowerAVG.chr：它是「本次运行」的输出记录（不读回），上次运行的值在本次取样前是过期数据、WebUI 会当有效读数展示；置空后回到 — 直到首个放电采样写回
     logger::power_avg_reset();
 
     // 全局 panic 钩子：任何线程的 panic 都落盘 daemon.log（此前只写 stderr、守护进程无人接收，调度线程崩溃日志零痕迹）钩子内**不得调用 i18n**：
@@ -272,7 +272,7 @@ fn main() -> Result<()> {
             )
         );
     }
-// 上一轮存活不足 30s（崩溃循环）：其日志已被直接丢弃、未打包；归档早于 logger::init 无处可打，这里补一条说明
+    // 上一轮存活不足 30s（崩溃循环）：其日志已被直接丢弃、未打包；归档早于 logger::init 无处可打，这里补一条说明
     if logger::short_session_discarded() {
         info!("{}", t("main-log-short-session-discarded"));
     }
@@ -326,9 +326,9 @@ fn main() -> Result<()> {
     );
     info!("{}", t("chiri-module-starting"));
 
-// [live_time] 心跳线程：每 15s 把当前本地时间（MM:SS）写模块根 LiveTime.chr，WebUI 刷新时比对差值（容差 20s）判定调度是否在跑——取代 flock 探测，
-// 不依赖 toybox 是否带 flock applet语义是**进程级存活**（与 flock 判据一致）：独立线程而非搭调度循环，进程被杀即停写；循环永不 panic、写失败静默（logger::
-// write_live_time 内部吞错）
+    // [live_time] 心跳线程：每 15s 把当前本地时间（MM:SS）写模块根 LiveTime.chr，WebUI 刷新时比对差值（容差 20s）判定调度是否在跑——取代 flock 探测，
+    // 不依赖 toybox 是否带 flock applet语义是**进程级存活**（与 flock 判据一致）：独立线程而非搭调度循环，进程被杀即停写；循环永不 panic、写失败静默（logger::
+    // write_live_time 内部吞错）
     thread::Builder::new()
         .name("live_time".to_string())
         .spawn(|| {
@@ -340,18 +340,18 @@ fn main() -> Result<()> {
             }
         })?;
 
-// [channels] 5. 创建通信通道（有界：容量 64，满时 send 阻塞形成背压，防止事件无限积压；足够承载 160ms（特调 40ms）负载事件与低频状态事件）
+    // [channels] 5. 创建通信通道（有界：容量 64，满时 send 阻塞形成背压，防止事件无限积压；足够承载 160ms（特调 40ms）负载事件与低频状态事件）
     let (tx, rx) = mpsc::sync_channel::<common::DaemonEvent>(64);
 
-// 特调激活共享标志：TunedGovernor 接管/释放时置位，cpu_monitor 据此在常规 160ms 与特调 40ms 采样间隔间切换
+    // 特调激活共享标志：TunedGovernor 接管/释放时置位，cpu_monitor 据此在常规 160ms 与特调 40ms 采样间隔间切换
     let ak_active = Arc::new(AtomicBool::new(false));
 
-// FAS 前台激活信号：FasManager 激活/去激活时置位并唤醒等待者，fps_monitor 据此门控 eBPF 探针——FAS 未激活时不建 tokio runtime、不加载 eBPF、
-// 不挂 uprobe（此前 daemon 启动即对前台应用挂 queueBuffer uprobe，非 FAS 会话每帧白付探针开销）。由 main 创建、monitor 与chiri 各持克隆；
-// 类型为 FasSignal 而非裸 AtomicBool）——见 monitor 的 [fas_signal]
+    // FAS 前台激活信号：FasManager 激活/去激活时置位并唤醒等待者，fps_monitor 据此门控 eBPF 探针——FAS 未激活时不建 tokio runtime、不加载 eBPF、
+    // 不挂 uprobe（此前 daemon 启动即对前台应用挂 queueBuffer uprobe，非 FAS 会话每帧白付探针开销）。由 main 创建、monitor 与chiri 各持克隆；
+    // 类型为 FasSignal 而非裸 AtomicBool）——见 monitor 的 [fas_signal]
     let fas_signal = Arc::new(FasSignal::new(false));
 
-// [scheduler_start] 6. 启动 ChiRi 调度器（Yumi 兜底已移除：非 ChiRi SoC 不接管 CPU，只跑监控/WebUI/日志，事件通道无消费者直接丢弃）
+    // [scheduler_start] 6. 启动 ChiRi 调度器（Yumi 兜底已移除：非 ChiRi SoC 不接管 CPU，只跑监控/WebUI/日志，事件通道无消费者直接丢弃）
     let start_result = if chiri_active {
         log::info!("{}", t("main-chiri-scheduler-selected"));
         let cfg = chiri::config::Config::load(config_path.to_str().unwrap()).unwrap_or_default();
@@ -374,7 +374,10 @@ fn main() -> Result<()> {
             Ok(()) => log::info!("{}", t("main-diag-thread-started")),
             Err(e) => error!(
                 "{}",
-                t_with_args("main-diag-thread-failed", &fluent_args!("error" => e.to_string()))
+                t_with_args(
+                    "main-diag-thread-failed",
+                    &fluent_args!("error" => e.to_string())
+                )
             ),
         }
         drop(rx);
@@ -394,7 +397,7 @@ fn main() -> Result<()> {
         info!("{}", t("scheduler-module-started"));
     }
 
-// [monitor_start] 7. 启动 Monitor 常规采样间隔按 SoC 参数化：Chiri 160ms，非 ChiRi（仅监控）沿用 200ms
+    // [monitor_start] 7. 启动 Monitor 常规采样间隔按 SoC 参数化：Chiri 160ms，非 ChiRi（仅监控）沿用 200ms
     let sample_ms_normal: u64 = if chiri_active { 160 } else { 200 };
     let monitor_thread = thread::Builder::new()
         .name("monitor_core".to_string())
@@ -412,7 +415,7 @@ fn main() -> Result<()> {
 
     info!("{}", t("monitor-module-started"));
 
-// [suspend] 8. 挂起：join 监控线程
+    // [suspend] 8. 挂起：join 监控线程
     monitor_thread.join().unwrap();
 
     Ok(())

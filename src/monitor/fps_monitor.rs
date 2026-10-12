@@ -351,7 +351,7 @@ struct FpsManager {
     blocked_source: Option<(u32, u64)>,
     /// 最后一次 attach 失败原因（与 attach_fail_total 同步更新），供周期摘要诊断
     last_attach_error: Option<String>,
-/// 下次允许重试 attach 的时刻（退避窗口内不解析 libgui）
+    /// 下次允许重试 attach 的时刻（退避窗口内不解析 libgui）
     attach_retry_at: Instant,
 }
 
@@ -446,7 +446,7 @@ impl FpsManager {
         let pid_i32 = new_pid as i32;
         let scope = NonZeroU32::new(new_pid).map(UProbeScope::OneProcess);
         let Some(scope) = scope else {
-// 防御：非法 PID（调用方已过滤 0），不 panic
+            // 防御：非法 PID（调用方已过滤 0），不 panic
             warn!(
                 "{}",
                 t_with_args(
@@ -457,13 +457,13 @@ impl FpsManager {
             return Ok(());
         };
 
-// 建实例时没扫到符号（libgui 当时不可读）则重扫：重试最长 60s 一次成本可忽略，可救回开机早期读不到文件的场景
+        // 建实例时没扫到符号（libgui 当时不可读）则重扫：重试最长 60s 一次成本可忽略，可救回开机早期读不到文件的场景
         if self.symbol_candidates.is_empty() {
             self.symbol_candidates = scan_queue_buffer_symbols(LIBGUI_PATH);
         }
 
-// 候选顺序：短签名 → 长签名 → dynsym 扫描变体（覆盖短/长名都解析失败的机型，按 mangled 前缀匹配）
-// TODO: 两个签名并存时先试短签名（旧版重载）——若真机帧数偏少，说明挂到非主路径重载，改长签名优先再验
+        // 候选顺序：短签名 → 长签名 → dynsym 扫描变体（覆盖短/长名都解析失败的机型，按 mangled 前缀匹配）
+        // TODO: 两个签名并存时先试短签名（旧版重载）——若真机帧数偏少，说明挂到非主路径重载，改长签名优先再验
         let mut candidates: Vec<String> = vec![SYMBOL_SHORT.to_string(), SYMBOL_LONG.to_string()];
         for sym in &self.symbol_candidates {
             if !candidates.contains(sym) {
@@ -487,7 +487,7 @@ impl FpsManager {
                     break;
                 }
                 Err(e) => {
-// 最后一个候选的失败原因才是有效诊断信息（前面失败只说明签名不匹配）
+                    // 最后一个候选的失败原因才是有效诊断信息（前面失败只说明签名不匹配）
                     if i + 1 == candidates.len() {
                         return Err(e.into());
                     }
@@ -505,7 +505,9 @@ impl FpsManager {
                 let program: &mut UProbe =
                     self.bpf.program_mut("handle_frame").unwrap().try_into()?;
                 let _ = program.detach(link);
-                return Err(anyhow::anyhow!("frame source identity changed during attach"));
+                return Err(anyhow::anyhow!(
+                    "frame source identity changed during attach"
+                ));
             }
             Err(error) => {
                 let program: &mut UProbe =
@@ -653,7 +655,7 @@ impl FpsManager {
         self.current_pid > 0
     }
 
-/// 是否到了可重试 attach 的时刻（退避窗口内 false）：符号解析失败是持续故障，按 500ms 反复重试等于每秒两次读解析 libgui ELF——纯浪费且刷爆 daemon.log
+    /// 是否到了可重试 attach 的时刻（退避窗口内 false）：符号解析失败是持续故障，按 500ms 反复重试等于每秒两次读解析 libgui ELF——纯浪费且刷爆 daemon.log
     fn attach_retry_due(&self) -> bool {
         Instant::now() >= self.attach_retry_at
     }
@@ -669,7 +671,7 @@ impl FpsManager {
         )
     }
 
-/// 记录一次 attach 失败：推进退避窗口并降频打日志——首次与每 10 次打 warn，其余 debug （此前每次 warn，一个游戏会话能刷数千行，日志写入本身成了负担）
+    /// 记录一次 attach 失败：推进退避窗口并降频打日志——首次与每 10 次打 warn，其余 debug （此前每次 warn，一个游戏会话能刷数千行，日志写入本身成了负担）
     fn report_attach_failure(&mut self, err: &anyhow::Error) {
         self.attach_fail_count = self.attach_fail_count.saturating_add(1);
         // 累计计数 + 最后原因：供 [attach_stats] 周期摘要观测真实故障总量（warn 降频后总量不可见）

@@ -281,20 +281,24 @@ mod tests {
         // 上界比较在 ns 精度完成（不做 ms 向下取整）：亚毫秒不落入更低的桶，
         // 恰好等于上界的入该桶（含上界），略超上界的落下一个桶（或超界桶）。
         let cases: [(u64, usize); 11] = [
-            (0, 0),             // 0ns → ≤1ms
-            (999_999, 0),       // 0.999ms → ≤1ms
-            (1_000_000, 0),     // 1ms（含上界）→ ≤1ms
-            (1_000_001, 1),     // 1.000001ms → ≤2ms（不再误入桶 0）
-            (1_999_000, 1),     // 1.999ms → ≤2ms（不再误入桶 0）
-            (2_000_000, 1),     // 2ms（含上界）→ ≤2ms
-            (5_000_000, 2),     // 5ms（含上界）→ ≤5ms
-            (5_000_001, 3),     // 略超 5ms → ≤10ms（不再误入桶 2）
-            (100_000_000, 7),   // 100ms（含上界）→ ≤100ms
-            (100_999_000, 8),   // 100.999ms → 超界（不再误入桶 7）
-            (101_000_000, 8),   // 101ms → 超界
+            (0, 0),           // 0ns → ≤1ms
+            (999_999, 0),     // 0.999ms → ≤1ms
+            (1_000_000, 0),   // 1ms（含上界）→ ≤1ms
+            (1_000_001, 1),   // 1.000001ms → ≤2ms（不再误入桶 0）
+            (1_999_000, 1),   // 1.999ms → ≤2ms（不再误入桶 0）
+            (2_000_000, 1),   // 2ms（含上界）→ ≤2ms
+            (5_000_000, 2),   // 5ms（含上界）→ ≤5ms
+            (5_000_001, 3),   // 略超 5ms → ≤10ms（不再误入桶 2）
+            (100_000_000, 7), // 100ms（含上界）→ ≤100ms
+            (100_999_000, 8), // 100.999ms → 超界（不再误入桶 7）
+            (101_000_000, 8), // 101ms → 超界
         ];
         for (wall_ns, want) in cases {
-            assert_eq!(bucket_index(wall_ns), want, "wall_ns={wall_ns} 应落桶 {want}");
+            assert_eq!(
+                bucket_index(wall_ns),
+                want,
+                "wall_ns={wall_ns} 应落桶 {want}"
+            );
         }
     }
 
@@ -463,9 +467,18 @@ mod tests {
     #[test]
     fn block_names_are_lowercase_and_all_is_ordered() {
         let cost = CostStats::new();
-        assert!(cost.summary_line("s", "a", "b", Block::Build).contains("block=build"));
-        assert!(cost.summary_line("s", "a", "b", Block::Write).contains("block=write"));
-        assert!(cost.summary_line("s", "a", "b", Block::Summary).contains("block=summary"));
+        assert!(
+            cost.summary_line("s", "a", "b", Block::Build)
+                .contains("block=build")
+        );
+        assert!(
+            cost.summary_line("s", "a", "b", Block::Write)
+                .contains("block=write")
+        );
+        assert!(
+            cost.summary_line("s", "a", "b", Block::Summary)
+                .contains("block=summary")
+        );
         assert_eq!(Block::ALL, [Block::Build, Block::Write, Block::Summary]);
     }
 

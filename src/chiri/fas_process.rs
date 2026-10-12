@@ -151,6 +151,10 @@ mod tests {
     fn missing_baseline_is_not_alive() {
         // 无 pidfd、无 starttime 基准：判死（fail-closed）
         assert!(!ProcessIdentity::for_test(None).is_alive(4321));
-        assert!(!ProcessIdentity::for_test(None).cheap_alive().unwrap_or(false));
+        assert!(
+            !ProcessIdentity::for_test(None)
+                .cheap_alive()
+                .unwrap_or(false)
+        );
     }
 }

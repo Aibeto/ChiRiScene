@@ -157,11 +157,11 @@ impl FasManager {
         }
         // 迁移成本：读不到原值就不写，保证退出能恢复
         let migration_cost_restore = rules.migration_cost_ns.filter(|v| *v > 0).and_then(|want| {
-                let orig = std::fs::read_to_string(MIGRATION_COST_PATH).ok()?;
-                let orig = orig.trim().to_string();
-                crate::utils::try_write_file(MIGRATION_COST_PATH, &want.to_string()).ok()?;
-                Some(orig)
-            });
+            let orig = std::fs::read_to_string(MIGRATION_COST_PATH).ok()?;
+            let orig = orig.trim().to_string();
+            crate::utils::try_write_file(MIGRATION_COST_PATH, &want.to_string()).ok()?;
+            Some(orig)
+        });
         controller.set_game(pid, pkg);
         controller.reset_frame_feedback();
         controller.set_temperature(self.last_temp);

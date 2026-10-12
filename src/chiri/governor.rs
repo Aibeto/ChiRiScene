@@ -152,7 +152,7 @@ impl GovernorGuard {
     }
 
     // [residue]
-/// 逐个 policy 体检：只回调「当前是 performance」的那些（pid, 节点路径）；读不到的 policy 直接跳过（与接管口径一致）
+    /// 逐个 policy 体检：只回调「当前是 performance」的那些（pid, 节点路径）；读不到的 policy 直接跳过（与接管口径一致）
     fn each_residue_policy(f: &mut dyn FnMut(i32, &str)) {
         for policy in crate::chiri::get_cpu_policies() {
             let path = format!(

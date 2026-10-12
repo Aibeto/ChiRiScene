@@ -36,7 +36,7 @@ pub fn write_to_file<P: AsRef<Path>, C: AsRef<[u8]>>(path: P, content: C) -> Res
 // 写文件，失败仅记日志不抛错
 pub fn try_write_file<P: AsRef<Path>, C: AsRef<[u8]>>(path: P, content: C) -> Result<()> {
     if let Err(e) = write_to_file(path.as_ref(), content) {
-// ENOENT = 机型/内核没有该调优节点，非写入失败：降 debug，避免周期 apply 每轮刷 warn
+        // ENOENT = 机型/内核没有该调优节点，非写入失败：降 debug，避免周期 apply 每轮刷 warn
         let not_found = e
             .downcast_ref::<std::io::Error>()
             .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound);
@@ -166,11 +166,11 @@ const WATCH_SETTLE: Duration = Duration::from_millis(100);
 impl DirWatcher {
     /// 监听 `dir` 目录（不递归）。目录不存在/无权限时返回 Err，由调用方退避重试
     pub fn new(dir: &Path) -> Result<Self> {
-// CLOSE_WRITE 覆盖直接写入；MOVED_TO 覆盖原子替换（WebUI 用临时文件 + mv 保存，只有 MOVED_TO 能感知）
+        // CLOSE_WRITE 覆盖直接写入；MOVED_TO 覆盖原子替换（WebUI 用临时文件 + mv 保存，只有 MOVED_TO 能感知）
         Self::new_with_mask(dir, WatchMask::CLOSE_WRITE | WatchMask::MOVED_TO)
     }
 
-/// 自定义事件掩码仅当「删掉文件也算状态变更」时才需要更多事件：配置/实验室链路文件被删会自愈补建（仍走 CLOSE_WRITE），多给掩码反而会因误删触发重载
+    /// 自定义事件掩码仅当「删掉文件也算状态变更」时才需要更多事件：配置/实验室链路文件被删会自愈补建（仍走 CLOSE_WRITE），多给掩码反而会因误删触发重载
     pub fn new_with_mask(dir: &Path, mask: WatchMask) -> Result<Self> {
         let inotify = Inotify::init()?;
         inotify.watches().add(dir, mask)?;
@@ -194,7 +194,7 @@ impl DirWatcher {
                 break;
             }
         }
-// 静默窗口 + 清空积压：连续写入合并为一次重载（fd 非阻塞，无事件时 WouldBlock 结束循环）
+        // 静默窗口 + 清空积压：连续写入合并为一次重载（fd 非阻塞，无事件时 WouldBlock 结束循环）
         thread::sleep(WATCH_SETTLE);
         while let Ok(events) = self.inotify.read_events(&mut self.buffer) {
             if events.peekable().peek().is_none() {
@@ -255,7 +255,7 @@ pub fn find_cpu_temp_path() -> Result<String> {
         return Err(anyhow::anyhow!("Thermal directory not found"));
     }
 
-// [名单序] 外层遍历名单项、内层 zones，首个命中项胜出，保证 soc_max 优先于 cpuss 回退（zones 少，双循环无性能顾虑）
+    // [名单序] 外层遍历名单项、内层 zones，首个命中项胜出，保证 soc_max 优先于 cpuss 回退（zones 少，双循环无性能顾虑）
     for item in cpu_temp_zone_types() {
         for entry in fs::read_dir(thermal_dir)? {
             let entry = entry?;
@@ -268,8 +268,7 @@ pub fn find_cpu_temp_path() -> Result<String> {
                     continue;
                 }
                 let type_path = path.join("type");
-                if let Ok(type_content) =
-                    read_file_content(type_path.to_str().unwrap_or_default())
+                if let Ok(type_content) = read_file_content(type_path.to_str().unwrap_or_default())
                 {
                     if type_content.contains(item.as_str()) {
                         let temp_path = path.join("temp");
@@ -459,7 +458,7 @@ impl FastWriter {
             path: path_ref.to_path_buf(),
             unmounted: false,
         };
-// 惰性卸载：仅当直接打开失败（挂载写保护/权限封装等异常态）时 umount 重开，避免对正常节点无条件detach（可能拆掉合法挂载）。写被拒（EACCES/EROFS）时也会走一次卸载重试（见 do_write）
+        // 惰性卸载：仅当直接打开失败（挂载写保护/权限封装等异常态）时 umount 重开，避免对正常节点无条件detach（可能拆掉合法挂载）。写被拒（EACCES/EROFS）时也会走一次卸载重试（见 do_write）
         if w.file.is_none() {
             w.unmount_and_reopen();
         }
@@ -535,7 +534,7 @@ impl FastWriter {
             Ok(()) => true,
             Err(e) => {
                 match e.raw_os_error() {
-// EINVAL(22): 内核拒绝该频率（热限频/范围收窄）；EBUSY(16): 节点短暂被占用均为预期内瞬态错误：降级 debug 且不缓存，下次 tick 自动重试
+                    // EINVAL(22): 内核拒绝该频率（热限频/范围收窄）；EBUSY(16): 节点短暂被占用均为预期内瞬态错误：降级 debug 且不缓存，下次 tick 自动重试
                     Some(libc::EINVAL) | Some(libc::EBUSY) => {
                         log::debug!("write freq {} to {:?} skipped: {}", value, self.path, e);
                     }
@@ -561,7 +560,7 @@ impl FastWriter {
                         );
                     }
                 }
-// 写入失败返回 false，不更新任何缓存值，下次 tick 由调用方重试
+                // 写入失败返回 false，不更新任何缓存值，下次 tick 由调用方重试
                 false
             }
         }

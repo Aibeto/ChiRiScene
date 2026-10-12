@@ -396,7 +396,9 @@ impl PowerBase {
             // 触摸窗口内锁在当前档落点（与 CLG 的触摸地板同义）：负载决策不得把刚抬起的档位压回去；
             // 窗口过期由上面的回落分支解除。只锁本次确实抬过档的簇——未命中档位体系的簇三档上界同为
             // hw_max，锁 1.0 会把它顶到硬件最高频，且窗口过期时 apply_tier_ceil 整条跳过、perf 收不回
-            if self.touch_until.is_some() && tier_idx > 0 && p.tier_ceils[tier_idx] != p.tier_ceils[0]
+            if self.touch_until.is_some()
+                && tier_idx > 0
+                && p.tier_ceils[tier_idx] != p.tier_ceils[0]
             {
                 target = 1.0;
             }

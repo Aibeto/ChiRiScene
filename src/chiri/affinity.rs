@@ -1278,7 +1278,9 @@ impl AffinityManager {
             if let Some(state) = self.threads.get_mut(&tid) {
                 state.starttime = starttime;
                 match starttime {
-                    Some(starttime) if state.normal_bind_retry.should_skip(starttime, cpus, now) => {
+                    Some(starttime)
+                        if state.normal_bind_retry.should_skip(starttime, cpus, now) =>
+                    {
                         return false;
                     }
                     None => state.normal_bind_retry.clear(),

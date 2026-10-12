@@ -92,7 +92,7 @@ struct ClusterState {
     /// 连续稳定 tick 计数（满 steady_decay_stable_ticks 才启动积分）
     steady_streak: u32,
     // [dwell] 写频滞回状态（Phase 2，与 CLG 同口径）
-/// 上次**实际写频**成功时刻：dwell 以它计时；None = 接管初写后尚未写过（初写不启动时钟，首次受控写频立即生效）
+    /// 上次**实际写频**成功时刻：dwell 以它计时；None = 接管初写后尚未写过（初写不启动时钟，首次受控写频立即生效）
     last_write_at: Option<Instant>,
     /// 上次实际写频方向：升 = 1、降 = -1、未写过 = 0（翻摆判定基准）
     last_write_dir: i8,
@@ -115,30 +115,30 @@ fn core_name_for(affected: &[usize]) -> Option<&'static str> {
     }
 }
 
-    /// 明日方舟特调（akmode）控制器：独立于 CLG 的动态限频调度，**无档位**
-    /// 每个负载 tick 按核心组实时负载直接计算 scaling_max_freq 目标上限：
-    /// target_ratio = clamp(组内最大核心占用率 × headroom, perf_floor, 1.0)
-    /// target_max   = 频率表中 ≤ ratio × 硬件最高的最大档位（floor 对齐）
-    /// 升频立即执行（响应性优先）；降频须偏离超 hysteresis（绝对死区 = hw_max × hysteresis）且持续 down_hold_ms
-    /// 替代原四档 core-count 阈值方案：后者在「少数线程高占用」负载下升频凑不齐、降频持续满足，max 单边下探到最低频
+/// 明日方舟特调（akmode）控制器：独立于 CLG 的动态限频调度，**无档位**
+/// 每个负载 tick 按核心组实时负载直接计算 scaling_max_freq 目标上限：
+/// target_ratio = clamp(组内最大核心占用率 × headroom, perf_floor, 1.0)
+/// target_max   = 频率表中 ≤ ratio × 硬件最高的最大档位（floor 对齐）
+/// 升频立即执行（响应性优先）；降频须偏离超 hysteresis（绝对死区 = hw_max × hysteresis）且持续 down_hold_ms
+/// 替代原四档 core-count 阈值方案：后者在「少数线程高占用」负载下升频凑不齐、降频持续满足，max 单边下探到最低频
 // [governor]
 pub struct TunedGovernor {
     cfg: SpecialTunedConfig,
-/// 当前接管的特调模式名（akmode / playback / daily …）：日志用；release 后保留（deactivated 日志要报是哪个模式退出）
+    /// 当前接管的特调模式名（akmode / playback / daily …）：日志用；release 后保留（deactivated 日志要报是哪个模式退出）
     mode: String,
     /// 特调激活共享标志：Monitor 层（cpu_monitor）据此切换采样间隔（特调 40ms / 其余 160ms）
     ak_active: Arc<AtomicBool>,
     clusters: Vec<ClusterState>,
     /// 各 policy 的 governor/min/max 快照，release 时恢复
     restore: Vec<PolicyRestore>,
-/// 接管前 `sched_migration_cost_ns` 原值（全局节点，只快照一次）：仅配置了 `migration_cost_ns` 且写成功才非 None，release 时写回
+    /// 接管前 `sched_migration_cost_ns` 原值（全局节点，只快照一次）：仅配置了 `migration_cost_ns` 且写成功才非 None，release 时写回
     migration_cost_restore: Option<String>,
     active: bool,
     /// 调试日志计数，每 25 tick 打一次摘要
     log_counter: u32,
-/// 帧源信号（见 `monitor::FasSignal`）：接管 `playback` 时置位**播放态旁路采样**谓词，
-/// 让 fps 探针在非 FAS 会话里也挂帧源做帧间隔直方图（P2-3：播放态原本零帧信号，任何播放态调参
-/// 都无法用流畅度判定）；只置位/清零这一位，不碰 FAS 激活位（它由 FasManager 独占）
+    /// 帧源信号（见 `monitor::FasSignal`）：接管 `playback` 时置位**播放态旁路采样**谓词，
+    /// 让 fps 探针在非 FAS 会话里也挂帧源做帧间隔直方图（P2-3：播放态原本零帧信号，任何播放态调参
+    /// 都无法用流畅度判定）；只置位/清零这一位，不碰 FAS 激活位（它由 FasManager 独占）
     fas_signal: Arc<FasSignal>,
 }
 
@@ -266,7 +266,10 @@ impl TunedGovernor {
             });
 
             // 统一默认调速器（选型见 common.rs [governor]）+ min 压到硬件最低（避免设备出厂高 min 导致频率降不下去）
-            let _ = crate::utils::try_write_file(&gov_path, crate::common::cpu_governor_for_policy(pid));
+            let _ = crate::utils::try_write_file(
+                &gov_path,
+                crate::common::cpu_governor_for_policy(pid),
+            );
             let min_hw = freqs[0];
             let _ = crate::utils::try_write_file(&min_path, min_hw.to_string());
 
@@ -309,8 +312,8 @@ impl TunedGovernor {
                 )
             );
             self.ak_active.store(true, Ordering::Relaxed);
-// 播放态帧源谓词：只有 `playback` 特调置位（akmode 是游戏、FAS 侧自有帧驱动，daily 组已移除）；
-// 非 playback 模式恒清零——`init_policies` 开头已 `release()` 清过一次，这里按模式重设，两种模式切换不留残位
+            // 播放态帧源谓词：只有 `playback` 特调置位（akmode 是游戏、FAS 侧自有帧驱动，daily 组已移除）；
+            // 非 playback 模式恒清零——`init_policies` 开头已 `release()` 清过一次，这里按模式重设，两种模式切换不留残位
             self.fas_signal.set_playback(self.mode == "playback");
         } else {
             warn!(
@@ -340,13 +343,13 @@ impl TunedGovernor {
         self.restore_migration_cost();
         self.clusters.clear();
         self.ak_active.store(false, Ordering::Relaxed);
-// 播放态帧源谓词同点清零（幂等：非 playback 模式本就没置位）；与 set(true) 一样唤醒 fps 探针，
-// 由它摘掉 uprobe 回零开销待机——不留「模式已退但探针还挂着」的窗口
+        // 播放态帧源谓词同点清零（幂等：非 playback 模式本就没置位）；与 set(true) 一样唤醒 fps 探针，
+        // 由它摘掉 uprobe 回零开销待机——不留「模式已退但探针还挂着」的窗口
         self.fas_signal.set_playback(false);
         self.log_counter = 0;
     }
 
-/// 恢复单个 policy 的原 governor/min/max，返回是否全部写成功（失败保留快照下次重试）；写序先 max 后 min，避免中间态 min > max
+    /// 恢复单个 policy 的原 governor/min/max，返回是否全部写成功（失败保留快照下次重试）；写序先 max 后 min，避免中间态 min > max
     fn restore_policy(r: &PolicyRestore) -> bool {
         let gov_path = format!(
             "/sys/devices/system/cpu/cpufreq/policy{}/scaling_governor",
@@ -380,8 +383,8 @@ impl TunedGovernor {
         all_ok
     }
 
-/// 接管期间按需调高 sched_migration_cost_ns：稳态负载下原值偏小会频繁跨核搬迁（省搬迁开销与 cache 失效）；原值进 migration_cost_restore，release 写回；
-/// 写失败当未配置，不影响接管
+    /// 接管期间按需调高 sched_migration_cost_ns：稳态负载下原值偏小会频繁跨核搬迁（省搬迁开销与 cache 失效）；原值进 migration_cost_restore，release 写回；
+    /// 写失败当未配置，不影响接管
     fn apply_migration_cost(&mut self) {
         let Some(want) = self.cfg.migration_cost_ns.filter(|v| *v > 0) else {
             return;
@@ -546,8 +549,8 @@ impl TunedGovernor {
                 c.down_since = None;
                 c.up_wait = c.up_wait.saturating_add(1);
                 if c.up_wait >= cfg.up_confirm_ticks {
-                Self::gated_write(c, target_max, cfg.write_dwell_ms);
-                decision = "up";
+                    Self::gated_write(c, target_max, cfg.write_dwell_ms);
+                    decision = "up";
                 } else {
                     decision = "up_wait";
                 }
@@ -590,7 +593,14 @@ impl TunedGovernor {
             }
 
             if diag {
-                main_rows.push((c.policy_id, c.core_name, util, decision, c.current_max, hw_max));
+                main_rows.push((
+                    c.policy_id,
+                    c.core_name,
+                    util,
+                    decision,
+                    c.current_max,
+                    hw_max,
+                ));
             }
         }
 

@@ -11,8 +11,14 @@ pub fn slice_due(completed: usize) -> bool {
     completed != 0 && completed % 16 == 0
 }
 
-pub fn anchor_rows<T>(candidates: impl IntoIterator<Item = T>, mut render: impl FnMut(T) -> Option<String>) -> Vec<String> {
-    candidates.into_iter().filter_map(|candidate| render(candidate)).collect()
+pub fn anchor_rows<T>(
+    candidates: impl IntoIterator<Item = T>,
+    mut render: impl FnMut(T) -> Option<String>,
+) -> Vec<String> {
+    candidates
+        .into_iter()
+        .filter_map(|candidate| render(candidate))
+        .collect()
 }
 
 // [reuse]
