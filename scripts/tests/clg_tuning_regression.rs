@@ -26,6 +26,19 @@ fn p3_coupled_down_knobs() {
     assert_eq!(default_value("down_rate_limit_ticks"), 1.0);
     assert_eq!(default_value("down_fast_threshold"), 0.40);
 }
+// [high_zone] 高位升频门槛契约：gate/util 阈值与三段启用值；hold 兜底必须在（防确认条件错配永久卡高位）
+#[test]
+fn high_zone_gate_knobs() {
+    assert_eq!(default_value("high_zone_gate"), 0.85);
+    assert_eq!(default_value("high_zone_count"), 2.0);
+    assert_eq!(default_value("high_zone_util"), 0.90);
+    for section in ["# [reduce]", "# [boost]"] {
+        let block = FEATURE.split(section).nth(1).unwrap();
+        let next = if section == "# [reduce]" { "# [default]" } else { "# [powerbase]" };
+        let body = block.split(next).next().unwrap();
+        assert!(body.contains("high_zone_gate: 0.85"), "{section} must enable high-zone gate");
+    }
+}
 #[test]
 fn preserve_target_ceiling_and_previous_delay() {
     assert_eq!(default_value("up_threshold"), 0.88);

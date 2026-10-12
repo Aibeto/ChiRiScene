@@ -212,6 +212,11 @@ reduce:
     down_fast_threshold: 0.10
     spike_jump_threshold: 0.35
     spike_decay: 0.30
+    # 高位升频门槛：perf ≥ 0.85 后再往抬需 ≥2 核（little 3 核取 2）util ≥ 0.90 确认。
+    # TODO: 实机复核（看高压负载到达最高频的延迟；回退 = 删掉下面三行，count 归 0 即关闭）。
+    high_zone_gate: 0.85
+    high_zone_count: 2
+    high_zone_util: 0.90
     touch_boost_enabled: true
     touch_boost_ms: 350
     touch_boost_tiers: 1
@@ -280,6 +285,11 @@ default:
     spike_jump_threshold: 0.50
     # 单 tick 尖峰只保留 10% 增量（削 p95 尖峰，不动稳态）
     spike_decay: 0.10
+    # 高位升频门槛：perf ≥ 0.85 后再往抬需 ≥2 核（big 4 核取 2）util ≥ 0.90 确认。
+    # TODO: 实机复核（看应用启动/重载冲顶延迟；回退 = 删掉下面三行，count 归 0 即关闭）。
+    high_zone_gate: 0.85
+    high_zone_count: 2
+    high_zone_util: 0.90
     touch_boost_enabled: true
     # 触摸窗口内大核地板抬高：floor = perf_init + tiers × 0.05，且不超过 perf_ceil
     # TODO: 实机复核 600ms / 2 档（手指在屏上滑动时应始终处于窗口内；档位过高会在
@@ -313,6 +323,10 @@ boost:
     down_fast_threshold: 0.05
     spike_jump_threshold: 0.40
     spike_decay: 0.20
+    # 高位升频门槛：perf_init 0.60 起步即过 gate，确认条件与 reduce/default 同款。
+    high_zone_gate: 0.85
+    high_zone_count: 2
+    high_zone_util: 0.90
     touch_boost_enabled: true
     touch_boost_ms: 500
     touch_boost_tiers: 1

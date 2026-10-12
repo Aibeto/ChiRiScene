@@ -122,6 +122,8 @@
 
 ## 进行中
 
+- **CLG 高位升频门槛（2026-10-13 落地，未提交）**：`CpuLoadGovernorConfig` 新增 `high_zone_gate`(0.85)/`high_zone_count`(0=关)/`high_zone_util`(0.90)/`high_zone_hold_ticks`(20) 四字段；`on_load_update` 在 perf ≥ gate 后升频需「≥count 核 util ≥ util」确认，未满足冻结 tick（decision=`hz_hold`，早退不动 up/down_wait），满 hold_ticks 强制放行一次。**只压决策意图，不封顶不回写 current_perf**（R2/R7 合规）；8550 三段（reduce/default/boost）全启用 count=2。replay 模板/生成器/契约测试已同步（clg_tuning 5/5 含 `high_zone_gate_knobs`；selfcheck 含「单核阻塞 + hold 兜底 2000 tick 到 hw_max」断言）。WebUI status 快照表温度列已删（数据解析契约不动）。回退 = 删 8550 三段三行。详见 `.cursor/memory/2026-10-13.md`。
+
 - daemon-perf-opt 五阶段性能优化计划：**已归档** `.archive/.cursor/docs/daemon-perf-opt-plan.md`（原路径 `.cursor/docs/` 下的副本已不存在）
   （Phase 3 前置 `.trae/specs/harden-scenemode-and-screen-detect` 的 hold 三分支）。
 

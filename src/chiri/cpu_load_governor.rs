@@ -116,6 +116,10 @@ struct ClusterState {
     last_failed: bool,
     /// on_load_update 命中「极低负载立即降频」快路径（豁免滞回），flush 消费清零
     fast_down: bool,
+    // [high_zone] 高位升频门槛状态：达标确认计数与上轮达标结果
+    /// 连续达标 tick 计数：当前 perf 已在高位区时，「≥high_zone_count 核 util ≥ high_zone_util」
+    /// 未达标即累加，满 high_zone_hold_ticks 强制放行一次并清零；达标 tick 清零
+    high_zone_wait: u32,
 }
 
 impl ClusterState {
@@ -208,6 +212,16 @@ impl ClusterState {
             .filter_map(|&cpu| core_utils.get(cpu))
             .copied()
             .fold(0.0_f32, f32::max)
+    }
+
+    /// [high_zone] 高位门槛达标核数：本簇 util ≥ 阈值的核数（0.0 核与 max_util 同口径不计达标）
+    #[inline]
+    fn high_zone_hits(&self, core_utils: &[f32], thresh: f32) -> u32 {
+        self.affected_cpus
+            .iter()
+            .filter_map(|&cpu| core_utils.get(cpu))
+            .filter(|&&u| u >= thresh)
+            .count() as u32
     }
 
     /// 频率（kHz）→ [0,1] 性能比例（与 cached_ratios 同口径）；降频时把 current_perf 同步到实际写入档位
@@ -491,9 +505,40 @@ impl CoreGroupWorker {
             1.0
         };
 
-        let target_perf = (util * headroom).clamp(self.cfg.perf_floor, self.cfg.perf_ceil);
-        self.dev_tgt_perf = target_perf;
+        // [high_zone] 高位升频门槛：已处于高位区（current_perf ≥ gate）时，把目标抬得更高需全簇
+        // 「≥high_zone_count 核 util ≥ high_zone_util」确认。只压决策意图，不回写 current_perf、
+        // 不动 up_wait/down_wait（冻结）；降频方向不受影响。未启用（0 核数/0 gate）不生效。
         let old_perf = self.cluster.current_perf;
+        // hold 兜底：确认被连续阻塞满 high_zone_hold_ticks 强制放行一次并重新计数，
+        // 防负载形态与确认条件错配时永久卡高位
+        let candidate_perf = (util * headroom).clamp(self.cfg.perf_floor, self.cfg.perf_ceil);
+        let mut high_zone_block = false;
+        if self.cfg.high_zone_count > 0
+            && self.cfg.high_zone_gate > 0.0
+            && old_perf >= self.cfg.high_zone_gate
+            && candidate_perf > old_perf + 1e-6
+        {
+            let hits = self.cluster.high_zone_hits(core_utils, self.cfg.high_zone_util);
+            if hits >= self.cfg.high_zone_count {
+                self.cluster.high_zone_wait = 0;
+            } else {
+                self.cluster.high_zone_wait = self.cluster.high_zone_wait.saturating_add(1);
+                if self.cluster.high_zone_wait >= self.cfg.high_zone_hold_ticks {
+                    // 兜底放行一次后重新计数：恢复确认节奏
+                    self.cluster.high_zone_wait = 0;
+                } else {
+                    high_zone_block = true;
+                }
+            }
+        }
+        if high_zone_block {
+            // 阻塞 tick 冻结状态早退：目标停在原地，不进入升/降分支（防把 current_freq 误写下去）
+            self.dev_tgt_perf = old_perf;
+            self.dev_decision = "hz_hold";
+            return;
+        }
+        let target_perf = candidate_perf;
+        self.dev_tgt_perf = target_perf;
 
         // [perf_eps] 浮点停滞防护：慢升分支 α≤0.5 在差 1 ulp 处增量舍入为 0，严格 > 比较使停滞态永久落 up 分支（假 up + up_wait 无限累加）；
         // 加 ε=1e-6 让停滞态落入死区 hold 正常收尾，ε 远小于真实负载增量
@@ -941,6 +986,7 @@ impl CoreGroupWorker {
             last_write_dir: 0,
             last_failed: false,
             fast_down: false,
+            high_zone_wait: 0,
         };
 
         let init_freq = cluster.find_floor_freq(init_perf);

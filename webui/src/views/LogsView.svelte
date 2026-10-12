@@ -217,7 +217,6 @@
                 <th scope="col">{t('logs.status.times')}</th>
                 <th scope="col">{t('logs.status.mode')}</th>
                 <th scope="col">{t('logs.status.pkg')}</th>
-                <th scope="col">{t('logs.status.batt')}</th>
                 <th scope="col">{t('logs.status.load')}</th>
                 <th scope="col">{t('logs.status.power')}</th>
                 <th scope="col">{t('logs.status.charge')}</th>
@@ -230,7 +229,6 @@
                   <td>{row.timestamp}</td>
                   <td>{row.mode || '—'}</td>
                   <td>{row.pkg || '—'}</td>
-                  <td>{fmt(row.battTemp, 1, t('unit.celsius'))}</td>
                   <td>{fmt(row.gpuBusy, 1, t('unit.percent'))}</td>
                   <td>{fmt(row.battPower, 1, t('unit.watt'))}</td>
                   <td>{chargeLabel(row.charge)}</td>

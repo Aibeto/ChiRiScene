@@ -87,7 +87,9 @@ def build_source():
     helpers = "\n".join(function(production, "fn " + name) for name in (
         "find_floor_freq(&self, target_ratio: f32)", "deadzone_band(&self, deadzone_ratio: f32)",
         "max_util(&self, core_utils: &[f32])", "ratio_of_freq(&self, freq: u32)"))
-    fields = sorted(set(re.findall(r"self.cfg.(\w+)", decision)) | {"perf_init"})
+    fields = sorted(set(re.findall(r"self.cfg.(\w+)", decision))
+                    | set(re.findall(r"self\.cfg\.(\w+)", helpers.split("fn max_util", 1)[-1]))
+                    | {"perf_init"})
     block = feature.split("# [default]")[1].split("# [boost]")[0]
     scalars = dict(re.findall(r"^    (\w+): ([0-9.]+|true|false)$", block, re.M))
     declarations, values = [], []

@@ -262,6 +262,18 @@ pub struct CpuLoadGovernorConfig {
     /// 尖峰增量保留比例（0.0=完全抑制，1.0=不抑制）
     #[serde(default = "d_clg_spike_decay")]
     pub spike_decay: f32,
+    /// 高位升频门槛（高频增阻）：current_perf ≥ 该值后，升频还需全簇「≥high_zone_count 核 util ≥ high_zone_util」确认；0 = 关闭
+    #[serde(default = "d_clg_high_zone_gate")]
+    pub high_zone_gate: f32,
+    /// 高位门槛核数：达标核心数的下限；0 = 关闭该机制
+    #[serde(default = "d_clg_high_zone_count")]
+    pub high_zone_count: u32,
+    /// 高位门槛占用：单核 util 达到该比例才计入「达标核」
+    #[serde(default = "d_clg_high_zone_util")]
+    pub high_zone_util: f32,
+    /// 高位门槛放行兜底：达标确认被连续阻塞满该 tick 数后强制放行一次（防确认条件与负载形态错配时永久卡死）
+    #[serde(default = "d_clg_high_zone_hold")]
+    pub high_zone_hold_ticks: u32,
     /// 触摸升频总开关：true 时触摸屏幕将把大核频率提前抬高一档（大核区间随命中 SoC 变化，见 common::chiri_core_ranges），减少操作卡顿
     #[serde(default = "crate::utils::default_true")]
     pub touch_boost_enabled: bool,
@@ -353,6 +365,18 @@ fn d_clg_spike_jump() -> f32 {
 }
 fn d_clg_spike_decay() -> f32 {
     0.30
+}
+fn d_clg_high_zone_gate() -> f32 {
+    0.85
+}
+fn d_clg_high_zone_count() -> u32 {
+    0
+}
+fn d_clg_high_zone_util() -> f32 {
+    0.90
+}
+fn d_clg_high_zone_hold() -> u32 {
+    20
 }
 fn d_clg_touch_boost_ms() -> u64 {
     400
@@ -447,6 +471,10 @@ impl Default for CpuLoadGovernorConfig {
             down_fast_threshold: d_clg_down_fast_thresh(),
             spike_jump_threshold: d_clg_spike_jump(),
             spike_decay: d_clg_spike_decay(),
+            high_zone_gate: d_clg_high_zone_gate(),
+            high_zone_count: d_clg_high_zone_count(),
+            high_zone_util: d_clg_high_zone_util(),
+            high_zone_hold_ticks: d_clg_high_zone_hold(),
             touch_boost_enabled: true,
             touch_boost_ms: d_clg_touch_boost_ms(),
             touch_boost_tiers: d_clg_touch_boost_tiers(),
@@ -512,7 +540,12 @@ impl CpuLoadGovernorConfig {
         if !self.spike_decay.is_finite() {
             self.spike_decay = d_clg_spike_decay();
         }
-
+        if !self.high_zone_gate.is_finite() {
+            self.high_zone_gate = d_clg_high_zone_gate();
+        }
+        if !self.high_zone_util.is_finite() {
+            self.high_zone_util = d_clg_high_zone_util();
+        }
         // 区间限制（语义约束）
         self.up_threshold = self.up_threshold.clamp(0.0, 1.0);
         self.down_threshold = self.down_threshold.clamp(0.0, 1.0);
@@ -527,6 +560,9 @@ impl CpuLoadGovernorConfig {
         self.spike_jump_threshold = self.spike_jump_threshold.clamp(0.0, 1.0);
         self.spike_decay = self.spike_decay.clamp(0.0, 1.0);
         self.headroom_ramp = self.headroom_ramp.clamp(0.0, 1.0);
+        // 高位升频门槛：占用阈值钳 [0,1]；gate 钳 [0,1]（>up_threshold 无意义由调用方 clamp）、0 核数 = 关闭
+        self.high_zone_gate = self.high_zone_gate.clamp(0.0, 1.0);
+        self.high_zone_util = self.high_zone_util.clamp(0.0, 1.0);
         // headroom 语义 >= 1（余量放大）
         self.headroom_factor = self.headroom_factor.clamp(1.0, 3.0);
 

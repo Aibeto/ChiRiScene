@@ -8,8 +8,13 @@ struct ClusterState {
     affected_cpus: Vec<usize>, available_freqs: Vec<u32>, cached_ratios: Vec<f32>,
     current_perf: f32, current_freq: u32, down_wait: u32, up_wait: u32,
     steady_decay: f32, steady_streak: u32, last_util: f32, ema_util: f32, fast_down: bool,
+    high_zone_wait: u32,
 }
 impl ClusterState {
+    /// [high_zone] replay 适配：单核回放（affected_cpus=[0]）达标核数 = util 达阈值即 1
+    fn high_zone_hits(&self, core_utils: &[f32], thresh: f32) -> u32 {
+        core_utils.iter().filter(|&&u| u >= thresh).count() as u32
+    }
 /* HELPERS */
 }
 struct CoreGroupWorker {
@@ -29,6 +34,7 @@ impl CoreGroupWorker {
             affected_cpus: vec![0], available_freqs: freqs, cached_ratios: ratios,
             current_perf: 0.0, current_freq: 0, down_wait: 0, up_wait: 0,
             steady_decay: 0.0, steady_streak: 0, last_util: 0.0, ema_util: -1.0, fast_down: false,
+            high_zone_wait: 0,
         }, dev_decision: "hold", dev_over: 0, dev_under: 0,
         dev_tgt_perf: 0.0, dev_raw_util: 0.0, dev_prev_perf: 0.0 };
         result.cluster.current_perf = result.cfg.perf_init;
@@ -51,6 +57,15 @@ fn selfcheck() {
         let hw_max = *w.cluster.available_freqs.last().unwrap();
         assert_eq!(saturated_perf, 1.0, "sustained load must retain full-performance reach");
         assert_eq!(saturated_freq, hw_max, "saturation must reach hardware maximum");
+        // [high_zone] replay 单核（affected_cpus=[0]）达标核数恒 1 < count=2：确认永不满足，验 hold 兜底
+        // 仍能到达硬件最高频。门槛阻塞下 alpha 每 high_zone_hold_ticks(20) 才放行一次，几何收敛需
+        // ~25 次放行才到 1 ulp → 与主饱和测试同口径跑 2000 tick
+        let mut hz = CoreGroupWorker::new(group);
+        for _ in 0..60 { hz.step(0.92); }
+        assert!(hz.cluster.current_perf >= hz.cfg.high_zone_gate, "precondition: perf must enter high zone before gate check");
+        for _ in 0..2000 { hz.step(1.0); }
+        assert_eq!(hz.cluster.current_perf, 1.0, "high-zone gate must not block saturation when all cores loaded");
+        assert_eq!(hz.cluster.current_freq, hw_max);
         let mut floor_tick = 0;
         for tick in 1..=100 { w.step(0.0); if w.dev_tgt_perf == w.cfg.perf_floor {floor_tick=tick; break;} }
         assert!(floor_tick > 0 && floor_tick <= 10);
