@@ -9,7 +9,7 @@
   工具自动写到项目外的副本（如 Cursor plans 目录）复制回项目后删除原件。
 - **【铁律】任何文件不得落在项目文件夹之外**（2026-09-26 用户严令，违者零容忍）：
   CreatePlan 会把计划写到 `C:\Users\Aibeto Zhu\.cursor\plans\`——**每次创建计划后必须立即**：
-  ① 原文复制到 `.cursor/docs/plans/<日期>-<名称>.plan.md`；② 删除 plans 目录原件；③ 确认项目外无残留。
+  ① 原文复制到 **`.cursor/plans/<日期>-<名称>.plan.md`**（**2026-10-11 更正：原写 `.cursor/docs/plans/` 是 2026-09-26 归档前的旧路径，该目录已随归档删除**；计划目录现行口径见 `agentsdocs/07-todos.md:37`）；② 删除 plans 目录原件；③ 确认项目外无残留。
   本日已违例一次（两份计划滞留项目外被用户抓到），此流程刻死，不依赖回忆。
 - 架构约定、契约数字、命令口径变更同步 `agentsdocs/` 与本文件；具体改动经过写 `.cursor/memory/YYYY-MM-DD.md`。
 - CI 跳过口径：`build.yml` 的 `check-skip` 闸——提交信息含 `skip ci`（不分大小写、无需方括号）即跳过该次构建；
@@ -99,7 +99,20 @@
   统一走 `wait_until_frame_source(timeout)`，只有「playback 在接管但诊断关着」用 1s 有界等待兜底
   （诊断开关无唤醒通道）。口径正文见 `agentsdocs/03-chiri.md` 的 FAS 帧源门控条。
 
-- ChiRi 是设备上唯一的 userspace sysfs 写频调度程序（口径，2026-09-26 依内核源码分析修正）：设备上**不存在常态竞争的厂商守护进程/第三方调度模块**；频率实际决策链 = waltgov + vendor hook（OMRG/frame_boost）+ FREQ_QOS 聚合，详见 `.cursor/docs/kernel-analysis/06-vendor-inventory.md`，ChiRi 写 scaling_max/min 是 clamp 不是频率决策，内核 thermal QoS 钳制是合法态不算篡改；防篡改/周期重写（fast/power_base 5s、FAS 30s 强制重写、CLG 1s、bg uclamp 60s 再断言等）一律是**异常兜底**——防的是残留旧模块、手动调试、内核异常态下的异常改写，文档/汇报勿再写成厂商对抗。
+- ChiRi 是设备上唯一的 userspace sysfs 写频调度程序（口径，2026-09-26 依内核源码分析修正）：设备上**不存在常态竞争的厂商守护进程/第三方调度模块**；频率实际决策链 = waltgov + vendor hook（OMRG/frame_boost）+ FREQ_QOS 聚合，详见 **`.archive/.cursor/docs/kernel-analysis/06-vendor-inventory.md`**（2026-10-11 更正：`kernel-analysis/` 目录早已归档，`.cursor/docs/` 下的同路径已不存在），ChiRi 写 scaling_max/min 是 clamp 不是频率决策，内核 thermal QoS 钳制是合法态不算篡改；防篡改/周期重写（fast/power_base 5s、FAS 30s 强制重写、CLG 1s、bg uclamp 60s 再断言等）一律是**异常兜底**——防的是残留旧模块、手动调试、内核异常态下的异常改写，文档/汇报勿再写成厂商对抗。
+
+- **息屏省电现状：两段（doze 0.30 立即 → scenemode 0.12 延迟）；2026-10-11 评估后决定不拆**：
+  ① **doze 段**：屏幕一灭就生效（`src/chiri/mod.rs:3723-3732`，另在 `:3321-3329` 与 `:4222-4233` 重复同一构造），用 `get_clg_cfg(&cfg, "reduce")` 起底后覆盖 5 个字段 —— `enabled=true` / `perf_floor 0.0` / **`perf_ceil = .min(0.30)`** / `smoothing_up 0.10` / `touch_boost=false`；
+  ② **scenemode 段**：`feature.yaml:20 scene_mode_delay_secs`（8550 YAML 现值 300 s；代码缺省 3000，被 YAML 覆盖）到期后进入（`mod.rs:4272-4285`），改用 `module/config/normal/scenemode.yaml` 的 `perf_ceil 0.12`。
+  **两段配置同源**（都是 `scenemode.yaml` 那份，doze 是 reduce 起底覆盖得来）⇒ DiD（0.12 相对 0.30）量的是**段间边际**（≈0，甚至略正 +0.0461 W）。
+  **来历**：doze 段是上游 yumi 的设计（`7e73d60` 2026-03-10，i18n `Enabling Extreme Doze mode`），ChiRi `a64366c` 继承、`540af54` 压到 0.30；scenemode 段是 ChiRi `1b9957b`（2026-08-30）自己加的。**全仓真天花板只有这两个**。
+
+- **【方案 P1，本轮要做】取消二段式息屏（2026-10-11 用户目标 + 已定做法）**：**「息屏只有一个档」是用户明确目标**（原话「我的目的就是取消二段式息屏」）。做法（用户 2026-10-11 定）：**doze 与 CLG 本就是同一套算法、doze 只是换参数 ⇒ 取消二段式 = 息屏后的 CLG 保持与 `reduce` 完全相同参数**，删掉那 4 行息屏专用覆盖（`perf_ceil .min(0.30)` / `perf_floor 0.0` / `smoothing_up 0.10` / `touch_boost=false`，3 组共 12 行），**不换基座、不改走 default**（那会连带改 7 个字段并引入 little 0.95）。**硬约束：任何模式下都必须保留「随时可到硬件最高频」的能力**。计数 **`scene_mode_delay_secs = 3000 s`**（五机型 YAML 300→3000）。饱和退出**保持退回 reduce 不变**（窗口内同为 reduce 参数，天然一致）。方案 `.cursor/plans/2026-10-11-调度改进方案.md` **P1**。
+  **代价 0.09 ~ 1.17 Wh（中枢 0.59）**：作用面 = 每次息屏的 `[0, min(段长, 3000))`，共 185 次息屏、其中 **119 次段长 <3000 s 永不进 scenemode**；实际窗口 **13469 s / 2.6791 Wh / avgW 0.716 / >1W 率 17.7%**。上界按 t2 匹配 ΔW 0.314 W → 1.17 Wh；中枢按窗口内「有 0.30 上限(13193 s, 0.713 W) vs 无上限(276 s, 0.871 W)」直接对比 Δ=0.158 W → 0.59 Wh；下界按 DiD 比值 0.147 折算 → 0.09 Wh。
+  **关键参照**：窗口内「天花板咬住」组 avgW 0.702 与「未咬住」组 0.729 **几乎相同**，且咬住秒里 cpu_dyn 只占整机 22.6%（cpu_dyn avgW 0.157 W）⇒ 这条改动的代价主要不在「放掉天花板」，而在「把压制推迟到 3000 s」。
+  **净收益（P1 代价 + P2 + P4）保守 +0.36 / 中枢 +1.59 / 乐观 +3.08 Wh**（P2 下界修正为 1.38 后，最保守情形**不再转负**）。
+  **改动口径**：`mod.rs:3716-3733` 删那 4 行覆盖（`:3725/:3728/:3729/:3730`，基座 reduce 不动）；`:3321-3329`（FAS 失效）与 `:4222-4233`（scenemode 被关）同口径删；**饱和退出 `:4359-4381` 保持退回 reduce 不变**；五机型 `feature.yaml` 的 delay 300→3000；i18n 只改 `scheduler-doze-enable/restore` 文案（双语），special-keep 保留。
+  **回退** = 恢复 doze 段构造 + 五机型 YAML 改回 300。
 
 - **热压制恒钳开关（2026-09-26 契约，配置级）**：`Thermal.clamp_heavy: bool`（serde 默认 `true`），`Config::load` 同步到 CLG，启动与热重载均生效。`true` = cap 窗口内所有簇**恒钳**写频目标、`free_above` 豁免档被忽略；`false` = 精确回退旧 `free_above` 豁免行为。只改钳制判据，仍**只钳写频、不回写 `current_perf`**（状态卡死根因不存在）。8550 feature.yaml 已置 `true`；行为级证据 = governor 侧 `clamp_apply` 跃迁事件（bind/unbind 跃迁时、`diag_active()` 门控内）。口径正文见 `agentsdocs/03-chiri.md` Thermal 段。
 
@@ -109,5 +122,49 @@
 
 ## 进行中
 
-- daemon-perf-opt 五阶段性能优化计划：`.cursor/docs/daemon-perf-opt-plan.md`
+- daemon-perf-opt 五阶段性能优化计划：**已归档** `.archive/.cursor/docs/daemon-perf-opt-plan.md`（原路径 `.cursor/docs/` 下的副本已不存在）
   （Phase 3 前置 `.trae/specs/harden-scenemode-and-screen-detect` 的 hold 三分支）。
+
+- **devimpbin/ 口径（2026-10-11 用户纠正）**：`devimpbin/` 是**本项目工作区内的日志包目录**（`.gitignore:41` 忽略，15G，历次解包），**不是要删除的残留** —— 本轮对话早前多次把「项目外 `~/devimpbin`」当成待清理残留，是混淆了两处路径；`devimpbin/_tmp/` 是一次性探针的合法落盘处。
+- **一次性分析脚本落盘位置（2026-10-11 新增）**：确需手写一次性探针时一律写 `devimpbin/_tmp/`
+  （`devimpbin/` 已被 `.gitignore:41` 忽略），**不得落在项目根目录** —— 项目根无 ignore 覆盖，
+  会在 `git status` 里堆出上百个 `??` 脏项。优先复用 `scripts/devimp/` 常驻脚本（含 `dvselfcost.py`，
+  `feas`/`diag`/`pair` 三子命令，需 `--manifest`；注意 `dvrun.py` 的 `STAGES` 未包含它）。
+
+- **收口/汇报前必做智能体生命周期核查（2026-10-11 新增）**：`list_agents` + `job_list` + `ps -eo pid,etimes,args`
+  三重核实，确认无活跃子代理、无未完成后台任务后再宣布收口。教训：曾出现汇报结束时子代理仍在跑、
+  3 个 sleep 轮询 job 未收的情况。派子代理前必须在 prompt 写明终端调用上限 / scratch 单文件路径 / 收尾清理要求。
+
+- **汇报结构最低要求（2026-10-11 新增）**：调度/功耗类结论必须给出「问题 → 原因（含源码路径）→ 后果 →
+  影响（量化）→ 快速判定方法（用哪个 dv*.py 看哪一段）+ 改哪一行」，缺一不可。仅给结论数字视为不合格。
+
+- **logd_1011-000909 调度功耗定稿口径（2026-10-11）**：整机放电 66.5 Wh（status.csv `charge=discharging` ∧ `0<batt_power_w<=20`，100344 样本）；
+  调度侧**净收益视 P1 代价档位**：保守 **+0.36 Wh（+0.5%）** / 中枢 **+1.59 Wh（+2.4%）** / 乐观 **+3.08 Wh（+4.6%）** = P1 代价（−1.17 / −0.59 / −0.09）+ P2 + P4。P2 对外区间 **1.38 ~ 2.77 Wh**（10%~20% 两档、**均已含热态 4% 折扣**；旧版 0.93~2.88 一端打折一端没打，已修正）；P3 与 P2 共享窗口不另加。
+  硬地板必须先扣：屏幕本体 6.35 Wh + 息屏地板外围 4.38~8.14 Wh = 10.73~14.49 Wh（16%~22%）。
+  **CPU 动态模型只占整机 31.3%（20.79 Wh）**，残差 68.7% 是 GPU/外围/模型误差 —— 任何 CPU 调频方案的收益上限受此约束。
+  定稿文档：**`.cursor/plans/2026-10-11-调度改进方案.md`**（**2026-10-11 由 `.cursor/docs/` 迁入计划目录并精简为 326 行**；结构 = §0 结论 / §1 能量盘子 / §2 改动清单（P1/P2/P4/P5/P11/P12）+ 已删除 8 条备查 / §3 约束与口径（含 doze＝scenemode、DiD 裁决、tick 四口径、硬口径 R1–R7）/ §4 验证 / §5 不做与证据不足 / §6 六路索引）。**完整版 639 行备份在 `devimpbin/_tmp/_plan_full_backup.md`**（gitignore 覆盖）。
+  两条裁决须记住：① scenemode 相对 doze 的因果边际 DiD=+0.0461 W（方向与省电相反）⇒ **息屏类收益只剩 P1 的 0.02~0.07 Wh**，t2 原上界 0.49 Wh 作废；
+  ② t6（playback/fas/akmode）0.50~1.50 Wh 与 tuned headroom **同一杠杆**（后者的 P9/P10 已删，不再是重叠问题）。
+  热档不要当省电手段：放电期非 100 档仅 4.03%，cap=60 段均 5.33 W **高于** cap=100 段 2.32 W。
+  **2026-10-11 两批删除共 8 条**（方案内记作「第一/第二轮」）：①「删掉不建议做的和几乎没收益的」→ P8（doze 再压 0.20）、P9/P10（tuned headroom）、P6（scenemode 解耦/阈值）、P7（delay 300→120）、CR.1（CLG 重建，≤0.02 Wh）；②**「不调 GPU，另外 doze 就是 scenemode」**→ **P3（GPU 协同抑制）、P13（削三特调模式）**。**保留清单 = P1 / P2 / P4 / P5 / P11 / P12**。删除理由/勿重评/重开条件集中在方案 **§2.2**；对账与借鉴底账在 **§2.1、§3.4**。
+  决策占比有**至少四个不可互换口径**（tick 行 `screen_on` 恒为 `-`，**无法按屏筛选**）：全 mode 合并 tick（n=1899928）up 40.8 / down 9.0 / down_wait 9.2；default 单独 tick（n=1329613）up 51.6 / 7.6 / 3.6；全 mode 按秒（n=1147979）48.4 / 10.4 / 10.0；default 按秒（n=714358）66.9 / 8.0 / 2.2。**「亮屏」二字不得挂在 tick 数字上**；`fas` 无 tick 行（走 governor=performance）。脚本 `devimpbin/_tmp/tmp_chk_speed6.py`（**从仓库根执行**）。
+
+- **计划/报告分目录口径（2026-10-11 定，用户指出）**：**计划类 → `.cursor/plans/`**（唯一权威 = `agentsdocs/07-todos.md:37`；`.cursor/docs/` 下只留报告类）。2026-10-11 已把 `2026-10-06-fas-ownership-plan.md`、`2026-10-09-energy-three-items-plan.md`（`git mv`）、`2026-10-11-调度改进方案.md` 迁入；`.cursor/docs/plans/` 与 `.cursor/docs/kernel-analysis/` 两个空目录（内容早已在 `.archive/`）已删。
+  **其他环境目录 `.codebuddy/` `.trae/` `.workbuddy/` 与 `agentsdocs/` 只读不写**（`AGENTS.md` 首条）；跨环境借鉴只做对账，改动一律落 `.cursor/`。
+
+- **其他环境的硬口径（读，勿重复评估）**：`.codebuddy/plans/d924b09f…/plan.md`（v14）的 **R1**（只有 SceneMode 允许不到最高频）、**R2**（天花板全拆；`perf_ceil<1`/`headroom<1` 都算，全仓现只剩 `module/config/normal/scenemode.yaml:15 perf_ceil: 0.12`）、**R3**（**永不再新增 A/B 对照**，允许同版本同场景观察）、**R5**（判据 = 帕累托前沿，46 点下凸；先 big 低频 499200→614400、prime 只在末端）、**R6**（放置类动作三道时间闸 `MIN_MIGRATE_INTERVAL` 4s/`REPIN_DEBOUNCE` 8s/`RETURN_COOLDOWN` 16s 不得绕过，新门槛须成对滞回）、**R7**（模式差异只能靠取点/到达速度/降权表达，不得用封顶；交叠带 default×1、reduce×0.5、boost×2）；回退三项（触发条件/字段级可逆/留档位置）**缺一不排期**。`agentsdocs/07-todos.md:53` 明写棘轮**不要往调阈值方向改**；`ANALYSIS-1009.md:297-301` ③④同样限定了 FAS 退出期不得提前降 perf。
+
+- **并行写者互斥范围（2026-10-11 教训）**：派子代理写文档时必须给出互斥写范围，否则会覆盖主线程版本。
+  实例：子代理 `2d93d9f6-56d3-40dd-a701-955ca80ea414` 覆盖了当时的 `.cursor/docs/2026-10-11-调度改进方案.md`（321 行 → 445 行），
+  丢失速判表与合规自查；同名 `tmp_an200~203.py` 亦被覆盖（脚本丢失、结论尚存）。规则见 `.cursor/rules/parallel-agent-file-ownership.mdc`。
+
+- **MemSearch（@zilliz/memsearch-dsh）索引故障与修复口径（2026-10-11 新增）**：这是 **MemSearch 记忆配置**，不是宿主 agent 自带的 memory/config 系统。
+  根因：全局 `~/.memsearch/config.toml` 不存在 ⇒ 嵌入 provider 走内置默认 **openai**（`config.py:58`），而本机**无 OPENAI_API_KEY** ⇒
+  `.index-state.json` 长期 `status: error`（`last_error = OpenAIError: Missing credentials`）。默认 milvus uri `~/.memsearch/milvus.db` 也从未创建。
+  **memsearch 只认 `$HOME/.memsearch/config.toml`（`config.py:26` expanduser，无 env 可重定向）**；项目级 `.memsearch.toml` 被白名单过滤
+  （`config.py:38-46`：只允许 milvus.collection / embedding.batch_size / chunking.* / indexing.* / watch.debounce_ms）；**插件从不传 `--provider`/`--model`**
+  （`@zilliz/memsearch-dsh/index.js:382-402`）。
+  选定修复：`[embedding] provider="onnx" model="gpahal/bge-m3-onnx-int8"`（纯 CPU、无密钥、可离线；索引 21 chunks ≈ 20~25 s，单次 search ≈ 10~12 s，
+  插件超时 15000 ms）；**huggingface.co 本机不可达，须 `HF_ENDPOINT=https://hf-mirror.com`**；模型本地副本在 `devimpbin/_hf-cache/`（560MB）；
+  一键脚本 `devimpbin/fix-memsearch-onnx.sh`，**必须在真实终端跑**（DSH 工具沙箱 /home 为 ro，`mkdir ~/.memsearch` 报只读文件系统），跑完重启 DSH。
+  已排除：ollama（无二进制）、local（需 torch）、hapi-cn（无 embedding 模型 / 404）、MiniLM 系（512 截断与位置嵌入不匹配，onnxruntime broadcast 报错）。
