@@ -267,7 +267,7 @@ const KILL_CMD = /killall -9 chiri/
 // 导出历史日志：启动与轮询探测 mock。启动命令形态必须与 contract/export.ts 发出的一致（`nohup sh <pack.sh> export ...`），
 // 正则写成 `nohup sh -c` 会 mismatch → 预览里点「导出历史日志」直接报「启动导出失败」，进度条根本不会出现
 const EXPORT_START_CMD = /^nohup sh .*pack\.sh'? export /
-const EXPORT_POLL_CMD = /\/sdcard\/Download\/logd_\d{4}-\d{6}\.tar\.gz/
+const EXPORT_POLL_CMD = /\/sdcard\/Download\/logd_\d{4}-\d{6}\.tar/
 /** 轮询次数：前几轮先回进度态，最后才回完成——一上来就回完成会让进度条一闪而过，预览里看不到进度形态 */
 let exportPolls = 0
 
@@ -278,13 +278,9 @@ function handle(cmd: string): ExecResult | null {
   }
   if (EXPORT_POLL_CMD.test(cmd)) {
     exportPolls++
-    // 按真实三段形态依次回：1-2 轮打包（.part 200MB / 源 300MB）、3-4 轮压缩（已读入 150MB / .tar 300MB）、
-    // 5-8 轮压缩但读不到 rchar（内核未计 io 的降级形态 → 界面走不定态）、第 9 轮起完成
-    if (exportPolls <= 2) return ok('p:209715200\ns:0\ng:0\nt:314572800\nr:0\n')
-    if (exportPolls <= 4)
-      return ok('p:0\ns:314572800\ng:157286400\nt:314572800\nr:157286400\n')
-    if (exportPolls <= 8) return ok('p:0\ns:314572800\ng:52428800\nt:314572800\nr:0\n')
-    return ok('s:zst\np:0\ns:0\ng:94371840\nt:314572800\nr:314572800\n')
+    // 按真实两段形态依次回：1-4 轮打包（.part 200MB / 源 300MB）、第 5 轮起完成（.tar 300MB）
+    if (exportPolls <= 4) return ok('p:209715200\ns:0\nt:314572800\n')
+    return ok('s:tar\np:0\ns:314572800\nt:314572800\n')
   }
 
   const exists = EXISTS_CMD.exec(cmd)

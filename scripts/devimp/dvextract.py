@@ -2,21 +2,22 @@
 """dvextract.py —— devimp 日志包解压（递归容忍，内容嗅探，不信任扩展名）。
 
 用法:
-    python scripts/devimp/dvextract.py <logd_*.tar.gz | 已解压目录> [--tag 名称] [--out-root devimpbin]
+    python scripts/devimp/dvextract.py <logd_*.tar.gz（或 .tar.zst / .tar）| 已解压目录> [--tag 名称] [--out-root devimpbin]
 
-背景（2026-09-25 pack.sh 改动）：
-- `module/scripts/pack.sh` 的 `archive` 分支把内层归档打成 **`.tar.lz4`**（`lz4 -f`）；
-  设备上 lz4 不可用时**回落保留 `.tar`**。所以外层包里的内层成员可能是
-  `<ts>.tar` / `<ts>.tar.lz4` / `devimp_<ts>.tar` / `devimp_<ts>.tar.lz4`——
+背景（2026-10-13 pack.sh 口径）：
+- `module/scripts/pack.sh` 的 `archive` 分支由 daemon 内置 zstd 把内层归档压成 **`.tar.zst`**
+  （级别 2、6 线程；2026-10-12 前是 `.tar.lz4`），压缩失败一律回落保留 `.tar`。所以外层包里的
+  内层成员可能是 `<ts>.tar.zst` / `<ts>.tar.lz4` / 老包 `.tar`——
   **一律按前 4 字节嗅探，不看名字**（见 已知坑：目录名/扩展名不可信）。
-- 本机没装 `lz4` python 模块，走 `dvlz4.decompress_bytes` 的纯 python 解码器。
+- zstd 解码三级兜底：stdlib `compression.zstd`（3.14+）→ `zstandard` 库 → 系统 `zstd` CLI；
+  本机没装 `lz4` python 模块，lz4 走 `dvlz4.decompress_bytes` 的纯 python 解码器。
 
 流程（与命令文档「1. 解压」一致）：
-1. 外层 `logd_<MMDD-HHMMSS>.tar.gz` 解到 `devimpbin/<tag>/`；
-2. 逐个内层成员按内容路由：LZ4 帧/遗留 magic → dvlz4；否则按 raw tar；
-3. 任何「本身又是归档」的成员递归解到同级 `x_<stem>/`（去掉 .lz4/.tar 后的名字）；
-4. **完整性闸门**：LZ4 解出后必须像 tar（`ustar` @257 或偏移 0 处名字合理），
-   否则报错并同时给出压缩前/解出后两个字节数——这是没有 lz4 可交叉验证时唯一的自动护栏；
+1. 外层 `logd_<MMDD-HHMMSS>.tar.gz`（或 .tar.zst / .tar）解到 `devimpbin/<tag>/`；
+2. 逐个内层成员按内容路由：LZ4 帧/遗留 magic → dvlz4；zstd → 三级兜底；否则按 raw tar；
+3. 任何「本身又是归档」的成员递归解到同级 `x_<stem>/`（去掉 .lz4/.zst/.tar 后的名字）；
+4. **完整性闸门**：lz4/zstd 解出后必须像 tar（`ustar` @257 或偏移 0 处名字合理），
+   否则报错并同时给出压缩前/解出后两个字节数——这是没有压缩器可交叉验证时唯一的自动护栏；
 5. 校验每个 devimp 侧批次至少解出 main_*/aff_*；缺 logd 侧的批次高声告警
    （已知坑 12：老包因预算清理 bug 丢过 daemon.log/status.csv）；
 6. 写 `inventory.txt`（每个文件 + 大小 + 所在嵌套层 + 检出压缩），stdout 只打摘要。可重复跑。
@@ -40,14 +41,17 @@ MAGIC_LZ4_FRAME = 0x184D2204
 MAGIC_LZ4_LEGACY = 0x184C2102
 MAGIC_LZ4_SKIP = 0x184D2A50
 MAGIC_GZIP = 0x8B1F
+MAGIC_ZSTD = 0xFD2FB528
 
 
 def sniff(data):
-    """按内容判定：'lz4' | 'gzip' | 'tar' | 'unknown'。前 4 字节优先。"""
+    """按内容判定：'lz4' | 'gzip' | 'zstd' | 'tar' | 'unknown'。前 4 字节优先。"""
     if len(data) >= 4:
         m = int.from_bytes(data[:4], "little")
         if m in (MAGIC_LZ4_FRAME, MAGIC_LZ4_LEGACY) or (m & 0xFFFFFFF0) == MAGIC_LZ4_SKIP:
             return "lz4"
+        if m == MAGIC_ZSTD:
+            return "zstd"
     if len(data) >= 2 and int.from_bytes(data[:2], "little") == MAGIC_GZIP:
         return "gzip"
     if looks_like_tar(data):
@@ -74,8 +78,30 @@ def looks_like_tar(data):
     return mode == b"" or all(c in b"01234567 " for c in mode)
 
 
+def zstd_decompress(raw):
+    """zstd 解压：stdlib `compression.zstd`（3.14+）→ `zstandard` 库 → 系统 `zstd` CLI，三级兜底。"""
+    try:
+        from compression import zstd
+        return zstd.decompress(raw)
+    except ImportError:
+        pass
+    try:
+        import zstandard
+        # decompress() 要求帧头带 content size（daemon 流式产物不带），必须走流式 read
+        dctx = zstandard.ZstdDecompressor()
+        with dctx.stream_reader(io.BytesIO(raw)) as r:
+            return r.read()
+    except ImportError:
+        pass
+    import subprocess
+    p = subprocess.run(["zstd", "-d", "-"], input=raw, capture_output=True)
+    if p.returncode != 0:
+        raise RuntimeError(f"zstd CLI 失败: {p.stderr.decode(errors='replace').strip()}")
+    return p.stdout
+
+
 def decode_archive_bytes(raw, label):
-    """把「外层成员」的原始字节解成 tar 字节：嗅探 → lz4/gzip/tar 直通。
+    """把「外层成员」的原始字节解成 tar 字节：嗅探 → lz4/zstd/gzip/tar 直通。
 
     LZ4 路径带完整性闸门：解出的字节必须像 tar，否则抛错（附两个字节数）。
     """
@@ -91,6 +117,17 @@ def decode_archive_bytes(raw, label):
                 f"头部 {out[:16]!r}）——解码器与真实编码器不一致，或文件已损坏"
             )
         return out, "tar.lz4"
+    if kind == "zstd":
+        try:
+            out = zstd_decompress(raw)
+        except Exception as e:
+            raise RuntimeError(f"{label}: zstd 解码失败（{len(raw)} bytes）: {e}") from e
+        if not looks_like_tar(out):
+            raise RuntimeError(
+                f"{label}: zstd 解出结果不是 tar（{len(raw)} → {len(out)} bytes，"
+                f"头部 {out[:16]!r}）——文件已损坏或不是归档"
+            )
+        return out, "tar.zst"
     if kind == "gzip":
         import gzip
         out = gzip.decompress(raw)
@@ -100,7 +137,7 @@ def decode_archive_bytes(raw, label):
         return out, "tar.gz"
     if kind == "tar":
         return raw, "tar"
-    raise RuntimeError(f"{label}: 既不是 tar/lz4/gzip，也不是可识别的归档（前 16 字节 {raw[:16]!r}）")
+    raise RuntimeError(f"{label}: 既不是 tar/lz4/zstd/gzip，也不是可识别的归档（前 16 字节 {raw[:16]!r}）")
 
 
 def extract_tar_bytes(raw, dest):
@@ -119,9 +156,9 @@ def extract_tar_bytes(raw, dest):
 
 
 def stem_of(name):
-    """`devimp_0925-040608.tar.lz4` → `devimp_0925-040608`（剥 .lz4/.gz/.tar 各一层）。"""
+    """`devimp_0925-040608.tar.lz4` → `devimp_0925-040608`（剥 .lz4/.zst/.gz/.tar 各一层）。"""
     s = name
-    for ext in (".lz4", ".gz", ".tar"):
+    for ext in (".lz4", ".zst", ".gz", ".tar"):
         if s.endswith(ext):
             s = s[: -len(ext)]
     return s
@@ -149,12 +186,17 @@ def run(inp, tag, out_root, records):
 
     with open(inp, "rb") as f:
         outer = f.read()
-    if int.from_bytes(outer[:2], "little") == MAGIC_GZIP:
+    outer_kind = sniff(outer[:8])
+    if outer_kind == "gzip":
         import gzip
         outer_tar = gzip.decompress(outer)
+    elif outer_kind == "zstd":
+        outer_tar = zstd_decompress(outer)
     else:
         outer_tar = outer
-    outer_kind = "tar.gz" if outer_tar is not outer else "tar"
+        if outer_kind != "tar":
+            # 老逻辑：非 gzip 外层一律当 tar（outer_tar is outer 恒真）；unknown（非 tar 的裸文件）也走 tarfile 由其报错
+            outer_kind = "tar"
     names = extract_tar_bytes(outer_tar, outdir)
     for n in names:
         records.append((n, os.path.getsize(os.path.join(outdir, n)), "0 outer", outer_kind))
@@ -171,7 +213,7 @@ def run(inp, tag, out_root, records):
         with open(rp, "rb") as f:
             raw = f.read()
         kind = sniff(raw)
-        is_archive = kind in ("lz4", "gzip", "tar")
+        is_archive = kind in ("lz4", "zstd", "gzip", "tar")
         if not is_archive:
             continue
         try:
@@ -239,7 +281,7 @@ def verify(outdir):
 def main(argv=None):
     dc.setup_console()
     ap = argparse.ArgumentParser()
-    ap.add_argument("input", help="logd_*.tar.gz 或已解压目录")
+    ap.add_argument("input", help="logd_*.tar.gz（或 .tar.zst / .tar）或已解压目录")
     ap.add_argument("--tag", default=None, help="输出子目录名（默认取包名 MMDD-HHMMSS）")
     ap.add_argument("--out-root", default="devimpbin")
     a = ap.parse_args(argv)

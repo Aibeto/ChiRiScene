@@ -903,17 +903,14 @@ class AppStore {
   // [export]
   /** 导出阶段：running 期间禁用按钮，done/failed 显示结果 */
   exportPhase = $state<'idle' | 'running' | 'done' | 'failed'>('idle')
-  /** 成功后的产物绝对路径（模块压缩器缺失时是未压缩 .tar） */
+  /** 成功后的产物绝对路径（tar） */
   exportTarget = $state('')
   exportError = $state('')
-  /** 进度百分比（0~99，100 留给完成态）：契约层按「已处理字节 / 计划处理字节」算好 */
+  /** 进度百分比（0~99，100 留给完成态）：契约层按「已处理字节 / 源总字节」算好 */
   exportPercent = $state(0)
   /** 已处理 / 计划处理 / 产物当前字节（原始字节数，MB 文案走下面三个 getter） */
   exportRead = $state(0)
   exportPlanned = $state(0)
-  exportWritten = $state(0)
-  /** 压缩段读不到已读入字节（/proc 不可用）→ 百分比无从推算，界面改走不定态动画 + 已写出 MB */
-  exportBlind = $state(false)
 
   get exportReadMb(): string {
     return (this.exportRead / 1048576).toFixed(1)
@@ -923,12 +920,9 @@ class AppStore {
     return (this.exportPlanned / 1048576).toFixed(1)
   }
 
-  get exportWrittenMb(): string {
-    return (this.exportWritten / 1048576).toFixed(1)
-  }
 
   /**
-   * 导出历史归档到 /sdcard/Download：打包在设备上后台跑（zstd -19 压几百 MB 需要时间），
+   * 导出历史归档到 /sdcard/Download：打包在设备上后台跑（仅 tar 不压缩，几百 MB 也要数十秒），
    * 这里只轮询产物，期间界面照常可用
    */
   async startExport(): Promise<void> {
@@ -939,8 +933,6 @@ class AppStore {
     this.exportPercent = 0
     this.exportRead = 0
     this.exportPlanned = 0
-    this.exportWritten = 0
-    this.exportBlind = false
     const started = await startExport()
     if (started.kind !== 'ok') {
       this.exportPhase = 'failed'
@@ -951,11 +943,9 @@ class AppStore {
       return
     }
     const job = started.value
-    // 1.5s 一轮，最多 320 轮（8 分钟）：zstd -19 接近极限压缩，明显慢于原 gzip -6，几百 MB 可达数分钟量级
+    // 1.5s 一轮，最多 120 轮（3 分钟）：仅 tar 不压缩，几百 MB 也在数十秒量级
     let pollFails = 0
-    // 压缩刚启动的一两轮 rchar 可能还是 0，连看两轮都为 0 才判「读不到」并切不定态，避免闪一下
-    let blindPolls = 0
-    for (let i = 0; i < 320; i++) {
+    for (let i = 0; i < 120; i++) {
       await new Promise(resolve => setTimeout(resolve, 1500))
       const probed = await pollExport(job)
       if (probed.kind !== 'ok') {
@@ -969,22 +959,16 @@ class AppStore {
       }
       pollFails = 0
       const progress = probed.value.progress
-      // 压缩收尾瞬间 .pid 已删而 .tar/.mode 尚在，rchar 读到 0 会让 read/percent 瞬时回退（进度条回跳）：
-      // 同一 job 内单调不减吸收该窗口（新 job 在开头已清零）
+      // 单调不减吸收轮间读数波动（新 job 在开头已清零）
       this.exportPercent = Math.max(this.exportPercent, progress.percent)
       this.exportRead = Math.max(this.exportRead, progress.read)
       this.exportPlanned = progress.planned
-      this.exportWritten = progress.written
-      blindPolls = progress.blind ? blindPolls + 1 : 0
-      this.exportBlind = blindPolls >= 2
       const phase = probed.value.phase
       if (phase === 'running') continue
-      if (phase === 'done-zst' || phase === 'done-tar') {
+      if (phase === 'done-tar') {
         this.exportPhase = 'done'
-        this.exportTarget = phase === 'done-zst' ? job.target : job.fallback
-        toast(
-          phase === 'done-zst' ? t('overview.export.done') : t('overview.export.doneTar')
-        )
+        this.exportTarget = job.target
+        toast(t('overview.export.doneTar'))
         return
       }
       this.exportPhase = 'failed'

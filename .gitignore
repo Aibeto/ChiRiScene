@@ -13,6 +13,8 @@ yumi-ebpf/target
 # Rust
 *.rs.bk
 node_modules/
+.cargo-home/
+.npm-cache/
 
 # AI tooling
 .reasonix/

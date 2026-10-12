@@ -2,7 +2,7 @@
 """dvrun.py —— devimp 日志包分析的单命令驱动（一次 python 进程跑完整条链）。
 
 用法:
-    python scripts/devimp/dvrun.py <logd_*.tar.gz | 已解压目录>
+    python scripts/devimp/dvrun.py <logd_*.tar.gz（或 .tar.zst / .tar）| 已解压目录>
         [--tag T] [--since MMDD-HHMMSS] [--min-n 30] [--only extract,analyze,main,aff,status,power,energy]
 
 或者用一条命令入口（Windows）：
@@ -57,7 +57,7 @@ def run_stage(name, func):
 def main(argv=None):
     dc.setup_console()
     ap = argparse.ArgumentParser()
-    ap.add_argument("input", help="logd_*.tar.gz 或已解压目录")
+    ap.add_argument("input", help="logd_*.tar.gz（或 .tar.zst / .tar）或已解压目录")
     ap.add_argument("--tag", default=None)
     ap.add_argument("--since", default="0000-000000")
     ap.add_argument("--min-n", type=int, default=30)

@@ -2935,7 +2935,7 @@ fn pack_dir_tar(root: &Path, dir: &Path, out_tar: &Path) -> bool {
 }
 
 /// Rust 内置流式 zstd 压缩（zstd crate 走 vendored C，进程内压缩不依赖设备压缩二进制；
-/// `io::copy` 流式不整读进内存——归档可达 100MB+）。level 由调用方定：启动归档 1（快 ~250MB/s）／导出 CLI 19。
+/// `io::copy` 流式不整读进内存——归档可达 100MB+）。level 由调用方定：启动归档 2／导出 CLI 19；压缩统一 6 线程（zstdmt）。
 /// `Encoder::new` 与 `finish` 均返回 io::Result，复制/收尾任一失败删除半截目标文件
 fn compress_zst(src: &Path, dst: &Path, level: i32) -> bool {
     match (fs::File::open(src), fs::File::create(dst)) {
@@ -2944,6 +2944,10 @@ fn compress_zst(src: &Path, dst: &Path, level: i32) -> bool {
             let Ok(mut enc) = zstd::Encoder::new(fout, level) else {
                 return false;
             };
+            // 6 线程压缩（zstdmt feature）：级别 19 单线程在设备上太慢；线程数超核时 libzstd 自行收敛
+            if enc.multithread(6).is_err() {
+                return false;
+            }
             let ok = std::io::copy(&mut fin, &mut enc)
                 .and_then(|_| enc.finish().map(|_| ()))
                 .is_ok();
@@ -2959,7 +2963,8 @@ fn compress_zst(src: &Path, dst: &Path, level: i32) -> bool {
 }
 
 /// 内置压缩工具入口（main.rs [toolbox] 分发）：`chiri zstd <file>` 就地生成 `<file>.zst` 并删除源文件
-/// （语义与 `gzip -f` 一致，供 pack.sh export 调用，级别 19 接近极限压缩率）。返回进程退出码：0 成功、1 压缩失败、2 用法错误
+/// （语义与 `gzip -f` 一致；级别 19 接近极限压缩率。2026-10-13 起 pack.sh export 已改纯 tar 不再调用，
+/// CLI 保留作设备侧手动压缩工具）。返回进程退出码：0 成功、1 压缩失败、2 用法错误
 pub fn compress_cli(cmd: &str, args: &[String]) -> i32 {
     match cmd {
         "zstd" => match args.first() {
@@ -2985,7 +2990,7 @@ pub fn compress_cli(cmd: &str, args: &[String]) -> i32 {
     }
 }
 
-/// 打包单个 staging 目录：pack.sh 先打无压缩 tar（目标名去掉 `.zst`），再用内置 zstd 压成 `out_final`（.tar.zst，级别 1）并删除中间 tar；
+/// 打包单个 staging 目录：pack.sh 先打无压缩 tar（目标名去掉 `.zst`），再用内置 zstd 压成 `out_final`（.tar.zst，级别 2）并删除中间 tar；
 /// zstd 落盘失败回落保留 `.tar`。tar 打包失败写 ARCHIVE_FAILED.txt 保留待查（此时 logger 尚未 init，无法打点）
 fn pack_or_keep(root: &Path, dir: &Path, out_final: &Path) {
     let Some(tar_str) = out_final.to_str().and_then(|s| s.strip_suffix(".zst")) else {
@@ -2993,7 +2998,7 @@ fn pack_or_keep(root: &Path, dir: &Path, out_final: &Path) {
     };
     let tar_path = PathBuf::from(tar_str);
     if pack_dir_tar(root, dir, &tar_path) {
-        if compress_zst(&tar_path, out_final, 1) {
+        if compress_zst(&tar_path, out_final, 2) {
             let _ = fs::remove_file(&tar_path);
         }
         // zstd 失败：保留 .tar 作为最终产物（回落，见上）
