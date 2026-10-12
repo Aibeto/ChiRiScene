@@ -19,6 +19,7 @@ on:
       - ".cursor/**"
       - ".codebuddy/**"
       - ".workbuddy/**"
+      - "scripts/**"
   pull_request:
     branches: ["main"]
     paths-ignore:
@@ -30,6 +31,7 @@ on:
       - ".cursor/**"
       - ".codebuddy/**"
       - ".workbuddy/**"
+      - "scripts/**"
   workflow_dispatch:
 # 跳过机制：同一 ref（分支/PR）上有新运行进入时，取消仍在跑的旧运行，
 # 避免连续 push 造成的排队与重复构建。tag 构建（发布产物）不取消。
@@ -40,6 +42,22 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: clippy, rustfmt }
+      - uses: Swatinem/rust-cache@v2
+        with: { shared-key: lint }
+      - run: cargo fmt --all -- --check
+      - run: cargo check --workspace --all-targets
+        env: { YUMI_SKIP_EBPF: "1" }
+      # 存量 clippy 警告暂不强制失败
+      - run: cargo clippy --workspace --all-targets --no-deps
+        env: { YUMI_SKIP_EBPF: "1" }
+
   build:
     name: Build and Package
     # 钉版本：ubuntu-latest 在 2026-10-19~11-19 期间切到 26.04，
@@ -54,16 +72,28 @@ jobs:
         with:
           fetch-depth: 0
 
+      # 0. 防呆：cache/ 与 output/ 为构建产物，若误入版本库则直接失败
+      - name: Guard against tracked cache/output
+        run: |
+          if git ls-files | grep -E '^(cache/|output/)'; then
+            echo "cache/ or output/ files must not be tracked" >&2
+            exit 1
+          fi
+
       # 2. 配置 Node.js 环境 (用于编译 WebUI)
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
           node-version: "24" # 推荐使用 LTS 版本
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
 
       # 3. 安装 WebUI 依赖
+      # 使用 npm ci：严格按 package-lock.json 安装，lock 与 package.json 不一致时直接报错失败，
+      # 不更新 lock 文件，保证 CI 可复现；配合上方 npm cache 加速。
       - name: Install WebUI dependencies
         working-directory: ./webui
-        run: npm install
+        run: npm ci
 
       # 4. 配置 Rust Nightly 环境并添加 Android 交叉编译目标
       - name: Setup Rust Toolchain
@@ -83,7 +113,15 @@ jobs:
       #    （ubuntu runner 无可用包）；cargo-binstall 因 asset 平台匹配问题回退到
       #    cargo install 而失败。因此直接经 GitHub API 解析官方 release asset 下载。
       #    build.rs 检测到 PATH 中已有 bpf-linker 后会跳过其内置安装逻辑。
+      - name: Cache bpf-linker
+        id: cache-bpf-linker
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/bin/bpf-linker
+          key: ${{ runner.os }}-${{ runner.arch }}-bpf-linker-v0.11.0
+
       - name: Install bpf-linker (prebuilt)
+        if: steps.cache-bpf-linker.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y zstd
@@ -117,7 +155,15 @@ jobs:
       #    与 bpf-linker 同理：带 GITHUB_TOKEN 调 API 解析 release asset，
       #    避免未鉴权时 runner 共享 IP 被 rate limit（响应体无 assets 字段）。
       #    注意该二进制只认 `cargo ndk` 调用方式，不能直接执行做 --version。
+      - name: Cache cargo-ndk
+        id: cache-cargo-ndk
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/bin/cargo-ndk
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-ndk-v4.1.2
+
       - name: Install cargo-ndk (prebuilt)
+        if: steps.cache-cargo-ndk.outputs.cache-hit != 'true'
         run: |
           ASSET=$(curl -sSfL \
             -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
