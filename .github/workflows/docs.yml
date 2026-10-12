@@ -57,7 +57,7 @@ jobs:
 
       # 5. 初始化 Pages 配置
       - name: Setup Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
 
       # 6. 上传构建产物作为 Pages artifact（VitePress 默认输出目录）
       - name: Upload Pages artifact
