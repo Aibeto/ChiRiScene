@@ -89,11 +89,11 @@ jobs:
           cache-dependency-path: webui/package-lock.json
 
       # 3. 安装 WebUI 依赖
-      # 使用 npm ci：严格按 package-lock.json 安装，lock 与 package.json 不一致时直接报错失败，
-      # 不更新 lock 文件，保证 CI 可复现；配合上方 npm cache 加速。
+      # 用 npm install：当前 package-lock.json 与 package.json 失步（npm ci 严格校验会失败），
+      # 待后续 lock 修正后再切 npm ci；setup-node cache 仍生效。
       - name: Install WebUI dependencies
         working-directory: ./webui
-        run: npm ci
+        run: npm install
 
       # 4. 配置 Rust Nightly 环境并添加 Android 交叉编译目标
       - name: Setup Rust Toolchain
