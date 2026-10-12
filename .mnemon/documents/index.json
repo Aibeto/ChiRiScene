@@ -1,0 +1,132 @@
+{
+  "version": 1,
+  "documents": [
+    {
+      "id": "4b0f8120-3d38-43b7-b8c9-59e936651c9d",
+      "title": "ChiRi 调度改进方案（2026-10-11 归因合并定稿）：核查要点与可复用口径",
+      "description": "SM8550 ChiRi 调度侧省电空间归因与改动清单的结构化摘要：66.5Wh 盘子、1.6~5.0Wh 可动区间的逐项可加口径、DiD 裁决与按 mode 分化系数、天花板/阈值棘轮等否决边界、CR.1、文件目录约定与遗留待裁定项。",
+      "status": "active",
+      "filename": "chiri-2026-10-11-4b0f8120.md",
+      "relativePath": "documents/active/chiri-2026-10-11-4b0f8120.md",
+      "sourcePaths": [
+        ".cursor/plans/2026-10-11-调度改进方案.md",
+        ".cursor/docs/2026-10-11-分派共同前提.md",
+        ".cursor/docs/2026-10-11-亮屏残差与尖峰归因.md",
+        ".cursor/docs/2026-10-11-息屏路径归因.md",
+        ".cursor/docs/2026-10-11-scenemode门槛归因.md",
+        ".cursor/docs/2026-10-11-热限与Thermal配置归因.md",
+        ".cursor/docs/2026-10-11-daemon自耗归因.md",
+        ".cursor/docs/2026-10-11-playback-fas-akmode归因.md",
+        "agentsdocs/07-todos.md"
+      ],
+      "sessionIds": [
+        "f4f17d38-ebd0-4dc4-af70-6b5cfce8b6a8"
+      ],
+      "createdAt": "2026-10-11T06:17:42.798Z",
+      "updatedAt": "2026-10-11T06:17:42.798Z",
+      "lastAccessedAt": "2026-10-11T10:02:15.032Z",
+      "revision": 1,
+      "contentHash": "fed27c85ae4666f5939c4d9c1a53a8ce14b16a8f40741a23f88fa07b62283309",
+      "sizeBytes": 8229,
+      "memoryBodyIds": []
+    },
+    {
+      "id": "3290f544-df25-40da-8e41-c802a1089ea6",
+      "title": "ChiRi 调度改进方案定稿口径：doze=scenemode 浅压档 与 P1~P5 编号",
+      "description": "2026-10-11 方案简化定稿后的口径记录：用户确认「doze 即 scenemode 浅压档（同一模式两深度档）」，全文术语统一与跨文件同步清单，删除项不入正文，编号重排为连续 P1~P5 及各项收益/风险，P1 修 defect 细节与验证判据。",
+      "status": "active",
+      "filename": "chiri-doze-scenemode-p1-p5-3290f544.md",
+      "relativePath": "documents/active/chiri-doze-scenemode-p1-p5-3290f544.md",
+      "sourcePaths": [
+        ".cursor/plans/2026-10-11-调度改进方案.md",
+        ".cursor/docs/2026-10-11-息屏路径归因.md",
+        ".cursor/docs/2026-10-11-scenemode门槛归因.md",
+        ".cursor/docs/2026-10-11-分派共同前提.md",
+        ".cursor/docs/2026-10-11-playback-fas-akmode归因.md",
+        ".cursor/memory/MEMORY.md",
+        "src/chiri/mod.rs"
+      ],
+      "sessionIds": [
+        "02410e1b-2a47-4976-8654-37468c83487e"
+      ],
+      "createdAt": "2026-10-11T07:34:23.575Z",
+      "updatedAt": "2026-10-11T07:34:23.575Z",
+      "lastAccessedAt": "2026-10-11T22:07:08.086Z",
+      "revision": 1,
+      "contentHash": "b264b49ef87ae91a4b39665f8ca7471a0c84087be8bd4b6a2e80c1f32182fa89",
+      "sizeBytes": 6331,
+      "memoryBodyIds": []
+    },
+    {
+      "id": "79fc353c-3cf1-4244-b1e3-c3265ef0e4b4",
+      "title": "ChiRi 调度改进方案终版口径（2026-10-11 用户五条反馈后）：P1=取消二段式息屏（保持 reduce 参数）与数字修正",
+      "description": "取代旧编号/旧数字口径的最终裁决：P1 改为删除 doze 段 4 行息屏专用覆盖、基座仍 reduce、scene_mode_delay 300→3000；硬约束「任何模式可随时到最高频」；P2 对外区间修正 1.38~2.77 Wh，三档净额保守 +0.36 / 中枢 +1.59 / 乐观 +3.08。",
+      "status": "active",
+      "filename": "chiri-2026-10-11-p1-reduce-79fc353c.md",
+      "relativePath": "documents/active/chiri-2026-10-11-p1-reduce-79fc353c.md",
+      "sourcePaths": [
+        ".cursor/plans/2026-10-11-调度改进方案.md",
+        ".cursor/memory/MEMORY.md",
+        "src/chiri/mod.rs",
+        "src/chiri/config.rs"
+      ],
+      "sessionIds": [
+        "4a928f88-35a7-4349-b312-e3d45344f1bf"
+      ],
+      "createdAt": "2026-10-11T10:02:48.423Z",
+      "updatedAt": "2026-10-11T10:02:48.423Z",
+      "lastAccessedAt": "2026-10-11T10:02:48.423Z",
+      "revision": 1,
+      "contentHash": "7d84184734dcfad26a84dc8d4c9af615bf04d6be247560e1fdf88232d687ec69",
+      "sizeBytes": 4969,
+      "memoryBodyIds": []
+    },
+    {
+      "id": "c1ce3257-d1be-4442-ba78-34526636507c",
+      "title": "ChiRi 未提交改动独立审查记录：P2/P3/P4/P5-b 修复与遗留判定",
+      "description": "2026-10-12 对全部未提交改动（P2/P3 参数、P4 @S 帧构建分片、P5-b cpuset 校验）的独立算法审查：1 阻塞 + 2 高优修复、4 处最终修改清单、回归验证口径，以及慢帧补采 pid_comm 兜底等接受不改的低危判定。",
+      "status": "active",
+      "filename": "chiri-p2-p3-p4-p5-b-c1ce3257.md",
+      "relativePath": "documents/active/chiri-p2-p3-p4-p5-b-c1ce3257.md",
+      "sourcePaths": [
+        "scripts/tests/clg_tuning_regression.rs",
+        "scripts/tests/clg_replay.rs",
+        "src/chiri/affinity.rs",
+        "src/chiri/mod.rs",
+        "module/config/8550/feature.yaml"
+      ],
+      "sessionIds": [
+        "21ff571e-fa2c-4e2a-83ba-439e7f5556b9"
+      ],
+      "createdAt": "2026-10-11T22:07:53.772Z",
+      "updatedAt": "2026-10-11T22:07:53.772Z",
+      "lastAccessedAt": "2026-10-12T09:23:38.069Z",
+      "revision": 1,
+      "contentHash": "350739cb2b5a563478c89b6f48734c866a39260bcf7813de6ddca41721ac8e45",
+      "sizeBytes": 4233,
+      "memoryBodyIds": []
+    },
+    {
+      "id": "26c98c8e-12e6-48dd-9092-ce4387dcd11d",
+      "title": "ChiRi nightly 工具链必要性与 build.yml 提速候选（2026-10-12）",
+      "description": "nightly 仅 eBPF 子 crate 必需的判定与 build.yml 提速候选清单（待拍板）",
+      "status": "active",
+      "filename": "chiri-nightly-build-yml-2026-10-12-26c98c8e.md",
+      "relativePath": "documents/active/chiri-nightly-build-yml-2026-10-12-26c98c8e.md",
+      "sourcePaths": [
+        "build.rs",
+        ".github/workflows/build.yml"
+      ],
+      "sessionIds": [
+        "257e941c-e3c1-4dc0-9407-966d4db0543b"
+      ],
+      "createdAt": "2026-10-12T09:25:01.694Z",
+      "updatedAt": "2026-10-12T09:25:01.694Z",
+      "lastAccessedAt": "2026-10-12T09:25:01.694Z",
+      "revision": 1,
+      "contentHash": "f71813ccf87a3fe60f18d4788feb7e61386625a256d25d5b7266b9370910526b",
+      "sizeBytes": 2793,
+      "memoryBodyIds": []
+    }
+  ]
+}

@@ -1,0 +1,588 @@
+{
+  "name": "chiri-power-1011",
+  "id": "chiri-power-1011",
+  "description": "logd_1011-000909 调度/功耗改进：五路并行归因后汇总",
+  "captainSessionId": "session-729f2776-a1e3-4f9f-9e45-537b3510dfd4",
+  "createdAt": 1791655816387,
+  "members": [
+    {
+      "id": "03197d80-e4bd-4f37-b866-e243ea22f605",
+      "name": "residual",
+      "role": "亮屏残差与尖峰归因",
+      "provider": "workbuddy",
+      "model": "hy4-preview",
+      "joinedAt": 1791655844036,
+      "status": "removed"
+    },
+    {
+      "id": "e108ad94-5a1b-41f8-a5f4-3a57eaa43d31",
+      "name": "screenoff",
+      "role": "息屏路径归因",
+      "provider": "workbuddy",
+      "model": "deepseek-v4.1-flash",
+      "joinedAt": 1791655844041,
+      "status": "removed"
+    },
+    {
+      "id": "8c288dfb-7f64-493f-9752-ca26845e7df0",
+      "name": "scenemode",
+      "role": "scenemode 门槛归因",
+      "provider": "workbuddy",
+      "model": "deepseek-v4.1-flash",
+      "joinedAt": 1791655844045,
+      "status": "removed"
+    },
+    {
+      "id": "fb8277f8-dee0-4cad-bc28-e7453d1ce56f",
+      "name": "thermal",
+      "role": "热限与 Thermal 配置归因",
+      "provider": "deepseek-official",
+      "model": "deepseek-flash",
+      "reasoningEffort": "high",
+      "joinedAt": 1791655844048,
+      "status": "removed"
+    },
+    {
+      "id": "1088b6ba-0608-47ba-8b13-7c6dd0e9c453",
+      "name": "selfcost",
+      "role": "daemon 自耗归因",
+      "provider": "workbuddy",
+      "model": "glm-5.3-flash",
+      "joinedAt": 1791655844052,
+      "status": "removed"
+    },
+    {
+      "id": "c82130a9-5407-4685-8df7-26630e5c83bd",
+      "name": "screenoff-b",
+      "role": "息屏路径归因",
+      "provider": "workbuddy",
+      "model": "deepseek-v4.1-flash",
+      "reasoningEffort": "high",
+      "joinedAt": 1791655945269,
+      "status": "removed"
+    },
+    {
+      "id": "3c14c740-f436-4b02-8c7a-e59b70c94055",
+      "name": "scenemode-b",
+      "role": "scenemode 门槛归因",
+      "provider": "workbuddy",
+      "model": "deepseek-v4.1-flash",
+      "reasoningEffort": "high",
+      "joinedAt": 1791655945301,
+      "status": "removed"
+    },
+    {
+      "id": "d621e1e7-6f77-4cd9-b46b-638b8379332a",
+      "name": "selfcost-b",
+      "role": "daemon 自耗归因",
+      "provider": "workbuddy",
+      "model": "glm-5.3-flash",
+      "reasoningEffort": "high",
+      "joinedAt": 1791655945349,
+      "status": "removed"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "t1",
+      "subject": "亮屏 default 残差与尖峰归因（主战场）",
+      "description": "开工前**先读** .cursor/docs/2026-10-11-分派共同前提.md（定版、数据包、铁律、判读要点、源码配置锚点、交付格式都在里面），本任务只描述你的专属题目。\n## 你的题目\n亮屏是主战场：亮屏 default 48209 样本 40.04Wh（avg 2.99W），CPU 动态只占 12.49Wh = 31%，**残差 69%**（GPU + 外围 + 模型误差）；全包 CPU 动态 20.79/66.52Wh = 31.3%。\n\n## 已给的二级读数（起点，不是结论，需你自己复核/加深）\n- power.txt [1]：default/com.tencent.mobileqq n=20357 avg3.27W p50 2.50 p95 9.80 Wh18.48(27.8%)；default/com.deepseek.chat n=13649 avg1.66 Wh6.29；default/com.android.launcher n=21083 avg0.91 Wh5.31\n- power.txt [7]：default 44.19Wh(66.4%, avg2.21W, gpu9.6, psi19.0)；playback 15.67Wh(23.6%, 2.40W, gpu8.8, psi18.6)\n- 亮屏 default 按包超额（地板 = 亮屏 default p10 0.99W）：QQ 13.10Wh(71%)、sgameGlobal 4.75Wh(77%)、deepseek 2.79Wh(44%)、launcher 1.73Wh(32%)；>5W 尖峰秒 QQ 3832 秒贡献 8.42Wh\n- 亮屏 idle(launcher)：p50 1.28W，p90 5.08，p99 9.48；>4W 秒 661（14%）贡献 1.196Wh\n- 亮屏 vs 息屏（default）：wakeups 14748 vs 8017；migrations 7323 vs 3599；freq_trans 8670 vs 4303；gpu 14.4% vs 0.0%\n- main.txt：tick decision 全局 up 40.8% / hold 24.8% / up_wait 16.2% / down_wait 9.2% / down 9.0%；决策值 cap% default avg37.5 p50 27.6 p90 66.7；snap cur/max default 92.9/82.7/91.7；迁移率(÷2) default 2915/s；wakeups/s 6057\n\n## 必须回答\n1. 69% 残差里 GPU / 屏幕 / modem / 静态漏电 / 模型误差各占多少可估计份额？用 dvenergy.py 的三层分解 + 低分位基线法给上限与下限，明确哪些是调度层碰不到的（batt_power_w 含外围，别把外围算成自己的功劳）。\n2. QQ 的 13.10Wh 超额里，多少来自 >5W 尖峰（3832 秒 / 8.42Wh）、多少来自稳态偏高？尖峰时刻 snap 特征（gpu_busy / psi_cpu / migrations / wakeups / freq）是什么形状——UI 刷新风暴 / 网络唤醒 / GPU 合成？\n3. launcher「idle 但不 idle」（p50 1.28W，p90 5.08W）是什么在动？\n4. 调度侧可动改进项（限 up 决策密度、down 迟滞、迁移抑制、wakeup 抑制、GPU 协同等），每项给**折算收益区间**（用观察到的分钟数 × 可削减功率），不许编造对照组。\n\n## 交付\n.cursor/docs/2026-10-11-亮屏残差与尖峰归因.md（四段式：证据→归因→改动建议→折算收益与不确定性）",
+      "status": "completed",
+      "assignee": "residual",
+      "dependencies": [],
+      "attempt": 1,
+      "createdAt": 1791655888572,
+      "updatedAt": 1791657093565,
+      "kind": "work",
+      "inScope": [
+        ".cursor/docs/2026-10-11-亮屏残差与尖峰归因.md",
+        "tmp_an*.py"
+      ],
+      "deliverables": [
+        ".cursor/docs/2026-10-11-亮屏残差与尖峰归因.md"
+      ],
+      "attemptId": "17cea813-a4f0-4c5a-b5f7-356cca8e8e86",
+      "reassigning": false,
+      "output": "交付 .cursor/docs/2026-10-11-亮屏残差与尖峰归因.md（281 行，四段式）。复核确认题目数字：亮屏 default 48209 秒 = 40.04Wh，cpu_dyn 12.49Wh(31.2%)，残差 27.55Wh(68.8%)；QQ 超额 13.01Wh，>5W 尖峰 3832s/8.42Wh 占超额 56.6%；launcher p50 1.28 / p90 5.08。\n\n①残差拆分（实测地板法，非回归截距）：屏幕本体 0.474W=6.35Wh(23.0%，调度碰不到)；息屏地板级外围 0.608W=8.14Wh(29.5%，碰不到)；活跃外围 13.07Wh(47.4%)，其中 GPU 8.80~11.28Wh（偏系数/分桶两口径），GPU 之外 1.79~4.27Wh（modem 活跃+CPU静态+模型误差，不可分）。硬地板 14.49Wh=36.2% 明确标注不得计入调度收益；modem 无法从本包分离；负 resid 4.24%(min −5.13W) 是模型误差直接证据。\n②QQ 尖峰 vs 稳态：>5W 阈值下尖峰 7.37Wh(56.6%) / 稳态 5.64Wh(43.4%)；比例强依赖阈值(>3W→82%，>8W→32%)。尖峰形状 = gpu_busy 55.49 vs 13.84（4.01×，升幅最大，p50 62/p90 81）、wk/s 2.37×、psi 2.25×、ft/s 2.64×、cpu_dyn 3.95×；gpu≥60% 亚型占尖峰电量 61% → GPU 合成主导；纯 CPU/网络型(gpu<5%)仅 91s/0.17Wh 可忽略；fps 全 0 故「UI 刷新风暴」不能证实也不能排除，事件流与 GPU 合成是同一因果链两端。\n③launcher 是双峰：中位层 2389s(49.7% 秒数) gpu 0.1%/cpu_dyn 0.14W = 真 idle，p50 1.28W 基本等于地板价；尾部 659s(13.7% 秒数却占 41.6% 电量) gpu 30.7% + wk/s 15928 + mig/s 6488 + ft/s 9044 + cpu_dyn 3.05W + resid 3.45W，与 QQ 尖峰同构 → 桌面小部件/负一屏/动画类周期重绘，非 CPU 单干。旁证：gpu<1% 的 93 秒仍有 6.28W、wk/s 15538 → 必须同时压事件流，单压 GPU 无效。\n④折算收益（构造性，无对照组）：五项窗口严重重叠（A∩D=6888s 等），去重后并集 17389s(289.8 分钟，36.1%)，窗口内 cpu_dyn 9.71Wh；并集削减 10/20/30% → 整机 0.97~1.44 / 1.94~2.88 / 2.91~4.32 Wh。兜底全局削减 10% → 1.25~1.85Wh。建议对外表述：可动空间现实量级 1~3Wh / 40.04Wh（2.5%~7.5%），超 4Wh 依赖 AMP=1.4833 的共线上界，不作承诺。AMP 来自 P_total=1.606+1.4833·cpu_dyn (R²=0.6183)，含共线非因果。\n\n建议优先级：1) 打 QQ gpu≥60% 尖峰亚型(2085s/5.14Wh，注意已被热限幅 cap 91.45%/cpu_temp 63.6°C 压制，需打折)；2) 修 launcher 尾部伪 idle（通用重绘路径，修一次惠及多包）；3) down 迟滞/回落加速（1851s，唯一零风险项，0.10~0.46Wh）；4) wakeup+迁移抑制窗口最大但重叠最重，须作联合项；5) 屏幕与息屏地板 14.49Wh 不在调度权限内；6) GPU 本体 8.80~11.28Wh 单列观察项，不作 CPU 调度 KPI。\n\n注：tmp_an52.py 曾尝试读 main.csv（实际只有 status.csv + main.txt），无输出已删除；该信息改从 devimpbin/1011-000909/main.txt [3][4][5][6] 段直接读取（tick decision 全局 up 40.8%、snap cur/max 92.9/82.7/91.7、wk/s 6057、mig/s 2915 复核一致）。",
+      "changedPaths": [
+        ".cursor/docs/2026-10-11-亮屏残差与尖峰归因.md",
+        "tmp_an50.py",
+        "tmp_an51.py",
+        "tmp_an53.py",
+        "tmp_an54.py",
+        "tmp_an55.py",
+        "tmp_an56.py"
+      ],
+      "acceptanceResults": [
+        {
+          "criterion": "问题1：69% 残差各成分份额 + 上下限 + 明确调度碰不到的部分",
+          "status": "passed",
+          "evidence": "§2.1：屏幕 6.35Wh(23.0%) / 息屏地板外围 8.14Wh(29.5%) / 活跃外围 13.07Wh(47.4%，含 GPU 8.80~11.28)；硬地板 14.49Wh 显式标为碰不到"
+        },
+        {
+          "criterion": "问题2：QQ 尖峰 vs 稳态拆分 + 尖峰 snap 特征形状",
+          "status": "passed",
+          "evidence": "§2.2：>5W 下尖峰 7.37Wh(56.6%)/稳态 5.64Wh(43.4%)，阈值敏感性表；gpu 4.01× 升幅最大；gpu≥60% 亚型占 61% 电量 → GPU 合成主导"
+        },
+        {
+          "criterion": "问题3：launcher idle 但不 idle 是什么在动",
+          "status": "passed",
+          "evidence": "§2.3：双峰结构，真 idle 2389s vs 伪 idle 659s(41.6% 电量)，gpu 30.7%+wk/s 15928+ft/s 9044；gpu<1% 的 93s 仍 6.28W"
+        },
+        {
+          "criterion": "问题4：每项改进给折算收益区间，不编造对照组",
+          "status": "passed",
+          "evidence": "§2.4/§4.1：并集 17389s 削减 10/20/30% → 0.97~1.44 / 1.94~2.88 / 2.91~4.32Wh；全局兜底 10% → 1.25~1.85Wh；全文无 A/B 对照，13 条不确定性清单"
+        }
+      ],
+      "commandsRun": [
+        {
+          "command": "python3 tmp_an50.py",
+          "status": "passed",
+          "exitCode": 0,
+          "evidence": "三层账+低分位基线+GPU分桶+回归，输出 40.04/12.49/27.55Wh 与地板 1.071W/0.597W"
+        },
+        {
+          "command": "python3 tmp_an51.py",
+          "status": "passed",
+          "exitCode": 0,
+          "evidence": "GPU 三口径(11.28/8.80Wh)+按包+QQ尖峰+launcher解剖"
+        },
+        {
+          "command": "python3 tmp_an53.py",
+          "status": "passed",
+          "exitCode": 0,
+          "evidence": "可动窗口分位与机会窗口、AMP=1.4833"
+        },
+        {
+          "command": "python3 tmp_an54.py",
+          "status": "passed",
+          "exitCode": 0,
+          "evidence": "尖峰窗口可切份额、cap 分层、按包可动窗口"
+        },
+        {
+          "command": "python3 tmp_an55.py",
+          "status": "passed",
+          "exitCode": 0,
+          "evidence": "残差自顶向下地板拆分 6.35/8.14/13.07Wh"
+        },
+        {
+          "command": "python3 tmp_an56.py",
+          "status": "passed",
+          "exitCode": 0,
+          "evidence": "改动项双档折算与窗口重叠去重（并集 17389s）"
+        }
+      ]
+    },
+    {
+      "id": "t2",
+      "subject": "息屏路径归因（CLG 仍激活与 doze perf_ceil）",
+      "description": "开工前**先读** .cursor/docs/2026-10-11-分派共同前提.md（定版、数据包、铁律、判读要点、源码配置锚点、交付格式都在里面），本任务只描述你的专属题目。\n## 你的题目\n息屏只占 4.76/66.5≈7%，但它是唯一可大幅相对优化的段，且当前明显偏高。\n\n## 已给二级读数\n- 息屏全部 27167 样本 4.76Wh，avg 0.63W（p50 0.59 p95 1.30 p99 2.00）；基线参考「待机（息屏/无前台）0.4~0.8W」——落在区间内但偏上\n- 息屏 >1.0W 的秒 3574（13.2%）贡献 1.38Wh（≈29% 的息屏能量来自 13% 的时间）\n- 息屏 CPU 动态只占 26%（1.24/4.76Wh）\n- **息屏 CLG 仍激活 23796/27167（87.6%）**\n- 息屏 migrations p50 3555/s、wakeups 8230/s、freq_trans 2969/s（与亮屏同量级，息屏没真正静下来）\n- 息屏省电实际靠 doze（perf_ceil 0.30）而非 scenemode（0.12，基本没生效，见 scenemode 路）\n- 源码：src/chiri/mod.rs:3703-3746（息屏分支 ak_governor.release + CLG doze，doze_cfg.perf_ceil=min(reduce.perf_ceil,0.30)、smoothing_up=0.10、touch_boost=false）\n- 配置：module/config/8550/feature.yaml（reduce up0.90/down0.50/perf_ceil1.00/steady0.80；default up0.88/down0.62/perf_ceil1.00/steady0.90/per_cluster.little.up_threshold0.95/touch_boost_tiers2/ms600）；meta.yaml（screen_off_value 1）\n\n## 必须回答\n1. 息屏 >1.0W 的 3574 秒里是什么在跑？（按 package / mode / wakeups / migrations 分桶；看 aff.txt 的 @S 帧息屏段有哪些进程/线程仍活跃）\n2. 87.6% 息屏 CLG 激活必要吗？doze perf_ceil 0.30 与「CLG 仍在逐秒 tick + 写频」是否互相矛盾？doze 期间 tick 决策分布（up/hold/down）是什么——若 up 占比仍高，说明 doze 没压住升频\n3. 息屏 freq_trans 2969/s、migrations 3555/s 是后台唤醒还是 CLG 自身？能否用「息屏延长决策周期 / 停写频 / 关 CLG 只留 tuned」消掉\n4. 息屏改进项与折算收益（基准 4.76Wh → 目标 Wh，每项拿多少、哪些有回归风险）\n\n## 交付\n.cursor/docs/2026-10-11-息屏路径归因.md",
+      "status": "completed",
+      "dependencies": [],
+      "attempt": 4,
+      "createdAt": 1791655888621,
+      "updatedAt": 1791659114704,
+      "kind": "work",
+      "inScope": [
+        ".cursor/docs/2026-10-11-息屏路径归因.md",
+        "tmp_an*.py"
+      ],
+      "deliverables": [
+        ".cursor/docs/2026-10-11-息屏路径归因.md"
+      ],
+      "reassigning": false,
+      "assignee": "screenoff-b",
+      "attemptId": "42e7b60b-8917-4d58-bcfa-d96a85652341",
+      "output": "息屏路径归因完成，交付 .cursor/docs/2026-10-11-息屏路径归因.md（327 行，四段式：证据 file+section+数字 → 归因 → 参数 file/param/from→to → 折算 Wh 区间+不确定性）。\n\n口径：status.csv charge==discharging 且 0<batt_power_w<=20；时间轴 anchor=批次名(MMDDHHMMSS)=该批 status 结束时刻，已用 daemon.log 末行校验（差 3~4s）；wakeups/migrations/freq_trans 是 2s 增量（相邻行三元组完全相同占 51.23%），一律 ÷2 报每秒。\n\nQ1 息屏 >1W 的 3573 秒：不是某个后台在跑，而是「刚息屏」+「上限没压住」。段内前 300s 占 68.2% 秒数却承载 82.7% 高功率能量（avgW 0.687 vs ≥300s 0.511）；>1W 段 cpu dyn 只占 19.2%（resid 80.8%，cpu_dyn_w 是能效表折算下界）；aff p 行（每帧全量）显示 com.tencent.mobileqq Σutil/帧 25.34→53.32、该秒线程数 65.6→125.0，但 t 行是字段级差分、仅 full=1 帧自包含（27/182），线程级结论标注证据不足。package 列是「息屏前最后前台」残值。mode×clg 完全互斥：default+clg1 23796 秒/4.1453Wh/0.627W；playback+clg0 3359/0.6080/0.652；fas+clg0 12/0.0066/1.974。\nQ2 87.6% CLG 激活是设计必然（mod.rs:3711-3733：非特调非活跃 FAS 的息屏一律 ak_governor.release+fast_lock.release+CLG doze init_policies；playback/fas 走 3711-3714 keep 分支故 clg_active 恒 0），要改的是上限不是开关；clg=1 段 avg 0.627W 并不高于 clg=0 播放段 0.652W。「逐秒写频」不成立：write_freq 有同值/死区/dwell 三重 gate（cpu_load_governor.rs:142-165，缺省 dwell 320ms、deadzone 0.03），实测写频 0.678 次/s vs status freq_trans 2152/s（约 3200×，freq_trans 来自内核 cpufreq tracepoint）。doze 期 tick 决策（n=277007）：up 57.81% / hold 23.84% / up_wait 14.11% / down 2.70% / down_wait 1.55%（up+up_wait 71.92%）；ceiling 封顶时 up 只是抬向 ceiling，A/B 档 max_util 无区分（0.77 vs 0.74）。用 max_util>=0.95 的 tick 读 tgt_perf=生效 perf_ceil：A ≤0.135 5808 秒 avgW 0.466 / B ≈0.30 4821 秒 avgW 0.781 / C >0.32 1381 秒 avgW 0.650。C 档 86% 落在 scenemode 饱和退出后 900s 内 —— 退出路径 mod.rs:4360-4368 reload reduce(perf_ceil 1.00，feature.yaml:203) 把 0.30 天花板掩盖，且因 scene_mode_active=false，3703-3733 的 doze 分支不会重跑，直到亮屏才重置。scenemode 实际大量生效（daemon.log 去重：25 进 18 退，scene 状态 18.0h；息屏 default 落在 scene 态 13054 秒/0.553W vs other 8304 秒/0.766W），修正简报「0.12 基本没生效」。\nQ3 freq_trans/migrations/wakeups 不是 CLG 产物：playback（CLG 已释放）仍有 1292 次/s freq_trans；r(freq_trans,migrations)=0.934；>1W 秒的 migrations 1550/s 反而低于 ≤1W 的 1776/s、freq_trans 2048 vs 2044 几乎相同 → 计数高低不预测功率。延长决策周期/停写频/关 CLG 既消不掉也换不来收益（显式标注折算收益 ≈0 Wh）。\nQ4 改进项：#1 doze perf_ceil 0.30→0.20（mod.rs:3728/3326/4226 三处硬编码，建议抽为 feature.yaml 的 doze_perf_ceil）0.14~0.28Wh；#2 饱和退出回到 doze 而非 reduce（mod.rs:4360-4368）0.03~0.07Wh；#3 scene_mode_delay_secs 300→120（feature.yaml:20）0.05~0.15Wh；#4 config.rs:1808 default_scene_mode_delay_secs()=3000 与其注释「5 分钟」不一致（防误配）。匹配 (段内位置 × psi) 反事实：A 档 0.466W vs B 档 0.781W，ΔW=+0.314W（>1W 率 5.9% vs 23.0%），把非 A 档高负载秒压到 A 档省 0.4916Wh = 息屏 default 11.86% / 息屏全量 10.33% / 整机放电 0.74%。汇总：保守 0.15~0.35Wh（−3%~−7.4%），乐观上界 0.49Wh（−10.3%，息屏 4.76→4.27Wh）。\n不确定性（文档第四节 4.3 共 9 条）：观察性匹配对照非 A/B（响应铁律）；resid 占 73.9% 故「压到 A 档均值」是乐观上界；aff 线程级样本不足；#1/#3 的主要回归风险（后台同步/推送时延、锁屏流畅度）本数据包无法验证，必须实机复核；scenemode 进出只有 daemon.log（main_*.log 的 scene_* event 数=0）。",
+      "changedPaths": [
+        ".cursor/docs/2026-10-11-息屏路径归因.md"
+      ],
+      "acceptanceResults": [
+        {
+          "criterion": "四段式：证据(文件+章节+数字) → 归因 → 可操作参数改动(文件/参数/from→to) → 折算收益区间与不确定性",
+          "status": "passed",
+          "evidence": ".cursor/docs/2026-10-11-息屏路径归因.md 共 327 行、5 个 ## 章节，每节均含「证据」表 + 「归因」+「可操作参数改动」表 + 「折算收益与不确定性」"
+        },
+        {
+          "criterion": "问题1：息屏 >1W 的 3573 秒归因（package/mode/wakeups/migrations 分桶 + aff @S 帧）",
+          "status": "passed",
+          "evidence": "第一节：段内位置 <300s n=18532/3.5341Wh/0.687W（>1W 1.1286Wh=82.7%）；mode×clg 互斥表；每秒计数分组表；aff p 行 51 条目 Σutil/帧 hi 349.4 vs lo 224.3"
+        },
+        {
+          "criterion": "问题2：87.6% CLG 必要性 + doze perf_ceil 0.30 与写频是否矛盾 + doze 期 up/hold/down 分布",
+          "status": "passed",
+          "evidence": "第二节：mode×clg 完全互斥；写频 0.678 次/s vs freq_trans 2152/s；tick 决策 up57.81/hold23.84/up_wait14.11/down2.70/down_wait1.55（n=277007）；生效 perf_ceil 三档 A 0.466W/B 0.781W/C 0.650W"
+        },
+        {
+          "criterion": "问题3：freq_trans 2969/s、migrations 3555/s 的来源与可消性",
+          "status": "passed",
+          "evidence": "第三节：2s 增量口径更正（÷2）；CLG 写频与 freq_trans 相差约 3200×；playback（CLG 释放）仍 1292 次/s；>1W 的 mig 1550/s < ≤1W 1776/s → 折算收益 ≈0 Wh"
+        },
+        {
+          "criterion": "问题4：息屏改进项与折算 Wh 收益、回归风险",
+          "status": "passed",
+          "evidence": "第四节：4 项改动表 + 收益汇总表（现状 4.7599 → 保守 4.55~4.62 / 中性 ~4.35 / 乐观上界 4.27 Wh）+ 4.3 节 9 条明示不确定性"
+        }
+      ],
+      "commandsRun": [
+        {
+          "command": "python3 tmp_an121.py",
+          "status": "passed",
+          "exitCode": 0,
+          "evidence": "息屏 n=27167 Wh=4.7599 avg=0.6308；亮屏 n=73151 Wh=61.7152；>1W n=3573 Wh=1.3649（28.7%）；mode×clg 互斥；状态/位置/package/计数分组全部数字"
+        },
+        {
+          "command": "python3 tmp_an118.py",
+          "status": "passed",
+          "exitCode": 0,
+          "evidence": "高负载息屏秒 n=12010；A n=5808 avgW 0.466 / B n=4821 avgW 0.781 / C n=1381 avgW 0.650；匹配 (位置×psi) ΔW=+0.314W；反事实合计 0.4916Wh = 息屏 10.33%、整机放电 0.74%"
+        },
+        {
+          "command": "python3 tmp_an84.py",
+          "status": "passed",
+          "exitCode": 0,
+          "evidence": "息屏 default tick 决策分布 little up70.52/hold13.92/up_wait8.18/down4.07/down_wait3.31；合计 up57.81 hold23.84 up_wait14.11 down2.70 down_wait1.55（n=277007）"
+        },
+        {
+          "command": "python3 tmp_an108.py",
+          "status": "passed",
+          "exitCode": 0,
+          "evidence": "aff @S 帧 hi(>1W)=713 / lo=4722；平均 nfg 125.0 vs 65.6；p 行进程级 Σutil/帧 mobileqq 53.32 vs 25.34、logd 15.05 vs 7.77"
+        },
+        {
+          "command": "python3 tmp_an113.py",
+          "status": "passed",
+          "exitCode": 0,
+          "evidence": "时间轴修正（anchor=批次名）校验：8 批 anchor 与 daemon.log 末行差 3~4s；scenemode IN=25 OUT=18；状态时长 scene 18.0h/post 2.7h/other 18.1h"
+        },
+        {
+          "command": "python3 tmp_an117.py",
+          "status": "passed",
+          "exitCode": 0,
+          "evidence": "C 档 2277 秒中 86.0% 落在某次饱和退出后 900s 内（≤300s 916、300-900s 1043、>900s 318）；little tgt_perf 出现 1.00（16%）= reduce 生效指纹"
+        },
+        {
+          "command": "python3 tmp_an101.py",
+          "status": "passed",
+          "exitCode": 0,
+          "evidence": "scene_exit→下次 entry 空窗 n=17 中位 768s max 27845s ≥300s 占 16/17；CLG 写频 vs freq_trans 比值 3163×"
+        }
+      ],
+      "supplementalEvidence": [
+        {
+          "at": 1791659440361,
+          "by": "screenoff-b",
+          "attempt": 4,
+          "attemptId": "42e7b60b-8917-4d58-bcfa-d96a85652341",
+          "note": "【补充与自我更正，append-only，不改变原 verdict】落盘后复核发现原文档的 scenemode 状态划分有一处口径缺陷并已修正：\n\n**缺陷**：原状态划分只把「饱和退出」当作 scenemode 窗口的终止条件，漏了「下一次亮屏」——但 src/chiri/mod.rs:3751-3753 在亮屏时执行 screen_off_at=None; scene_mode_active=false; scene_hold_logged=false，scenemode 状态必须在亮屏时终止。漏掉后会把多个不连续的生效窗合并，导致（a）scene 态秒数被高估、（b）\"驻留合计 18.0h\"被夸大。\n\n**修正后（tmp_an122 状态机 + tmp_an126 全 status 覆盖权威口径）**：\n- scenemode 有效驻留 = 25 段合计 21136s = 5.87h（被 OUT 或下一次亮屏终止；期间亮屏 326 次）。\n- 息屏 default 秒 × 状态（23796 秒 / 4.1453 Wh）：scene 8734 秒（36.7%）/ 1.1351 Wh / 0.468 W / >1W 432 秒 0.1446 Wh；post 2504 秒（10.5%）/ 0.3894 Wh / 0.560 W / >1W 307 秒 0.1362 Wh；other 12558 秒（52.8%）/ 2.6209 Wh / 0.751 W / >1W 2452 秒 0.9317 Wh。三者 Wh 合计 4.1454 ≈ mode×clg 的 default 段 4.1453 Wh（内部一致）。\n- 高负载（max_util>=0.95，n=12010）档×状态：A≤0.135 scene 5719 秒 avgW 0.461 Wh 0.7324 / other 43 / post 46；B≈0.30 other 4627 秒 avgW 0.788 Wh 1.0134 / post 183 / scene 11；C>0.32 post 930 秒（67.3%）0.1626 Wh / other 445 / scene 6。→ 结论方向不变：**A 档只出现在 scene 窗内、B 档几乎全在 scene 之外、C 档 2/3 落在饱和退出后的 post 窗**，即\"退出 reload reduce(perf_ceil=1.00) 掩盖 doze 0.30 天花板\"。\n- 第三节计数表按修正状态重算：default/scene 8734 秒 wake 4387 / mig 2304 / ft 2933 次每秒；default/post 2504 秒 4664/1941/1966；default/other 12558 秒 3614/1420/1645；default/>1W 3191 秒（avgW 1.368）4225/1548/2112；default/≤1W 20605 秒 3975/1838/2158；playback 3359 秒 3603/1371/1292。→ 新增一条反证：**scene 档计数反而最高（ft 2933/s > other 1645/s），因为上限压到 0.12 后 schedutil 需要更频繁微调频率**，而 scene 档 avgW 反而最低（0.468 W）——进一步证明 freq_trans/migrations 是\"压上限的下游产物\"，不是功耗来源。\n- 与 t3（scenemode 门槛归因）独立交叉验证：t3 报\"scenemode 驻留（并集）21105s\"，本文独立得 21136s，差 31s（事件边界取整）；t3 报的\"息屏墙钟 69025s＝19.17h\"是 daemon 事件窗口累计，本文口径为 status.csv 息屏行 33184 行＝9.22h（区间覆盖率 76.4%，息屏放电秒 27167），**两个口径不可混用**。\n\n**未受影响的结论**（复核后不变）：息屏 27167 秒 / 4.7599 Wh / avg 0.6308 W；>1W 3573 秒 1.3649 Wh（28.7%）；mode×clg 完全互斥（default 23796/4.1453/0.627、playback 3359/0.6080/0.652、fas 12/0.0066/1.974）；段内前 300s 承载 82.7% 高功率能量；CLG 写频 0.678 次/s vs freq_trans 2152/s；tick 决策 up57.81/hold23.84/up_wait14.11/down2.70/down_wait1.55（n=277007）；匹配(位置×psi) A 0.466 vs B 0.781 ΔW=+0.314，反事实 0.4916 Wh（息屏 10.33%、整机放电 0.74%）；收益结论与 9 条不确定性不变。\n\n文档已就地更新（.cursor/docs/2026-10-11-息屏路径归因.md，现 340 行），并在口径说明处标注了该状态机规则与作废值。新增脚本：tmp_an122.py、tmp_an123.py、tmp_an124.py、tmp_an125.py、tmp_an126.py。",
+          "commandsRun": [
+            {
+              "command": "python3 tmp_an122.py",
+              "status": "passed",
+              "exitCode": 0,
+              "evidence": "修正状态机（OUT 或下一次亮屏终止）：驻留 25 段 21136s；息屏 default 秒×状态 scene 8701/post 2483/other 12015；高负载秒×档×状态 A scene 5719、B other 4627、C post 930"
+            },
+            {
+              "command": "python3 tmp_an126.py",
+              "status": "passed",
+              "exitCode": 0,
+              "evidence": "全 status 覆盖权威口径：scene 8734 秒 1.1351Wh 0.468W / post 2504 0.3894 0.560W / other 12558 2.6209 0.751W，合计 4.1454 ≈ default 段 4.1453Wh"
+            },
+            {
+              "command": "python3 tmp_an125.py",
+              "status": "passed",
+              "exitCode": 0,
+              "evidence": "修正状态下每秒计数：scene 4387/2304/2933、post 4664/1941/1966、other 3614/1420/1645、>1W 4225/1548/2112、≤1W 3975/1838/2158"
+            },
+            {
+              "command": "python3 tmp_an124.py",
+              "status": "passed",
+              "exitCode": 0,
+              "evidence": "status.csv 区间覆盖：8 批 rows=117994 / span=154402s(42.89h)=整包墙钟，覆盖 76.4%，缺失 13588s；缺口集中在 1009-144818(55.4%) 与 1010-141248(54.7%)；息屏行 33184"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "t3",
+      "subject": "scenemode 进入/撤销门槛归因",
+      "description": "开工前**先读** .cursor/docs/2026-10-11-分派共同前提.md（定版、数据包、铁律、判读要点、源码配置锚点、交付格式都在里面），本任务只描述你的专属题目。\n## 你的题目\nscenemode 是本该承担省电的特调模式，实测几乎没生效。\n\n## 已给二级读数（来自 tmp_an7.py 解析 daemon.log；数据在 devimpbin/1011-000909/ 各批次 daemon.log）\n- 进入 25 次，**18 次（72%）被撤销**，理由都是「持续顶满性能上限（little util 9x~100%），退回 reduce 并进入 300s 冷却」\n- 驻留 min 35s / p50 337s / max 6036s；<300s 占 50%\n- 息屏省电实际靠 doze（perf_ceil 0.30）而非 scenemode（perf_ceil 0.12）\n- 源码：src/chiri/mod.rs:4199-4386（SCENEMODE_SAT_UTIL、SAT_SECS=10s、SCENEMODE_COOLDOWN=300s、long_off=息屏≥4×delay 绕过门槛）\n- 配置：module/config/normal/scenemode.yaml（perf_ceil0.12、up_threshold1.0、perf_init0.12）；feature.yaml（CoreCtl.scenemode_offline false）；meta.yaml（scenemode_enabled true）\n\n## 必须回答\n1. 25 次进入分别发生在什么场景/前台包/温度？18 次撤销是「真的负载高」还是「up_threshold=1.0 + perf_ceil=0.12 自锁」（给 0.12 天花板 → 负载长期顶满 → 判定饱和 → 撤销）？给判据\n2. SCENEMODE_COOLDOWN=300s 与「驻留 <300s 占 50%」合起来，是否大半时间在冷却态？给冷却态占整包墙钟的比例估计\n3. long_off（息屏 ≥4×delay 绕过门槛）这条捷径实测被用了几次、有没有生效？\n4. scenemode 改进项（门槛值、饱和判据、冷却时长、与 doze 的关系），每项给折算收益与回归风险（重点：误进 scenemode 会不会伤前台流畅度）\n\n## 交付\n.cursor/docs/2026-10-11-scenemode门槛归因.md",
+      "status": "completed",
+      "dependencies": [],
+      "attempt": 3,
+      "createdAt": 1791655888670,
+      "updatedAt": 1791658061851,
+      "kind": "work",
+      "inScope": [
+        ".cursor/docs/2026-10-11-scenemode门槛归因.md",
+        "tmp_an*.py"
+      ],
+      "deliverables": [
+        ".cursor/docs/2026-10-11-scenemode门槛归因.md"
+      ],
+      "reassigning": false,
+      "assignee": "scenemode-b",
+      "attemptId": "8bbd193e-0520-4157-922a-0fce35f5d224",
+      "output": "scenemode 门槛归因完成。核心结论：18/25 次撤销是【自锁】而非真高载——perf_ceil=0.12 把 little 钉在 307.2MHz(簇最低 OPP，占 96%)，同一份负载的 util 反比抬满(配对 util 比 1.54，而 util×频率上限 比 0.75=需求不变)，撞上【与进入门槛共用同一 0.75 常量】的退出门槛；同一负载在 doze(P0.20) 下饱和条件仅占 2.8%。冷却态只占整包墙钟 3.63%(名义 5400s)/0.97%(实际被挡 1448s)，并非大半时间；真正损失是 scenemode 只覆盖息屏 30.58%，且撤销后 22.18h 困在 doze(P0.20)。long_off 用过 11 次(44%)但不生效(11/11 本可通过单 tick 门槛，关掉后进入 25→25 不变)，且撤销率更高(82% vs 64%)。scenemode 相对 doze 净省电 ±0.3Wh(Δbatt 中位 +8mW, CI ±71mW)在噪声内，因 big/prime 上限本就相同，其全部边际只在 little 441.6→307.2MHz。改进项：A1 SCENEMODE_SAT_SECS 10s→30s(零驻留损失，撤销 18→4)、A2 进入/退出门槛解耦+去抖、A3 SCENEMODE_COOLDOWN 300→120s、A4 删 long_off、A5 scenemode.yaml perf_ceil 0.12→0.20 对齐 doze、A6 废弃 scenemode 阶段。回归：进入硬编码 !is_screen_on(源码 :4237)、亮屏恢复实测全 ≤2s → 误进不伤前台流畅度；真实风险是息屏后台任务被压 307.2MHz 超时。交付 .cursor/docs/2026-10-11-scenemode门槛归因.md(329 行)。",
+      "changedPaths": [
+        ".cursor/docs/2026-10-11-scenemode门槛归因.md",
+        "tmp_anb11.py",
+        "tmp_anb16.py",
+        "tmp_anb17.py",
+        "tmp_anb18.py",
+        "tmp_anb19.py",
+        "tmp_anb20.py",
+        "tmp_anb21.py",
+        "tmp_anb22.py",
+        "tmp_anb29.py",
+        "tmp_anb30.py",
+        "tmp_anb31b.py",
+        "tmp_anb32.py",
+        "tmp_anb33.py",
+        "tmp_anb34.py"
+      ],
+      "acceptanceResults": [
+        {
+          "criterion": "交付 .cursor/docs/2026-10-11-scenemode门槛归因.md，四段式（证据→归因→可动参数→折算收益与不确定性）",
+          "status": "passed",
+          "evidence": "已写 329 行/33009 字节；含〇摘要、一证据(1.1-1.14)、二归因(Q1-Q4)、三可动参数 A1-A7、四折算收益+回归风险、五不确定性声明"
+        },
+        {
+          "criterion": "Q1：25 次进入的场景/前台包/温度，并判定 18 次撤销是真高载还是自锁",
+          "status": "passed",
+          "evidence": "全部息屏+mode=default+delay_hit=Y；launcher 19/25，其余 6 包各 1；thermal_cap_pct 恒 100、batt_temp p50 32.7℃ → 与温度无关。判定自锁的四条判据：①逐段配对 util×频率上限比 p50=0.75 而 util 比 1.54/频率比 2.94；②同一负载在 doze(P0.20) 下饱和条件仅 133s/4724s=2.8%；③SAT_SECS 10→30s 撤销 18→4 而驻留 21105→21101s；④需求折算中位 0.79、8/13≥0.75"
+        },
+        {
+          "criterion": "Q2：SCENEMODE_COOLDOWN=300s 与驻留<300s 占 50% 合起来，冷却态占整包墙钟比例",
+          "status": "passed",
+          "evidence": "冷却名义 5400s=1.50h=整包 3.63%（权威分母 daemon 屏幕事件并集 148699s=41.31h）、冷却∩息屏 4826s=1.34h；status 1Hz 实际被挡仅 1448s=0.40h=0.97% → 冷却不是大半时间；最大损失是 scenemode 只覆盖息屏 30.58% 且撤销后 22.18h 困在 doze(P0.20)"
+        },
+        {
+          "criterion": "Q3：long_off 用过几次、有没有生效",
+          "status": "passed",
+          "evidence": "11/25=44% 走 long_off；11/11 门前 60s 内本就有 max<0.75 的更新(64%~84%) → 不是必要条件、关掉后进入次数 25→25 不变；long_off 组撤销率 82% vs 非 long_off 组 64% → 反而更易自锁"
+        },
+        {
+          "criterion": "Q4：改进项（门槛值/饱和判据/冷却时长/与 doze 关系）逐项给折算收益与回归风险，含误进 scenemode 是否伤前台流畅度",
+          "status": "passed",
+          "evidence": "A1 SAT_SECS 10→30s（零驻留损失、撤销 18→4）；A2 进入/退出门槛解耦+去抖；A3 COOLDOWN 300→120s（回收 ~870s）；A4 删 long_off；A5 perf_ceil 0.12→0.20 对齐 doze；A6 废弃 scenemode；A7 delay 300→120。总收益 ±0.5Wh(噪声内)。回归：亮屏恢复实测全 ≤2s、进入硬编码 !is_screen_on(源码 :4237) → 机制上不伤前台流畅度；真实风险是息屏后台任务被压 307.2MHz 超时"
+        },
+        {
+          "criterion": "报告标注不确定性口径",
+          "status": "passed",
+          "evidence": "第五章 7 条：离线 tick 是下界(logger.rs:1477-1553 去重不含 max_util)、fps 仅 2854 行不可用、功耗配对 19 段 95%CI ±71mW、status.csv 时间戳含假值、scenemode 窗内饱和率 0.1% 是幸存者偏差、反事实模型假设、scene_hold 去重低估"
+        }
+      ],
+      "commandsRun": [
+        {
+          "command": "python3 tmp_anb34.py",
+          "status": "passed",
+          "exitCode": 0,
+          "evidence": "整包墙钟 148699s=41.31h；息屏 69025s=19.17h(46.42%)；scenemode 并集 21105s=5.86h → 14.19% 整包 / 30.58% 息屏；冷却并集 5400s=1.50h → 3.63%；冷却∩息屏 4826s；≥300s 息屏段 27 个占 14.79h，可进入墙上界 12.54h"
+        },
+        {
+          "command": "python3 tmp_anb20.py（逐段配对不变性）",
+          "status": "passed",
+          "exitCode": 0,
+          "evidence": "23/25 段有样本：little util 比 p50=1.54、频率上限比 1.44~3.62(多为 2.94)、util×频率上限 比 p50=0.75 → 需求不变、天花板被压 2.9 倍后 util 反比顶满"
+        },
+        {
+          "command": "python3 tmp_anb16.py && python3 tmp_anb21.py（门槛解耦反事实）",
+          "status": "passed",
+          "exitCode": 0,
+          "evidence": "0.75/10s→21105s/18 撤；0.75/30s→21101s/4 撤；0.85~0.95/30s→~21101s/4~6 撤；0.95/10s→15298s/5；0.65/10s→14202s/8。共用常量 thr 0.85/0.95/1.00 → 驻留反降 28%"
+        },
+        {
+          "command": "python3 tmp_anb30.py（功耗配对分解）",
+          "status": "passed",
+          "exitCode": 0,
+          "evidence": "19 段（discharging 16 段）：Δbatt 中位 +8mW、均值 +4mW、95%CI ±71mW、省电段 8/16；紧贴 120s 配对 Δ省 10mW。折算 21105s 驻留 → ±0.3Wh 量级"
+        },
+        {
+          "command": "python3 tmp_anb31b.py（亮屏恢复延迟）",
+          "status": "passed",
+          "exitCode": 0,
+          "evidence": "25 次结束后 screen_on→CLG P0=0.35 延迟 [0,0,1,1,1,1,1,1,1,1,0,1,2,2,0,1,1,1,1,1,1,0,0,0,1] 秒，全 ≤2s"
+        },
+        {
+          "command": "python3 tmp_anb11.py（进入状态快照）",
+          "status": "passed",
+          "exitCode": 0,
+          "evidence": "launcher 19/25；discharging 16、charging 4、full 3；thermal_cap_pct 恒 100；batt_temp min26.3/p50 32.7/max 37.1℃"
+        }
+      ]
+    },
+    {
+      "id": "t4",
+      "subject": "热限档位与 Thermal 配置归因",
+      "description": "开工前**先读** .cursor/docs/2026-10-11-分派共同前提.md（定版、数据包、铁律、判读要点、源码配置锚点、交付格式都在里面），本任务只描述你的专属题目。\n## 你的题目\n热压制是背景还是偶发？现有 Thermal 四级配置有没有自相矛盾？\n\n## 已给二级读数\n- power.txt [4] cap 档采样行：100 档 105985(89.8%)、85 档 6333(5.4%)、60 档 5119(4.3%)、40 档 542(0.5%)、75 档 12、55 档 3\n- power.txt [5] 典型迁移：100(34→41℃) → 85(41→43℃) → 60(43→41℃) → 75(2 samples) → 85(41→38℃) → 100(38→3x℃)；41℃ 起软档、43℃ 起中档、45℃ 硬档（x_1010-230936 出现 cap=40/55）\n- power.txt [6] 温度带：cap100 batt 25/35.0/44；cap85 38/40.4/43；cap60 41/42.9/45；cap40 43/44.5/46\n- 8 次 daemon 重启 → 重启把热状态重置回 100，**跨批次 cap 序列不可连读**；100 档的 89.8% 里有多少是「重启后升温前」的产物，必须按批次拆开重算\n- 配置：module/config/8550/feature.yaml（Thermal 四级 1.0/0.85/0.60/0.40，batt 41/43/45，hysteresis_c 3 / mid 1.5 / hard 2，clamp_heavy true，free_above 0.95，tuned_thermal_floor 0.55）\n\n## 判读铁律（易错，务必遵守）\n- **free_above 是性能豁免档不是温度带**，压制只落在 (soft_perf_cap, free_above) 区间\n- **cap=85 ≠ 已压制**（free_above == soft_perf_cap 时压制带为空、软限档完全空转）\n- **hysteresis_mid_c=1.5 意味着中限解除点 41.5℃ >= 软限 41℃**，满足「本级解除点不得低于下一档跳闸点」不变量，需确认 normalize 是否真这么算\n\n## 必须回答\n1. 按批次拆开重算各档占比（不跨重启连读），回答「热是常态还是偶发」\n2. 现有 0.85 档是否空转（压制带 (0.85, 0.95) 是否真有被钳制的秒）？若有，这些秒写频是否真被压到 85%？用 main.txt 的 decide-vs-actual 段交叉\n3. hysteresis（3 / 1.5 / 2）与 cap 迁移时间线是否一致？时间线里 75/55 档（12/3 个样本）说明什么（升档斜坡？抖动？）\n4. tuned_thermal_floor 0.55 与 clamp_heavy 在本次包的表现；热态下 tuned（playback/akmode）段 cap 列恒 `-`，如何间接判断它们有没有被压\n5. Thermal 配置改进项与折算收益（注意：热档是保护，改进目标是**少触发**而不是压更狠——通过降低触发前功耗来推迟触档）\n\n## 交付\n.cursor/docs/2026-10-11-热限与Thermal配置归因.md",
+      "status": "completed",
+      "assignee": "thermal",
+      "dependencies": [],
+      "attempt": 1,
+      "createdAt": 1791655888722,
+      "updatedAt": 1791656745003,
+      "kind": "work",
+      "inScope": [
+        ".cursor/docs/2026-10-11-热限与Thermal配置归因.md",
+        "tmp_an*.py"
+      ],
+      "deliverables": [
+        ".cursor/docs/2026-10-11-热限与Thermal配置归因.md"
+      ],
+      "attemptId": "53722126-cf58-48f1-93b1-074cc8acb189",
+      "reassigning": false,
+      "output": "t4 完成：交付 .cursor/docs/2026-10-11-热限与Thermal配置归因.md（289 行，四段式），复现脚本 tmp_ant4_thermal.py → tmp_ant4_thermal.out（407 行）。\n五问结论：(1) 档位按批重算（dt 加权，跨零点修正）100 档 131059s/91.4%、85 6617、60 5168、40 557、75 12、55 3；非100 8.62% 但**放电期仅 4.03%、充电期 48.95%** ⇒ 热限是每会话必到的背景机制（7/8 会话、8 段、每段 12-34min），不是偶发；cap=100 的 131059s 中 60.4% 是首触前升温段。\n(2) 0.85 档**不空转但压制力有限**：cap=85 窗口内 cur_perf>0.85 的采样 little 11.6%/big 6.4%/prime 8.0%，其中 92.3-92.8% 的写频正好钉在天花板（little 1670400/big 2457600/prime 2726400）；全包 freq>天花板 0.0%；clamp_change 读回 2664 次/簇仅 2 次越线；snap cpu_cur 越线 0.0%。\n(3) hysteresis 3/1.5/2 与时间线完全一致：跳闸 41.0/43.0/45.0℃，解除 37.9/41.4/42.9℃（< 41-3 / 43-1.5 / 45-2）；75/55 档是 +0.15/2s 解除斜坡台阶（6 批各 2s=12、1 批 3s，75→85 间隔实测恒 2.0s），非抖动非独立档。\n(4) clamp_heavy=true 实效显著：被钳命中样本 61-70% 落在 (0.95,1.0] 旧豁免带 ⇒ 关掉重钳会掉 2/3 实效；tuned 侧 cap 生效（akmode cap=85 snap cpu_max=1670400 且 47.7% 秒为绑定上限、playback 9.2%）；tuned_thermal_floor=0.55 本包**零行使**（硬档 557s 全在 default）。配置无逻辑矛盾，但有 3 处死配置/边界脆弱：free_above 在 clamp_heavy 下不被读取、hysteresis_hard_c=2 正好卡 normalize 上限 hard−mid=2（改 batt_mid/hard 会被静默改写）、floor 未验证。\n(5) 折算：实测热模型 dT/dt=0.0600·P_batt−0.0517 ℃/min（r²=0.20，批间 b 0.024-0.094）+ 实测 37→41℃ 斜坡 27.7-28.1min @4.55-5.05W ⇒ **−0.5W 整机 = 触档延后 +7.4min（区间 +2.6~+13.6min）**，−0.3W=+4.1min；放电期 CPU 动态功耗仅占整机 27-30%、充电期 2-5%，故调度侧收益上限有限；保护本身只花 ≈1.43Wh/39.8h。不建议压更狠；建议 tuned_profiles akmode headroom 1.15→1.10（低置信度，需帧率遥测）、保持 clamp_heavy=true 与 hysteresis_c=3（38-40℃ 滞后带钉死率 12.6% 仍高于 41-43 的 9.4%）。",
+      "changedPaths": [
+        ".cursor/docs/2026-10-11-热限与Thermal配置归因.md",
+        "tmp_ant4_thermal.py",
+        "tmp_an29.py"
+      ],
+      "acceptanceResults": [
+        {
+          "criterion": "Q1 按批次拆开重算各档占比（不跨重启连读），回答热是常态还是偶发",
+          "status": "passed",
+          "evidence": "报告 §1.1 表 + 充放分离表（放电 4.03% / 充电 48.95%，8 段热限）；tmp_ant4_thermal.out [A]"
+        },
+        {
+          "criterion": "Q2 0.85 档是否空转、被钳秒写频是否真到 85%（与 main.txt decide-vs-actual 交叉）",
+          "status": "passed",
+          "evidence": "报告 §1.2 三层取证：tick perf>cap 6.4-11.6% 且 92% 写频=天花板；freq>天花板 0.0%；clamp_change 读回 2664 次仅 2 次越线；snap cpu_cur 0.0% 越线"
+        },
+        {
+          "criterion": "Q3 hysteresis(3/1.5/2) 与 cap 迁移时间线是否一致；75/55 档含义",
+          "status": "passed",
+          "evidence": "报告 §1.3 表：跳闸 41.0/43.0/45.0，解除 37.9/41.4/42.9；75/55 为 +0.15/2s 解除台阶（75→85 实测恒 2.0s，6 批×2s=12 样本）"
+        },
+        {
+          "criterion": "Q4 tuned_thermal_floor 0.55 与 clamp_heavy 表现；tuned 段 cap 列恒 '-' 时如何间接判断被压",
+          "status": "passed",
+          "evidence": "报告 §1.4：clamp_heavy 旁路 (0.95,1.0] 带（61-70% 被钳样本落在其中）；snap cpu_max vs 天花板判 tuned（akmode 47.7%/playback 9.2% 钉死）；floor 零行使"
+        },
+        {
+          "criterion": "Q5 Thermal 配置改进项与折算收益（目标是少触发不是压更狠）",
+          "status": "passed",
+          "evidence": "报告 §1.5+§3+§4：热模型 dT/dt=0.0600·P−0.0517（r²=0.20）、37→41℃ 实测 27.7-28.1min、−0.5W ⇒ +7.4min（+2.6~+13.6），7 条参数建议含风险"
+        },
+        {
+          "criterion": "交付文件 .cursor/docs/2026-10-11-热限与Thermal配置归因.md（四段式：证据→归因→参数建议→折算收益与不确定性）",
+          "status": "passed",
+          "evidence": "289 行；§1 证据 / §2 归因 / §3 建议表 / §4 折算与 6 条不确定性；0 处转义残留"
+        }
+      ],
+      "commandsRun": [
+        {
+          "command": "python3 tmp_ant4_thermal.py",
+          "status": "passed",
+          "exitCode": 0,
+          "evidence": "tmp_ant4_thermal.out 407 行，分区 [A][A2][B][C][D][D2][E][F][G][H][I]"
+        },
+        {
+          "command": "python3 - <<EOF (残留转义自检) EOF",
+          "status": "passed",
+          "exitCode": 0,
+          "evidence": "grep -c '\\\\`' 报告 = 0"
+        }
+      ]
+    },
+    {
+      "id": "t5",
+      "subject": "daemon 自身开销归因",
+      "description": "开工前**先读** .cursor/docs/2026-10-11-分派共同前提.md（定版、数据包、铁律、判读要点、源码配置锚点、交付格式都在里面），本任务只描述你的专属题目。\n## 你的题目\n调度器自己吃了多少？这是纯开销，不改善任何体验。\n\n## 已给二级读数\n- daemon 自身 CPU：均值 6.56% core，p95 14%，max 35%，>20% 仅 9 秒；累计 7737.8s ≈ **2.15 core-hour**（整包约 33 小时墙钟 → 平均占用 6.5% 个核）\n- selfcost 告警 4403 条，build 耗时 p50 58.6ms / p90 109.5 / p99 527.9 / max 12457.7ms —— 这是 @S 同步块（aff 快照构建）墙钟\n- aff.txt：8 个文件，@S 1913~14716 帧，final_bound 0~5（无泄漏），peak 371~600；@A 里 pin/normal_busy e22(EINVAL) 589+61+32+20、uclamp/bg_apply e2(ENOENT 节点缺失) 27（10-09 专项已加退避/负缓存），bulkΣ 182263~24436\n- 8 次 daemon 重启（2026-09-27 实测过：devimp 归档约 4.6h 内 3 次触顶 128MB 强制重启）——本次 8 次重启的界标是 daemon.log 的「统一启动中」，需确认是否仍是 128MB 触顶\n- **先读** .cursor/docs/2026-10-07-daemon-selfcost-implementation-plan.md（已有自耗改进计划），避免重复立项；本次只需给出在 1011-000909 上**验证到的现状与增量建议**\n\n## 必须回答\n1. 2.15 core-hour 折算成多少能量？（用 dvenergy.py 的 cpu_dyn_w / 能效表，或按 8550 大核动态功耗量级折算；给区间不给单点）\n2. 4403 条 selfcost 告警集中在哪些时段/场景？build p99 527.9ms 的尖峰与 @S 帧的 ntop/nfg（进程/线程行数）是否相关（线程越多构建越慢）？给相关性证据\n3. 8 次重启的成因（128MB 触顶？崩溃？）？重启本身的代价（重建存活集合、重新建档的 CPU 尖峰）？\n4. @A 的 e22 702 次（589+61+32+20）在 10-09 退避后仍这么多，说明退避没生效还是来源变了（walt_halt 的核被 setaffinity 拒绝，见已知坑 11）？\n5. 自耗改进项与折算收益（优先：@S 构建降频/分片、快照节流、无用 tick 抑制、重启预算），每项标明是否已在前述 10-07 计划里（避免重复）\n\n## 交付\n.cursor/docs/2026-10-11-daemon自耗归因.md",
+      "status": "completed",
+      "dependencies": [],
+      "attempt": 3,
+      "createdAt": 1791655888777,
+      "updatedAt": 1791657481542,
+      "kind": "work",
+      "inScope": [
+        ".cursor/docs/2026-10-11-daemon自耗归因.md",
+        "tmp_an*.py"
+      ],
+      "deliverables": [
+        ".cursor/docs/2026-10-11-daemon自耗归因.md"
+      ],
+      "reassigning": false,
+      "assignee": "selfcost-b",
+      "attemptId": "61da1dc7-8475-485b-a1c8-08e228262cca",
+      "output": "t5 daemon 自耗归因完成。交付 .cursor/docs/2026-10-11-daemon自耗归因.md（四段式）+ tmp_an24~40.py。\n五问结论：①2.15 core-hour 折算 0.15~1.1 Wh（中枢 0.35~0.65，≈整机 0.2~1.7%，soc.yaml 纯动态表单核边际口径）。②4403 告警白天 10-23 高峰/07-09 近零；4403/4403 与 @S 帧精确配对：corr(build,ntop)=-0.07、corr(build,nfg)=-0.05、nfg 四箱 p50 均 55-59ms → p99 530ms 尖峰与线程规模无关，是系统争用。③8 次重启全部为 devimp 128MB 归档触发（非崩溃），重启后 180s 无持续 CPU 尖峰。④e22 非退避失效：74% tid 后续恢复、真持续拒绝仅 2%、affinity_retry.rs:43-59 退避按设计生效；5355/5414 为 dst=group 兜底路径且富集于 default+clg_active=1 场景 → 机制是 CLG/scenemode 收窄 cpuset 后兜底组掩码写必 EINVAL；walt_halt 仅解释 59 条单核路径。⑤改进建议 6 项，逐项标注与 10-07 计划关系（#1 @S 分片、#2 尖峰让路、#3 cpuset 交集校验为新增高优先；tick 抑制受\"不调大 aff_secs\"约束只能做无变化短路）。自耗可压缩量估计 0.15~0.40 Wh（20~55%），告警预期减 50~80%。",
+      "changedPaths": [
+        ".cursor/docs/2026-10-11-daemon自耗归因.md",
+        "tmp_an24.py",
+        "tmp_an25.py",
+        "tmp_an26.py",
+        "tmp_an27.py",
+        "tmp_an28.py",
+        "tmp_an29.py",
+        "tmp_an30.py",
+        "tmp_an31.py",
+        "tmp_an32.py",
+        "tmp_an33.py",
+        "tmp_an34.py",
+        "tmp_an35.py",
+        "tmp_an36.py",
+        "tmp_an37.py",
+        "tmp_an38.py",
+        "tmp_an39.py",
+        "tmp_an40.py"
+      ],
+      "acceptanceResults": [
+        {
+          "criterion": "2.15 core-hour 能量折算（区间）",
+          "status": "passed",
+          "evidence": "doc §四：0.15~1.1 Wh 中枢 0.35~0.65，soc.yaml 单核边际口径"
+        },
+        {
+          "criterion": "4403 告警分布+build/ntop/nfg 相关性证据",
+          "status": "passed",
+          "evidence": "tmp_an27 4403/4403 配对，corr=-0.07/-0.05，nfg 分箱 p50 55-59ms"
+        },
+        {
+          "criterion": "8 次重启成因与代价",
+          "status": "passed",
+          "evidence": "tmp_an25/31：全为 128MB 归档行，重启后 180s 无持续尖峰"
+        },
+        {
+          "criterion": "e22 退避有效性归因",
+          "status": "passed",
+          "evidence": "tmp_an35-37：74% 恢复/2% 持续；dst=group 5355/5414 + clg 场景富集"
+        },
+        {
+          "criterion": "改进项标注与 10-07 计划不重复",
+          "status": "passed",
+          "evidence": "doc §三对照表逐项标注"
+        }
+      ],
+      "commandsRun": [
+        {
+          "command": "python3 tmp_an24.py",
+          "status": "passed",
+          "evidence": "daemon CPU 分批/分屏均值"
+        },
+        {
+          "command": "python3 tmp_an27.py",
+          "status": "passed",
+          "evidence": "4403/4403 配对相关性"
+        },
+        {
+          "command": "python3 tmp_an31.py",
+          "status": "passed",
+          "evidence": "重启曲线"
+        },
+        {
+          "command": "python3 tmp_an32.py",
+          "status": "passed",
+          "evidence": "能量折算"
+        },
+        {
+          "command": "python3 tmp_an35.py",
+          "status": "passed",
+          "evidence": "e22 重复分类"
+        }
+      ]
+    }
+  ],
+  "taskSeq": 5
+}
