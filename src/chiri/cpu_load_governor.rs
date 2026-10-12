@@ -518,7 +518,9 @@ impl CoreGroupWorker {
             && old_perf >= self.cfg.high_zone_gate
             && candidate_perf > old_perf + 1e-6
         {
-            let hits = self.cluster.high_zone_hits(core_utils, self.cfg.high_zone_util);
+            let hits = self
+                .cluster
+                .high_zone_hits(core_utils, self.cfg.high_zone_util);
             if hits >= self.cfg.high_zone_count {
                 self.cluster.high_zone_wait = 0;
             } else {
