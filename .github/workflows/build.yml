@@ -42,25 +42,6 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
-  lint:
-    name: Lint
-    runs-on: ubuntu-26.04
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-          targets: aarch64-linux-android
-      - uses: Swatinem/rust-cache@v2
-        with: { shared-key: lint }
-      - run: cargo fmt --all --check
-      # 代码含 bionic-only 符号（libc::__system_property_get），必须按 android target 检查
-      - run: cargo check --workspace --all-targets --target aarch64-linux-android
-        env: { YUMI_SKIP_EBPF: "1" }
-      # 存量 clippy 警告暂不强制失败
-      - run: cargo clippy --workspace --all-targets --target aarch64-linux-android --no-deps
-        env: { YUMI_SKIP_EBPF: "1" }
-
   build:
     name: Build and Package
     # 钉版本：ubuntu-latest 在 2026-10-19~11-19 期间切到 26.04，
@@ -99,17 +80,24 @@ jobs:
         run: npm install
 
       # 4. 配置 Rust Nightly 环境并添加 Android 交叉编译目标
+      #    clippy/rustfmt 供下方 lint 步骤使用（lint 已并入本 job：代码含 bionic-only
+      #    符号（libc::__system_property_get）且依赖 zstd-sys 需 NDK 的 android clang，
+      #    独立 host lint job 无法编译，复用本 job 环境最省）
       - name: Setup Rust Toolchain
         uses: dtolnay/rust-toolchain@nightly
         with:
           targets: aarch64-linux-android
-          components: rust-src # build-std 需要用到 (含 bpfel-unknown-none)
+          components: rust-src, clippy, rustfmt # build-std 需要 rust-src (含 bpfel-unknown-none)
 
       # 5. 缓存 Rust 依赖与编译产物（含 -Z build-std 的 core 与 eBPF 产物）。
       #    纯加速步骤，不改构建语义：key 含 rustc 版本与 Cargo.lock，
       #    nightly 更新或依赖变更时自动冷启一次。
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
+
+      # 5.5. lint 前置：fmt 在所有重下载/编译之前先失败（秒级暴露格式漂移）
+      - name: Lint (fmt)
+        run: cargo fmt --all --check
 
       # 6. 安装 bpf-linker（官方预编译二进制，静态链接 LLVM，无系统依赖）。
       #    背景：bpf-linker 0.11 依赖 LLVM 21+，源码编译需要系统 LLVM 21+
@@ -179,6 +167,14 @@ jobs:
           tar -xzf /tmp/cargo-ndk.tar.gz -C /tmp/cargo-ndk
           sudo find /tmp/cargo-ndk -type f -name cargo-ndk -exec install -m 755 {} /usr/local/bin/cargo-ndk \;
           cargo ndk --version
+
+      # 9.5. lint 后置：NDK 就绪后按 android target 跑 check/clippy（zstd-sys 的 C 编译需要 NDK clang）。
+      #    在完整构建前暴露类型/借用/clippy 错误；存量 clippy 警告暂不强制失败。
+      - name: Lint (check + clippy)
+        run: |
+          cargo check --workspace --all-targets --target aarch64-linux-android
+          cargo clippy --workspace --all-targets --target aarch64-linux-android --no-deps
+        env: { YUMI_SKIP_EBPF: "1" }
 
       # 10. 删除模块文本文件中的注释行（编译打包前）
       #    仅处理会打进模块包的文本文件（sh/yaml/ftl）中的整行 # 注释；
