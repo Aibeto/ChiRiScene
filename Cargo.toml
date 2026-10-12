@@ -49,11 +49,9 @@ fluent = "0.17.0"
 fluent-bundle = "0.16.0"
 intl-memoizer = "0.5.3"
 
-# --- 日志归档压缩（内置库，不依赖设备 gzip/lz4 二进制；2026-09-25）---
-# flate2 走 rust_backend（miniz_oxide，纯 Rust，免链系统 zlib）；
-# lz4_flex 为纯 Rust 的 lz4 帧格式实现，产物与标准 lz4 工具互通
-flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
-lz4_flex = "0.14"
+# --- 日志归档压缩（内置库，进程内压缩，不依赖设备任何压缩二进制；2026-10-12 由 tar.lz4/gzip 迁移到 tar.zst）---
+# zstd 走 vendored C（zstd-sys + cc，本仓第一个 C 依赖）；级别口径：启动归档 1（快，~250MB/s）／导出 CLI 19（接近极限压缩率）
+zstd = "0.13"
 
 [profile.release]
 strip = true

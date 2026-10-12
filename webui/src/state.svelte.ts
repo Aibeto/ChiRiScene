@@ -903,7 +903,7 @@ class AppStore {
   // [export]
   /** 导出阶段：running 期间禁用按钮，done/failed 显示结果 */
   exportPhase = $state<'idle' | 'running' | 'done' | 'failed'>('idle')
-  /** 成功后的产物绝对路径（设备不支持 gzip 时是未压缩 .tar） */
+  /** 成功后的产物绝对路径（模块压缩器缺失时是未压缩 .tar） */
   exportTarget = $state('')
   exportError = $state('')
   /** 进度百分比（0~99，100 留给完成态）：契约层按「已处理字节 / 计划处理字节」算好 */
@@ -928,7 +928,7 @@ class AppStore {
   }
 
   /**
-   * 导出历史归档到 /sdcard/Download：打包在设备上后台跑（gzip 压几百 MB 需要时间），
+   * 导出历史归档到 /sdcard/Download：打包在设备上后台跑（zstd -19 压几百 MB 需要时间），
    * 这里只轮询产物，期间界面照常可用
    */
   async startExport(): Promise<void> {
@@ -951,11 +951,11 @@ class AppStore {
       return
     }
     const job = started.value
-    // 1.5s 一轮，最多 160 轮（4 分钟）：gzip -6 压几百 MB 通常几十秒到一两分钟量级
+    // 1.5s 一轮，最多 320 轮（8 分钟）：zstd -19 接近极限压缩，明显慢于原 gzip -6，几百 MB 可达数分钟量级
     let pollFails = 0
     // 压缩刚启动的一两轮 rchar 可能还是 0，连看两轮都为 0 才判「读不到」并切不定态，避免闪一下
     let blindPolls = 0
-    for (let i = 0; i < 160; i++) {
+    for (let i = 0; i < 320; i++) {
       await new Promise(resolve => setTimeout(resolve, 1500))
       const probed = await pollExport(job)
       if (probed.kind !== 'ok') {
@@ -979,11 +979,11 @@ class AppStore {
       this.exportBlind = blindPolls >= 2
       const phase = probed.value.phase
       if (phase === 'running') continue
-      if (phase === 'done-gz' || phase === 'done-tar') {
+      if (phase === 'done-zst' || phase === 'done-tar') {
         this.exportPhase = 'done'
-        this.exportTarget = phase === 'done-gz' ? job.target : job.fallback
+        this.exportTarget = phase === 'done-zst' ? job.target : job.fallback
         toast(
-          phase === 'done-gz' ? t('overview.export.done') : t('overview.export.doneTar')
+          phase === 'done-zst' ? t('overview.export.done') : t('overview.export.doneTar')
         )
         return
       }

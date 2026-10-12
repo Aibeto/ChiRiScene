@@ -1,6 +1,6 @@
-// export.ts: [start] [poll]。导出历史归档：把 logd/（历次重启的日志归档）打成 tar.gz 放到 /sdcard/Download。打包交给外部脚本 scripts/pack
-// sh（对外暴露的稳定接口，与守护进程启动归档共用、构建流程不得修改）：先 tar 再 gzip，完成后删除中间 .tar；设备无 gzip 时保留未压缩 .tar 作为产物硬约束——后台执行：归档可达几百 MB、
-// 压缩数十秒级，前台等ksu exec 会被桥的超时掐断，命令自己 fork 到后台、结束写产物/标记文件，前端只轮询——进度分两段，都取文件/内核读数而不是脚本回显：
+// export.ts: [start] [poll]。导出历史归档：把 logd/（历次重启的日志归档）打成 tar.zst 放到 /sdcard/Download。打包交给外部脚本 scripts/pack
+// sh（对外暴露的稳定接口，与守护进程启动归档共用、构建流程不得修改）：先 tar 再 zstd，完成后删除中间 .tar；模块压缩器缺失时保留未压缩 .tar 作为产物硬约束——后台执行：归档可达几百 MB、
+// zstd -19 压缩可达分钟级，前台等ksu exec 会被桥的超时掐断，命令自己 fork 到后台、结束写产物/标记文件，前端只轮询——进度分两段，都取文件/内核读数而不是脚本回显：
 // 打包段 = .part 字节 / 源总字节，压缩段 = /proc/<压缩器 pid>/io 的 rchar（已读入输入字节）/ .tar 字节
 import { absOf, shQuote } from './paths'
 import { isLive, run } from '@/kernel/shell'
@@ -10,7 +10,7 @@ import { absent, failed, ok, shellError, type ReadResult } from './errors'
 const DOWNLOAD_DIR = '/sdcard/Download'
 /** 失败标记放 tmpfs：/dev 在 Android 上必有；/sdcard 不可写时标记写不进去、只能等超时 */
 const FAIL_FILE = '/dev/chiri_export.fail'
-/** tar/gzip 的 stderr（设备排障用；前端只把它当脚本的输出落点，不解析） */
+/** tar/zstd 的 stderr（设备排障用；前端只把它当脚本的输出落点，不解析） */
 const LOG_FILE = '/dev/chiri_export.log'
 /** 源总字节（脚本用 du 预算，打包段进度分母） */
 const TOTAL_FILE = '/dev/chiri_export.total'
@@ -18,9 +18,9 @@ const TOTAL_FILE = '/dev/chiri_export.total'
 const PID_FILE = `${FAIL_FILE}.pid`
 
 export interface ExportJob {
-  /** tar.gz 目标路径 */
+  /** tar.zst 目标路径 */
   target: string
-  /** 未压缩回退产物（设备不支持 gzip 时保留的 .tar） */
+  /** 未压缩回退产物（模块压缩器缺失时保留的 .tar） */
   fallback: string
   /** 失败标记（内容为退出码）：3 = logd 目录不可进，4 = 打包/压缩失败，5 = 没有历史归档 */
   failFlag: string
@@ -42,11 +42,11 @@ function stamp(now = new Date()): string {
  */
 export async function startExport(): Promise<ReadResult<ExportJob>> {
   if (!isLive()) return absent<ExportJob>('unsupported-env')
-  // pack.sh export 的 dest_base 是不带扩展名的基准名（脚本自己生成 <base>.tar 再压成<base>.tar.gz）：传带 .tar 的名字产物会变 logd_X.tar.tar
-  // gz，轮询永远找不到目标
+  // pack.sh export 的 dest_base 是不带扩展名的基准名（脚本自己生成 <base>.tar 再压成<base>.tar.zst）：传带 .tar 的名字产物会变 logd_X.tar.tar
+  // zst，轮询永远找不到目标
   const base = `${DOWNLOAD_DIR}/logd_${stamp()}`
   const job: ExportJob = {
-    target: `${base}.tar.gz`,
+    target: `${base}.tar.zst`,
     fallback: `${base}.tar`,
     failFlag: FAIL_FILE
   }
@@ -66,7 +66,7 @@ export async function startExport(): Promise<ReadResult<ExportJob>> {
 }
 
 // [poll]
-export type ExportPhase = 'running' | 'done-gz' | 'done-tar' | 'empty' | 'no-logd' | 'failed'
+export type ExportPhase = 'running' | 'done-zst' | 'done-tar' | 'empty' | 'no-logd' | 'failed'
 
 export interface ExportProgress {
   /** 进度条百分比（0~99；分母 = 计划处理字节 = 源总字节 + .tar 字节） */
@@ -75,7 +75,7 @@ export interface ExportProgress {
   read: number
   /** 计划处理字节（打包期间 .tar 还没出现，先用源总字节顶替） */
   planned: number
-  /** 产物当前字节（.part + .tar + .tar.gz 之和，单调增长；压缩进度读不到时当兜底文案） */
+  /** 产物当前字节（.part + .tar + .tar.zst 之和，单调增长；压缩进度读不到时当兜底文案） */
   written: number
   /** 压缩进行中却读不到「已读入字节」（/proc 不可读或内核未计 io）→ 分母无从推算，前端改走不定态 */
   blind: boolean
@@ -96,8 +96,8 @@ export async function pollExport(job: ExportJob): Promise<ReadResult<ExportProbe
   const cmd =
     // fail 必须最先判：失败时脚本已删 .mode 而半截产物可能还在，先看产物会把失败当完成上报
     `[ -f ${shQuote(job.failFlag)} ] && echo "s:fail:$(cat ${shQuote(job.failFlag)} 2>/dev/null)"; ` +
-    // .mode = gzip 进行中标记：gzip 就地流式写 <base>.tar.gz（边压边长），不看标记会在压缩刚开始就误判完成、下载到半截归档
-    `[ ! -f ${shQuote(mode)} ] && [ -f ${shQuote(job.target)} ] && echo s:gz; ` +
+    // .mode = zstd 进行中标记：zstd 就地流式写 <base>.tar.zst（边压边长），不看标记会在压缩刚开始就误判完成、下载到半截归档
+    `[ ! -f ${shQuote(mode)} ] && [ -f ${shQuote(job.target)} ] && echo s:zst; ` +
     `[ ! -f ${shQuote(mode)} ] && [ -f ${shQuote(tarPath)} ] && echo s:tar; ` +
     `p=0; [ -f ${shQuote(part)} ] && p=$(wc -c < ${shQuote(part)}); echo "p:$p"; ` +
     `s=0; [ -f ${shQuote(tarPath)} ] && s=$(wc -c < ${shQuote(tarPath)}); echo "s:$s"; ` +
@@ -138,14 +138,14 @@ export async function pollExport(job: ExportJob): Promise<ReadResult<ExportProbe
       // .tar 已就绪却读不到 rchar = 压缩在跑但拿不到进度源（/proc 不可读或内核未计 io）→ 界面走不定态
       blind: tarBytes > 0 && consumed <= 0
     }
-    // fail 先于产物判定：打包/压缩失败会留下半截 .tar 或 .tar.gz（且 .mode 已删），先判产物会把失败静默上报成完成
+    // fail 先于产物判定：打包/压缩失败会留下半截 .tar 或 .tar.zst（且 .mode 已删），先判产物会把失败静默上报成完成
     const fail = /^s:fail:(\d+)/m.exec(out)
     if (fail) {
       const phase = fail[1] === '5' ? 'empty' : fail[1] === '3' ? 'no-logd' : 'failed'
       return ok({ phase, progress })
     }
     // 产物判定已由命令侧 `[ ! -f .mode ]` 守卫：.mode 在 = gzip 进行中，此刻产物存在也不算完成
-    if (/^s:gz$/m.test(out)) return ok({ phase: 'done-gz', progress })
+    if (/^s:zst$/m.test(out)) return ok({ phase: 'done-zst', progress })
     if (/^s:tar$/m.test(out)) return ok({ phase: 'done-tar', progress })
     return ok({ phase: 'running', progress })
   } catch (e) {

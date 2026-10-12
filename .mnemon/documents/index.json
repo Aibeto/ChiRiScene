@@ -127,6 +127,31 @@
       "contentHash": "f71813ccf87a3fe60f18d4788feb7e61386625a256d25d5b7266b9370910526b",
       "sizeBytes": 2793,
       "memoryBodyIds": []
+    },
+    {
+      "id": "ba43ec02-61de-470c-9d56-68789fae4585",
+      "title": "ChiRi 日志归档迁移 tar.zst：实现、zstd-sys 构建链核查与缓存清理（2026-10-12）",
+      "description": "zstd 压缩迁移实现与构建链核查证据、遗留验证项（2026-10-12）",
+      "status": "active",
+      "filename": "chiri-tar-zst-zstd-sys-2026-10-12-ba43ec02.md",
+      "relativePath": "documents/active/chiri-tar-zst-zstd-sys-2026-10-12-ba43ec02.md",
+      "sourcePaths": [
+        "Cargo.toml",
+        "src/logger.rs",
+        "src/main.rs",
+        ".github/workflows/build.yml",
+        "xtask/src/main.rs"
+      ],
+      "sessionIds": [
+        "638c579c-25e7-4748-a104-5653f9b37da0"
+      ],
+      "createdAt": "2026-10-12T14:31:42.672Z",
+      "updatedAt": "2026-10-12T14:31:42.672Z",
+      "lastAccessedAt": "2026-10-12T14:31:42.672Z",
+      "revision": 1,
+      "contentHash": "5140297acea3640d73e1cd675a9632284eab0db1d7a8e7e5342b14201e247815",
+      "sizeBytes": 3721,
+      "memoryBodyIds": []
     }
   ]
 }

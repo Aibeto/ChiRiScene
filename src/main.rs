@@ -25,12 +25,12 @@ use std::thread;
 // fluent_args 重复导入（E0255）
 
 fn main() -> Result<()> {
-    // [toolbox] 内置压缩工具模式：`chiri gzip <file>` / `chiri lz4 <src> <dst>`，pack.sh 导出时调用（见 pack.sh 的 CHIRI_BIN），
-    // flate2 / lz4_flex 纯 Rust 压缩，设备没有 gzip/lz4 二进制也能产出 .tar.gz / .tar.lz4必须在 daemonize 之前分发：
-    // CLI 需要完整 stdout/stderr 与退出码；看门狗拉起守护进程时 arg1 是模块目录绝对路径，与这两个子命令字面量不可能冲突
+    // [toolbox] 内置压缩工具模式：`chiri zstd <file>` 就地生成 `<file>.zst`，pack.sh 导出时调用（见 pack.sh 的 CHIRI_BIN，语义同 gzip -f），
+    // zstd crate 走 vendored C 进程内压缩，设备没有任何压缩二进制也能产出 .tar.zst；级别口径：启动归档 1（快）／导出 CLI 19（接近极限压缩率）。必须在 daemonize 之前分发：
+    // CLI 需要完整 stdout/stderr 与退出码；看门狗拉起守护进程时 arg1 是模块目录绝对路径，与该子命令字面量不可能冲突
     if let Some(cmd) = std::env::args().nth(1) {
         match cmd.as_str() {
-            "gzip" | "lz4" => {
+            "zstd" => {
                 let rest: Vec<String> = std::env::args().skip(2).collect();
                 std::process::exit(crate::logger::compress_cli(&cmd, &rest));
             }
@@ -100,10 +100,10 @@ fn main() -> Result<()> {
     }
 
     let log_dir = root.join("logs");
-    // 启动归档：把上一轮整个 logs/ 与 devimp/ 分别重命名并交单个子线程异步打包为logd/<ts>.tar.lz4 与 logd/devimp_<ts>.tar.lz4（pack.sh 打无压缩 tar、
-    // Rust 内置 lz4_flex 压缩，不依赖设备 lz4 二进制，失败回落保留 .tar；watchdog.pid 复制回新建 logs/ 供stopScheduler 定位看门狗），
+    // 启动归档：把上一轮整个 logs/ 与 devimp/ 分别重命名并交单个子线程异步打包为logd/<ts>.tar.zst 与 logd/devimp_<ts>.tar.zst（pack.sh 打无压缩 tar、
+    // Rust 内置 zstd 压缩（级别 1，进程内不依赖设备压缩二进制），失败回落保留 .tar；watchdog.pid 复制回新建 logs/ 供stopScheduler 定位看门狗），
     // 完成后对 logd/ 与 devimp/ 各自预算清理（>128MB 删最旧到<96MB）devimp/ 为双诊断文件（main_<pkg>_<MMDD-HHmmss>.log 主诊断 + aff_*
-    // log 线程流），归档时一并进 devimp_<ts>.tar.lz4必须在 create_dir_all(log_dir)/logger::init 之前执行
+    // log 线程流），归档时一并进 devimp_<ts>.tar.zst必须在 create_dir_all(log_dir)/logger::init 之前执行
     let (archived_zip, archived_devimp) = logger::archive_on_startup(&root);
     std::fs::create_dir_all(&log_dir)?;
 // devimp/ 不在这里创建（dev_record 关闭时不得产生任何数据，含空目录）：写入路径（logger 的main_open / aff_open）

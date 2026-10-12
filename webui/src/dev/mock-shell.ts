@@ -284,7 +284,7 @@ function handle(cmd: string): ExecResult | null {
     if (exportPolls <= 4)
       return ok('p:0\ns:314572800\ng:157286400\nt:314572800\nr:157286400\n')
     if (exportPolls <= 8) return ok('p:0\ns:314572800\ng:52428800\nt:314572800\nr:0\n')
-    return ok('s:gz\np:0\ns:0\ng:94371840\nt:314572800\nr:314572800\n')
+    return ok('s:zst\np:0\ns:0\ng:94371840\nt:314572800\nr:314572800\n')
   }
 
   const exists = EXISTS_CMD.exec(cmd)
