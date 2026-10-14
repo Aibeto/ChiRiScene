@@ -19,3 +19,7 @@ ChiRi 未 commit 工作区修复清单（2026-10-12 eae6bc89 标记 push 风险�
 审查口径（2026-10-13 用户定）：① 审查时必须避让他人正在进行的修改——只检查本会话自己改的部分（git diff 中自己负责的文件/行），不碰不评判他人 WIP 文件（如 src/chiri/config.rs、cpu_load_governor.rs、feature.yaml、clg_replay.rs 等并行改动）；② 审查默认不包含构建测试（cargo check / svelte-check / vitest 不属于审查动作，除非用户点名要求），审查 = 静态读 diff + 逻辑核对 + 必要的最小功能验证。
 §
 ChiRi 提交规范：读 .trae/rules/git-commit-message.md——type(scope) 中文祈使句主题行，scope 用 chiri/clg 等子作用域；提交信息长文案先 Write 到 devimpbin/_tmp/*.txt 再 git commit -F。2026-10-13 高位升频门槛 + 温度列关闭已提交 ebfe0c3（9 文件 +195/−6），仅限本轮改动文件，未动用户 WIP（package-lock、agentsdocs 等 5 项遗留未提交）。
+§
+【铁律】ChiRi 代码改动后必须立即格式化改动的文件（cargo fmt / rustfmt），再收口或提交；CI 用 nightly 工具链跑 `cargo fmt --all --check`（.github/workflows/build.yml:100，且 fmt 前置在所有重编译之前），本机默认是 stable，改动后应两套工具链都跑一遍确认干净（2026-10-13 用户明确要求写入记忆）。
+§
+ChiRi 提交信息口径（2026-10-13 用户定）：commit 文本遵循 .trae/rules/git-commit-message.md（Conventional Commits，type(scope): 中文祈使主题，scope 用 chiri/scheduler/monitor/config/webui/xtask/module/ci 及子作用域）；默认**不写**「验证情况无异常」这类流水账，也**不写**预期影响；正文要写得详细（动机与背景，每行≤80 字符）。

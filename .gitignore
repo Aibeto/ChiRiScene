@@ -28,6 +28,7 @@ ChiRi*.zip
 # *.bak
 cache/
 output/
+.cache/
 *.log
 logd/
 .tmp-log/

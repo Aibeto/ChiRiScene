@@ -51,7 +51,7 @@
       ],
       "createdAt": "2026-10-11T07:34:23.575Z",
       "updatedAt": "2026-10-11T07:34:23.575Z",
-      "lastAccessedAt": "2026-10-12T20:47:52.457Z",
+      "lastAccessedAt": "2026-10-14T06:21:54.448Z",
       "revision": 1,
       "contentHash": "b264b49ef87ae91a4b39665f8ca7471a0c84087be8bd4b6a2e80c1f32182fa89",
       "sizeBytes": 6331,
@@ -100,7 +100,7 @@
       ],
       "createdAt": "2026-10-11T22:07:53.772Z",
       "updatedAt": "2026-10-11T22:07:53.772Z",
-      "lastAccessedAt": "2026-10-12T18:39:18.112Z",
+      "lastAccessedAt": "2026-10-14T05:34:38.528Z",
       "revision": 1,
       "contentHash": "350739cb2b5a563478c89b6f48734c866a39260bcf7813de6ddca41721ac8e45",
       "sizeBytes": 4233,
@@ -122,7 +122,7 @@
       ],
       "createdAt": "2026-10-12T09:25:01.694Z",
       "updatedAt": "2026-10-12T09:25:01.694Z",
-      "lastAccessedAt": "2026-10-12T17:30:32.433Z",
+      "lastAccessedAt": "2026-10-14T06:41:02.986Z",
       "revision": 1,
       "contentHash": "f71813ccf87a3fe60f18d4788feb7e61386625a256d25d5b7266b9370910526b",
       "sizeBytes": 2793,
@@ -148,7 +148,7 @@
       ],
       "createdAt": "2026-10-12T14:31:42.672Z",
       "updatedAt": "2026-10-12T19:48:58.602Z",
-      "lastAccessedAt": "2026-10-12T20:50:23.938Z",
+      "lastAccessedAt": "2026-10-14T06:41:02.986Z",
       "revision": 2,
       "contentHash": "c395522cc593e80ad6cbfcb47c91858e7b613628f100c3dc062a2ba771178cd8",
       "sizeBytes": 5798,
@@ -171,7 +171,7 @@
       ],
       "createdAt": "2026-10-12T17:32:23.656Z",
       "updatedAt": "2026-10-12T17:32:23.656Z",
-      "lastAccessedAt": "2026-10-12T18:39:18.112Z",
+      "lastAccessedAt": "2026-10-14T06:41:02.986Z",
       "revision": 1,
       "contentHash": "b123eed90a8bc14937a894cadfd53a12dde0d93ee34c66aff21d7b0464a0586a",
       "sizeBytes": 3534,
@@ -205,6 +205,55 @@
       "revision": 1,
       "contentHash": "c63cf181d9abc4d8b376a15331ca8aef07d3149f18e23964cf34a49754ecb8ad",
       "sizeBytes": 4404,
+      "memoryBodyIds": []
+    },
+    {
+      "id": "5ff5d43d-27d6-4c0b-8a83-cfdbd45b68a7",
+      "title": "ChiRi 本地构建 -Z nightly 通道根因与 build-arch.sh 工具链 wrapper 修复（2026-10-14）",
+      "description": "build.rs:150 env_remove(RUSTUP_TOOLCHAIN) 致最内层 eBPF cargo 回落 stable 拒绝 -Z 的根因、PATH 前置 wrapper 修法与 37/37 自测",
+      "status": "active",
+      "filename": "chiri-z-nightly-build-arch-sh-wrapper-2026-10-14-5ff5d43d.md",
+      "relativePath": "documents/active/chiri-z-nightly-build-arch-sh-wrapper-2026-10-14-5ff5d43d.md",
+      "sourcePaths": [
+        "scripts/build-arch/build-arch.sh",
+        "scripts/build-arch/README.md",
+        "build.rs",
+        "xtask/src/main.rs",
+        "devimpbin/selftest-build-arch.sh"
+      ],
+      "sessionIds": [
+        "5bc16e60-2f90-4dc8-860b-01b00b1df630"
+      ],
+      "createdAt": "2026-10-14T06:23:48.212Z",
+      "updatedAt": "2026-10-14T06:23:48.212Z",
+      "lastAccessedAt": "2026-10-14T06:41:02.986Z",
+      "revision": 1,
+      "contentHash": "8cc4fc6f64ba880571b98e7e9d06d8859da10a526fedee4bbf81bfdbeb262435",
+      "sizeBytes": 4284,
+      "memoryBodyIds": []
+    },
+    {
+      "id": "9b9d8201-877a-406a-85cd-7e3962c14e46",
+      "title": "ChiRi build-arch 三项增强交付：下载进度 dl() / 包管理引导 / 脱敏（2026-10-14）",
+      "description": "build-arch.sh 下载进度 dl()、pacman/AUR 引导、脱敏、selftest 47/47 与真实构建冒烟交付记录",
+      "status": "active",
+      "filename": "chiri-build-arch-dl-2026-10-14-9b9d8201.md",
+      "relativePath": "documents/active/chiri-build-arch-dl-2026-10-14-9b9d8201.md",
+      "sourcePaths": [
+        "scripts/build-arch/build-arch.sh",
+        "scripts/build-arch/clean-cache.sh",
+        "scripts/build-arch/README.md",
+        "devimpbin/selftest-build-arch.sh"
+      ],
+      "sessionIds": [
+        "7a27ebc1-1f54-40e3-bcea-46d5c504a196"
+      ],
+      "createdAt": "2026-10-14T06:42:08.147Z",
+      "updatedAt": "2026-10-14T06:42:08.147Z",
+      "lastAccessedAt": "2026-10-14T06:42:08.147Z",
+      "revision": 1,
+      "contentHash": "222012e0703129141b833b9cfb158881d24ba4cd3ad6c5d738ba8f12d3b64e3e",
+      "sizeBytes": 4534,
       "memoryBodyIds": []
     }
   ]
