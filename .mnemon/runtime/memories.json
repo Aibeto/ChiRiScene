@@ -30,9 +30,9 @@
       "importance": "normal"
     },
     {
-      "content": "ChiRi 进行中工作（2026-10-12 终稿）：唯一权威计划 = .cursor/plans/2026-10-11-调度改进方案.md。P1+P5-a 于 10-12 落地；P2/P3/P4/P5-b 也已实施并全回归过（rust_regression 34/34、affinity_cpuset 17/17、clg_tuning 4/4、diag_slice 6/6、Python 70+1、replay_clg 真实数据 dry run OK、cargo check 9 warnings 基线一致），实机 adb 未连功耗验收未做。两轮审查：30 L2 首审 + 15 L2 复核修复；BLOCKER×2 修毕（affinity.rs fg_cursor %=n 除零 +4 行；config.rs:1766 注释 300s→3000s doc-bug）；重要×5 复核确认、附带改用判定不修（end<1024 硬编码、dedup 组迁移沿用、mod.rs 三处 doze 删后语义差异、replay_clg.py None 防御——全部判定保持现状）。落地 4 处修复：affinity.rs +4 行守卫、config.rs:1766 注释、en.ftl 补 logger-append-failed、affinity_cpuset.rs 内 mod tests +3 case（1000-2000/1023/空 cpus）。agentsdocs/03-chiri.md doze 语义同步属文档欠款待办。",
+      "content": "ChiRi 测试与计划基线（2026-10-16 更新）：唯一权威计划 = .cursor/plans/2026-10-11-调度改进方案.md，P1~P5 全部落地（含 P1 取消二段式息屏）。回归基线与 2026-10-12 不同：rust_regression 59（原 34）、affinity_cpuset 17、clg_tuning 5、diag_slice 6、app_mode_activity 6（新增）、Python 70+1、replay_clg 真实数据 selfcheck 三簇过。实机 adb 功耗验收仍未做。审查口径：BLOCKER 必修（除零类断言硬伤），doc-bug 类改注释；曾判「保持现状」的 4 项（end<1024 硬编码、dedup 组迁移、doze 删后语义差异、replay_clg.py None 防御）仍维持原判。agentsdocs/03-chiri.md 的 doze 语义已同步。",
       "created_at": "2026-10-11T09:51:51.670Z",
-      "updated_at": "2026-10-12T11:33:26.210Z",
+      "updated_at": "2026-10-15T20:23:14.588Z",
       "target": "memory",
       "importance": "normal"
     },
@@ -51,20 +51,6 @@
       "importance": "critical"
     },
     {
-      "content": "ChiRi commit 归属审计（eae6bc89 L2 终审，2026-10-12）：严重问题——P1 代码（三处 doze 删覆盖 +102/-54 mod.rs）实际被夹带于 0e87784「feat(chiri): 亲和快照构建分片」commit 内，message 影响栏仅写「遥测快照路径」失实。P1 在 git 历史无显式归属 commit。其他 commit 归属清晰：c48a06c=P2/P3/P5-a(参数+场景延迟+i18n 夹带)、9c3412f=P5-b(cpuset 预检)、f444f47=docs、4415c95=CI。push 前必先提交工作树 4 处修复（affinity.rs +4、config.rs:1766 注释、en.ftl logger-append-failed、affinity_cpuset.rs +3 测试 case），否则推送内容与验证状态（plans:8 全回归过）不一致。",
-      "created_at": "2026-10-12T11:49:29.937Z",
-      "updated_at": "2026-10-12T11:49:29.937Z",
-      "target": "memory",
-      "importance": "critical"
-    },
-    {
-      "content": "ChiRi 未 commit 工作区修复清单（2026-10-12 eae6bc89 标记 push 风险）：4 处未提交修复 ① src/chiri/affinity.rs +4 行（promote_busy_foreground n==0 守卫 + bind_release fg_cursor=0） ② src/chiri/config.rs:1766 注释「300s」→「3000s（50 分钟）」 ③ module/config/i18n/en.ftl +1 key logger-append-failed ④ src/chiri/affinity_cpuset.rs mod tests +3 case（1000-2000/1023/空 cpus &[]） push 前须全部 commit，否则与 plans:8「全回归过」状态不一致。",
-      "created_at": "2026-10-12T11:49:55.168Z",
-      "updated_at": "2026-10-12T11:49:55.168Z",
-      "target": "memory",
-      "importance": "critical"
-    },
-    {
       "content": "审查口径（2026-10-13 用户定）：① 审查时必须避让他人正在进行的修改——只检查本会话自己改的部分（git diff 中自己负责的文件/行），不碰不评判他人 WIP 文件（如 src/chiri/config.rs、cpu_load_governor.rs、feature.yaml、clg_replay.rs 等并行改动）；② 审查默认不包含构建测试（cargo check / svelte-check / vitest 不属于审查动作，除非用户点名要求），审查 = 静态读 diff + 逻辑核对 + 必要的最小功能验证。",
       "created_at": "2026-10-12T20:21:01.280Z",
       "updated_at": "2026-10-12T20:21:01.280Z",
@@ -72,9 +58,9 @@
       "importance": "normal"
     },
     {
-      "content": "ChiRi 提交规范：读 .trae/rules/git-commit-message.md——type(scope) 中文祈使句主题行，scope 用 chiri/clg 等子作用域；提交信息长文案先 Write 到 devimpbin/_tmp/*.txt 再 git commit -F。2026-10-13 高位升频门槛 + 温度列关闭已提交 ebfe0c3（9 文件 +195/−6），仅限本轮改动文件，未动用户 WIP（package-lock、agentsdocs 等 5 项遗留未提交）。",
+      "content": "ChiRi 提交规范：读 .trae/rules/git-commit-message.md——Conventional Commits，type(scope): 中文祈使主题行，scope 用 chiri/scheduler/monitor/config/webui/xtask/module/ci 及子作用域；长文案先 Write 到 devimpbin/ 内文件再 git commit -F；正文写动机与背景（每行≤80 字符），默认不写「验证无异常」这类流水账、不写预期影响。2026-10-16 状态：截至 commit f8e8d03，上游 ChiRiScene/main 已含本轮全部提交（本地曾领先 9 个），历史遗留的「5 项未提交」（package-lock、agentsdocs 等）已随 WebUI 重构提交清空。分组的既有惯例：按主题拆多次提交，每次只含同一逻辑变更的文件集。",
       "created_at": "2026-10-12T20:46:12.322Z",
-      "updated_at": "2026-10-12T20:46:12.322Z",
+      "updated_at": "2026-10-15T20:23:49.765Z",
       "target": "memory",
       "importance": "normal"
     },
@@ -91,6 +77,27 @@
       "updated_at": "2026-10-12T20:59:04.955Z",
       "target": "memory",
       "importance": "normal"
+    },
+    {
+      "content": "ChiRi 长期口径命名（2026-10-16 用户定稿）：**混合前台焦点算法** = `src/chiri/fas_focus.rs` 的 `Focused`/`LoadOnly`/`Grace` 决策体系（含 2026-10-16 新增的「帧率可取则不因叠加窗口降级为仅调频」规则），配套验证活动名 **混合窗口验证**（真机多类窗口共存时验证窗口解析与帧率降级行为）。术语对齐 `agentsdocs/03-chiri.md` 的「当前所有权与叠加契约」；注意勿与 `agentsdocs/07-todos.md:125` 的「混合值」（息屏+亮屏段混合的功率读数）混淆。",
+      "created_at": "2026-10-15T20:15:46.574Z",
+      "updated_at": "2026-10-15T20:15:46.574Z",
+      "target": "memory",
+      "importance": "normal"
+    },
+    {
+      "content": "ChiRi 温控安全关闭（2026-10-16 用户要求，勿当回归）：全部软件温控已关闭并标注「安全关闭」，共三处需同关才叫温控全关——① module/config/{8475,8550,8650,8998,zumapro}/feature.yaml 的 Thermal.enabled=false；② 同段 tuned_resp_enabled=false（tuned 通道）；③ module/config/normal/fas/{dfm,endfield,lolm,sgame,speedmobile}.yaml 的 core_temp_threshold=0.0（FAS 通道，0=禁用是 d_temp_thresh() 既有缺省）。安全依据：内核 thermal 独立于 ChiRi（~95°C 起控 + LMh/DCVS），ChiRi 只做提前轻压，关掉不新增过热风险。恢复 = 三处改回 true/45.0，阈值与回滞参数原样保留。FAS 活跃时 src/chiri/mod.rs:3651 会整体跳过 ChiRi 热保护，故漏关第三处则游戏场景仍有温控。",
+      "created_at": "2026-10-15T20:23:20.787Z",
+      "updated_at": "2026-10-15T20:23:20.787Z",
+      "target": "memory",
+      "importance": "critical"
+    },
+    {
+      "content": "ChiRi 窗口解析真机教训（2026-10-16，值得复用）：合成 fixture 的「字段布局」会掩盖真实 ROM 形态，新增窗口/dumpsys 解析逻辑一律用真机原文做夹具。实测（8550/PHB110 ColorOS）三条必须兼容：① dumpsys window 与 dumpsys -t 1 window windows 两条命令互补——前者有 mCurrentFocus/mFocusedApp 但无 mObscured/mViewVisibility，后者反之，只用后者则 Focused 恒不可达，只用前者则连 VisibleUnfocused/Hidden 都判不出；② mSession=Session{...} 是行内出现（mDisplayId=0 taskId=851 mSession=... mClient=...），按行首前缀匹配必然失败；③ AID 形式 u0aNNNNN 与同块 mOwnerUid=NNNNN 必须归一到同一 uid（appId 在文本里已是最终值，不得再加 10000，否则恒不相等 → 全落 unknown_owned → 恒 Unknown）。取证脚本 devimpbin/1016-001727/probe3.sh。",
+      "created_at": "2026-10-15T20:23:27.117Z",
+      "updated_at": "2026-10-15T20:23:27.117Z",
+      "target": "memory",
+      "importance": "critical"
     }
   ]
 }

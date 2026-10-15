@@ -32,6 +32,7 @@ output/
 *.log
 logd/
 .tmp-log/
+zzzlink/
 
 # TRAE & CodeBuddy
 .trae-html-share-packages/
