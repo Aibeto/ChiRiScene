@@ -521,7 +521,17 @@ impl CoreGroupWorker {
             let hits = self
                 .cluster
                 .high_zone_hits(core_utils, self.cfg.high_zone_util);
-            if hits >= self.cfg.high_zone_count {
+            // [high_zone] 确认核数按**本簇规模**封顶：hits 的可达上限 = 本簇在线核数（prime 单核
+            // 簇恒为 1）。若 high_zone_count 大于本簇核数，确认条件永远不成立，该簇只能靠
+            // high_zone_hold_ticks 兜底放行一次（8550 prime 实测阻塞占比 52%），把「高位需多核确认」
+            // 退化成「周期性突刺」。同一份配置在单核簇上必须仍有可达的确认条件，故取
+            // min(count, 本簇核数)。little(3)/big(4) 在 count=2 下逐位不变；仅当**接管时**在线核数
+            // 少于 2（核下线）才会比原设计更松——此时「不要求多于在线核数的确认」本就是正确语义。
+            let need = self
+                .cfg
+                .high_zone_count
+                .min(self.cluster.affected_cpus.len().max(1) as u32);
+            if hits >= need {
                 self.cluster.high_zone_wait = 0;
             } else {
                 self.cluster.high_zone_wait = self.cluster.high_zone_wait.saturating_add(1);

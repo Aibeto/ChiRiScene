@@ -11,9 +11,14 @@ struct ClusterState {
     high_zone_wait: u32,
 }
 impl ClusterState {
-    /// [high_zone] replay 适配：单核回放（affected_cpus=[0]）达标核数 = util 达阈值即 1
+    /// [high_zone] replay 适配：与生产同口径 —— 只数**本簇**核（affected_cpus）里 util 达阈值
+    /// 的个数。core_utils 按真实 CPU ID 索引，故按 affected_cpus 的 CPU 号取值。
     fn high_zone_hits(&self, core_utils: &[f32], thresh: f32) -> u32 {
-        core_utils.iter().filter(|&&u| u >= thresh).count() as u32
+        self.affected_cpus
+            .iter()
+            .filter_map(|&cpu| core_utils.get(cpu))
+            .filter(|&&u| u >= thresh)
+            .count() as u32
     }
 /* HELPERS */
 }
@@ -46,6 +51,13 @@ impl CoreGroupWorker {
         c.current_freq = c.find_floor_freq((c.current_perf-c.steady_decay).max(self.cfg.perf_floor));
     }
     fn step(&mut self, util: f32) { self.on_load_update(&[util]); self.sink(); }
+    /// 多核簇回放：affected_cpus 与 core_utils 都按真实 CPU ID 索引，故第 N 个核的 util
+    /// 必须由调用方给出同长的切片。用于验证「多核簇仍需 count 个核达标」这条核心承诺。
+    fn step_cores(&mut self, core_utils: &[f32]) { self.on_load_update(core_utils); self.sink(); }
+    fn with_cores(mut self, cores: Vec<usize>) -> Self {
+        self.cluster.affected_cpus = cores;
+        self
+    }
 }
 // [selfcheck] Constructive invariants for ONLY the current configuration.
 fn selfcheck() {
@@ -57,15 +69,41 @@ fn selfcheck() {
         let hw_max = *w.cluster.available_freqs.last().unwrap();
         assert_eq!(saturated_perf, 1.0, "sustained load must retain full-performance reach");
         assert_eq!(saturated_freq, hw_max, "saturation must reach hardware maximum");
-        // [high_zone] replay 单核（affected_cpus=[0]）达标核数恒 1 < count=2：确认永不满足，验 hold 兜底
-        // 仍能到达硬件最高频。门槛阻塞下 alpha 每 high_zone_hold_ticks(20) 才放行一次，几何收敛需
-        // ~25 次放行才到 1 ulp → 与主饱和测试同口径跑 2000 tick
+        // [high_zone] 确认核数按本簇规模封顶（生产 = min(count, 本簇核数)）。replay 是单核
+        // （affected_cpus=[0] → 规模 1），故 need = min(2, 1) = 1：util 达 high_zone_util 即确认，
+        // 不再依赖 high_zone_hold_ticks 兜底放行。若这里回退成 count 原值（2），单核簇永远无法确认，
+        // 每个 tick 都落 hz_hold、每 high_zone_hold_ticks(20) 才放行一次 —— 本断言会把该缺陷暴露出来。
         let mut hz = CoreGroupWorker::new(group);
         for _ in 0..60 { hz.step(0.92); }
         assert!(hz.cluster.current_perf >= hz.cfg.high_zone_gate, "precondition: perf must enter high zone before gate check");
-        for _ in 0..2000 { hz.step(1.0); }
+        let before = hz.cluster.current_perf;
+        let mut hz_holds = 0u32;
+        for _ in 0..2000 { hz.step(1.0); if hz.dev_decision == "hz_hold" { hz_holds += 1; } }
         assert_eq!(hz.cluster.current_perf, 1.0, "high-zone gate must not block saturation when all cores loaded");
         assert_eq!(hz.cluster.current_freq, hw_max);
+        assert!(hz.cluster.current_perf > before, "saturation must progress past the high-zone gate");
+        assert_eq!(hz_holds, 0, "single-core cluster must confirm (no hz_hold) once util meets high_zone_util");
+        // [high_zone] 多核簇核心承诺：need = min(count, 本簇核数)。以 3 核簇（affected_cpus=[0,1,2]）
+        // 配 count=2 为例 —— 只有 1 核达标时必须**继续阻塞**（落 hz_hold），2 核达标才放行。
+        // 这条覆盖「多核簇行为与改动前逐位一致」：若有人把 need 改成 min(len) 或整段逻辑改错，
+        // 单核断言仍会全绿而这里会失败。
+        let mut mc = CoreGroupWorker::new(group).with_cores(vec![0, 1, 2]);
+        for _ in 0..60 { mc.step_cores(&[0.92, 0.92, 0.92]); }
+        assert!(mc.cluster.current_perf >= mc.cfg.high_zone_gate, "precondition: 3-core cluster must enter high zone first");
+        let need = mc.cfg.high_zone_count.min(3) as usize;
+        // 只有 1 个核达标：need>=2 时必须阻塞
+        let before_mc = mc.cluster.current_perf;
+        mc.step_cores(&[1.0, 0.10, 0.10]);
+        if need >= 2 {
+            assert_eq!(mc.dev_decision, "hz_hold", "3-core cluster must still block when only 1 core meets high_zone_util");
+            assert_eq!(mc.cluster.current_perf, before_mc, "blocked tick must freeze target");
+        }
+        // 恰好 need 个核达标：必须放行（不落 hz_hold）
+        let mut ok = CoreGroupWorker::new(group).with_cores(vec![0, 1, 2]);
+        for _ in 0..60 { ok.step_cores(&[0.92, 0.92, 0.92]); }
+        let pass = if need >= 3 { [1.0f32, 1.0, 1.0] } else if need == 2 { [1.0f32, 1.0, 0.1] } else { [1.0f32, 0.1, 0.1] };
+        ok.step_cores(&pass);
+        assert_ne!(ok.dev_decision, "hz_hold", "cluster must release once `need` cores meet high_zone_util");
         let mut floor_tick = 0;
         for tick in 1..=100 { w.step(0.0); if w.dev_tgt_perf == w.cfg.perf_floor {floor_tick=tick; break;} }
         assert!(floor_tick > 0 && floor_tick <= 10);
