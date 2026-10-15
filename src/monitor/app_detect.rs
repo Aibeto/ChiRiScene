@@ -3,6 +3,7 @@
 use inotify::{Inotify, WatchMask};
 use log::{debug, info, warn};
 use std::collections::HashSet;
+use std::collections::HashMap;
 use std::error::Error;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
@@ -69,10 +70,15 @@ pub struct ForegroundSnapshot {
     pub pid: i32,
     pub process_starttime: Option<u64>,
     pub generation: u64,
+    /// 前台 Activity 查表键（`pkg/.MainActivity` 短形）；空 = 未知。
+    /// **不参与 `identity_matches`**：activity 切换不得改变 generation，否则每次页面跳转都会
+    /// 重下 ModeChange + 触发 FAS 重接管。消费方只把它当作 `determine_mode` 的附加查表维度。
+    pub activity: Arc<str>,
 }
 
 impl ForegroundSnapshot {
     /// 身份一致性：包名、PID、进程启动时间三者全同才算同一前台实例；PID 复用或进程重启都会破坏它
+    /// （activity 刻意不参与：它是路由信息，不是进程身份）
     pub fn identity_matches(&self, other: &ForegroundSnapshot) -> bool {
         self.package == other.package
             && self.pid == other.pid
@@ -87,6 +93,7 @@ struct ForegroundState {
     process_starttime: Option<u64>,
     generation: u64,
     raw_package: Arc<str>,
+    activity: Arc<str>,
 }
 
 impl Default for ForegroundState {
@@ -97,6 +104,7 @@ impl Default for ForegroundState {
             process_starttime: None,
             generation: 0,
             raw_package: Arc::from(""),
+            activity: Arc::from(""),
         }
     }
 }
@@ -108,6 +116,7 @@ impl ForegroundState {
             pid: self.pid,
             process_starttime: self.process_starttime,
             generation: self.generation,
+            activity: self.activity.clone(),
         }
     }
 }
@@ -142,6 +151,12 @@ pub fn raw_foreground_package_arc() -> Arc<str> {
     FOREGROUND_STATE.lock().unwrap().raw_package.clone()
 }
 
+/// 当前前台 Activity 查表键（`pkg/.MainActivity` 短形，零分配 Arc 克隆）；空 = 未知。
+/// 只有 FAS 路径会驱动窗口探针，故非 FAS 前台通常为空——调用方必须回退包名级判定。
+pub fn current_activity_arc() -> Arc<str> {
+    FOREGROUND_STATE.lock().unwrap().activity.clone()
+}
+
 fn set_raw_foreground_package(package: &str) {
     let mut state = FOREGROUND_STATE.lock().unwrap();
     if state.raw_package.as_ref() != package {
@@ -170,6 +185,7 @@ fn set_current_package(
     pid: i32,
     process_starttime: Option<u64>,
     force_bump: bool,
+    activity: &str,
 ) -> ForegroundSnapshot {
     let base = match pkg.split_once(':') {
         Some((b, _suffix)) => {
@@ -190,8 +206,13 @@ fn set_current_package(
         pid,
         process_starttime,
         generation: state.generation,
+        activity: Arc::from(""),
     };
     let generation = next_generation(&state.snapshot(), &candidate, force_bump);
+    // activity 槽更新规则见 `next_activity`：换包清空（防新包继承旧包的 activity）、
+    // 空观测保留旧值（探针只在 FAS 路径跑，非 FAS 轮次传空是常态）
+    let package_changed = state.package.as_ref() != base;
+    state.activity = next_activity(package_changed, &state.activity, activity);
     state.package = candidate.package;
     state.pid = pid;
     state.process_starttime = process_starttime;
@@ -215,6 +236,7 @@ mod identity_tests {
             pid,
             process_starttime: starttime,
             generation,
+            activity: Arc::from(""),
         }
     }
 
@@ -224,6 +246,35 @@ mod identity_tests {
         let restarted = snapshot("com.example.game", 43, Some(1000), 7);
         assert!(!previous.identity_matches(&restarted));
         assert_eq!(next_generation(&previous, &restarted, false), 8);
+    }
+
+    #[test]
+    fn package_change_clears_stale_activity() {
+        // 换包必须丢弃旧包 activity，否则新包会继承旧包的规则（游戏→微信 例）
+        assert_eq!(
+            next_activity(true, "com.game/.MainActivity", "").as_ref(),
+            ""
+        );
+        // 换包且当期观测到新 activity：直接用新的
+        assert_eq!(
+            next_activity(true, "com.game/.MainActivity", "com.tencent.mm/.Chat")
+                .as_ref(),
+            "com.tencent.mm/.Chat"
+        );
+    }
+
+    #[test]
+    fn same_package_keeps_activity_when_observation_is_empty() {
+        // 非 FAS 轮次探针不跑，空观测不得抹掉已生效的 activity 规则
+        assert_eq!(
+            next_activity(false, "com.game/.MainActivity", "").as_ref(),
+            "com.game/.MainActivity"
+        );
+        // 同包内换页（Activity 切换）：采纳新值
+        assert_eq!(
+            next_activity(false, "com.game/.Main", "com.game/.Settings").as_ref(),
+            "com.game/.Settings"
+        );
     }
 
     #[test]
@@ -418,10 +469,51 @@ fn get_focused_app_from_cgroup(ignored_apps: &[String]) -> Result<(String, i32),
 
 // [mode]
 
-/// 模式判定：FAS 白名单 > 特调白名单 > app_modes > 特调映射 > 全局模式（见各分支注释）
+/// 前台 activity 槽的下一个值（纯函数，便于回归测试）。两条规则：
+/// - **换包清空**：activity 属于「上一个前台包」，包变了旧值就失去意义，必须丢弃，
+///   否则新包会继承旧包的 activity（游戏→微信 时微信可能被套上游戏的模式）。
+/// - **空值不覆盖**：探针只在 FAS 路径跑，非 FAS 轮次传空是常态；空值保留旧值，
+///   避免 FAS 退出瞬间 activity 规则整段失效。
+fn next_activity(
+    package_changed: bool,
+    current: &str,
+    observed: &str,
+) -> Arc<str> {
+    if package_changed {
+        if observed.is_empty() {
+            return Arc::from("");
+        }
+        return Arc::from(observed);
+    }
+    if observed.is_empty() {
+        return Arc::from(current);
+    }
+    Arc::from(observed)
+}
+
+/// Activity 级规则查表（纯函数，便于回归测试）：返回命中的模式名。
+/// 三个前提缺一不可 —— 总开关开启、activity 非空、`app_modes` 里确有该 activity 键；
+/// 任一不满足即返回 `None`，由调用方回退包名级查表（默认回退语义）。
+fn activity_lookup<'a>(
+    app_modes: &'a HashMap<String, String>,
+    _current_package: &str,
+    activity: &str,
+    activity_aware: bool,
+) -> Option<&'a String> {
+    if !activity_aware || activity.is_empty() {
+        return None;
+    }
+    app_modes.get(activity)
+}
+
+/// 模式判定：FAS 白名单 > **Activity 级规则** > 特调白名单 > app_modes(包名) > 特调映射 > 全局模式（见各分支注释）
 /// **PowerBase 不在这里出现**：它只替换「谁来调频」，模式名与所有外部接口（current_mode.chr /
 /// rules.yaml / WebUI / 通知）保持原样——开启后 current_mode 依然是 default/boost
-fn determine_mode(config: &RulesConfig, current_package: &str) -> String {
+///
+/// `activity` = `current_activity_arc()` 的查表键（`pkg/.MainActivity`，空 = 未知）。
+/// **默认回退**：activity 为空或查不到时完全落回包名级逻辑，行为与引入本参数前逐位一致。
+/// **选择性覆盖**：只有用户在 `app_modes` 里显式写了 `pkg/.Activity` 键才会命中这一层。
+fn determine_mode(config: &RulesConfig, current_package: &str, activity: &str) -> String {
     // 特调仅 Chiri SoC 且 tuned_profiles.yaml 加载成功时生效；缺配置的机型白名单应用回退 CLG 普通模式调度
     let chiri = crate::common::is_chiri_soc();
     let special_enabled = chiri && crate::common::is_special_tuned_available();
@@ -465,7 +557,21 @@ fn determine_mode(config: &RulesConfig, current_package: &str) -> String {
     // 特调为 ChiRi 专属且仅白名单应用生效：非 ChiRi SoC 或非白名单包名映射到特调模式时回退全局模式并告警（WebUI 扫描后会同步清理非法条目）规则表匹配：
     // [rules]
     // 前台名与规则键都已归一为主包名（见 set_current_package / config.rs），此处为精确查表，不做回退链
-    let app_mode = config.app_modes.get(current_package);
+    // [activity] Activity 级规则（选择性优先级覆盖）：仅当总开关开启、activity 非空、且用户在
+    // app_modes 里显式写了 `pkg/.Activity` 键时命中。未命中（或开关关闭/activity 未知）即落回
+    // 下方包名级逻辑 —— 这就是「默认回退」，未配置 activity 的应用行为逐位不变。
+    // 注意 activity 只在 FAS 路径被窗口探针填充，非 FAS 前台恒为空 → 自动走包名级。
+    let activity_mode = activity_lookup(&config.app_modes, current_package, activity, config.activity_aware);
+    if activity_mode.is_some() {
+        debug!(
+            "{}",
+            t_with_args(
+                "app-detect-activity-override",
+                &fluent_args!("pkg" => current_package, "activity" => activity)
+            )
+        );
+    }
+    let app_mode = activity_mode.or_else(|| config.app_modes.get(current_package));
     if let Some(mode) = app_mode {
         if crate::common::is_special_mode(mode) || crate::common::is_fas_mode(mode) {
             // FAS 模式仅白名单驱动：app_modes 中手动映射的 "fas" 一律拒绝（防绕过白名单）
@@ -774,8 +880,14 @@ pub fn app_detection_loop(
                     )
                 );
                 // 同身份强制刷新也递增 generation：旧 mode 事件不会被后续快照接受
-                let snapshot =
-                    set_current_package(&final_pkg, final_pid, final_starttime, force_refresh);
+                let activity = crate::monitor::window_visibility::last_activity_key();
+                let snapshot = set_current_package(
+                    &final_pkg,
+                    final_pid,
+                    final_starttime,
+                    force_refresh,
+                    &activity,
+                );
                 // 前台 PID 变化即时广播（cpu_monitor/fps 共用）：仅 pid 真正变化且有效时发
                 if final_pid != prev_pid && final_pid > 0 {
                     debug!(
@@ -790,11 +902,11 @@ pub fn app_detection_loop(
                     );
                     let _ = pid_tx.send(final_pid as u32);
                 }
-                // 模式判定要读整份规则（global_mode/app_modes/dynamic_enabled），取一次短锁即可；guard 不可跨上方 cgroup 扫描持有，
+                // 模式判定要读整份规则（global_mode/app_modes/dynamic_enabled/activity_aware），取一次短锁即可；guard 不可跨上方 cgroup 扫描持有，
                 // 也不缓存整份配置——稳态每轮不碰锁
                 let new_mode = {
                     let cfg = config_arc.lock().unwrap();
-                    determine_mode(&cfg, &final_pkg)
+                    determine_mode(&cfg, &final_pkg, &activity)
                 };
 
                 // force_refresh 只驱动重算模式，模式未变不重发 ModeChange（避免 default->default 冗余）；同模式应用切换对 CLG 无影响，
