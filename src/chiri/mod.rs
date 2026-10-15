@@ -344,8 +344,25 @@ fn reconcile_fas_focus(
                 })
                 .map(|(_, observed_at)| *observed_at)
         });
+    // 帧率当前可否取到（`frame_feedback` 使能 + 已过预热 + 最近一帧未超 FRAME_FEEDBACK_STALE=500ms，
+    // 见 `FasManager::frame_feedback_active`）：用于阻止「叠加窗口（输入法/小窗/帧率悬浮窗）
+    // → VisibleUnfocused → 降 LoadOnly」把仍有帧数据的场景误判为仅调频。它**不**介入
+    // Hidden/Unknown 的退出路径，故「有叠加窗口时退出 FAS 是预期行为」这条语义保持不变。
+    //
+    // 读取位置是硬约束：必须早于下面那次「暂停反馈」。判据里的 `last_frame_at` 由 `on_frame` 维护，
+    // 而 `on_frame` 在 `frame_feedback_enabled == false` 时直接早退——也就是说一旦先暂停，
+    // 此后 `last_frame_at` 永不再更新，本判据恒为 false，规则不会触发（且不会自愈）。
+    // 因此这里读到的是「本帧暂停之前」的真实供帧状态。
+    // PID/generation 匹配已隐含在判据内：`on_frame` 只受理与当前实例 pid/generation 一致的帧。
+    let frame_feedback_active = manager.frame_feedback_active();
     // 非 Focused 结果会先暂停反馈；缓存只在 fresh Focused 时保留。
-    if previous_focus.is_none() {
+    // 例外：帧源仍在供帧时不抢先暂停——`set_frame_feedback_enabled(false)` 会 bump generation 并
+    // `reset_frame_feedback()`，使本次窗口观测因 request 代数不再匹配而取不到（evidence=None → Grace，
+    // 即「帧率可用却退出」，正是要修的病灶），预热计数也被重置。
+    // 不抢先暂停不改变任何终态：下方 LoadOnly/Grace 分支各自显式 `set_frame_feedback_enabled(false)`，
+    // Focused 分支显式置 true；叠加窗口的退出语义不受影响，只是在真正 Hidden/Unknown 时
+    // 最多晚一次窗口查询（<1s）才收敛。
+    if previous_focus.is_none() && !frame_feedback_active {
         manager.set_frame_feedback_enabled(false);
     }
     let Some(source) = manager.frame_source() else {
@@ -371,12 +388,13 @@ fn reconcile_fas_focus(
         .or_else(|| {
             previous_focus.map(|observed_at| (FocusDecision::Focused, observed_at.elapsed()))
         });
+    // 注意：`frame_feedback_active` 已在「暂停反馈」之前读取（见上），此处直接用，切勿挪到下方再读。
     let decision = if !owner_process_alive {
         FocusDecision::Grace
     } else if deadline_managed {
-        decide_focus(false, false, None)
+        decide_focus(false, false, None, frame_feedback_active)
     } else if owner_allowed {
-        decide_focus(false, false, evidence)
+        decide_focus(false, false, evidence, frame_feedback_active)
     } else {
         FocusDecision::Grace
     };

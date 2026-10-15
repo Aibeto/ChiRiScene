@@ -233,6 +233,13 @@ impl FasController {
                 .is_none_or(|timestamp| timestamp.elapsed() >= FRAME_FEEDBACK_STALE)
     }
 
+    /// 帧反馈是否**当前可用**（= `uses_load_control()` 取反）：帧反馈已启用、已过预热、
+    /// 且最近一帧未过期（`FRAME_FEEDBACK_STALE=500ms`）。
+    /// 供上层判断「现在真的能取到窗口帧率」，用于「帧率可用时不因叠加窗口降级为仅调频」。
+    pub fn frame_feedback_active(&self) -> bool {
+        !self.uses_load_control()
+    }
+
     /// load-only 的地板：沿用配置 base，不叠加 current_target_fps bonus（帧反馈暂停时目标帧率与负载无关）。
     pub(super) fn load_control_floor(&self) -> f32 {
         self.cfg.perf_floor.min(self.cfg.perf_ceil)

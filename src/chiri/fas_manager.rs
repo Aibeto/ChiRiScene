@@ -255,6 +255,18 @@ impl FasManager {
         self.instance.as_ref().map(|instance| instance.frame_source)
     }
 
+    /// 帧率**当前是否可取**：FAS 实例存在、帧反馈启用、已过预热、且最近一帧未过期。
+    /// 用于「能取到窗口帧率时不因叠加窗口（输入法/小窗/帧率悬浮窗）降级为仅调频」
+    /// —— 叠加窗口时 `WindowVisibility` 会变 `VisibleUnfocused`，但帧源仍在正常产出，
+    /// 此时降 `LoadOnly` 会关掉帧驱动、被用户感知为「FAS 异常退出」。
+    /// 语义边界：本判据**只用于阻止降级**，不改变「有叠加窗口时退出 FAS 是预期行为」——
+    /// `Hidden`/`Unknown` 仍走 `Grace`，该退出路径不经过这里。
+    pub fn frame_feedback_active(&self) -> bool {
+        self.instance
+            .as_ref()
+            .is_some_and(|instance| instance.controller.frame_feedback_active())
+    }
+
     /// 当前 owner 是否就是该 pid/starttime 进程：供主线同 session 门控（快事件只喂同一会话）。
     /// fail-closed：pid 不同或任一侧 starttime 未知都判 false，绝不把无法取证的事件算作同一会话。
     pub fn owner_matches_process(&self, pid: i32, process_starttime: Option<u64>) -> bool {
