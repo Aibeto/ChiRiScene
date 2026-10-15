@@ -234,6 +234,33 @@
       "trustScore": 1,
       "createdAt": "2026-10-12T20:21:01.274Z",
       "updatedAt": "2026-10-12T20:21:01.274Z"
+    },
+    {
+      "id": "holo-58013f32-97c0-4769-b40d-d8c25aaa49b4",
+      "content": "【铁律 2026-10-16 用户定】ChiRi 仓库：暂存（git add）前必须先查代码格式并格式化 —— 先 `cargo fmt --all`，再 `cargo fmt --all --check` 确认干净。CI 的 Lint (fmt) 是秒级前置门禁（跑在重下载/编译之前），格式漂移直接红掉整套构建。两个易踩点：① `scripts/tests/*.rs` 不在 workspace 内，`cargo fmt --all` 覆盖不到，改到它们要单独 `rustfmt --edition 2024 <file>`；② `scripts/tests/clg_replay.rs` 禁止 rustfmt —— 它是 scripts/devimp/replay_clg.py 的生成物，且 clg_tuning_regression.rs 用 include_str! 对它做子串字面量断言（如 `assert_eq!(saturated_freq, hw_max`），rustfmt 拆行会让断言失效（实测踩到 saturation_selfcheck_must_not_be_weakened 由 pass 转 FAILED），要改应改生成器。排错顺序：格式问题先跑 `cargo fmt --all --check` 定位（秒级、不需 NDK），它干净后才怀疑编译/clippy；CI 的 clippy 步未加 -D warnings，存量警告不会让 CI 失败，别把警告当失败原因。",
+      "category": "preference",
+      "tags": [
+        "铁律",
+        "格式化",
+        "CI",
+        "git"
+      ],
+      "entities": [
+        "ChiRi",
+        "cargo fmt",
+        "rustfmt",
+        "Lint (fmt)",
+        "clg_replay.rs",
+        "replay_clg.py",
+        "scripts/tests",
+        "CI",
+        "Lint",
+        "FAILED",
+        "NDK"
+      ],
+      "trustScore": 1,
+      "createdAt": "2026-10-15T20:49:42.285Z",
+      "updatedAt": "2026-10-15T20:49:42.285Z"
     }
   ]
 }

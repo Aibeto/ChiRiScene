@@ -446,7 +446,8 @@ fn unique_focus(segment: &str) -> Option<&str> {
 /// 合并快照下焦点来自 `window` 段，片段缺失时回退到整份（兼容旧快照/测试注入）。
 fn focused_activity_key(snapshot: &str) -> Arc<str> {
     let (focus_segment, visibility_segment) = split_segments(snapshot);
-    let Some(first) = unique_focus(focus_segment).or_else(|| unique_focus(visibility_segment)) else {
+    let Some(first) = unique_focus(focus_segment).or_else(|| unique_focus(visibility_segment))
+    else {
         return Arc::from("");
     };
     match window_component(first) {
@@ -501,9 +502,11 @@ fn android_uid(value: &str) -> Option<u32> {
 /// `mSession` 写在行首，掩盖了真实形态。
 /// 现改为按**子串**定位，并保留「恰好一条 session」的歧义拒绝。
 fn window_session(block: &str) -> Option<(u32, u32)> {
-    let mut sessions = block
-        .lines()
-        .filter_map(|line| line.trim().split_once("mSession=Session{").map(|(_, rest)| rest));
+    let mut sessions = block.lines().filter_map(|line| {
+        line.trim()
+            .split_once("mSession=Session{")
+            .map(|(_, rest)| rest)
+    });
     let body = sessions.next()?.split_once('}')?.0;
     if sessions.next().is_some() {
         return None;
@@ -1022,7 +1025,10 @@ mod activity_tests {
             "  mCurrentFocus=Window{abc u0 com.example.game/.Main}",
             "  Window #0 Window{abc u0 com.example.game/.Main}:\n    mSession=Session{def 42:10042}\n    mOwnerUid=10042\n    mHasSurface=true isOnScreen=true mObscured=true",
         );
-        assert_eq!(parse_windows(&snap, &request(), 10042), WindowVisibility::Hidden);
+        assert_eq!(
+            parse_windows(&snap, &request(), 10042),
+            WindowVisibility::Hidden
+        );
     }
 
     #[test]
@@ -1031,16 +1037,29 @@ mod activity_tests {
             "  mCurrentFocus=Window{zzz u0 com.other.app/.A}",
             "  Window #0 Window{abc u0 com.example.game/.Main}:\n    mSession=Session{def 42:10042}\n    mOwnerUid=10042\n    mHasSurface=true isOnScreen=true mObscured=false",
         );
-        assert_eq!(parse_windows(&snap, &request(), 10042), WindowVisibility::VisibleUnfocused);
+        assert_eq!(
+            parse_windows(&snap, &request(), 10042),
+            WindowVisibility::VisibleUnfocused
+        );
     }
 
     #[test]
     fn single_segment_snapshot_keeps_legacy_behaviour() {
         // 无分隔标记（旧快照/测试注入）：两段都取整份，行为与改动前一致
-        assert_eq!(parse_windows(&snapshot(true, true), &request(), 10042), WindowVisibility::Focused);
-        assert_eq!(parse_windows(&snapshot(false, false), &request(), 10042), WindowVisibility::Hidden);
         assert_eq!(
-            parse_windows(&"WINDOW MANAGER WINDOWS (dumpsys window windows)\n  nothing\n", &request(), 10042),
+            parse_windows(&snapshot(true, true), &request(), 10042),
+            WindowVisibility::Focused
+        );
+        assert_eq!(
+            parse_windows(&snapshot(false, false), &request(), 10042),
+            WindowVisibility::Hidden
+        );
+        assert_eq!(
+            parse_windows(
+                &"WINDOW MANAGER WINDOWS (dumpsys window windows)\n  nothing\n",
+                &request(),
+                10042
+            ),
             WindowVisibility::Unknown
         );
     }
@@ -1074,26 +1093,35 @@ mod activity_tests {
         );
     }
 
-
     #[test]
     fn merged_snapshot_without_header_is_unknown() {
         // 两段都缺 `WINDOW MANAGER WINDOWS` 头 → Unknown（不误判 Hidden）
-        let snap = "== CHIRI-DUMPSYS-SEGMENT ==\n  mCurrentFocus=Window{abc u0 com.example.game/.Main}\n";
-        assert_eq!(parse_windows(snap, &request(), 10042), WindowVisibility::Unknown);
+        let snap =
+            "== CHIRI-DUMPSYS-SEGMENT ==\n  mCurrentFocus=Window{abc u0 com.example.game/.Main}\n";
+        assert_eq!(
+            parse_windows(snap, &request(), 10042),
+            WindowVisibility::Unknown
+        );
     }
 
     #[test]
     fn focused_activity_key_survives_empty_first_segment() {
         // 第一段为空（`window` 查询失败已在上游整体失败，但防御性保留）：回退第二段
         let snap = merged("", "  mCurrentFocus=Window{abc u0 com.example.game/.Main}");
-        assert_eq!(focused_activity_key(&snap).as_ref(), "com.example.game/.Main");
+        assert_eq!(
+            focused_activity_key(&snap).as_ref(),
+            "com.example.game/.Main"
+        );
     }
 
     #[test]
     fn activity_key_is_stable_across_dumpsys_spellings() {
         // 用户从 dumpsys 复制的两种写法必须落到同一键，否则规则静默失配
         let a = activity_key("com.tencent.tmgp.sgame", ".SGameActivity");
-        let b = activity_key("com.tencent.tmgp.sgame", "com.tencent.tmgp.sgame.SGameActivity");
+        let b = activity_key(
+            "com.tencent.tmgp.sgame",
+            "com.tencent.tmgp.sgame.SGameActivity",
+        );
         assert_eq!(a, b);
         assert_eq!(a, "com.tencent.tmgp.sgame/.SGameActivity");
     }

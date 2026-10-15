@@ -61,6 +61,13 @@ cargo xtask build --no-pack
 # 本地静态检查（验证 chiri crate 本身；需 nightly + aarch64-linux-android target + bpf-linker）
 cargo +nightly check -p chiri --target aarch64-linux-android
 
+# 暂存前必做：格式化 + 复检（秒级、不需要 NDK；与 CI 的 Lint (fmt) 门禁同款）
+cargo fmt --all && cargo fmt --all --check
+
+# 独立文件 scripts/tests/*.rs 不在 workspace 内，cargo fmt --all 覆盖不到，需单独跑
+# 例外：clg_replay.rs 是生成物且被 include_str! 做字面量断言，禁止 rustfmt
+rustfmt --edition 2024 scripts/tests/app_mode_activity_regression.rs
+
 # WebUI 开发（无 ksu 时自动装载 src/dev/mock-shell 设备替身）
 cd webui && npm install && npm run dev
 

@@ -282,7 +282,11 @@ mod tests {
         fs::create_dir_all(root.join("scripts")).unwrap();
         fs::create_dir_all(root.join("foo")).unwrap();
 
-        fs::write(root.join("a.sh"), "#!/bin/sh\n# comment\n  # indented\nx=1 # inline\n").unwrap();
+        fs::write(
+            root.join("a.sh"),
+            "#!/bin/sh\n# comment\n  # indented\nx=1 # inline\n",
+        )
+        .unwrap();
         fs::write(root.join("foo/b.yaml"), "# c\nkey: val # inline\n").unwrap();
         fs::write(root.join("META-INF/keep.sh"), "#META\n").unwrap();
         fs::write(root.join("scripts/keep.sh"), "# c\nrun\n").unwrap();
@@ -298,8 +302,14 @@ mod tests {
             "key: val # inline\n"
         );
         // 顶层 META-INF/ 与 scripts/ 整体跳过
-        assert_eq!(fs::read_to_string(root.join("META-INF/keep.sh")).unwrap(), "#META\n");
-        assert_eq!(fs::read_to_string(root.join("scripts/keep.sh")).unwrap(), "# c\nrun\n");
+        assert_eq!(
+            fs::read_to_string(root.join("META-INF/keep.sh")).unwrap(),
+            "#META\n"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("scripts/keep.sh")).unwrap(),
+            "# c\nrun\n"
+        );
 
         let _ = fs::remove_dir_all(&root);
     }

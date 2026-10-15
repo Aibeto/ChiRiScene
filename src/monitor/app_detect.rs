@@ -2,8 +2,8 @@
 
 use inotify::{Inotify, WatchMask};
 use log::{debug, info, warn};
-use std::collections::HashSet;
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::error::Error;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering};
@@ -257,8 +257,7 @@ mod identity_tests {
         );
         // 换包且当期观测到新 activity：直接用新的
         assert_eq!(
-            next_activity(true, "com.game/.MainActivity", "com.tencent.mm/.Chat")
-                .as_ref(),
+            next_activity(true, "com.game/.MainActivity", "com.tencent.mm/.Chat").as_ref(),
             "com.tencent.mm/.Chat"
         );
     }
@@ -474,11 +473,7 @@ fn get_focused_app_from_cgroup(ignored_apps: &[String]) -> Result<(String, i32),
 ///   否则新包会继承旧包的 activity（游戏→微信 时微信可能被套上游戏的模式）。
 /// - **空值不覆盖**：探针只在 FAS 路径跑，非 FAS 轮次传空是常态；空值保留旧值，
 ///   避免 FAS 退出瞬间 activity 规则整段失效。
-fn next_activity(
-    package_changed: bool,
-    current: &str,
-    observed: &str,
-) -> Arc<str> {
+fn next_activity(package_changed: bool, current: &str, observed: &str) -> Arc<str> {
     if package_changed {
         if observed.is_empty() {
             return Arc::from("");
@@ -561,7 +556,12 @@ fn determine_mode(config: &RulesConfig, current_package: &str, activity: &str) -
     // app_modes 里显式写了 `pkg/.Activity` 键时命中。未命中（或开关关闭/activity 未知）即落回
     // 下方包名级逻辑 —— 这就是「默认回退」，未配置 activity 的应用行为逐位不变。
     // 注意 activity 只在 FAS 路径被窗口探针填充，非 FAS 前台恒为空 → 自动走包名级。
-    let activity_mode = activity_lookup(&config.app_modes, current_package, activity, config.activity_aware);
+    let activity_mode = activity_lookup(
+        &config.app_modes,
+        current_package,
+        activity,
+        config.activity_aware,
+    );
     if activity_mode.is_some() {
         debug!(
             "{}",

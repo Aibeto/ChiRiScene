@@ -31,8 +31,7 @@ fn select_mode<'a>(
     activity: &str,
     activity_aware: bool,
 ) -> Option<&'a String> {
-    activity_lookup(app_modes, activity, activity_aware)
-        .or_else(|| app_modes.get(package))
+    activity_lookup(app_modes, activity, activity_aware).or_else(|| app_modes.get(package))
 }
 
 fn modes(pairs: &[(&str, &str)]) -> HashMap<String, String> {
@@ -48,27 +47,39 @@ const ACT: &str = "com.tencent.tmgp.sgame/.SGameActivity";
 #[test]
 fn configured_activity_overrides_package_rule() {
     let m = modes(&[(PKG, "default"), (ACT, "boost")]);
-    assert_eq!(select_mode(&m, PKG, ACT, true).map(String::as_str), Some("boost"));
+    assert_eq!(
+        select_mode(&m, PKG, ACT, true).map(String::as_str),
+        Some("boost")
+    );
 }
 
 #[test]
 fn unconfigured_activity_falls_back_to_package_rule() {
     // 只配了包名级 → activity 命中不了，必须回退包名（默认回退，零行为变化）
     let m = modes(&[(PKG, "boost")]);
-    assert_eq!(select_mode(&m, PKG, ACT, true).map(String::as_str), Some("boost"));
+    assert_eq!(
+        select_mode(&m, PKG, ACT, true).map(String::as_str),
+        Some("boost")
+    );
 }
 
 #[test]
 fn empty_activity_falls_back_to_package_rule() {
     // activity 未知（非 FAS 前台恒为空）：即使用户配了可能匹配的 activity 键也不能命中
     let m = modes(&[(PKG, "default"), (ACT, "boost")]);
-    assert_eq!(select_mode(&m, PKG, "", true).map(String::as_str), Some("default"));
+    assert_eq!(
+        select_mode(&m, PKG, "", true).map(String::as_str),
+        Some("default")
+    );
 }
 
 #[test]
 fn activity_aware_off_ignores_activity_keys() {
     let m = modes(&[(PKG, "default"), (ACT, "boost")]);
-    assert_eq!(select_mode(&m, PKG, ACT, false).map(String::as_str), Some("default"));
+    assert_eq!(
+        select_mode(&m, PKG, ACT, false).map(String::as_str),
+        Some("default")
+    );
 }
 
 #[test]
@@ -82,5 +93,8 @@ fn no_rule_at_all_returns_none_for_global_fallback() {
 fn activity_key_is_exact_not_prefix_match() {
     // 精确查表，不做前缀/模糊匹配：只写包名键不会意外命中 activity
     let m = modes(&[(PKG, "boost"), ("com.tencent.tmgp.sgame/.Other", "reduce")]);
-    assert_eq!(select_mode(&m, PKG, ACT, true).map(String::as_str), Some("boost"));
+    assert_eq!(
+        select_mode(&m, PKG, ACT, true).map(String::as_str),
+        Some("boost")
+    );
 }

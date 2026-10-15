@@ -14,6 +14,10 @@
 
 - **永不再新增 A/B 测试（2026-09-28 用户定，长期口径）**：判据只有三类——「**逻辑必然 + 模型折算 + 功能回归观察**」。**观察**＝同版本、同场景、不并行对照、不控制变量，只记录现象与指标；**对照实验**＝并行或交错对比两个版本/两个配置、以差值做判据——一律不做（"关/开某配置比功耗"属对照实验）。替代手段：离线重放（把日志帧当输入重跑决策）、模型折算、构造性自检。
 
+- **暂存（git add）前必须先查格式并格式化（2026-10-16 用户定，长期口径）**：`cargo fmt --all` 后再 `cargo fmt --all --check` 确认干净，才允许暂存。CI 的 `Lint (fmt)` 是**秒级前置门禁**（跑在重下载/编译之前），格式漂移会直接红掉整套构建。独立文件（`scripts/tests/*.rs`）不在 workspace 内、`cargo fmt --all` **覆盖不到**，改到它们要单独 `rustfmt --edition 2024 <file>`。
+  - **例外：`scripts/tests/clg_replay.rs` 不要 rustfmt**——它是 `scripts/devimp/replay_clg.py` 的生成物，且 `clg_tuning_regression.rs` 用 `include_str!("clg_replay.rs")` 对它做**子串字面量断言**（`assert_eq!(saturated_freq, hw_max` 等）。rustfmt 会把这些断言拆成多行，断言随即失效（2026-10-16 实测踩到：`saturation_selfcheck_must_not_be_weakened` 由 pass 转 FAILED）。要改它应改生成器 `replay_clg.py`。
+  - 判断顺序：格式问题先用 `cargo fmt --all --check` 定位（秒级、无需 NDK）；只有它干净后才值得怀疑编译/clippy。CI 的 clippy 步未加 `-D warnings`，存量警告**不会**让 CI 失败，别把警告当失败原因。
+
 ## [lessons] 经验教训
 
 - 含 `std::ops::Range<usize>` 字段的结构体别 `derive(Copy)`：CI（`-Z build-std` + nightly）编译 `common::CoreGroupRanges` 时报 E0204（字段不实现 Copy），即便标准库中 `Range<usize>` 实现了 Copy。按值 move 或显式 `clone()` 即可，用 `#[derive(Debug, Clone)]` 够了，不要加 Copy。
