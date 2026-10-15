@@ -233,6 +233,12 @@ fn write_webui_assets() {
 }
 
 /// 递归收集目录下全部文件（rel 用 `/` 分隔，与 webroot 下的相对路径一致）
+///
+/// **`backend.chr` 必须排除**：它是「用户自定义背景」文件——与 index.html 同目录存在时由 WebUI
+/// 用作页面背景（见 webui/src/App.svelte [custom-bg]）。若它随 dist 被 include_bytes! 嵌进二进制，
+/// `restore_webroot` 会在**每次 daemon 启动**发现磁盘上的用户图与内嵌版内容不一致，从而按「内容不一致
+/// 即覆盖」的防篡改口径把用户图**反复改写回内嵌副本**（或被删掉），用户的背景永远无法生效。
+/// 它不属于出厂资产，只能由用户放在设备上；xtask 组装也不对它做任何增删。
 fn collect_webui_dist(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) {
     let Ok(rd) = fs::read_dir(dir) else { return };
     for entry in rd.flatten() {
@@ -240,7 +246,12 @@ fn collect_webui_dist(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>)
         if path.is_dir() {
             collect_webui_dist(root, &path, out);
         } else if let Ok(rel) = path.strip_prefix(root) {
-            out.push((rel.to_string_lossy().replace('\\', "/"), path));
+            let rel_str = rel.to_string_lossy().replace('\\', "/");
+            // 只排除根目录下的 backend.chr（与 index.html 同级的那个），不误伤 assets/ 下的同名文件
+            if rel_str == "backend.chr" {
+                continue;
+            }
+            out.push((rel_str, path));
         }
     }
 }

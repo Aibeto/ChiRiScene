@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# build-arch.sh: [meta] [menu] [dl] [deps] [pkg] [toolchain] [lint] [strip] [xtask] [pack]
+# build-arch.sh: [meta] [menu] [dl] [deps] [pkg] [toolchain] [lint] [xtask] [pack]
 # ChiRi 本地构建脚本,供 Arch Linux 及其衍生发行版使用(pacman 系)。
 # 与 CI(.github/workflows/build.yml) 构建等效,产物一致,最后追加 zip 打包。
 # 本脚本只检查依赖,永不自动安装;缺失时交互式选「预构建拉取 / 给出包管理器命令 / 跳过」。
@@ -10,7 +10,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$ROOT"
 CACHE_DIR="$ROOT/.cache/build-arch"
-TRASH_DIR="$CACHE_DIR/trash"                            # 一次性废物(下载包/解压缓冲/module 剥注释副本);仅本目录可随意删
+TRASH_DIR="$CACHE_DIR/trash"                            # 一次性废物(下载包/解压缓冲/工具链 wrapper);仅本目录可随意删
 mkdir -p "$TRASH_DIR"
 export CARGO_HOME="${CARGO_HOME:-$ROOT/.cargo-home}"   # 仓内现成缓存,命中仓库自带 registry
 BPF_LINKER_BIN=""
@@ -203,9 +203,9 @@ fix_rust_src() {
     c_grn "rust-src 已就绪"
 }
 
-fix_webui_deps() {    # package-lock 与 package.json 现失步(CI 也 npm install),本地可对锁
-    echo "npm install(下载 115M 左右,进度/速度由 npm 显示)"
-    (cd webui && npm install --no-audit --no-fund --cache "$ROOT/.npm-cache")
+fix_webui_deps() {    # lock 与 package.json 已一致(2026-10-15 补 @rolldown/binding-darwin-x64 后)；CI 亦 npm ci
+    echo "npm ci(下载 115M 左右,进度/速度由 npm 显示)"
+    (cd webui && npm ci --no-audit --no-fund --cache "$ROOT/.npm-cache")
 }
 
 # $1=依赖ID $2=描述 $3=修复动作(函数名)
@@ -231,8 +231,6 @@ check_deps() {
     have git    || { pkg_hint "git" "拉取/版本查询基础"; die "git 缺失者请先装"; }
     have node   || dep_missing node    "Node.js(WebUI 编译)"          fetch_node
     have npm    || dep_missing npm     "npm(WebUI 依赖安装)"           fetch_node
-    have perl   || { pkg_hint "perl" "剥注释用的正则替换"; die "perl 缺失者请先装"; }
-    have rsync  || dep_missing rsync   "rsync(module/ 副本同步,剥注释不污染工作区)" fetch_rsync
     have zip    || dep_missing zip     "zip(最后打包必需)"              fetch_zip
     have unzip  || dep_missing unzip   "unzip(仅拉取 NDK 时需要,纯本地构建可忽略)" fetch_unzip
     have zstd   || dep_missing zstd    "zstd(解 bpf-linker 预编译包)" fetch_zstd
@@ -279,7 +277,7 @@ check_deps() {
 }
 
 # [pkg] 包管理器引导: 系统包永不自动装,只给可复制命令 + 认 AUR 助手
-#   官方仓库已核实(2026-10-14 pacman -Si): zip unzip rsync zstd perl nodejs npm git rustup 均在仓
+#   官方仓库已核实(2026-10-14 pacman -Si): zip unzip zstd nodejs npm git rustup 均在仓
 #   android-ndk 不在官方仓库,只在 AUR(283 票);故 NDK 走「预构建 zip 或 AUR」
 aur_helper() {
     local h
@@ -327,7 +325,6 @@ fetch_node()  { pkg_hint "nodejs npm" "Node.js 24 + npm(WebUI 编译;Arch 仓库
 fetch_unzip() { pkg_hint "unzip"      "解 NDK 的 zip"; }
 fetch_zstd()  { pkg_hint "zstd"       "解 bpf-linker 的 .tar.zst"; }
 fetch_zip()   { pkg_hint "zip"        "最后打包产物"; }
-fetch_rsync() { pkg_hint "rsync"      "同步 module/ 副本(剥注释不污染工作区)"; }
 
 # [toolchain] 把 nightly 钉到 PATH 最前,等效 CI 的「rustup default = nightly」
 #   为什么必须这样: build.rs:150 会 env_remove("RUSTUP_TOOLCHAIN") 再 spawn `cargo`,
@@ -372,37 +369,11 @@ run_lint() {
                  cargo clippy --workspace --all-targets --target aarch64-linux-android --no-deps'
 }
 
-# [strip] 副本剥注释(零污染 module/):
-#   1) rsync module -> TRASH 副本
-#   2) 在副本上剥注释(与 CI 同 find 谓词)
-#   3) 副本换入 module/,真身先挪 TRASH 保留
-#   4) trap 保证 xtask 结束(成败)后真身还原
-MODULE_BACKUP=""
-restore_module() {
-    if [[ -n "$MODULE_BACKUP" && -d "$MODULE_BACKUP" ]]; then
-        rm -rf module
-        mv "$MODULE_BACKUP" module
-        MODULE_BACKUP=""
-        c_grn "module/ 已还原"
-    fi
-}
-trap restore_module EXIT
-
-strip_comments() {
-    local cp_dir="$TRASH_DIR/module.strip"
-    rm -rf "$cp_dir"; mkdir -p "$cp_dir"
-    rsync -a --delete --exclude .git module/ "$cp_dir/"
-    find "$cp_dir" -type f \
-        \( -name '*.sh' -o -name '*.block' -o -name '*.yaml' -o -name '*.yml' -o -name '*.ftl' \) \
-        -not -path "$cp_dir/META-INF/*" -not -path "$cp_dir/scripts/*" -print0 \
-    | while IFS= read -r -d '' f; do
-        perl -i -ne 'print if /^\s*#!/ || !/^\s*#/' "$f"
-    done
-    MODULE_BACKUP="$TRASH_DIR/module.orig.$$"
-    mv module "$MODULE_BACKUP"
-    mv "$cp_dir" module
-    c_grn "注释副本已剥(原 module -> $MODULE_BACKUP, 退出时自动还原)"
-}
+# [strip] 注释剥离已下沉到 xtask（在 output/.temp 副本上做）：
+#   历史上本脚本用「rsync 副本 + mv module + trap EXIT 还原」实现，但那依赖 trap 执行：
+#   SIGKILL / 断电时 trap 不跑，module/ 会永久停在已剥状态（不可逆丢注释）。
+#   现由 xtask::strip_comments 在它自己创建的产物副本上剥离，
+#   module/ 全程只读，构建任意阶段中断都不污染工作区，也不再需要 perl/rsync。
 
 # [xtask] 组装(等价 CI `--no-pack`,再自行打 zip)
 run_xtask() {
@@ -430,13 +401,12 @@ main() {
     local steps=()
     ask DO_LINT "跑 fmt+check+clippy?(CI 前置,几分钟)" "跑" "不跑"
     [[ "$DO_LINT" == 跑 ]] && steps+=(lint)
-    steps+=(strip xtask)
+    steps+=(xtask)
     have zip && steps+=(pack)  # zip 缺失此时已被 check_deps 菜单兜底
 
     for s in "${steps[@]}"; do
         case "$s" in
             lint)  run_lint ;;
-            strip) strip_comments ;;
             xtask) run_xtask ;;
             pack)  pack_zip ;;
         esac

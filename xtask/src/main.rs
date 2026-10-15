@@ -112,6 +112,12 @@ fn build(sh: &Shell, no_pack: bool) -> Result<()> {
         fs::remove_file(temp_dir.join(".gitignore"))?;
     }
 
+    // 删模块文本文件中的整行 # 注释（保留 shebang、行内 # 与无扩展名标记文件）；
+    // **只作用于 temp_dir 副本**：module/ 是唯一真身，任何构建中途失败/被杀都不会污染工作区
+    // （旧实现由 CI 的 perl -i 或 build-arch.sh 的「换入副本 + trap 还原」完成，
+    //  SIGKILL/断电时 trap 不执行会把 module/ 永久停在已剥状态）
+    strip_comments(&temp_dir);
+
     // 从模块包移除仅二进制使用的配置：运行时只读嵌入内容，磁盘上无任何读取方，取消对外暴露以缩小可篡改面；meta.yaml / rules.yaml / 特调与 FAS 导出文件有 WebUI 读取方，保留
     const BIN_ONLY: [&str; 5] = [
         "config/feature.yaml",
@@ -208,4 +214,105 @@ fn build_webui(sh: &Shell) -> Result<()> {
     let _dir = sh.push_dir("webui");
     cmd!(sh, "npm run build").run()?;
     Ok(())
+}
+
+// [strip] 在产物副本上删整行注释
+
+/// 删模块文本文件中的整行 `#` 注释，保留 shebang（`#!`）、行内 `#`。
+///
+/// **只应在 `temp_dir` 副本上调用**：`module/` 是唯一真身，构建中断（含 SIGKILL/断电）
+/// 不得污染它。谓词与历史 CI 的 `perl -i -ne 'print if /^\s*#!/ || !/^\s*#/'` 等价；
+/// 排除 `META-INF/`（updater-script 的 `#MAGISK` 为必需标记）与 `scripts/`
+/// （对外稳定接口，守护进程与 WebUI 共用），二者只在顶层生效。
+fn strip_comments(root: &Path) {
+    const EXTS: [&str; 5] = ["sh", "block", "yaml", "yml", "ftl"];
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let top_level = path
+                    .strip_prefix(root)
+                    .map(|r| r.components().count() == 1)
+                    .unwrap_or(false);
+                let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+                if top_level && (name == "META-INF" || name == "scripts") {
+                    continue;
+                }
+                stack.push(path);
+                continue;
+            }
+            let matched = path
+                .extension()
+                .and_then(|s| s.to_str())
+                .is_some_and(|x| EXTS.contains(&x));
+            if !matched {
+                continue;
+            }
+            let Ok(text) = fs::read_to_string(&path) else {
+                continue;
+            };
+            let kept: String = text
+                .split_inclusive('\n')
+                .filter(|line| {
+                    let t = line.trim_start();
+                    t.starts_with("#!") || !t.starts_with('#')
+                })
+                .collect();
+            if kept != text {
+                let _ = fs::write(&path, kept);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 与历史 CI 谓词等价的语义：整行 # 删；shebang、行内 #、META-INF/、scripts/ 保留
+    #[test]
+    fn strip_comments_semantics() {
+        let root = Path::new("target").join("xtask-strip-test");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("META-INF")).unwrap();
+        fs::create_dir_all(root.join("scripts")).unwrap();
+        fs::create_dir_all(root.join("foo")).unwrap();
+
+        fs::write(root.join("a.sh"), "#!/bin/sh\n# comment\n  # indented\nx=1 # inline\n").unwrap();
+        fs::write(root.join("foo/b.yaml"), "# c\nkey: val # inline\n").unwrap();
+        fs::write(root.join("META-INF/keep.sh"), "#META\n").unwrap();
+        fs::write(root.join("scripts/keep.sh"), "# c\nrun\n").unwrap();
+
+        strip_comments(&root);
+
+        assert_eq!(
+            fs::read_to_string(root.join("a.sh")).unwrap(),
+            "#!/bin/sh\nx=1 # inline\n"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("foo/b.yaml")).unwrap(),
+            "key: val # inline\n"
+        );
+        // 顶层 META-INF/ 与 scripts/ 整体跳过
+        assert_eq!(fs::read_to_string(root.join("META-INF/keep.sh")).unwrap(), "#META\n");
+        assert_eq!(fs::read_to_string(root.join("scripts/keep.sh")).unwrap(), "# c\nrun\n");
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// 无尾随换行的末行 # 注释也要删干净（split_inclusive 边界）
+    #[test]
+    fn strip_comments_no_trailing_newline() {
+        let root = Path::new("target").join("xtask-strip-test2");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("x.yml"), "a: 1\n# tail comment").unwrap();
+        strip_comments(&root);
+        assert_eq!(fs::read_to_string(root.join("x.yml")).unwrap(), "a: 1\n");
+        let _ = fs::remove_dir_all(&root);
+    }
 }
