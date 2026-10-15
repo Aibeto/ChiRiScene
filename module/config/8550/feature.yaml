@@ -113,7 +113,11 @@ CoreCtl:
 
 # [thermal]
 Thermal:
-  enabled: true
+  # 【2026-10-16 用户要求】温控全部关闭，标记为安全关闭（随时可恢复）。
+  # 内核 thermal 独立于 ChiRi（~95°C 起控），软件压制只是提前轻压，关掉无新增过热风险。
+  # 温控全关需三处同关：本段 enabled、tuned_resp_enabled、FAS 的 core_temp_threshold（置 0）。
+  # 恢复 = 三处改回 true / 45.0，阈值与回滞参数原样保留。
+  enabled: false
   # CPU 温度探测名单默认 = 内置（soc_max → cpuss → mtktscpu/… 按序 contains
   # 匹配）：soc_max 为聚合温区（偏保守、非纯 CPU），cpuss0-3 为 cluster 级
   # 单传感器回退；本机若需增删节点才写 cpu_temp_zone_types 覆盖
@@ -180,7 +184,7 @@ Thermal:
   # 天花板全部拆除（tuned_profiles.yaml 的 per_cluster 与 headroom 已按 R2 撤回），playback
   # 各簇天花板现为 1.0，软限 0.85 因此会真实咬住 big（原被 0.75 掩盖）；中档 0.60 与硬档
   # （→floor）的压制关系不变。
-  tuned_resp_enabled: true
+  tuned_resp_enabled: false
   # 性能下限：不把硬档 0.40 直接套到播放态（掉帧风险实打实；播放态帧信号 2026-09-27 起有，
   # 但只是离线直方图 `event` 行 decision=playback_fps，在线无判据）。normalize 保证 >= hard_perf_cap。
   tuned_thermal_floor: 0.55

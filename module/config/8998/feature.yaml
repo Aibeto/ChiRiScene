@@ -41,7 +41,8 @@ CoreCtl:
 
 # [thermal]
 Thermal:
-  enabled: true
+  # 【2026-10-16 用户要求】温控全部关闭，安全关闭（说明与恢复见 8550/feature.yaml 同段）。
+  enabled: false
   batt_soft_temp_c: 41
   batt_hard_temp_c: 45
   # CPU 温度仅极端热时参与（内核 ~95°C 温控兜底）：合成温区在大型游戏高负载下
@@ -62,7 +63,7 @@ Thermal:
   # （中限-软限 = 硬限-中限 = 2，写 3 会被钳到 2 并 warn），取舍与 8550 一致。
   hysteresis_mid_c: 2
   hysteresis_hard_c: 2
-  tuned_resp_enabled: true
+  tuned_resp_enabled: false
   tuned_thermal_floor: 0.55
 
 # [sched]

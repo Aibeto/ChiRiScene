@@ -55,7 +55,8 @@ CoreCtl:
 
 # [thermal]
 Thermal:
-  enabled: true
+  # 【2026-10-16 用户要求】温控全部关闭，安全关闭（说明与恢复见 8550/feature.yaml 同段）。
+  enabled: false
   # CPU 温度探测名单默认 = 内置（soc_max → cpuss → mtktscpu/… 按序 contains 匹配），
   # soc_max 为聚合温区（偏保守、非纯 CPU）；本机若需增删节点才写 cpu_temp_zone_types。
   batt_soft_temp_c: 41
@@ -81,7 +82,7 @@ Thermal:
   hysteresis_mid_c: 2
   hysteresis_hard_c: 2
   # 热态 tuned 响应：让 playback/akmode 等非 CLG 通道也对温度有响应。
-  tuned_resp_enabled: true
+  tuned_resp_enabled: false
   # 硬档不直接套给播放态（掉帧风险），normalize 保证 >= hard_perf_cap。
   tuned_thermal_floor: 0.55
 
