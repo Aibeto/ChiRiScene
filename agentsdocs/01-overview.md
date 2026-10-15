@@ -26,8 +26,9 @@ xtask/                # 构建脚本（cargo xtask build 完成编译打包 zip�
 module/               # Magisk/KernelSU 模块载体（module.prop、customize.sh、service.sh）
   config/             # meta.yaml（可改抬头）+ feature.yaml（调优段）+ rules.yaml + i18n (en.ftl / zh.ftl)；字段说明书在 mdocs/*-example.yaml（不随构建嵌入）；<soc>/ 处理器子目录（meta/feature/soc 三件套齐全，缺一即编译失败；8475/8998/8650/zumapro 各自一份）+ normal/tuned_profiles.yaml、normal/scenemode.yaml、normal/fas.yaml（FAS 白名单）、normal/fas/<配置名>.yaml 每应用 FAS 调优（编译期嵌入）；rhine-init.yaml 实验室模式定义（同样只进二进制）
   rhine.chr           # 实验室状态（对外暴露、可手改；空/只有注释 = 未启用）。rhine-back.chr 由 daemon 生成，不随包
-webui/                # Svelte 5(runes) + TypeScript + Vite + ak-ui 管理界面；分层 kernel/shell → contract → data → views，tests/ 为纯逻辑断言（详见 webui/README.md）
+webui/                # Svelte 5(runes) + TypeScript + Vite 管理界面（2026-10-15 起 MIUIX 观感 + Material You 动态配色，弃用 ak-ui）；分层 kernel/shell → contract → data → views，theme.ts 按 seed 注入 --md-*/--sig-*，tests/ 为纯逻辑断言（详见 webui/README.md 与 webui/DESIGN.md）
   scripts/fetch-fonts.mjs  # 构建期拉取字体（predev/prebuild 自动执行）：Poppins 拉丁 + Noto Sans SC 中文子集，产物 src/assets/fonts/ 不入库
+WebUI-old/            # 重构前 ak-ui 版本留档（2026-10-15 停更，仅供对照）
 analyze/              # PC 端 CSV 分析台（analyze/index.html 单文件零依赖 + analyze/fonts/ 按实际用字裁的子集字体），浏览器打开即可看 status.csv 曲线（file:// 下需 `python -m http.server`）
 updateInformation/    # 更新.json 与 changelog（changelog.md / HotUpdateInfo.md 现为空文件，是否填充待定，见 07）
 .github/workflows/    # CI：Node 24 + Rust nightly + NDK r29；cargo-ndk/bpf-linker 走官方预编译二进制 + rust-cache；提交信息含 "skip ci"（不分大小写）时跳过该次构建；push 变更全落在 docs/agentsdocs/mdocs/.archive/.trae/.cursor/.codebuddy/.workbuddy 时不触发（tag 发布不受 path 过滤影响）
@@ -44,7 +45,7 @@ scripts/devreview.py  # 代码审查辅助（只读）：codediff（改动 diff 
 | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 守护进程   | Rust (edition 2024, nightly), tokio, aya (eBPF), serde_yaml, inotify, netlink                                                                              |
 | eBPF       | aya 框架，`sched_switch` tracepoint + `queueBuffer` uprobe                                                                                                 |
-| WebUI      | Svelte 5 (runes), TypeScript, Vite, ak-ui 1.0.0 (CSS Core), js-yaml, vitest                                                                                |
+| WebUI      | Svelte 5 (runes), TypeScript, Vite, @material/material-color-utilities 0.4 (Material You 配色), js-yaml, vitest                     |
 | WebUI 字体 | 构建期 `scripts/fetch-fonts.mjs` 从 jsdelivr 拉取并子集化：Poppins（拉丁几何）+ Noto Sans SC（中文人文主义），二进制不入库；`subset-font` 仅 devDependency |
 | 构建       | cargo xtask build（Rust aarch64-linux-android 交叉编译 + webui npm build + 打包）                                                                          |
 

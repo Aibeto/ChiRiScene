@@ -77,6 +77,19 @@ webui/src/assets/fonts/.subset-charset
 # tmp→rename 中途残留（见脚本 save()）
 webui/src/assets/fonts/*.tmp
 
+# WebUI-old（2026-10-15 重构前的 ak-ui 版本留档，仅作对照，不参与构建）
+# 产物/依赖/构建期字体一律不入库，规则同上面的 webui/
+WebUI-old/dist
+WebUI-old/node_modules
+WebUI-old/logs
+WebUI-old/coverage
+WebUI-old/.svelte-check/
+WebUI-old/*.tsbuildinfo
+WebUI-old/src/assets/fonts/poppins-*.woff2
+WebUI-old/src/assets/fonts/noto-sans-sc-*.woff2
+WebUI-old/src/assets/fonts/.subset-charset
+WebUI-old/src/assets/fonts/*.tmp
+
 # Magisk 模块打包产物（原 module/.gitignore 合并于此）
 module/webroot/
 module/core/bin/chiri

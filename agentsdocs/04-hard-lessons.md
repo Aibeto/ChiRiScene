@@ -72,7 +72,7 @@
 
 - **CSS 覆盖三坑**：别靠「写在后面」覆盖前文规则（同权重后者胜，要用后代选择器提权重）；类选择器自带 `display` 时会压过 UA 的 `[hidden]` → 显式写 `.xxx[hidden]{display:none}`；原生 `<select>` 自绘弹层不吃继承色，`option` 也要显式背景+文字色（深色页白底白字）。
 
-- **ak-ui 深坑（2026-09-18/19 实测）**：`--ak-progress-signal/value` 默认值声明在 `.ak-progress` 根元素上，裸用 track/fill 取不到 signal 变量 → background invalid → 进度条透明（两次「修宽度」无效的真根因）；独立页面（analyze/）应 import tokens.css 自建样式，别拼组件类。走查用 agent-browser 时 `wait --load networkidle` 因 Vite HMR 长连接永不完成——固定等待 + eval 读 DOM。
+- **ak-ui 深坑（2026-09-18/19 实测）**：`--ak-progress-signal/value` 默认值声明在 `.ak-progress` 根元素上，裸用 track/fill 取不到 signal 变量 → background invalid → 进度条透明（两次「修宽度」无效的真根因）；独立页面（analyze/）应 import tokens.css 自建样式，别拼组件类。走查用 agent-browser 时 `wait --load networkidle` 因 Vite HMR 长连接永不完成——固定等待 + eval 读 DOM。[**已随 2026-10-15 WebUI 重构失效**：ak-ui 已弃用，旧版留档 `WebUI-old/`；同类教训在新栈的对应物是「原子类被引用但未定义会静默无样式」——重构后实测 `u-mono`/`u-btn--danger`/`u-btn--block`/`u-card--flat` 四个类被 8 个文件引用却无定义，`svelte-check` 不会报错，必须靠 `grep` 交叉核对「引用的 class」与「app.css 定义的 class」。]
 
 - **git 尾注与历史改写（2026-09-26 实录）**：commit message 尾注 `Co-authored-by:` 会被 GitHub 解析计入 Contributors（本地 shortlog/log --author 查不到）；`git filter-branch --msg-filter` 改写后**全部 commit hash 作废**（tree/parent/作者/日期不变），其他克隆需重 clone 或 reset --hard，dependabot 旧链等其自行 rebase。
 
