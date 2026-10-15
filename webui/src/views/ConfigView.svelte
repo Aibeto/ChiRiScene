@@ -91,11 +91,11 @@
   </Panel>
 
   <Panel title={t('config.writable')} desc={t('config.readonly.hint')}>
-    <div class="ak-form-stack">
-      <label class="ak-field">
-        <span class="ak-label">{t('config.loglevel')}</span>
+    <div class="g-form-stack">
+      <label class="g-field">
+        <span class="g-label">{t('config.loglevel')}</span>
         <select
-          class="ak-select"
+          class="g-input"
           value={loglevel}
           disabled={!app.metaValid}
           onchange={event =>
@@ -107,10 +107,10 @@
         </select>
       </label>
 
-      <label class="ak-field">
-        <span class="ak-label">{t('config.daemonLanguage')}</span>
+      <label class="g-field">
+        <span class="g-label">{t('config.daemonLanguage')}</span>
         <select
-          class="ak-select"
+          class="g-input"
           value={daemonLang}
           disabled={!app.metaValid}
           onchange={event =>
@@ -120,7 +120,7 @@
             <option value={lang} selected={lang === daemonLang}>{t(`lang.${lang}`)}</option>
           {/each}
         </select>
-        <span class="ak-field__hint">{t('config.daemonLanguage.hint')}</span>
+        <span class="g-hint">{t('config.daemonLanguage.hint')}</span>
       </label>
 
       <ToggleField
@@ -178,7 +178,7 @@
       <div class="u-actions">
         <button
           type="button"
-          class="ak-button btn btn--ghost"
+          class="g-btn g-btn--ghost"
           disabled={!app.hasDraft || app.saving}
           onclick={() => app.discardDraft()}
         >
@@ -186,7 +186,7 @@
         </button>
         <button
           type="button"
-          class="ak-button btn btn--primary"
+          class="g-btn g-btn--primary"
           disabled={!app.hasDraft || app.saving || !app.metaValid || app.configState !== 'ok'}
           onclick={() => app.commitDraft()}
         >
@@ -203,7 +203,7 @@
         <!-- 电池读数二级页入口（ChiRi 专属：遥测线程只在 ChiRi SoC 启动，非 ChiRi 上开关无消费方） -->
         <button
           type="button"
-          class="ak-button btn btn--ghost entry__open"
+          class="g-btn g-btn--ghost entry__open"
           onclick={() => go('battery')}
         >
           {t('battery.entry.open')}
@@ -218,7 +218,7 @@
       <!-- 高级设置二级页入口：直写调度进程状态文件与 meta.yaml，不经过草稿/保存 -->
       <button
         type="button"
-        class="ak-button btn btn--ghost entry__open"
+        class="g-btn g-btn--ghost entry__open"
         onclick={() => go('advanced')}
       >
         {t('config.advanced.open')}
@@ -241,7 +241,7 @@
         </p>
         <button
           type="button"
-          class="ak-button btn btn--ghost entry__open"
+          class="g-btn g-btn--ghost entry__open"
           onclick={() => go('lab')}
         >
           {t('lab.entry.open')}
@@ -259,7 +259,7 @@
   }
 
   .entry__state[data-on='yes'] {
-    color: var(--ak-signal-danger);
+    color: var(--sig-danger);
   }
 
   .entry__open {
@@ -268,10 +268,10 @@
 
   .commit {
     display: grid;
-    gap: var(--ak-space-3);
-    margin-top: var(--ak-space-4);
-    padding-top: var(--ak-space-3);
-    border-top: var(--ak-line-hairline) solid var(--ak-surface-raised);
+    gap: var(--space-3);
+    margin-top: var(--space-4);
+    padding-top: var(--space-3);
+    border-top: var(--hairline) solid var(--glass-border);
   }
 
   /* 有意保留正文色：与「未改动」态的 .u-muted 拉开对比（不用 .u-note） */

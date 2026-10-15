@@ -1,12 +1,29 @@
-/* app.css: [fonts] [brand-map] [base] [utilities] [signal-map] [ak-adapt] [buttons] [rows] [lists] */
+/* app.css: [fonts] [scene] [tokens] [base] [glass] [primitives] [signal-map] [utilities] [fallbacks]
+ *
+ * 玻璃拟态（Nocturne Glassmorphism）设计系统。风格资源见 ../stylekit/glassmorphism/：
+ *   - glassmorphism-globals.css  ← 上游 StyleKit 的官方 Global CSS（本文件 [scene] 与 [glass] 的基础）
+ *   - glassmorphism-SKILL.md     ← 完整规则集（禁止项 / 必须项 / token 字典）
+ * 上游给的是 Tailwind 类名口径；本项目不用 Tailwind，这里把同一套数值落成原生 CSS 变量 + 原子类。
+ *
+ * 不可违反（违反即风格报废）：
+ *   ① 玻璃无色——面板一律白色低透明度 5%~12%，颜色只能来自 [scene] 光源；禁止给面板上色
+ *   ② 必须有场景——深墨夜景 + 2~3 个大半径 radial 光源光斑；纯色平面背景下玻璃无可折射之物
+ *   ③ backdrop-blur 按用户要求两次下调（上游 40/60 → 25% → 再四分之一）：
+ *      --glass-blur 2.5px / --glass-blur-heavy 3.75px ——远低于上游 SKILL.md 的 ≥30px，
+ *      是刻意的用户口径，且必须带 saturate(180%)，缺一不可
+ *   ④ 阴影必须三层（外层深度 + inset 顶边受光 + inset 底边暗缘）；单层扁平阴影即失去光的方向
+ *   ⑤ 唯一强调色香槟金 #E4B863，只用于主 CTA / 关键数字 / 高亮文字；禁止第二强调色、禁止紫粉渐变
+ *   ⑥ 圆角 ≥16px；过渡一律 500ms + cubic-bezier(0.16,1,0.3,1)（禁 duration-100/150）
+ */
 
 /*
  * [fonts]
  * 拉丁/数字 → 'ChiRi Sans'（Poppins，SIL OFL 1.1）；中文 → 'ChiRi Sans CJK'（Noto Sans SC，SIL OFL 1.1）；
- * 等宽 → 'ChiRi Mono'（JetBrains Mono 拉丁子集，SIL OFL 1.1）——遥测数值/日志/路径走等宽栈，内置后数字对齐与字形稳定
+ * 等宽 → 'ChiRi Mono'（JetBrains Mono 拉丁子集，SIL OFL 1.1）——遥测数值/日志/路径走等宽栈，数字对齐与字形稳定
  * 许可正文随仓库同目录（LICENSE-OFL-*.txt）；Poppins/Noto 二进制不入库，构建期由 scripts/fetch-fonts.mjs 拉取，等宽已入库
- * 中文字体已按仓库用字裁剪、不含拉丁字形，拉丁自然落到 Poppins、中文落到本字体，无需 unicode-range（范围过宽缺字会出豆腐块）；
- * 衬线已按用户要求停用：--ak-font-serif 保留 token、回落系统衬线
+ * 中文字体已按仓库用字裁剪、不含拉丁字形，无需 unicode-range（范围过宽缺字会出豆腐块）
+ * 一律用相对路径——交给 vite 处理后带 hash 落到 dist/assets/（写成 /fonts/ 绝对路径会既不进产物又 404）
+ * 风格自检要求避开 Inter / Roboto / Geist 等滥用字体，Poppins + Noto Sans SC + JetBrains Mono 满足
  */
 @font-face {
   font-family: 'ChiRi Sans';
@@ -65,39 +82,75 @@
 }
 
 /*
- * [brand-map]
- * ak-ui 语义 token 的品牌映射：单产品因此在 :root 覆盖；只换色值/字体，不改任何 token 的语义角色
- * 深色分层 canvas < panel < muted < raised，文字三级对比随之设计
+ * [tokens]
+ * 色值一律用上游 [scene]/[glass] 口径的原始值；不要把色值散进组件 <style>，改这里即可换肤
  */
 :root {
-  --ak-surface-canvas: #0e1114;
-  --ak-surface-panel: #171b21;
-  --ak-surface-muted: #1f242b;
-  --ak-surface-raised: #232932;
-  --ak-surface-inverse: #e6eaf0;
+  color-scheme: dark;
 
-  --ak-text-primary: #e6eaf0;
-  --ak-text-secondary: #9aa4b2;
-  --ak-text-inverse: #0e1114;
+  /* —— 夜景场景（背景承载全部颜色）—— */
+  --night-deep: #060a13; /* 近黑：页面边缘 */
+  --night: #0b1322; /* 深墨蓝：主背景 */
+  --night-steel: #16233a; /* 钢蓝抬升：分区色带 */
+  --moon-steel: #33517a; /* 月光钢蓝：光源光斑（深） */
+  --moonlight: #7c9cc4; /* 月光：光源光斑（亮）/ 信息信号 */
 
-  --ak-signal-info: #4c8df6;
-  --ak-signal-action: #e8b339;
-  --ak-signal-accent: #1d4e89;
-  --ak-signal-success: #35c46a;
-  --ak-signal-danger: #e5484d;
-  --ak-signal-disabled: #6b7280;
+  /* —— 唯一强调色（克制使用：主 CTA / 关键数字 / 高亮文字）—— */
+  --champagne: #e4b863;
+  --champagne-bright: #f3dca8; /* 香槟按钮上的文字 */
 
-  /*
-   * 设备端字体栈：拉丁走内置 Poppins、中文走内置 Noto Sans SC，系统栈只作兜底；等宽映射进 ak-ui 语义 token等宽栈必须插 'ChiRi Sans CJK'：
-   * ChiRi Mono 只裁了拉丁，等宽组件（标签/字段名/进度表头/日志）里的中文没它会落到系统默认字体
-   */
-  --ak-font-sans: 'ChiRi Sans', 'ChiRi Sans CJK', system-ui, -apple-system, 'PingFang SC',
+  /* —— 玻璃（永远无色）—— */
+  --glass-bg: rgb(255 255 255 / 8%);
+  --glass-bg-strong: rgb(255 255 255 / 12%);
+  --glass-bg-hover: rgb(255 255 255 / 15%);
+  --glass-bg-weak: rgb(255 255 255 / 6%);
+  --glass-border: rgb(255 255 255 / 15%);
+  --glass-border-hover: rgb(255 255 255 / 30%);
+  /* 模糊半径按用户要求两次下调：上游 40/60 → 25% → 再四分之一（即 40/16、60/16）。
+     saturate 保持 180%：饱和度增强是「暗景光透玻璃发亮」的来源，与模糊强弱无关，不随之缩放 */
+  --glass-blur: 2.5px;
+  --glass-blur-heavy: 3.75px;
+  --glass-saturate: 180%;
+
+  /* —— 文本（正文 ≥ white/60 才够对比度；white/60 在 #0B1322 上约 8.9:1，远超 AA）—— */
+  --text-primary: #fff;
+  --text-secondary: rgb(255 255 255 / 78%);
+  --text-muted: rgb(255 255 255 / 58%);
+  --text-faint: rgb(255 255 255 / 40%);
+
+  /* —— 方向性阴影：外层深度 + 顶边受光 + 底边暗缘（禁单层）—— */
+  --glass-shadow-sm: 0 2px 8px rgb(3 7 18 / 35%),
+    inset 0 1px 0 rgb(255 255 255 / 18%);
+  --glass-shadow: 0 16px 40px rgb(3 7 18 / 50%), inset 0 1px 0 rgb(255 255 255 / 22%),
+    inset 0 -1px 0 rgb(2 6 16 / 35%);
+  --glass-shadow-hover: 0 24px 64px rgb(3 7 18 / 60%), inset 0 1px 0 rgb(255 255 255 / 32%),
+    inset 0 -1px 0 rgb(2 6 16 / 35%);
+  --glass-shadow-lifted: 0 16px 48px rgb(3 7 18 / 55%), 0 0 0 1px rgb(255 255 255 / 8%),
+    inset 0 1px 0 rgb(255 255 255 / 25%), inset 0 -1px 0 rgb(2 6 16 / 35%);
+  --glass-shadow-inset: inset 0 1px 0 rgb(255 255 255 / 15%),
+    inset 0 -1px 0 rgb(2 6 16 / 30%);
+  --focus-ring: 0 0 0 3px rgb(228 184 99 / 18%), 0 8px 24px rgb(3 7 18 / 45%);
+
+  /* —— 几何与动效 —— */
+  --radius-m: 16px; /* rounded-2xl */
+  --radius-l: 24px; /* rounded-3xl */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --control-h: 44px; /* 最小命中区（无障碍硬要求） */
+  --hairline: 1px;
+  --spring: cubic-bezier(0.16, 1, 0.3, 1);
+  --motion: 500ms;
+  --safe-b: env(safe-area-inset-bottom, 0px);
+
+  /* —— 字体栈 ——（中文等宽必须插 'ChiRi Sans CJK'：ChiRi Mono 只裁了拉丁） */
+  --font-body: 'ChiRi Sans', 'ChiRi Sans CJK', system-ui, -apple-system, 'PingFang SC',
     'Noto Sans SC', 'Source Han Sans SC', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  --ak-font-mono: 'ChiRi Mono', 'ChiRi Sans CJK', ui-monospace, SFMono-Regular, Menlo, Monaco,
+  --font-mono: 'ChiRi Mono', 'ChiRi Sans CJK', ui-monospace, SFMono-Regular, Menlo, Monaco,
     Consolas, monospace;
-  --ak-font-serif: 'Noto Serif SC', serif;
-  /* 命令字/标题统一走无衬线栈（用户要求禁衬线）；衬线子集已移除，--ak-font-serif 保留 token 回落系统衬线，需要时再按 [fonts] 内置 */
-  --ak-font-command: var(--ak-font-sans);
 }
 
 /* [base] */
@@ -109,9 +162,10 @@ body {
 }
 
 body {
-  background: var(--ak-surface-canvas);
-  color: var(--ak-text-primary);
-  font-family: var(--ak-font-sans);
+  /* 场景先于玻璃：底色是夜景，不是平面填充 */
+  background: var(--night);
+  color: var(--text-primary);
+  font-family: var(--font-body);
   font-size: 15px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
@@ -122,7 +176,6 @@ body {
   min-height: 100%;
 }
 
-/* 触控目标与焦点：ak-ui 要求 44px 最小命中区与可见焦点，逐控件兜底 */
 button,
 [role='button'],
 input,
@@ -132,28 +185,924 @@ label {
 }
 
 :focus-visible {
-  outline: var(--ak-focus-width) solid var(--ak-focus-color);
-  outline-offset: var(--ak-focus-offset);
+  outline: 2px solid var(--champagne);
+  outline-offset: 2px;
 }
 
-/* [utilities] 项目级通用类：只做布局与排版，视觉决策一律走 --ak-* token。 */
+/*
+ * [scene]
+ * .g-scene 提供「深墨夜景 + 三个大半径柔和光源光斑」；.g-grain 叠 2.5% feTurbulence 噪点消塑料感。
+ * 光斑用伪元素而非 background 多层渐变，是为了让它们能被 backdrop-filter 真实模糊到——
+ * 玻璃必须"有东西可模糊"，纯色平面上做玻璃是本风格的头号禁止项。
+ */
+.g-scene {
+  position: relative;
+  min-height: 100vh;
+  min-height: 100dvh;
+  background: linear-gradient(165deg, var(--night-deep) 0%, var(--night) 55%, var(--night-steel) 100%);
+  /* 关键：isolate 让下面 z-index:-1 的伪元素被约束在本元素的层叠上下文里。
+     否则负 z-index 会逃到根上下文、被 body 背景盖住，光源光斑整个不可见 */
+  isolation: isolate;
+}
+
+/*
+ * 光源光斑：absolute + inset:0 覆盖整个（可滚动的）场景高度，而不是固定在视口——
+ * 长列表滚到底部时那里的玻璃仍然有光可借。z-index:-1 让它落在场景底色之上、内容之下
+ */
+.g-scene::before {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  content: '';
+  /* 三个光源：右上月光（亮）/ 左下月光钢蓝（深）/ 中偏左单一暖色点缀 */
+  background:
+    radial-gradient(640px circle at 85% 10%, rgb(124 156 196 / 28%) 0%, transparent 65%),
+    radial-gradient(560px circle at 8% 88%, rgb(51 81 122 / 35%) 0%, transparent 65%),
+    radial-gradient(420px circle at 32% 42%, rgb(228 184 99 / 10%) 0%, transparent 60%);
+  pointer-events: none;
+}
+
+/* 2.5% 颗粒噪点：全屏固定叠层，消除塑料感 */
+.g-grain::after {
+  position: fixed;
+  z-index: 40;
+  inset: 0;
+  opacity: 0.025;
+  content: '';
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  pointer-events: none;
+}
+
+/*
+ * [glass]
+ * 三层玻璃结构：① 无色表面 + blur + saturate ② 内发光（顶亮下透）③ 方向性阴影。
+ * .g-glass 是可组合的基类，面板/按钮/输入框都建在它之上。
+ */
+.g-glass {
+  position: relative;
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  border: var(--hairline) solid var(--glass-border);
+  box-shadow: var(--glass-shadow);
+}
+
+/* 第 2 层内发光：顶边受光、向下渐隐 */
+.g-glass::before {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  content: '';
+  background: linear-gradient(to bottom, rgb(255 255 255 / 12%), transparent 50%);
+  pointer-events: none;
+}
+
+/* 内容必须抬到内发光之上 */
+.g-glass > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* 扫光是玻璃的装饰层，必须留在内发光之下、且保持绝对定位——否则会被上面这条规则改成 static 而挤占布局 */
+.g-glass > .g-sheen {
+  position: absolute;
+  z-index: 0;
+}
+
+/* 干玻璃（无模糊）：用于已经嵌在玻璃里的小元素，避免叠加 blur 造成层数/性能失控 */
+.g-glass--flat {
+  background: var(--glass-bg-weak);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: var(--glass-shadow-inset);
+}
+
+/* 重玻璃：大面板用更高模糊 */
+.g-glass--heavy {
+  background: var(--glass-bg-strong);
+  -webkit-backdrop-filter: blur(var(--glass-blur-heavy)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur-heavy)) saturate(var(--glass-saturate));
+}
+
+/* 扫光高光（光反射）：hover 时斜向扫过，玻璃"活"起来 */
+.g-sheen {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.g-sheen::after {
+  position: absolute;
+  inset: 0;
+  content: '';
+  background: linear-gradient(to right, transparent, rgb(255 255 255 / 25%), transparent);
+  transform: translateX(-150%) skewX(-20deg);
+  transition: transform 700ms ease-out;
+}
+
+:where(.g-card, .g-btn, .g-row-item):hover .g-sheen::after {
+  transform: translateX(150%) skewX(-20deg);
+}
+
+/* [primitives] —— 卡片 / 按钮 / 输入 / 标签 / 状态 / 分段 / 开关 / 弹层 / 通知 / 进度 */
+
+/* —— 卡片（面板容器）—— */
+.g-card {
+  padding: var(--space-5);
+  border-radius: var(--radius-l);
+  transition:
+    border-color var(--motion) var(--spring),
+    box-shadow var(--motion) var(--spring),
+    transform var(--motion) var(--spring);
+}
+
+.g-card:hover {
+  border-color: var(--glass-border-hover);
+  box-shadow: var(--glass-shadow-hover);
+  transform: translateY(-4px);
+}
+
+/* 卡片只在小屏上浮；触屏设备没有 hover，避免无谓位移 */
+@media (hover: none) {
+  .g-card:hover {
+    transform: none;
+  }
+}
+
+.g-card__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.g-card__titles {
+  min-width: 0;
+}
+
+.g-card__title {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 1.0625rem;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.g-card__desc {
+  margin: 0.25rem 0 0;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.g-card__actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* 左侧信号条：卡片语义（危险/警告/成功）——不靠颜色单独传递，标题文字同时给出语义 */
+.g-card[data-signal] {
+  overflow: hidden;
+}
+
+.g-card[data-signal]::after {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 3px;
+  content: '';
+  background: var(--signal);
+}
+
+/* —— 按钮 —— */
+.g-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: var(--control-h);
+  padding: 0 var(--space-5);
+  overflow: hidden;
+  border: var(--hairline) solid rgb(255 255 255 / 20%);
+  border-radius: var(--radius-m);
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  color: var(--text-primary);
+  box-shadow: var(--glass-shadow-sm);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition:
+    background-color var(--motion) var(--spring),
+    border-color var(--motion) var(--spring),
+    box-shadow var(--motion) var(--spring),
+    transform var(--motion) var(--spring);
+}
+
+.g-btn:hover:not(:disabled) {
+  border-color: var(--glass-border-hover);
+  background: var(--glass-bg-hover);
+  box-shadow: 0 10px 32px rgb(3 7 18 / 55%), inset 0 1px 0 rgb(255 255 255 / 35%);
+  transform: translateY(-2px);
+}
+
+.g-btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.g-btn:disabled {
+  color: var(--text-faint);
+  cursor: not-allowed;
+  opacity: 0.6;
+  transform: none;
+}
+
+/* 主 CTA：唯一允许用香槟金填充的地方 */
+.g-btn--primary {
+  border-color: rgb(228 184 99 / 40%);
+  background: rgb(228 184 99 / 15%);
+  color: var(--champagne-bright);
+  box-shadow: 0 4px 20px rgb(228 184 99 / 15%), inset 0 1px 0 rgb(243 220 168 / 35%);
+}
+
+.g-btn--primary:hover:not(:disabled) {
+  border-color: rgb(228 184 99 / 55%);
+  background: rgb(228 184 99 / 22%);
+  box-shadow: 0 8px 28px rgb(228 184 99 / 22%), inset 0 1px 0 rgb(243 220 168 / 45%);
+}
+
+/* 危险操作：语义红信号，仍走玻璃（不上色面板） */
+.g-btn--danger {
+  border-color: rgb(224 113 111 / 45%);
+  background: rgb(224 113 111 / 14%);
+  color: #f3a9a7;
+  box-shadow: 0 4px 20px rgb(224 113 111 / 14%), inset 0 1px 0 rgb(255 255 255 / 25%);
+}
+
+.g-btn--danger:hover:not(:disabled) {
+  border-color: rgb(224 113 111 / 65%);
+  background: rgb(224 113 111 / 22%);
+}
+
+.g-btn--ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.g-btn--ghost:hover:not(:disabled) {
+  border-color: var(--glass-border);
+  background: var(--glass-bg-weak);
+  box-shadow: none;
+}
+
+.g-btn--block {
+  width: 100%;
+}
+
+/* 小尺寸按钮（标签行内 / 头部操作） */
+.g-btn--sm {
+  min-height: 36px;
+  padding: 0 var(--space-3);
+  font-size: 0.75rem;
+}
+
+/* 纯图标按钮（关闭 / 语言切换） */
+.g-btn--icon {
+  flex: 0 0 auto;
+  width: var(--control-h);
+  padding: 0;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+/* —— 输入框 / 下拉 —— */
+.g-input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: var(--control-h);
+  padding: 0 var(--space-4);
+  border: var(--hairline) solid var(--glass-border);
+  border-radius: var(--radius-m);
+  outline: none;
+  background: var(--glass-bg-weak);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  color: var(--text-primary);
+  box-shadow: var(--glass-shadow-inset);
+  font: inherit;
+  transition:
+    border-color var(--motion) var(--spring),
+    background-color var(--motion) var(--spring),
+    box-shadow var(--motion) var(--spring);
+}
+
+.g-input::placeholder {
+  color: var(--text-faint);
+}
+
+.g-input:hover:not(:disabled) {
+  border-color: var(--glass-border-hover);
+}
+
+.g-input:focus {
+  border-color: rgb(255 255 255 / 35%);
+  background: rgb(255 255 255 / 10%);
+  box-shadow: var(--focus-ring);
+}
+
+.g-input:disabled {
+  color: var(--text-faint);
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* 原生 select 的选项在 WebView 里由系统绘制，深色下必须显式给底色否则白底白字 */
+.g-input option {
+  background: var(--night);
+  color: var(--text-primary);
+}
+
+/* 数字输入去掉浏览器微调箭头（触屏误触且与玻璃观感冲突） */
+.g-input[type='number'] {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.g-input[type='number']::-webkit-outer-spin-button,
+.g-input[type='number']::-webkit-inner-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
+}
+
+/* 非法输入：红边 + 红字（文字提示在组件里，不靠颜色单独传达） */
+.g-input[aria-invalid='true'] {
+  border-color: rgb(224 113 111 / 60%);
+}
+
+/* —— 字段 / 表单 —— */
+.g-field {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.g-label {
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.g-hint {
+  color: var(--text-muted);
+  font-size: 0.6875rem;
+  line-height: 1.5;
+}
+
+.g-form-stack {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-5);
+}
+
+/* —— 标签（包名 / 配置名 / 模式名）—— */
+.g-tag {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 0.2rem var(--space-2);
+  border: var(--hairline) solid var(--glass-border);
+  border-radius: 999px;
+  background: var(--glass-bg-weak);
+  /* 标签承载标识符：不做大小写变换，避免界面显示与设备真实取值不一致 */
+  text-transform: none;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.02em;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.g-tag--neutral {
+  color: var(--text-muted);
+}
+
+/* 特调 / FAS / 实验室接管等"值得注意"的标签：香槟金边 = 高亮位置，符合唯一强调色的克制用法 */
+.g-tag--accent {
+  border-color: rgb(228 184 99 / 40%);
+  background: rgb(228 184 99 / 12%);
+  color: var(--champagne-bright);
+}
+
+.g-tag--danger {
+  border-color: rgb(224 113 111 / 45%);
+  background: rgb(224 113 111 / 12%);
+  color: #f3a9a7;
+}
+
+.g-tag-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+/* —— 存活状态芯片 —— */
+.g-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  box-sizing: border-box;
+  min-height: var(--control-h);
+  padding: 0 var(--space-3);
+  border: var(--hairline) solid var(--glass-border);
+  border-radius: var(--radius-m);
+  background: var(--glass-bg-weak);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  box-shadow: var(--glass-shadow-inset);
+}
+
+.g-status__signal {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--signal, var(--moonlight));
+  box-shadow: 0 0 8px var(--signal, var(--moonlight));
+}
+
+.g-status__label {
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.g-status__detail {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  white-space: nowrap;
+}
+
+/* 只有 running 态脉冲：存活才该"呼吸"，停止/未知不该闪 */
+.g-status--running .g-status__signal {
+  animation: g-pulse 2s ease-in-out infinite;
+}
+
+/* —— 分段切换器 —— */
+.g-segmented {
+  display: flex;
+  width: 100%;
+  gap: var(--space-1);
+  padding: var(--space-1);
+  border: var(--hairline) solid var(--glass-border);
+  border-radius: var(--radius-m);
+  background: var(--glass-bg-weak);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  box-shadow: var(--glass-shadow-inset);
+}
+
+.g-segmented__item {
+  flex: 1;
+  min-width: 0;
+  min-height: 36px;
+  padding: 0 var(--space-2);
+  border: var(--hairline) solid transparent;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition:
+    background-color var(--motion) var(--spring),
+    border-color var(--motion) var(--spring),
+    color var(--motion) var(--spring);
+}
+
+.g-segmented__item:hover {
+  color: var(--text-primary);
+  background: var(--glass-bg-weak);
+}
+
+.g-segmented__item[aria-checked='true'] {
+  border-color: var(--glass-border-hover);
+  background: var(--glass-bg-strong);
+  color: var(--text-primary);
+  box-shadow: var(--glass-shadow-inset);
+}
+
+/* 横向滑动变体：项多时窄屏被压到看不清，改成按内容宽度排、整条左右滑 */
+.g-segmented[data-scroll] {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+
+.g-segmented[data-scroll]::-webkit-scrollbar {
+  display: none;
+}
+
+.g-segmented[data-scroll] .g-segmented__item {
+  flex: 0 0 auto;
+  min-width: auto;
+  padding: 0 var(--space-4);
+}
+
+/* —— 开关 ——
+ * 项目红线禁 :has()：track 必须是 input 的兄弟元素、靠 input:checked ~ track 联动。
+ * 结构：<label class="g-switch"><input hidden><span class="g-switch__track"><span class="g-switch__thumb"></span></span>...</label>
+ * thumb 放在 track 内，用 track 的 overflow 收纳，避免绝对定位两处对齐出错
+ */
+.g-switch {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.g-switch__control {
+  position: relative;
+  flex: 0 0 auto;
+  width: 48px;
+  height: 28px;
+  margin-top: 2px;
+}
+
+/* 原生 checkbox 视觉隐藏但**保持可聚焦可点击**（不能用 hidden/display:none，否则键盘与无障碍失效）。
+ * 铺满整个 label 的命中区，焦点环由 :focus-visible 画在 track 上 */
+.g-switch__input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.g-switch[data-disabled] .g-switch__input {
+  cursor: not-allowed;
+}
+
+.g-switch__track {
+  position: absolute;
+  inset: 0;
+  border: var(--hairline) solid var(--glass-border);
+  border-radius: 999px;
+  background: var(--glass-bg-weak);
+  box-shadow: var(--glass-shadow-inset);
+  transition:
+    background-color var(--motion) var(--spring),
+    border-color var(--motion) var(--spring),
+    box-shadow var(--motion) var(--spring);
+}
+
+.g-switch__thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  box-shadow: 0 2px 6px rgb(3 7 18 / 50%);
+  transition:
+    transform var(--motion) var(--spring),
+    background-color var(--motion) var(--spring);
+}
+
+.g-switch input:checked ~ .g-switch__control .g-switch__track {
+  border-color: rgb(228 184 99 / 45%);
+  background: rgb(228 184 99 / 22%);
+}
+
+.g-switch input:checked ~ .g-switch__control .g-switch__thumb {
+  background: var(--champagne-bright);
+  transform: translateX(20px);
+}
+
+.g-switch input:focus-visible ~ .g-switch__control .g-switch__track {
+  box-shadow: var(--focus-ring);
+}
+
+.g-switch__text {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.g-switch__name {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.g-switch[data-disabled] {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+/* 「待提交」标记：香槟金小点（关键状态的提示，不是装饰） */
+.g-pending {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--champagne);
+  box-shadow: 0 0 6px var(--champagne);
+}
+
+/* —— 弹层（确认 sheet）—— */
+.g-dialog {
+  width: min(32rem, calc(100vw - 2rem));
+  padding: 0;
+  overflow: hidden;
+  border: var(--hairline) solid var(--glass-border-hover);
+  border-radius: var(--radius-l);
+  background: var(--glass-bg-strong);
+  -webkit-backdrop-filter: blur(var(--glass-blur-heavy)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur-heavy)) saturate(var(--glass-saturate));
+  color: var(--text-primary);
+  box-shadow: var(--glass-shadow-lifted);
+}
+
+.g-dialog::backdrop {
+  background: rgb(6 10 19 / 62%);
+  -webkit-backdrop-filter: blur(0.5px);
+  backdrop-filter: blur(0.5px);
+}
+
+.g-dialog__header {
+  padding: var(--space-5) var(--space-5) var(--space-3);
+  border-bottom: var(--hairline) solid var(--glass-border);
+}
+
+.g-dialog__eyebrow {
+  margin: 0 0 var(--space-1);
+  color: var(--dialog-signal, var(--champagne));
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+
+.g-dialog__title {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 1.0625rem;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.g-dialog__body {
+  padding: var(--space-4) var(--space-5);
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+  line-height: 1.6;
+}
+
+.g-dialog__body p {
+  margin: 0;
+}
+
+.g-dialog__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5) var(--space-5);
+}
+
+/* —— 通知 / 状态占位（StateBox 底座）—— */
+.g-notice {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-3);
+  align-items: center;
+  padding: var(--space-4) var(--space-4) var(--space-4) var(--space-5);
+  overflow: hidden;
+  border: var(--hairline) solid var(--glass-border);
+  border-radius: var(--radius-m);
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  box-shadow: var(--glass-shadow-sm);
+}
+
+/*
+ * 信号条用 ::after 而不是 ::before：.g-notice 与 .g-glass 同挂一个元素上，
+ * ::before 已被 .g-glass 的顶边内发光占用（三层玻璃结构的第 2 层），
+ * 两条 ::before 规则特异性相同、会互相顶掉，必须各占一条伪元素
+ */
+.g-notice::after {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 3px;
+  content: '';
+  background: var(--notice-signal, var(--moonlight));
+}
+
+.g-notice[data-kind='empty'],
+.g-notice[data-kind='loading'] {
+  --notice-signal: var(--moonlight);
+}
+
+.g-notice[data-kind='missing'] {
+  --notice-signal: var(--champagne);
+}
+
+.g-notice[data-kind='error'] {
+  --notice-signal: var(--sig-danger);
+}
+
+.g-notice__body {
+  min-width: 0;
+}
+
+.g-notice__title {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.g-notice__message {
+  margin: var(--space-1) 0 0;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+/* —— 进度条（总览页功耗/进度）—— */
+.g-progress {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.g-progress__header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+}
+
+.g-progress__track {
+  position: relative;
+  height: 8px;
+  overflow: hidden;
+  border: var(--hairline) solid var(--glass-border);
+  border-radius: 999px;
+  background: var(--glass-bg-weak);
+  box-shadow: var(--glass-shadow-inset);
+}
+
+.g-progress__fill {
+  /* 必须是 block：标记里是 <span>（行内元素），行内盒上 width/height 一律无效 → 条恒为空。
+     上游 ak-ui 的 .ak-progress__fill 正有 display:block，改写时漏掉是这两个功耗条不出填充的真正原因
+     （此前误判成宽度/变量问题，改 width 方向自然无效） */
+  display: block;
+  height: 100%;
+  /* 宽度可由使用方在 .g-progress 根上给 --progress-width（如 style="--progress-width: 42%"），
+     也能直接内联 width；两者都支持，缺省 0 */
+  width: var(--progress-width, 0);
+  border-radius: 999px;
+  background: var(--progress-signal, var(--moonlight));
+  box-shadow: 0 0 12px var(--progress-signal, var(--moonlight));
+  transition: width var(--motion) var(--spring);
+}
+
+/* 关键数字：香槟金（唯一强调色的合法用法） */
+.g-progress__value {
+  color: var(--progress-signal, var(--champagne));
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 大号读数（功耗仪表 / 关键指标） */
+.g-readout {
+  color: var(--champagne);
+  font-family: var(--font-mono);
+  font-size: 1.75rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+
+/*
+ * [signal-map]
+ * data-signal="info|action|danger|success|accent" → --signal 单点映射。
+ * 语义信号色是**状态**信息（无障碍要求"不能只靠颜色"，故每个信号都有对应文字），
+ * 与"唯一强调色香槟金"不冲突：香槟金是唯一用于*强调*的颜色，信号色只标状态。
+ */
+[data-signal] {
+  --signal: var(--sig-info);
+}
+
+[data-signal='info'] {
+  --signal: var(--sig-info);
+}
+
+[data-signal='action'] {
+  --signal: var(--sig-action);
+}
+
+[data-signal='danger'] {
+  --signal: var(--sig-danger);
+}
+
+[data-signal='success'] {
+  --signal: var(--sig-success);
+}
+
+[data-signal='accent'] {
+  --signal: var(--sig-accent);
+}
+
+[data-signal='muted'] {
+  --signal: var(--sig-muted);
+}
+
+:root {
+  /* 信号色：全部为夜景里的低饱和玻璃语言（不引入第二强调色） */
+  --sig-info: #7c9cc4; /* 月光：信息 / 中性态 */
+  --sig-action: #e4b863; /* 香槟金：待提交 / 需注意（与唯一强调色同源） */
+  --sig-danger: #e0716f; /* 危险：红信号（仍低饱和，不刺穿玻璃） */
+  --sig-success: #6fbf9b; /* 成功：冷绿，与月光同族 */
+  --sig-accent: #a894d8; /* 备用强调：极少用（实验室接管）*/
+  --sig-muted: rgb(255 255 255 / 40%);
+}
+
+/*
+ * [utilities] 项目级通用类：只做布局与排版，视觉决策一律走上面的 token。
+ * 一律 :where() 降特异性，便于视图局部覆写；但 .u-stack 的列宽是硬约束（见下）
+ */
+
 .u-row {
   display: flex;
   align-items: center;
-  gap: var(--ak-space-3);
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.u-row-tight {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
 }
 
 .u-between {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: var(--ak-space-3);
+  gap: var(--space-3);
+  min-width: 0;
 }
 
 .u-col {
   display: flex;
   flex-direction: column;
-  gap: var(--ak-space-3);
+  gap: var(--space-3);
+  min-width: 0;
 }
 
 .u-grow {
@@ -161,13 +1110,34 @@ label {
   min-width: 0;
 }
 
+/*
+ * 纵向分组：列宽必须显式 minmax(0,1fr)——网格项默认 min-width:auto，
+ * 日志这类 nowrap 宽内容会把整列（乃至整页）撑出屏幕（历史血泪教训，不得删）
+ */
+.u-stack {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+}
+
+.u-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-3);
+}
+
 .u-mono {
-  font-family: var(--ak-font-mono);
+  font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
 }
 
 .u-muted {
-  color: var(--ak-text-secondary);
+  color: var(--text-muted);
+}
+
+.u-danger {
+  color: var(--sig-danger);
 }
 
 .u-truncate {
@@ -176,57 +1146,29 @@ label {
   text-overflow: ellipsis;
 }
 
-.u-row-tight {
-  display: flex;
-  align-items: center;
-  gap: var(--ak-space-2);
-}
-
-/*
- * 页面/面板内的纵向分组（视图根节点与字段组共用）。列宽必须显式 minmax(0,1fr)：网格项默认 min-width:auto，日志这类 nowrap 宽内容会把整列（乃至整页）撑出屏幕
- */
-.u-stack {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: var(--ak-space-4);
-}
-
-/* 右对齐的操作按钮行（提交栏 / 弹层按钮） */
-.u-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: var(--ak-space-3);
-}
-
-/*
- * 说明性小字：面板底注/状态附注/字段提示。.u-mt-* 必须定义在其后，组合使用时 margin-top 才不会被 margin:0 吃掉
- */
+/* 说明性小字；.u-mt-* 必须定义在其后，组合使用时 margin-top 才不被 margin:0 吃掉 */
 .u-note {
   margin: 0;
-  color: var(--ak-text-secondary);
+  color: var(--text-muted);
   font-size: 0.75rem;
   line-height: 1.5;
 }
 
 .u-mt-2 {
-  margin-top: var(--ak-space-2);
+  margin-top: var(--space-2);
 }
 
 .u-mt-3 {
-  margin-top: var(--ak-space-3);
-}
-
-.u-danger {
-  color: var(--ak-signal-danger);
+  margin-top: var(--space-3);
 }
 
 /* 子滚动窗口：限高由使用方给，滚动行为统一在这里（终端 / 快照表 / 文件清单） */
 .u-scroll {
   overflow: auto;
   overscroll-behavior: contain;
-  /* WebView 默认 overlay 滚动条一滑即隐，「还有没有内容」看不出来——显式绘制细滚动条（Chrome 121+ 标准属性，旧内核走 webkit 伪元素） */
+  /* WebView 默认 overlay 滚动条一滑即隐，"还有没有内容"看不出来——显式绘制细滚动条 */
   scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--ak-text-secondary) 60%, transparent) transparent;
+  scrollbar-color: rgb(255 255 255 / 22%) transparent;
 }
 
 .u-scroll::-webkit-scrollbar {
@@ -239,8 +1181,8 @@ label {
 }
 
 .u-scroll::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--ak-text-secondary) 60%, transparent);
   border-radius: 3px;
+  background: rgb(255 255 255 / 22%);
 }
 
 .u-list-reset {
@@ -249,333 +1191,13 @@ label {
   list-style: none;
 }
 
-/*
- * [signal-map]
- * data-signal="info|action|danger|success|accent" → --signal 单点映射：Panel 信号条与总览页模式名共用一个源
- */
-[data-signal] {
-  --signal: var(--ak-signal-info);
-}
-
-[data-signal='action'] {
-  --signal: var(--ak-signal-action);
-}
-
-[data-signal='danger'] {
-  --signal: var(--ak-signal-danger);
-}
-
-[data-signal='success'] {
-  --signal: var(--ak-signal-success);
-}
-
-[data-signal='accent'] {
-  --signal: var(--ak-signal-accent);
-}
-
-/*
- * [ak-adapt]
- * ak-ui 原语三类修正：① 表单类硬编码浅色，深色不可读；② 表面类底色浅，层级叠不开；③ 字体族硬编码绕开 --ak-font-* token
- * 只在 [data-ak-ui] 作用域内把颜色/表面/字体映射回语义 token，不动 :root；几何/间距/交互反馈/状态一律仍来自 ak-ui
- */
-
-/*
- * ③ 字体族收回：官方 dist 把 font-family 硬编码进 78 处组件规则，token 完全失效（拉丁落到 Roboto、中文落到系统字体）
- * 按官方用法分两组收回：正文类走 --ak-font-sans，等宽类（标签/字段名/提示/进度表头/眉头字/分段项）走 --ak-font-mono
- * 选择器一律带 [data-ak-ui] 前缀提升特异性，压过官方单类规则（与本文其余覆盖一致）
- */
-[data-ak-ui] :is(
-  .ak-button,
-  .ak-button__label,
-  .ak-dialog,
-  .ak-dialog__title,
-  .ak-dialog__body,
-  .ak-field,
-  .ak-input,
-  .ak-select,
-  .ak-textarea,
-  .ak-choice,
-  .ak-notice__title,
-  .ak-notice__message,
-  .ak-status__detail
-) {
-  font-family: var(--ak-font-sans);
-}
-
-[data-ak-ui] :is(
-  .ak-label,
-  .ak-field__hint,
-  .ak-progress__header,
-  .ak-tag,
-  .ak-dialog__eyebrow,
-  .ak-segmented__item
-) {
-  font-family: var(--ak-font-mono);
-}
-
-[data-ak-ui] .ak-field,
-[data-ak-ui] .ak-choice {
-  color: var(--ak-text-primary);
-}
-
-[data-ak-ui] .ak-label {
-  color: var(--ak-text-secondary);
-}
-
-[data-ak-ui] .ak-field__hint {
-  color: var(--ak-text-secondary);
-}
-
-[data-ak-ui] .ak-input,
-[data-ak-ui] .ak-select,
-[data-ak-ui] .ak-textarea {
-  border-color: color-mix(in srgb, var(--ak-text-secondary) 35%, transparent);
-  color: var(--ak-text-primary);
-  background-color: var(--ak-surface-muted);
-}
-
-[data-ak-ui] .ak-input::placeholder {
-  color: var(--ak-text-secondary);
-}
-
-[data-ak-ui] .ak-input:disabled,
-[data-ak-ui] .ak-select:disabled {
-  color: var(--ak-signal-disabled);
-  background-color: var(--ak-surface-panel);
-}
-
-/* 标签里承载标识符（包名/配置名/模式名）：不做大小写变换，避免界面显示与设备真实取值不一致（ak-ui 默认 uppercase）。 */
-[data-ak-ui] .ak-tag {
-  text-transform: none;
-  letter-spacing: 0.04em;
-}
-
-/* ak-notice（StateBox 底座）：官方为浅色纸卡（深字浅底），深色主题下映射回语义 token */
-[data-ak-ui] .ak-notice {
-  color: var(--ak-text-primary);
-  background: var(--ak-surface-muted);
-  border-color: var(--ak-surface-raised);
-  min-height: 0;
-}
-
-[data-ak-ui] .ak-notice__title,
-[data-ak-ui] .ak-notice__message {
-  color: inherit;
-}
-
-[data-ak-ui] .ak-notice__message {
-  color: var(--ak-text-secondary);
-}
-
-/* StateBox 无官方 __code 槽：收成「正文 + 操作」两列 */
-[data-ak-ui] .ak-notice {
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: var(--ak-space-3);
-}
-
-/* —— 直接复用官方原语的深色适配 —— 这些原语官方已是深色皮肤或只需补齐层级，几何/状态/排版全部用官方 */
-
-/* ak-card（Panel 外壳）：官方是透明 + 阴影的浅色卡 → 实体面板 + 切角 */
-[data-ak-ui] .ak-card {
-  display: block;
-  padding: var(--ak-space-4);
-  border: var(--ak-line-hairline) solid var(--ak-surface-raised);
-  background: var(--ak-surface-panel);
-  box-shadow: none;
-  clip-path: polygon(
-    0 0,
-    calc(100% - var(--ak-cut-md)) 0,
-    100% var(--ak-cut-md),
-    100% 100%,
-    0 100%
-  );
-}
-
-/* 卡片标题走品牌命令字体（官方硬编码 Noto Serif SC 会绕开 token）；字重对齐 700，避免合成粗体 */
-[data-ak-ui] .ak-card__title {
-  font-family: var(--ak-font-command);
-  font-weight: 700;
-}
-
-/* ak-dialog（ConfirmSheet）：官方自带深色弹层，只把硬编码色值换成语义 token */
-[data-ak-ui] .ak-dialog {
-  border-color: color-mix(in srgb, var(--ak-text-secondary) 45%, transparent);
-  background: var(--ak-surface-panel);
-  color: var(--ak-text-primary);
-}
-
-[data-ak-ui] .ak-dialog__header {
-  border-bottom-color: var(--ak-surface-raised);
-}
-
-[data-ak-ui] .ak-dialog__title {
-  color: var(--ak-text-primary);
-}
-
-[data-ak-ui] .ak-dialog__body {
-  color: var(--ak-text-secondary);
-}
-
-/* 眉头字（CONFIRM/DANGER）：上游固定信息蓝，与弹层自身信号色不一致（红条+蓝字）；改为跟随弹层信号：CONFIRM 暖黄、DANGER 危险红 */
-[data-ak-ui] .ak-dialog__eyebrow {
-  color: var(--ak-dialog-signal);
-}
-
-/*
- * ak-status（LiveStatus 顶栏芯片）：与顶栏按钮同规格——官方 min-height 走 content-box，叠 padding 会超高，改 border-box + 纯水平内距；
- * align-content 居中必须保留：官方两行网格会把多余高度分给信号条所在的空行，文字上浮
- */
-[data-ak-ui] .ak-status {
-  box-sizing: border-box;
-  min-height: var(--ak-density-control-height);
-  padding: 0 var(--ak-space-3);
-  align-content: center;
-  justify-content: center;
-  background: var(--ak-surface-raised);
-}
-
-/* 标签换无衬线常规字号（官方是 0.625rem 等宽小字，中文过小、和按钮的 12px 不一致） */
-[data-ak-ui] .ak-status__label {
-  font-family: var(--ak-font-sans);
-  font-size: 0.75rem;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-}
-
-/* ak-segmented：控制台里作整行切换器（官方仅窄屏铺满）；aria-checked 映射官方选中态；高度取 44px 命中区并上调字号 */
-[data-ak-ui] .ak-segmented {
-  display: flex;
-  width: 100%;
-}
-
-[data-ak-ui] .ak-segmented__item {
-  flex: 1;
-  min-width: 0;
-  min-height: var(--ak-density-control-height);
-  font-size: 0.75rem;
-}
-
-[data-ak-ui] .ak-segmented__item[aria-checked='true'] {
-  color: var(--ak-text-inverse);
-  background: var(--ak-segmented-signal);
-}
-
-/*
- * 横向滑动变体（项目侧钩子 data-ak-scroll，非上游修饰类）：项多时窄屏被压到看不清，改成「项按内容宽度排、整条左右滑」——官方只处理窄屏铺满，没有滑动档位
- */
-[data-ak-ui] .ak-segmented[data-ak-scroll] {
-  overflow-x: auto;
-  overscroll-behavior-x: contain;
-}
-
-[data-ak-ui] .ak-segmented[data-ak-scroll] .ak-segmented__item {
-  flex: 0 0 auto;
-  min-width: auto;
-}
-
-/* ak-choice（ToggleField 开关）：官方是浅色表单 → 轨道/旋钮/选中色换 token */
-[data-ak-ui] .ak-choice {
-  --ak-choice-fill: var(--ak-signal-info);
-  --ak-choice-signal: var(--ak-signal-info);
-}
-
-[data-ak-ui] .ak-choice__input {
-  border-color: color-mix(in srgb, var(--ak-text-secondary) 55%, transparent);
-  background: var(--ak-surface-raised);
-}
-
-[data-ak-ui] .ak-choice--switch .ak-choice__input::after {
-  background: var(--ak-text-secondary);
-}
-
-[data-ak-ui] .ak-choice--switch .ak-choice__input:checked {
-  border-color: var(--ak-signal-info);
-  background: color-mix(in srgb, var(--ak-signal-info) 82%, var(--ak-color-black));
-}
-
-/* ak-progress：标题行承载中文元信息，等宽小字上调一档保证可读 */
-[data-ak-ui] .ak-progress__header {
-  font-size: 0.6875rem;
-}
-
-/*
- * [buttons]
- * 复用 .ak-button 的交互语义，尺寸/阴影/配色按 token 重绘：官方按钮 150×50 固定尺寸 + 重阴影，不适合行内与紧凑布局
- */
-.btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--ak-space-2);
-  width: auto;
-  height: auto;
-  min-height: var(--ak-density-control-height);
-  padding: 0 var(--ak-space-4);
-  border: var(--ak-line-hairline) solid var(--ak-surface-raised);
-  background-color: var(--ak-surface-raised);
-  color: var(--ak-text-primary);
-  box-shadow: none;
-  font-size: 0.8125rem;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  cursor: pointer;
-  clip-path: polygon(
-    0 0,
-    calc(100% - var(--ak-cut-sm)) 0,
-    100% var(--ak-cut-sm),
-    100% 100%,
-    0 100%
-  );
-  transition:
-    background-color var(--ak-motion-fast) var(--ak-ease-standard),
-    border-color var(--ak-motion-fast) var(--ak-ease-standard),
-    color var(--ak-motion-fast) var(--ak-ease-standard);
-}
-
-.btn:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--ak-text-primary) 45%, transparent);
-  background-color: var(--ak-surface-muted);
-  transform: none;
-  filter: none;
-}
-
-.btn:active:not(:disabled) {
-  background-color: var(--ak-surface-panel);
-}
-
-.btn:disabled {
-  color: var(--ak-signal-disabled);
-  cursor: not-allowed;
-  opacity: 0.6;
-}
-
-.btn--primary {
-  border-color: var(--ak-signal-info);
-  background-color: color-mix(in srgb, var(--ak-signal-info) 22%, var(--ak-surface-raised));
-}
-
-.btn--danger {
-  border-color: var(--ak-signal-danger);
-  background-color: color-mix(in srgb, var(--ak-signal-danger) 22%, var(--ak-surface-raised));
-}
-
-.btn--ghost {
-  background-color: transparent;
-  color: var(--ak-text-secondary);
-}
-
-.btn--block {
-  width: 100%;
-}
-
-/* [rows] 信息行：标签在左、值在右，长值可换行 */
+/* 信息行：标签在左、值在右，长值可换行 */
 .kv {
   display: grid;
   grid-template-columns: 5.5rem minmax(0, 1fr);
-  gap: var(--ak-space-3);
+  gap: var(--space-3);
   padding: 0.5rem 0;
-  border-bottom: var(--ak-line-hairline) solid var(--ak-surface-raised);
+  border-bottom: var(--hairline) solid var(--glass-border);
 }
 
 .kv:last-child {
@@ -583,19 +1205,20 @@ label {
 }
 
 .kv__key {
-  color: var(--ak-text-secondary);
+  color: var(--text-muted);
   font-size: 0.75rem;
   line-height: 1.6;
 }
 
 .kv__value {
   min-width: 0;
+  color: var(--text-primary);
   font-size: 0.8125rem;
   line-height: 1.6;
   overflow-wrap: anywhere;
 }
 
-/* [lists] 提示清单：暖色短竖条 + 次要小字（总览页导出须知 / 实验室须知共用）。 */
+/* 提示清单：香槟金短竖条 + 次要小字（导出须知 / 实验室须知共用） */
 .u-notice {
   display: grid;
   gap: 0.5rem;
@@ -606,8 +1229,8 @@ label {
 
 .u-notice li {
   position: relative;
-  padding-left: var(--ak-space-3);
-  color: var(--ak-text-secondary);
+  padding-left: var(--space-3);
+  color: var(--text-muted);
   font-size: 0.75rem;
   line-height: 1.6;
 }
@@ -619,10 +1242,59 @@ label {
   width: 2px;
   height: 0.85em;
   content: '';
-  background: var(--ak-signal-action);
+  background: var(--champagne);
 }
 
-/* 减弱动效：尊重系统设置 */
+/*
+ * [fallbacks] 无 backdrop-filter 支持的环境（极旧 WebView）退化为更高不透明度的实心表面。
+ * 这不是"给玻璃上色"，而是能力降级——宁可失去玻璃错觉，也不能让文字落在透光背景上不可读。
+ */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .g-glass,
+  .g-card,
+  .g-btn,
+  .g-input,
+  .g-status,
+  .g-segmented,
+  .g-dialog,
+  .g-notice {
+    background: rgb(22 35 58 / 92%);
+  }
+
+  .g-glass--flat {
+    background: rgb(22 35 58 / 75%);
+  }
+}
+
+/* 骨架脉冲 / 存活呼吸：唯一的两处关键动效 */
+@keyframes g-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.45;
+  }
+}
+
+@keyframes g-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.g-animate-in {
+  animation: g-fade-in var(--motion) var(--spring) both;
+}
+
+/* 减弱动效：尊重系统设置（风格自检硬要求） */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -631,5 +1303,10 @@ label {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
+  }
+
+  .g-card:hover,
+  .g-btn:hover:not(:disabled) {
+    transform: none;
   }
 }

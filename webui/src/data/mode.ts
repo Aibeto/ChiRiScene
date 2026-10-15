@@ -11,7 +11,7 @@ import { DOWN_WORD } from '@/data/down'
  * - down：DOWN 停摆（独立家族，不是 stardust）；lab：vector/contingency/babel/frozen（rhine.chr 驱动 global_mode 覆盖）
  */
 export type ModeKind = 'clg' | 'fas' | 'special' | 'lab' | 'down' | 'stardust' | 'unknown'
-/** 语义信号（UI 映射到 --ak-signal-*，不用裸色值） */
+/** 语义信号（UI 映射到 --sig-*，不用裸色值） */
 export type ModeSignal = 'info' | 'success' | 'action' | 'danger' | 'accent'
 
 export interface ModeInfo {

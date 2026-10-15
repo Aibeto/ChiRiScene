@@ -1,0 +1,1326 @@
+{
+  "source": "static",
+  "slug": "glassmorphism",
+  "name": "玻璃拟态",
+  "nameEn": "Glassmorphism",
+  "description": "夜航质感的高级毛玻璃。深墨夜景配克制光源，玻璃只借光、不带色：高斯模糊、饱和度增强、受光顶边与噪点颗粒，营造真实玻璃的安静高级感。",
+  "styleType": "visual",
+  "keywords": [
+    "glassmorphism",
+    "frosted",
+    "blur",
+    "refraction",
+    "translucent",
+    "nocturne",
+    "modern",
+    "premium",
+    "玻璃拟态",
+    "夜景",
+    "毛玻璃"
+  ],
+  "colors": {
+    "primary": "rgba(255, 255, 255, 0.08)",
+    "secondary": "rgba(255, 255, 255, 0.05)",
+    "accent": [
+      "#0B1322",
+      "#33517A",
+      "#7C9CC4",
+      "#E4B863"
+    ]
+  },
+  "philosophy": "玻璃拟态的本质是光学，不是配色。真实的玻璃没有颜色——它只是借用、弯曲、柔化背后的光。这也是 Apple 在 Liquid Glass 材质规范里坚持的原则：玻璃从内容层取色，自己保持中性。\n\n核心理念：\n- 玻璃无色：面板只用白色低透明度（5%-12%），所有颜色来自背景场景\n- 深色夜景：背景是接近黑的深墨蓝场景，配少量柔和光源（light wells），玻璃才有东西可折射\n- 光有方向：顶边受光（inset 高光）、底边背光（inset 暗缘），这是真玻璃与\"半透明色块\"的分界线\n- 唯一强调色：香槟金 #E4B863 只出现在主要动作和高亮文字，绝不大面积铺色\n- 颗粒质感：2%-3% 噪点叠加消除塑料感\n- 流体动效：所有过渡使用 spring easing，模拟玻璃的物理惯性\n\n设计原则：\n- 视觉一致性：所有组件必须遵循统一的视觉语言，从色彩到字体到间距保持谐调\n- 层次分明：通过颜色深浅、字号大小、留白空间建立清晰的信息层级\n- 交互反馈：每个可交互元素都必须有明确的 hover、active、focus 状态反馈\n- 响应式适配：设计必须在移动端、平板、桌面端上保持一致的体验\n- 无障碍性：确保色彩对比度符合 WCAG 2.1 AA 标准，所有交互元素可键盘访问",
+  "doList": [
+    "背景使用深墨夜景底色（#0B1322 一类）+ 2-3 个大半径柔和光源光斑（radial-gradient light wells）",
+    "玻璃面板使用 bg-white/5 到 bg-white/12，配 backdrop-blur-[40px] 或 backdrop-blur-[60px]",
+    "添加饱和度增强 backdrop-saturate-[180%]",
+    "光有方向：inset 0 1px 0 白色高光（顶边受光）+ inset 0 -1px 0 深色暗缘（底边背光）+ 外层深阴影",
+    "叠加 2%-3% 噪点纹理（SVG feTurbulence）保留玻璃颗粒感",
+    "唯一强调色香槟金 #E4B863，只用于主 CTA、关键数字和高亮文字",
+    "边框使用 border-white/15，hover 时提升到 border-white/30",
+    "圆角使用 rounded-2xl 或 rounded-3xl",
+    "过渡使用 duration-500 + cubic-bezier(0.16,1,0.3,1) spring easing，hover 轻微上浮"
+  ],
+  "dontList": [
+    "禁止紫粉 AI 渐变背景（#667eea、#764ba2、#f093fb 一类的 indigo-purple-pink 组合）",
+    "禁止在纯色平面背景上使用（必须有光源或图片，玻璃才有东西可模糊）",
+    "禁止玻璃透明度超过 15%（会变成实心色块，失去玻璃感）",
+    "禁止使用低模糊值 backdrop-blur-sm 或 backdrop-blur",
+    "禁止省略 backdrop-saturate（饱和度增强让暗景光源透过玻璃发亮）",
+    "禁止给玻璃面板本身上色（玻璃无色，颜色属于背景）",
+    "禁止使用不透明背景 bg-white, bg-black",
+    "禁止使用快速过渡 duration-100, duration-150",
+    "禁止使用单层扁平阴影（必须外层深度 + 顶边高光 + 底边暗缘）"
+  ],
+  "aiRules": "# 玻璃拟态设计系统（Nocturne Glassmorphism）\n\n你是一位专精于高级夜航玻璃拟态（Nocturne Glassmorphism）风格的前端开发专家。生成的所有代码都必须严格遵守以下规范。\n\n## 绝对禁止\n\n- 禁止紫粉 AI 渐变背景（#667eea、#764ba2、#f093fb 一类的 indigo-purple-pink 组合）\n- 禁止在纯色平面背景上使用（必须有光源或图片，玻璃才有东西可模糊）\n- 禁止玻璃透明度超过 15%（会变成实心色块，失去玻璃感）\n- 禁止使用低模糊值 backdrop-blur-sm 或 backdrop-blur\n- 禁止省略 backdrop-saturate（饱和度增强让暗景光源透过玻璃发亮）\n- 禁止给玻璃面板本身上色（玻璃无色，颜色属于背景）\n- 禁止使用不透明背景 bg-white, bg-black\n- 禁止使用快速过渡 duration-100, duration-150\n- 禁止使用单层扁平阴影（必须外层深度 + 顶边高光 + 底边暗缘）\n\n## 必须遵守\n\n- 背景使用深墨夜景底色（#0B1322 一类）+ 2-3 个大半径柔和光源光斑（radial-gradient light wells）\n- 玻璃面板使用 bg-white/5 到 bg-white/12，配 backdrop-blur-[40px] 或 backdrop-blur-[60px]\n- 添加饱和度增强 backdrop-saturate-[180%]\n- 光有方向：inset 0 1px 0 白色高光（顶边受光）+ inset 0 -1px 0 深色暗缘（底边背光）+ 外层深阴影\n- 叠加 2%-3% 噪点纹理（SVG feTurbulence）保留玻璃颗粒感\n- 唯一强调色香槟金 #E4B863，只用于主 CTA、关键数字和高亮文字\n- 边框使用 border-white/15，hover 时提升到 border-white/30\n- 圆角使用 rounded-2xl 或 rounded-3xl\n- 过渡使用 duration-500 + cubic-bezier(0.16,1,0.3,1) spring easing，hover 轻微上浮\n\n## 风格身份\n- **名称**：Nocturne Glassmorphism（夜航玻璃拟态）\n- **分类**：现代、高端\n- **本质**：无色玻璃覆于深夜场景之上——颜色由场景承载，玻璃只负责借光\n- **气质**：安静的奢华感、电影感、沉稳、真实可信\n- **灵感来源**：Apple Liquid Glass 材质规范（玻璃从内容层取色，自身永远保持中性）、建筑玻璃幕墙、雨夜车窗外的城市灯光\n\n---\n\n## 核心视觉原则\n\n### 1. 场景先于玻璃（关键）\n```\n必须使用：深墨夜景底色 + 2-3 个柔和光源光斑。禁止使用平面渐变或紫粉渐变。\n\n底色: #0B1322（深墨蓝）或 #060A13（近黑）\n光源光斑（radial-gradient，大半径，柔和）：\n<div class=\"absolute -top-32 -right-20 w-[560px] h-[560px] rounded-full\"\n  style=\"background: radial-gradient(circle, rgba(124,156,196,0.28) 0%, transparent 65%)\" />\n<div class=\"absolute -bottom-36 -left-24 w-[520px] h-[520px] rounded-full\"\n  style=\"background: radial-gradient(circle, rgba(51,81,122,0.35) 0%, transparent 65%)\" />\n可选的单一暖色点缀：\n  radial-gradient(circle, rgba(228,184,99,0.12) 0%, transparent 60%)\n```\n\n### 2. 玻璃面板三层结构\n```\n第 1 层 — 无色玻璃表面：\nbg-white/5 到 bg-white/12（禁止上色，禁止超过 15%）\nbackdrop-blur-[40px] 或 backdrop-blur-[60px]\nbackdrop-saturate-[180%]\n\n第 2 层 — 内发光：\n<span class=\"absolute inset-0 bg-gradient-to-b from-white/12 to-transparent pointer-events-none\" />\n\n第 3 层 — 方向性阴影（光从上方而来）：\nshadow-[0_16px_40px_rgba(3,7,18,0.5),inset_0_1px_0_rgba(255,255,255,0.22),inset_0_-1px_0_rgba(2,6,16,0.35)]\n```\n\n### 3. 颗粒噪点\n```\n全屏叠加 2%-3% 的 SVG feTurbulence 噪点，消除塑料感：\nopacity: 0.025; background-image: url(\"data:image/svg+xml,...feTurbulence type='fractalNoise' baseFrequency='0.8'...\")\n```\n\n### 4. 边框系统\n```\n默认: border border-white/15\nHover: border-white/30 到 border-white/35\n```\n\n### 5. 圆角\n```\n必须使用: rounded-2xl (16px) 或 rounded-3xl (24px)\n```\n\n---\n\n## 交互规范\n\n### Hover 效果\n| 元素 | 效果 | 实现 |\n|---------|--------|----------------|\n| 卡片 | 上浮 + 阴影加深 | hover:-translate-y-1 hover:shadow-[0_24px_64px_rgba(3,7,18,0.6),inset_0_1px_0_rgba(255,255,255,0.32),inset_0_-1px_0_rgba(2,6,16,0.35)] |\n| 按钮 | 轻微上浮 + 边框提亮 | hover:-translate-y-0.5 hover:border-white/35 hover:bg-white/15 |\n| 链接 | 背景浮现 | hover:bg-white/8 |\n\n### 扫光高光（光反射）\n```jsx\n<span className=\"absolute inset-0 -translate-x-[150%] skew-x-[-20deg]\n  bg-gradient-to-r from-transparent via-white/25 to-transparent\n  group-hover:translate-x-[150%] transition-transform duration-700 ease-out\n  pointer-events-none\" />\n```\n\n### Active 状态\n```\nactive:scale-[0.97]\n```\n\n---\n\n## 动效规则\n\n### Spring 物理\n```\ntransition-all duration-500 ease-[cubic-bezier(0.16,1,0.3,1)]\n```\n\n### 时长参考\n| 交互 | 时长 | 缓动 |\n|-------------|----------|--------|\n| Hover 上浮 | 500ms | cubic-bezier(0.16,1,0.3,1) |\n| 扫光高光 | 700ms | ease-out |\n| Focus 光晕 | 500ms | cubic-bezier(0.16,1,0.3,1) |\n| Active 按下 | 150ms | ease-out |\n\n---\n\n## 配色方案\n\n### 夜景场景（背景拥有全部颜色）\n| Token | Hex | 用途 |\n|-------|-----|-------|\n| 近黑 | #060A13 | 最深的底色，页面边缘 |\n| 深墨蓝 | #0B1322 | 主背景 |\n| 钢蓝抬升 | #16233A | 抬升区域、分区色带 |\n| 月光钢蓝 | #33517A | 光源光斑颜色（深） |\n| 月光 | #7C9CC4 | 光源光斑颜色（亮） |\n\n### 玻璃表面（永远无色）\n| Token | 值 | 用途 |\n|-------|-------|-------|\n| 玻璃背景 | bg-white/5 到 bg-white/12 | 面板背景 |\n| 玻璃背景 Hover | bg-white/10 到 bg-white/16 | Hover 状态 |\n| 边框 | border-white/15 | 默认边框 |\n| 边框 Hover | border-white/30 | Hover 边框 |\n| 主文字 | text-white | 标题 |\n| 次要文字 | text-white/60 | 正文 |\n| 弱化文字 | text-white/40 | 说明文字 |\n\n### 唯一强调色（克制使用）\n| Token | Hex | 用途 |\n|-------|-----|-------|\n| 香槟金 | #E4B863 | 主 CTA 填充（/15-/22 透明度）、关键数字、边框（/40） |\n| 亮香槟 | #F3DCA8 | 香槟按钮上的文字、高亮词语 |\n\n香槟按钮配方：\n```\nbg-[#E4B863]/15 border border-[#E4B863]/40 text-[#F3DCA8]\nshadow-[0_4px_20px_rgba(228,184,99,0.15),inset_0_1px_0_rgba(243,220,168,0.35)]\nhover:bg-[#E4B863]/22 hover:border-[#E4B863]/55\n```\n\n---\n\n## 禁止使用的模式\n\n| 模式 | 原因 |\n|---------|--------|\n| #667eea / #764ba2 / #f093fb 渐变 | 这正是本风格明确拒绝的通用 AI 紫粉配色 |\n| 上色的玻璃面板（如 bg-purple-500/20） | 玻璃无色；颜色属于场景 |\n| 玻璃透明度超过 15% | 会变成实心色块，破坏玻璃错觉 |\n| 纯色平面背景 | 没有可供折射的东西 |\n| 面板使用 bg-white, bg-black | 玻璃需要半透明 |\n| backdrop-blur-sm, backdrop-blur | 模糊不足 |\n| 省略 backdrop-saturate | 场景光源无法透过玻璃发亮 |\n| 单层阴影 | 没有光的方向，看起来是平面半透明 |\n| rounded-none, rounded-sm | 直角破坏玻璃感 |\n| duration-100, duration-150 | 过快，失去流动感 |\n| 多种强调色 | 只允许一种香槟金强调色 |\n\n---\n\n## 响应式规范\n\n### 模糊值缩放\n```\n移动端: backdrop-blur-[30px]\n桌面端 (md:): backdrop-blur-[40px] 到 backdrop-blur-[60px]\n```\n\n### 阴影缩放\n```\n移动端: shadow-[0_8px_24px_rgba(3,7,18,0.45),inset_0_1px_0_rgba(255,255,255,0.18)]\n桌面端: shadow-[0_16px_40px_rgba(3,7,18,0.5),inset_0_1px_0_rgba(255,255,255,0.22),inset_0_-1px_0_rgba(2,6,16,0.35)]\n```\n\n### 内边距\n```\n卡片: p-6 md:p-8 lg:p-10\n按钮: px-5 py-3 md:px-6 md:py-3.5\n```\n\n---\n\n## 组件模板\n\n### 玻璃卡片\n```jsx\n<div className=\"group relative p-6 md:p-8\n  bg-white/8 backdrop-blur-[60px] backdrop-saturate-[180%]\n  border border-white/15 rounded-3xl\n  shadow-[0_16px_40px_rgba(3,7,18,0.5),inset_0_1px_0_rgba(255,255,255,0.22),inset_0_-1px_0_rgba(2,6,16,0.35)]\n  hover:border-white/30\n  hover:shadow-[0_24px_64px_rgba(3,7,18,0.6),inset_0_1px_0_rgba(255,255,255,0.32),inset_0_-1px_0_rgba(2,6,16,0.35)]\n  hover:-translate-y-1\n  transition-all duration-500 ease-[cubic-bezier(0.16,1,0.3,1)]\n  overflow-hidden\">\n  {/* Inner luminance */}\n  <span className=\"absolute inset-0 bg-gradient-to-b from-white/12 to-transparent pointer-events-none\" />\n  {/* Content */}\n  <div className=\"relative z-10\">...</div>\n</div>\n```\n\n---\n\n## 自检清单\n\n输出代码前请逐项确认：\n- [ ] 背景是深墨夜景 + 柔和光源光斑（不是平面渐变，更不是紫粉渐变）\n- [ ] 玻璃面板是 5%-12% 透明度的无色白玻璃\n- [ ] 存在 backdrop-blur-[40px] 或更高的模糊值\n- [ ] 存在 backdrop-saturate-[180%]\n- [ ] 阴影有方向性（外层深度 + 顶边高光 + 底边暗缘）\n- [ ] 叠加了颗粒噪点\n- [ ] 香槟金 #E4B863 只出现在主要操作/高亮位置\n- [ ] 边框使用 border-white/15\n- [ ] 圆角是 rounded-2xl 或 rounded-3xl\n- [ ] 过渡使用 spring easing cubic-bezier(0.16,1,0.3,1)\n- [ ] 正文文字是 white/60 或更亮",
+  "globalCss": "/* Nocturne Glassmorphism Global Styles */\n\n:root {\n  --glass-blur: 40px;\n  --glass-blur-heavy: 60px;\n  --glass-saturate: 180%;\n  --glass-bg: rgba(255, 255, 255, 0.08);\n  --glass-bg-hover: rgba(255, 255, 255, 0.14);\n  --glass-border: rgba(255, 255, 255, 0.15);\n  --glass-border-hover: rgba(255, 255, 255, 0.3);\n  --glass-shadow: 0 16px 40px rgba(3, 7, 18, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.22), inset 0 -1px 0 rgba(2, 6, 16, 0.35);\n  --glass-shadow-hover: 0 24px 64px rgba(3, 7, 18, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.32), inset 0 -1px 0 rgba(2, 6, 16, 0.35);\n  --glass-spring: cubic-bezier(0.16, 1, 0.3, 1);\n  --night-deep: #060A13;\n  --night: #0B1322;\n  --night-steel: #16233A;\n  --moon-steel: #33517A;\n  --moonlight: #7C9CC4;\n  --champagne: #E4B863;\n}\n\n.glass {\n  background: var(--glass-bg);\n  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));\n  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));\n  border: 1px solid var(--glass-border);\n  box-shadow: var(--glass-shadow);\n}\n\n.glass::before {\n  content: \"\";\n  position: absolute;\n  inset: 0;\n  background: linear-gradient(to bottom, rgba(255, 255, 255, 0.12), transparent 50%);\n  border-radius: inherit;\n  pointer-events: none;\n}\n\n.glass-container {\n  position: relative;\n  background:\n    radial-gradient(640px circle at 85% 12%, rgba(124, 156, 196, 0.22), transparent 60%),\n    radial-gradient(560px circle at 8% 85%, rgba(51, 81, 122, 0.3), transparent 60%),\n    radial-gradient(420px circle at 30% 40%, rgba(228, 184, 99, 0.08), transparent 55%),\n    linear-gradient(165deg, var(--night-deep) 0%, var(--night) 55%, var(--night-steel) 100%);\n  min-height: 100vh;\n}\n\n/* 2.5% film grain removes the plastic feel */\n.glass-grain::after {\n  content: \"\";\n  position: fixed;\n  inset: 0;\n  opacity: 0.025;\n  pointer-events: none;\n  background-image: url(\"data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E\");\n}\n\n@keyframes glassmorphism-fade-in {\n  from { opacity: 0; transform: translateY(8px); }\n  to { opacity: 1; transform: translateY(0); }\n}\n\n@keyframes glassmorphism-pulse {\n  0%, 100% { opacity: 1; }\n  50% { opacity: 0.7; }\n}\n\n.glassmorphism-accent-corner {\n  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 2rem), calc(100% - 2rem) 100%, 0 100%);\n}\n\n.glassmorphism-animate-in {\n  animation: glassmorphism-fade-in 0.5s ease-out both;\n}",
+  "components": {
+    "button": {
+      "name": "Button",
+      "description": "Nocturne glass button with directional edge light, specular sweep, and champagne primary variant",
+      "code": "<button className=\"group relative\n  px-6 py-3\n  bg-white/10 backdrop-blur-[40px] backdrop-saturate-[180%]\n  border border-white/20\n  rounded-2xl\n  text-white font-medium\n  shadow-[0_4px_16px_rgba(3,7,18,0.45),inset_0_1px_0_rgba(255,255,255,0.25),inset_0_-1px_0_rgba(2,6,16,0.3)]\n  hover:bg-white/15 hover:border-white/35\n  hover:shadow-[0_10px_32px_rgba(3,7,18,0.55),inset_0_1px_0_rgba(255,255,255,0.35),inset_0_-1px_0_rgba(2,6,16,0.3)]\n  hover:-translate-y-0.5\n  active:scale-[0.97]\n  transition-all duration-500 ease-[cubic-bezier(0.16,1,0.3,1)]\n  overflow-hidden\n\">\n  <span className=\"absolute inset-0 bg-gradient-to-b from-white/12 to-transparent pointer-events-none\" />\n  <span className=\"absolute inset-0 -translate-x-[150%] skew-x-[-20deg] bg-gradient-to-r from-transparent via-white/25 to-transparent group-hover:translate-x-[150%] transition-transform duration-700 ease-out pointer-events-none\" />\n  <span className=\"relative z-10\">Frosted Glass</span>\n</button>\n\n{/* Primary action: the ONLY place the champagne accent appears */}\n<button className=\"group relative\n  px-6 py-3\n  bg-[#E4B863]/15 backdrop-blur-[40px] backdrop-saturate-[180%]\n  border border-[#E4B863]/40\n  rounded-2xl\n  text-[#F3DCA8] font-medium\n  shadow-[0_4px_20px_rgba(228,184,99,0.15),inset_0_1px_0_rgba(243,220,168,0.35),inset_0_-1px_0_rgba(2,6,16,0.3)]\n  hover:bg-[#E4B863]/22 hover:border-[#E4B863]/55\n  hover:-translate-y-0.5\n  active:scale-[0.97]\n  transition-all duration-500 ease-[cubic-bezier(0.16,1,0.3,1)]\n  overflow-hidden\n\">\n  <span className=\"absolute inset-0 bg-gradient-to-b from-[#F3DCA8]/15 to-transparent pointer-events-none\" />\n  <span className=\"relative z-10\">Primary Action</span>\n</button>"
+    },
+    "card": {
+      "name": "Card",
+      "description": "Nocturne glass card with directional edge light, grain-friendly surface, and depth hover",
+      "code": "<div className=\"group relative\n  p-6 md:p-8\n  bg-white/8 backdrop-blur-[60px] backdrop-saturate-[180%]\n  border border-white/15\n  rounded-3xl\n  shadow-[0_16px_40px_rgba(3,7,18,0.5),inset_0_1px_0_rgba(255,255,255,0.22),inset_0_-1px_0_rgba(2,6,16,0.35)]\n  hover:border-white/30\n  hover:shadow-[0_24px_64px_rgba(3,7,18,0.6),inset_0_1px_0_rgba(255,255,255,0.32),inset_0_-1px_0_rgba(2,6,16,0.35)]\n  hover:-translate-y-1\n  transition-all duration-500 ease-[cubic-bezier(0.16,1,0.3,1)]\n  overflow-hidden\n\">\n  <span className=\"absolute inset-0 bg-gradient-to-b from-white/12 to-transparent pointer-events-none\" />\n  <span className=\"absolute inset-0 -translate-x-[150%] skew-x-[-20deg] bg-gradient-to-r from-transparent via-white/12 to-transparent group-hover:translate-x-[150%] transition-transform duration-1000 ease-out pointer-events-none\" />\n  <div className=\"relative z-10\">\n    <h3 className=\"text-xl font-semibold text-white mb-2\">\n      Nocturne Glass Card\n    </h3>\n    <p className=\"text-white/60\">\n      The scene carries the color; the glass stays neutral\n    </p>\n  </div>\n</div>"
+    },
+    "input": {
+      "name": "Input",
+      "description": "Nocturne glass input with inner shade and quiet focus luminance",
+      "code": "<input\n  type=\"text\"\n  placeholder=\"Type here...\"\n  className=\"\n    w-full px-5 py-3.5\n    bg-white/6 backdrop-blur-[40px] backdrop-saturate-[180%]\n    border border-white/15\n    rounded-2xl\n    text-white placeholder-white/35\n    shadow-[inset_0_1px_0_rgba(255,255,255,0.15),inset_0_-1px_0_rgba(2,6,16,0.3)]\n    focus:outline-none focus:border-white/35 focus:bg-white/10\n    focus:shadow-[0_0_0_3px_rgba(228,184,99,0.15),inset_0_1px_0_rgba(255,255,255,0.25)]\n    transition-all duration-500 ease-[cubic-bezier(0.16,1,0.3,1)]\n  \"\n/>"
+    },
+    "nav": {
+      "name": "Navigation",
+      "description": "Fixed nocturne glass navigation bar with subtle depth",
+      "code": "<nav className=\"\n  fixed top-0 left-0 right-0 z-50\n  px-6 py-3\n  bg-white/6 backdrop-blur-[60px] backdrop-saturate-[180%]\n  border-b border-white/10\n  shadow-[0_1px_0_rgba(255,255,255,0.08)]\n\">\n  <div className=\"max-w-6xl mx-auto flex items-center justify-between\">\n    <a href=\"/\" className=\"text-white font-bold text-lg tracking-tight\">\n      Logo\n    </a>\n    <div className=\"flex items-center gap-1\">\n      <a href=\"#\" className=\"px-4 py-2 rounded-xl text-white/65 hover:text-white hover:bg-white/8 transition-all duration-300\">\n        Home\n      </a>\n      <a href=\"#\" className=\"px-4 py-2 rounded-xl text-white/65 hover:text-white hover:bg-white/8 transition-all duration-300\">\n        About\n      </a>\n    </div>\n  </div>\n</nav>"
+    },
+    "hero": {
+      "name": "Hero",
+      "description": "Nocturne glass hero with deep ink scene, soft light wells, and film grain",
+      "code": "<section className=\"\n  relative min-h-screen\n  flex items-center justify-center\n  bg-[#0B1322]\n  px-6 overflow-hidden\n\">\n  {/* Light wells: the scene provides the color, not the glass */}\n  <div className=\"absolute top-[-120px] right-[-80px] w-[560px] h-[560px] rounded-full pointer-events-none\"\n    style={{ background: \"radial-gradient(circle, rgba(124,156,196,0.28) 0%, transparent 65%)\" }} />\n  <div className=\"absolute bottom-[-140px] left-[-100px] w-[520px] h-[520px] rounded-full pointer-events-none\"\n    style={{ background: \"radial-gradient(circle, rgba(51,81,122,0.35) 0%, transparent 65%)\" }} />\n  <div className=\"absolute top-1/3 left-1/4 w-[300px] h-[300px] rounded-full pointer-events-none\"\n    style={{ background: \"radial-gradient(circle, rgba(228,184,99,0.12) 0%, transparent 60%)\" }} />\n\n  <div className=\"\n    relative max-w-2xl mx-auto text-center\n    p-10 md:p-14\n    bg-white/8 backdrop-blur-[60px] backdrop-saturate-[180%]\n    border border-white/15\n    rounded-3xl\n    shadow-[0_24px_64px_rgba(3,7,18,0.55),inset_0_1px_0_rgba(255,255,255,0.25),inset_0_-1px_0_rgba(2,6,16,0.35)]\n    overflow-hidden\n  \">\n    <span className=\"absolute inset-0 bg-gradient-to-b from-white/12 to-transparent pointer-events-none\" />\n    <h1 className=\"relative text-4xl md:text-6xl font-bold text-white mb-6\">\n      Glass Borrows Light\n    </h1>\n    <p className=\"relative text-lg text-white/65 mb-8\">\n      Deep scenes, soft light wells, one champagne accent\n    </p>\n    <button className=\"\n      relative px-8 py-4\n      bg-[#E4B863]/15 backdrop-blur-[40px] backdrop-saturate-[180%]\n      border border-[#E4B863]/40\n      rounded-2xl\n      text-[#F3DCA8] font-semibold\n      shadow-[0_4px_20px_rgba(228,184,99,0.15),inset_0_1px_0_rgba(243,220,168,0.35)]\n      hover:bg-[#E4B863]/22 hover:border-[#E4B863]/55\n      transition-all duration-500 ease-[cubic-bezier(0.16,1,0.3,1)]\n    \">\n      Explore\n    </button>\n  </div>\n</section>"
+    }
+  },
+  "examplePrompts": [
+    {
+      "title": "夜航玻璃仪表盘",
+      "titleEn": "Nocturne Glass Dashboard",
+      "description": "深夜景毛玻璃数据面板",
+      "descriptionEn": "Deep night scene frosted glass data dashboard",
+      "prompt": "Create a nocturne glassmorphism dashboard with:\n1. Background: deep ink #0B1322 with three soft radial light wells — rgba(124,156,196,0.28) top right, rgba(51,81,122,0.35) bottom left, rgba(228,184,99,0.12) center accent\n2. Film grain: full-viewport 2.5% SVG feTurbulence noise overlay\n3. Top nav: fixed, bg-white/6 backdrop-blur-[60px] backdrop-saturate-[180%], border-b border-white/10\n4. Stat cards: bg-white/8 backdrop-blur-[60px], directional shadows (outer depth + inset top highlight + inset bottom shade), key numbers in champagne #E4B863, hover lift\n5. Chart area: large colorless glass panel; chart line in moonlight #7C9CC4 with champagne highlight point\n6. All transitions: duration-500 ease-[cubic-bezier(0.16,1,0.3,1)]\n7. Specular sweep on card hover; NO purple-pink gradients anywhere",
+      "promptEn": "Create a nocturne glassmorphism dashboard with:\n1. Background: deep ink #0B1322 with three soft radial light wells — rgba(124,156,196,0.28) top right, rgba(51,81,122,0.35) bottom left, rgba(228,184,99,0.12) center accent\n2. Film grain: full-viewport 2.5% SVG feTurbulence noise overlay\n3. Top nav: fixed, bg-white/6 backdrop-blur-[60px] backdrop-saturate-[180%], border-b border-white/10\n4. Stat cards: bg-white/8 backdrop-blur-[60px], directional shadows (outer depth + inset top highlight + inset bottom shade), key numbers in champagne #E4B863, hover lift\n5. Chart area: large colorless glass panel; chart line in moonlight #7C9CC4 with champagne highlight point\n6. All transitions: duration-500 ease-[cubic-bezier(0.16,1,0.3,1)]\n7. Specular sweep on card hover; NO purple-pink gradients anywhere"
+    },
+    {
+      "title": "夜航玻璃登录页",
+      "titleEn": "Nocturne Glass Login",
+      "description": "安静高级的深夜毛玻璃登录页",
+      "descriptionEn": "Quiet, premium night-scene frosted glass login page",
+      "prompt": "Create a nocturne glassmorphism login page with:\n1. Background: near-black #060A13 to #0B1322, one moonlight well rgba(124,156,196,0.25) upper right, one faint champagne well rgba(228,184,99,0.1) lower left, 2.5% film grain\n2. Login card: centered, bg-white/8 backdrop-blur-[60px] backdrop-saturate-[180%], rounded-3xl, shadow with inset top highlight and inset bottom shade\n3. Inner luminance: gradient overlay from-white/12 to transparent at top\n4. Inputs: bg-white/6, inset shade, focus ring rgba(228,184,99,0.15)\n5. Submit button: the ONLY champagne element — bg-[#E4B863]/15 border-[#E4B863]/40 text-[#F3DCA8]\n6. Serif display headline (e.g. Playfair Display) over the glass for editorial luxury\n7. All corners rounded-2xl or rounded-3xl, spring easing transitions",
+      "promptEn": "Create a nocturne glassmorphism login page with:\n1. Background: near-black #060A13 to #0B1322, one moonlight well rgba(124,156,196,0.25) upper right, one faint champagne well rgba(228,184,99,0.1) lower left, 2.5% film grain\n2. Login card: centered, bg-white/8 backdrop-blur-[60px] backdrop-saturate-[180%], rounded-3xl, shadow with inset top highlight and inset bottom shade\n3. Inner luminance: gradient overlay from-white/12 to transparent at top\n4. Inputs: bg-white/6, inset shade, focus ring rgba(228,184,99,0.15)\n5. Submit button: the ONLY champagne element — bg-[#E4B863]/15 border-[#E4B863]/40 text-[#F3DCA8]\n6. Serif display headline (e.g. Playfair Display) over the glass for editorial luxury\n7. All corners rounded-2xl or rounded-3xl, spring easing transitions"
+    },
+    {
+      "title": "夜航玻璃音乐播放器",
+      "titleEn": "Nocturne Glass Music Player",
+      "description": "沉浸式深夜毛玻璃音乐播放器",
+      "descriptionEn": "Immersive night-scene frosted glass music player",
+      "prompt": "Create a nocturne glassmorphism music player with:\n1. Background: blurred album art darkened with a rgba(6,10,19,0.6) scrim so the glass stays readable, plus 2.5% film grain\n2. Player card: bg-white/8 backdrop-blur-[60px] backdrop-saturate-[180%], rounded-3xl, directional shadows\n3. Album art: rounded-2xl with border-white/15 frame and inset top highlight\n4. Controls: colorless glass buttons; the play button is the single champagne accent (#E4B863/15 fill, #F3DCA8 icon)\n5. Progress bar: glass track bg-white/8; fill in moonlight #7C9CC4; thumb with champagne ring on drag\n6. Playlist: glass sidebar with hover-highlighted rows (hover:bg-white/8)\n7. All transitions spring easing; NO purple-pink gradients",
+      "promptEn": "Create a nocturne glassmorphism music player with:\n1. Background: blurred album art darkened with a rgba(6,10,19,0.6) scrim so the glass stays readable, plus 2.5% film grain\n2. Player card: bg-white/8 backdrop-blur-[60px] backdrop-saturate-[180%], rounded-3xl, directional shadows\n3. Album art: rounded-2xl with border-white/15 frame and inset top highlight\n4. Controls: colorless glass buttons; the play button is the single champagne accent (#E4B863/15 fill, #F3DCA8 icon)\n5. Progress bar: glass track bg-white/8; fill in moonlight #7C9CC4; thumb with champagne ring on drag\n6. Playlist: glass sidebar with hover-highlighted rows (hover:bg-white/8)\n7. All transitions spring easing; NO purple-pink gradients"
+    }
+  ],
+  "tokens": {
+    "border": {
+      "width": "border",
+      "color": "border-white/15",
+      "radius": "rounded-3xl",
+      "style": "border-solid"
+    },
+    "shadow": {
+      "sm": "shadow-[0_2px_8px_rgba(3,7,18,0.35),inset_0_1px_0_rgba(255,255,255,0.18)]",
+      "md": "shadow-[0_8px_24px_rgba(3,7,18,0.45),inset_0_1px_0_rgba(255,255,255,0.22),inset_0_-1px_0_rgba(2,6,16,0.3)]",
+      "lg": "shadow-[0_16px_48px_rgba(3,7,18,0.55),0_0_0_1px_rgba(255,255,255,0.08),inset_0_1px_0_rgba(255,255,255,0.25),inset_0_-1px_0_rgba(2,6,16,0.35)]",
+      "none": "shadow-none",
+      "hover": "hover:shadow-[0_20px_60px_rgba(3,7,18,0.65),0_0_0_1px_rgba(255,255,255,0.12),inset_0_1px_0_rgba(255,255,255,0.32)]",
+      "focus": "focus:shadow-[0_0_0_3px_rgba(228,184,99,0.18),0_8px_24px_rgba(3,7,18,0.45)]",
+      "colored": {
+        "inner": "shadow-[inset_0_1px_1px_rgba(255,255,255,0.3),inset_0_-1px_1px_rgba(2,6,16,0.35)]",
+        "glow": "shadow-[0_0_40px_rgba(124,156,196,0.15),0_0_80px_rgba(124,156,196,0.05)]",
+        "blue": "shadow-[0_0_24px_rgba(124,156,196,0.3),inset_0_1px_0_rgba(124,156,196,0.2)]",
+        "green": "shadow-[0_0_16px_rgba(228,184,99,0.3),inset_0_1px_0_rgba(228,184,99,0.2)]"
+      }
+    },
+    "interaction": {
+      "transition": "transition-all duration-500 ease-[cubic-bezier(0.16,1,0.3,1)]",
+      "active": "active:scale-[0.97]",
+      "hoverOpacity": "hover:bg-white/15"
+    },
+    "typography": {
+      "heading": "font-semibold text-white",
+      "body": "text-white/80",
+      "mono": "font-mono text-white/85",
+      "sizes": {
+        "hero": "text-4xl md:text-6xl",
+        "h1": "text-3xl md:text-5xl",
+        "h2": "text-2xl md:text-3xl",
+        "h3": "text-xl md:text-2xl",
+        "body": "text-sm md:text-base",
+        "small": "text-xs"
+      }
+    },
+    "spacing": {
+      "section": "py-16 md:py-24",
+      "container": "px-6 md:px-8",
+      "card": "p-6 md:p-8",
+      "gap": {
+        "sm": "gap-4",
+        "md": "gap-6",
+        "lg": "gap-8"
+      }
+    },
+    "colors": {
+      "background": {
+        "primary": "bg-white/8 backdrop-blur-[40px] backdrop-saturate-[180%]",
+        "secondary": "bg-white/12 backdrop-blur-[60px] backdrop-saturate-[180%]",
+        "accent": [
+          "bg-[radial-gradient(640px_circle_at_85%_10%,rgba(124,156,196,0.25),transparent_60%),radial-gradient(560px_circle_at_10%_90%,rgba(51,81,122,0.3),transparent_60%)] bg-[#0B1322]",
+          "bg-[radial-gradient(640px_circle_at_80%_15%,rgba(201,143,78,0.22),transparent_60%),radial-gradient(560px_circle_at_12%_88%,rgba(92,58,30,0.35),transparent_60%)] bg-[#120D0A]",
+          "bg-[radial-gradient(640px_circle_at_85%_12%,rgba(127,182,158,0.2),transparent_60%),radial-gradient(560px_circle_at_10%_88%,rgba(31,77,58,0.35),transparent_60%)] bg-[#081210]"
+        ]
+      },
+      "text": {
+        "primary": "text-white",
+        "secondary": "text-white/80",
+        "muted": "text-white/50"
+      },
+      "button": {
+        "primary": "bg-white/12 text-white backdrop-blur-[40px] backdrop-saturate-[180%]",
+        "secondary": "bg-white/6 text-white/85 backdrop-blur-[30px] backdrop-saturate-[160%]"
+      }
+    },
+    "forbidden": {
+      "classes": [
+        "rounded-none",
+        "rounded-sm",
+        "rounded",
+        "bg-white",
+        "bg-black",
+        "bg-gray-100",
+        "bg-gray-900",
+        "shadow-none",
+        "backdrop-blur-sm",
+        "backdrop-blur",
+        "duration-100",
+        "duration-150",
+        "border-black",
+        "border-gray-500",
+        "from-indigo-600",
+        "via-purple-600",
+        "to-pink-500"
+      ],
+      "patterns": [
+        "^rounded-none",
+        "^rounded-sm$",
+        "^rounded$",
+        "^bg-(?!white\\/|gradient|\\[|transparent)",
+        "^border-(?!white\\/|\\[)",
+        "^backdrop-blur$",
+        "^backdrop-blur-sm$",
+        "^duration-(100|150)$"
+      ],
+      "reasons": {
+        "rounded-none": "Glassmorphism requires large rounded corners (rounded-2xl or rounded-3xl)",
+        "rounded-sm": "Glassmorphism requires large rounded corners (rounded-2xl or rounded-3xl)",
+        "rounded": "Glassmorphism requires large rounded corners (rounded-2xl or rounded-3xl)",
+        "bg-white": "Glassmorphism uses semi-transparent surfaces (bg-white/5 to bg-white/12)",
+        "bg-black": "Glassmorphism requires semi-transparent surfaces, not opaque colors",
+        "backdrop-blur-sm": "Glassmorphism requires high blur (backdrop-blur-[40px] or higher)",
+        "backdrop-blur": "Glassmorphism requires high blur (backdrop-blur-[40px] or higher)",
+        "duration-100": "Glassmorphism uses fluid animations (duration-500 with spring easing)",
+        "duration-150": "Glassmorphism uses fluid animations (duration-500 with spring easing)",
+        "border-black": "Glassmorphism uses luminous white borders (border-white/15 to border-white/35)",
+        "from-indigo-600": "The purple-pink AI gradient is the exact cliche this style rejects; use deep night scenes with light wells",
+        "via-purple-600": "The purple-pink AI gradient is the exact cliche this style rejects; use deep night scenes with light wells",
+        "to-pink-500": "The purple-pink AI gradient is the exact cliche this style rejects; use deep night scenes with light wells"
+      }
+    },
+    "required": {
+      "button": [
+        "bg-white/10 backdrop-blur-[40px] backdrop-saturate-[180%]",
+        "border border-white/20",
+        "rounded-2xl",
+        "text-white",
+        "shadow-[0_4px_16px_rgba(3,7,18,0.45),inset_0_1px_0_rgba(255,255,255,0.25),inset_0_-1px_0_rgba(2,6,16,0.3)]",
+        "hover:bg-white/15 hover:border-white/35 hover:shadow-[0_10px_32px_rgba(3,7,18,0.55),inset_0_1px_0_rgba(255,255,255,0.35)]",
+        "hover:-translate-y-0.5",
+        "transition-all duration-500 ease-[cubic-bezier(0.16,1,0.3,1)]"
+      ],
+      "card": [
+        "bg-white/8 backdrop-blur-[60px] backdrop-saturate-[180%]",
+        "border border-white/15",
+        "rounded-3xl",
+        "shadow-[0_16px_40px_rgba(3,7,18,0.5),inset_0_1px_0_rgba(255,255,255,0.22),inset_0_-1px_0_rgba(2,6,16,0.35)]",
+        "[background-image:linear-gradient(to_bottom,rgba(255,255,255,0.12),transparent_50%)]"
+      ],
+      "input": [
+        "bg-white/6 backdrop-blur-[40px] backdrop-saturate-[180%]",
+        "border border-white/15",
+        "rounded-2xl",
+        "text-white placeholder-white/35",
+        "shadow-[inset_0_1px_0_rgba(255,255,255,0.15),inset_0_-1px_0_rgba(2,6,16,0.3)]",
+        "focus:outline-none focus:border-white/35 focus:bg-white/10",
+        "focus:shadow-[0_0_0_3px_rgba(228,184,99,0.15),inset_0_1px_0_rgba(255,255,255,0.25)]",
+        "transition-all duration-500 ease-[cubic-bezier(0.16,1,0.3,1)]"
+      ]
+    }
+  },
+  "recipes": {
+    "styleSlug": "glassmorphism",
+    "recipes": {
+      "button": {
+        "id": "button",
+        "name": "Button",
+        "nameZh": "按钮",
+        "description": "Liquid glass button with edge highlight, saturation boost and fluid transition",
+        "skeleton": {
+          "element": "button",
+          "baseClasses": [
+            "font-medium",
+            "backdrop-blur-2xl backdrop-saturate-150",
+            "rounded-2xl",
+            "border border-white/40",
+            "ring-1 ring-inset ring-white/20",
+            "transition-all duration-300 ease-out"
+          ]
+        },
+        "parameters": [
+          {
+            "id": "size",
+            "label": "Size",
+            "labelZh": "尺寸",
+            "type": "select",
+            "options": [
+              {
+                "value": "sm",
+                "label": "Small",
+                "labelZh": "小",
+                "classes": "px-4 py-2 text-sm"
+              },
+              {
+                "value": "md",
+                "label": "Medium",
+                "labelZh": "中",
+                "classes": "px-5 py-2.5 md:px-6 md:py-3 text-sm md:text-base"
+              },
+              {
+                "value": "lg",
+                "label": "Large",
+                "labelZh": "大",
+                "classes": "px-6 py-3 md:px-8 md:py-4 text-base md:text-lg"
+              }
+            ],
+            "default": "md"
+          },
+          {
+            "id": "fullWidth",
+            "label": "Full Width",
+            "labelZh": "全宽",
+            "type": "boolean",
+            "default": false,
+            "trueClasses": "w-full"
+          }
+        ],
+        "variants": {
+          "primary": {
+            "id": "primary",
+            "label": "Primary",
+            "labelZh": "主要",
+            "classes": [
+              "bg-white/25 text-white",
+              "shadow-lg shadow-black/5"
+            ]
+          },
+          "secondary": {
+            "id": "secondary",
+            "label": "Secondary",
+            "labelZh": "次要",
+            "classes": [
+              "bg-white/15 text-white",
+              "shadow-md shadow-black/5"
+            ]
+          },
+          "accent": {
+            "id": "accent",
+            "label": "Accent",
+            "labelZh": "强调",
+            "classes": [
+              "bg-[#007AFF]/30 text-white",
+              "shadow-lg shadow-[#007AFF]/20"
+            ]
+          },
+          "outline": {
+            "id": "outline",
+            "label": "Outline",
+            "labelZh": "轮廓",
+            "classes": [
+              "bg-transparent text-white",
+              "border-white/50",
+              "ring-white/30"
+            ]
+          }
+        },
+        "slots": [
+          {
+            "id": "icon",
+            "label": "Icon",
+            "labelZh": "图标",
+            "required": false,
+            "type": "icon"
+          },
+          {
+            "id": "label",
+            "label": "Label",
+            "labelZh": "文字",
+            "required": true,
+            "default": "Click Me",
+            "type": "text"
+          }
+        ],
+        "states": {
+          "hover": [
+            "hover:bg-white/35",
+            "hover:ring-white/30",
+            "hover:shadow-xl hover:shadow-black/10"
+          ],
+          "active": [
+            "active:scale-[0.98]"
+          ],
+          "disabled": [
+            "opacity-50 cursor-not-allowed"
+          ]
+        }
+      },
+      "card": {
+        "id": "card",
+        "name": "Card",
+        "nameZh": "卡片",
+        "description": "Liquid glass card with multi-layer depth, edge refraction and top highlight gradient",
+        "skeleton": {
+          "element": "div",
+          "baseClasses": [
+            "bg-white/20",
+            "backdrop-blur-3xl backdrop-saturate-150",
+            "rounded-3xl",
+            "border border-white/30",
+            "ring-1 ring-inset ring-white/25",
+            "shadow-xl shadow-black/10",
+            "[background-image:linear-gradient(to_bottom,rgba(255,255,255,0.15),transparent)]",
+            "transition-all duration-300 ease-out"
+          ]
+        },
+        "parameters": [
+          {
+            "id": "padding",
+            "label": "Padding",
+            "labelZh": "内边距",
+            "type": "select",
+            "options": [
+              {
+                "value": "sm",
+                "label": "Small",
+                "labelZh": "小",
+                "classes": "p-4 md:p-5"
+              },
+              {
+                "value": "md",
+                "label": "Medium",
+                "labelZh": "中",
+                "classes": "p-5 md:p-7"
+              },
+              {
+                "value": "lg",
+                "label": "Large",
+                "labelZh": "大",
+                "classes": "p-6 md:p-8"
+              }
+            ],
+            "default": "md"
+          },
+          {
+            "id": "interactive",
+            "label": "Interactive",
+            "labelZh": "可交互",
+            "type": "boolean",
+            "default": true,
+            "trueClasses": "hover:-translate-y-1 cursor-pointer"
+          }
+        ],
+        "variants": {
+          "default": {
+            "id": "default",
+            "label": "Default",
+            "labelZh": "默认",
+            "classes": []
+          },
+          "light": {
+            "id": "light",
+            "label": "Light",
+            "labelZh": "浅色",
+            "classes": [
+              "bg-white/30",
+              "ring-white/30"
+            ]
+          },
+          "dark": {
+            "id": "dark",
+            "label": "Dark",
+            "labelZh": "深色",
+            "classes": [
+              "bg-black/20",
+              "border-white/20",
+              "ring-white/15"
+            ]
+          },
+          "accent": {
+            "id": "accent",
+            "label": "Accent",
+            "labelZh": "强调",
+            "classes": [
+              "bg-[#007AFF]/20",
+              "border-[#007AFF]/30",
+              "ring-[#007AFF]/20"
+            ]
+          }
+        },
+        "slots": [
+          {
+            "id": "title",
+            "label": "Title",
+            "labelZh": "标题",
+            "required": false,
+            "default": "Card Title",
+            "type": "text"
+          },
+          {
+            "id": "children",
+            "label": "Content",
+            "labelZh": "内容",
+            "required": true,
+            "default": "Card content goes here",
+            "type": "children"
+          }
+        ],
+        "states": {
+          "hover": [
+            "hover:bg-white/25",
+            "hover:ring-white/35",
+            "hover:shadow-2xl hover:shadow-black/15"
+          ]
+        }
+      },
+      "input": {
+        "id": "input",
+        "name": "Input",
+        "nameZh": "输入框",
+        "description": "Liquid glass input with enhanced focus glow and edge highlights",
+        "skeleton": {
+          "element": "input",
+          "baseClasses": [
+            "w-full",
+            "bg-white/15",
+            "backdrop-blur-2xl backdrop-saturate-150",
+            "rounded-2xl",
+            "border border-white/30",
+            "ring-1 ring-inset ring-white/20",
+            "text-white",
+            "placeholder:text-white/50",
+            "focus:outline-none",
+            "transition-all duration-300 ease-out"
+          ]
+        },
+        "parameters": [
+          {
+            "id": "size",
+            "label": "Size",
+            "labelZh": "尺寸",
+            "type": "select",
+            "options": [
+              {
+                "value": "sm",
+                "label": "Small",
+                "labelZh": "小",
+                "classes": "px-3 py-2 text-sm"
+              },
+              {
+                "value": "md",
+                "label": "Medium",
+                "labelZh": "中",
+                "classes": "px-4 py-2.5 md:px-5 md:py-3 text-sm md:text-base"
+              },
+              {
+                "value": "lg",
+                "label": "Large",
+                "labelZh": "大",
+                "classes": "px-5 py-3 md:px-6 md:py-4 text-base md:text-lg"
+              }
+            ],
+            "default": "md"
+          }
+        ],
+        "variants": {
+          "default": {
+            "id": "default",
+            "label": "Default",
+            "labelZh": "默认",
+            "classes": []
+          },
+          "filled": {
+            "id": "filled",
+            "label": "Filled",
+            "labelZh": "填充",
+            "classes": [
+              "bg-white/25"
+            ]
+          }
+        },
+        "slots": [
+          {
+            "id": "placeholder",
+            "label": "Placeholder",
+            "labelZh": "占位符",
+            "required": false,
+            "default": "Type here...",
+            "type": "text"
+          }
+        ],
+        "states": {
+          "focus": [
+            "focus:bg-white/25",
+            "focus:border-white/50",
+            "focus:ring-white/40",
+            "focus:shadow-[0_0_20px_rgba(255,255,255,0.15)]"
+          ],
+          "disabled": [
+            "opacity-50 cursor-not-allowed"
+          ]
+        }
+      },
+      "modal": {
+        "id": "modal",
+        "name": "Modal",
+        "nameZh": "模态框",
+        "description": "Liquid glass modal with inner glow border and depth shadow",
+        "skeleton": {
+          "element": "div",
+          "baseClasses": [
+            "bg-white/20",
+            "backdrop-blur-3xl backdrop-saturate-150",
+            "rounded-3xl",
+            "border border-white/30",
+            "ring-1 ring-inset ring-white/25",
+            "shadow-2xl shadow-black/20",
+            "[background-image:linear-gradient(to_bottom,rgba(255,255,255,0.15),transparent)]"
+          ]
+        },
+        "parameters": [
+          {
+            "id": "size",
+            "label": "Size",
+            "labelZh": "尺寸",
+            "type": "select",
+            "options": [
+              {
+                "value": "sm",
+                "label": "Small",
+                "labelZh": "小",
+                "classes": "max-w-sm p-5"
+              },
+              {
+                "value": "md",
+                "label": "Medium",
+                "labelZh": "中",
+                "classes": "max-w-md p-6"
+              },
+              {
+                "value": "lg",
+                "label": "Large",
+                "labelZh": "大",
+                "classes": "max-w-lg p-8"
+              }
+            ],
+            "default": "md"
+          }
+        ],
+        "variants": {
+          "default": {
+            "id": "default",
+            "label": "Default",
+            "labelZh": "默认",
+            "classes": []
+          }
+        },
+        "slots": [
+          {
+            "id": "title",
+            "label": "Title",
+            "labelZh": "标题",
+            "required": false,
+            "default": "Modal Title",
+            "type": "text"
+          },
+          {
+            "id": "children",
+            "label": "Content",
+            "labelZh": "内容",
+            "required": true,
+            "type": "children"
+          }
+        ],
+        "states": {}
+      },
+      "pill": {
+        "id": "pill",
+        "name": "Pill Badge",
+        "nameZh": "胶囊徽章",
+        "description": "Capsule-shaped liquid glass badge with inner shadow highlight",
+        "skeleton": {
+          "element": "div",
+          "baseClasses": [
+            "inline-flex items-center gap-1.5",
+            "bg-white/20",
+            "backdrop-blur-xl backdrop-saturate-150",
+            "rounded-full",
+            "border border-white/30",
+            "ring-1 ring-inset ring-white/20",
+            "shadow-[inset_0_1px_1px_rgba(255,255,255,0.3)]",
+            "text-white"
+          ]
+        },
+        "parameters": [
+          {
+            "id": "size",
+            "label": "Size",
+            "labelZh": "尺寸",
+            "type": "select",
+            "options": [
+              {
+                "value": "sm",
+                "label": "Small",
+                "labelZh": "小",
+                "classes": "px-2.5 py-1 text-xs"
+              },
+              {
+                "value": "md",
+                "label": "Medium",
+                "labelZh": "中",
+                "classes": "px-4 py-1.5 text-sm"
+              }
+            ],
+            "default": "sm"
+          }
+        ],
+        "variants": {
+          "default": {
+            "id": "default",
+            "label": "Default",
+            "labelZh": "默认",
+            "classes": []
+          },
+          "success": {
+            "id": "success",
+            "label": "Success",
+            "labelZh": "成功",
+            "classes": [
+              "bg-[#34C759]/25 border-[#34C759]/40"
+            ]
+          },
+          "warning": {
+            "id": "warning",
+            "label": "Warning",
+            "labelZh": "警告",
+            "classes": [
+              "bg-[#FF9500]/25 border-[#FF9500]/40"
+            ]
+          },
+          "error": {
+            "id": "error",
+            "label": "Error",
+            "labelZh": "错误",
+            "classes": [
+              "bg-[#FF2D55]/25 border-[#FF2D55]/40"
+            ]
+          }
+        },
+        "slots": [
+          {
+            "id": "icon",
+            "label": "Icon",
+            "labelZh": "图标",
+            "required": false,
+            "type": "icon"
+          },
+          {
+            "id": "label",
+            "label": "Label",
+            "labelZh": "文字",
+            "required": true,
+            "default": "Badge",
+            "type": "text"
+          }
+        ],
+        "states": {}
+      },
+      "toggle": {
+        "id": "toggle",
+        "name": "Toggle Switch",
+        "nameZh": "开关",
+        "description": "iOS-style liquid glass toggle switch with glow effect",
+        "skeleton": {
+          "element": "button",
+          "baseClasses": [
+            "relative",
+            "w-12 h-7",
+            "bg-white/20",
+            "backdrop-blur-xl backdrop-saturate-150",
+            "rounded-full",
+            "border border-white/30",
+            "ring-1 ring-inset ring-white/15",
+            "transition-all duration-300 ease-out"
+          ]
+        },
+        "parameters": [
+          {
+            "id": "visible",
+            "label": "Visible",
+            "labelZh": "可见",
+            "type": "boolean",
+            "default": true,
+            "trueClasses": "opacity-100",
+            "falseClasses": "opacity-0"
+          }
+        ],
+        "variants": {
+          "default": {
+            "id": "default",
+            "label": "Default",
+            "labelZh": "默认",
+            "classes": []
+          }
+        },
+        "slots": [
+          {
+            "id": "children",
+            "label": "Content",
+            "labelZh": "内容",
+            "required": false,
+            "type": "children"
+          }
+        ],
+        "states": {
+          "active": [
+            "[&.active]:bg-[#34C759]/40",
+            "[&.active]:border-[#34C759]/50",
+            "[&.active]:ring-[#34C759]/30",
+            "[&.active]:shadow-[0_0_12px_rgba(52,199,89,0.4)]"
+          ]
+        }
+      },
+      "nav": {
+        "id": "nav",
+        "name": "Navigation",
+        "nameZh": "导航栏",
+        "description": "Fixed liquid glass navigation bar with bottom highlight edge",
+        "skeleton": {
+          "element": "nav",
+          "baseClasses": [
+            "bg-white/10",
+            "backdrop-blur-3xl backdrop-saturate-150",
+            "border-b border-white/20",
+            "shadow-[0_1px_0_0_rgba(255,255,255,0.1)]",
+            "px-4 md:px-8",
+            "py-3 md:py-4"
+          ]
+        },
+        "parameters": [
+          {
+            "id": "sticky",
+            "label": "Sticky",
+            "labelZh": "固定",
+            "type": "boolean",
+            "default": false,
+            "trueClasses": "fixed top-0 left-0 right-0 z-50"
+          }
+        ],
+        "variants": {
+          "default": {
+            "id": "default",
+            "label": "Default",
+            "labelZh": "默认",
+            "classes": []
+          },
+          "solid": {
+            "id": "solid",
+            "label": "Solid",
+            "labelZh": "实色",
+            "classes": [
+              "bg-white/20"
+            ]
+          }
+        },
+        "slots": [
+          {
+            "id": "logo",
+            "label": "Logo",
+            "labelZh": "Logo",
+            "required": true,
+            "default": "BRAND",
+            "type": "text"
+          },
+          {
+            "id": "children",
+            "label": "Links",
+            "labelZh": "链接",
+            "required": false,
+            "type": "children"
+          }
+        ],
+        "states": {}
+      },
+      "slider": {
+        "id": "slider",
+        "name": "Slider",
+        "nameZh": "滑块",
+        "description": "Liquid glass slider with glowing thumb and translucent track",
+        "skeleton": {
+          "element": "div",
+          "baseClasses": [
+            "relative",
+            "h-2",
+            "bg-white/15",
+            "backdrop-blur-xl",
+            "rounded-full",
+            "ring-1 ring-inset ring-white/20"
+          ]
+        },
+        "parameters": [
+          {
+            "id": "visible",
+            "label": "Visible",
+            "labelZh": "可见",
+            "type": "boolean",
+            "default": true,
+            "trueClasses": "opacity-100",
+            "falseClasses": "opacity-0"
+          }
+        ],
+        "variants": {
+          "default": {
+            "id": "default",
+            "label": "Default",
+            "labelZh": "默认",
+            "classes": []
+          },
+          "accent": {
+            "id": "accent",
+            "label": "Accent",
+            "labelZh": "强调",
+            "classes": [
+              "[&>.fill]:bg-[#007AFF]/60"
+            ]
+          }
+        },
+        "slots": [
+          {
+            "id": "children",
+            "label": "Content",
+            "labelZh": "内容",
+            "required": false,
+            "type": "children"
+          }
+        ],
+        "states": {}
+      },
+      "controlGrid": {
+        "id": "controlGrid",
+        "name": "Control Grid",
+        "nameZh": "控制网格",
+        "description": "iOS Control Center style grid of liquid glass controls",
+        "skeleton": {
+          "element": "div",
+          "baseClasses": [
+            "grid grid-cols-2 gap-3",
+            "p-4",
+            "bg-white/15",
+            "backdrop-blur-3xl backdrop-saturate-150",
+            "rounded-3xl",
+            "border border-white/20",
+            "ring-1 ring-inset ring-white/15"
+          ]
+        },
+        "parameters": [
+          {
+            "id": "visible",
+            "label": "Visible",
+            "labelZh": "可见",
+            "type": "boolean",
+            "default": true,
+            "trueClasses": "opacity-100",
+            "falseClasses": "opacity-0"
+          }
+        ],
+        "variants": {
+          "default": {
+            "id": "default",
+            "label": "Default",
+            "labelZh": "默认",
+            "classes": []
+          }
+        },
+        "slots": [
+          {
+            "id": "children",
+            "label": "Controls",
+            "labelZh": "控制项",
+            "required": true,
+            "type": "children"
+          }
+        ],
+        "states": {}
+      },
+      "controlTile": {
+        "id": "controlTile",
+        "name": "Control Tile",
+        "nameZh": "控制磁贴",
+        "description": "Single control tile for Control Center style grids",
+        "skeleton": {
+          "element": "button",
+          "baseClasses": [
+            "flex flex-col items-center justify-center",
+            "aspect-square",
+            "bg-white/20",
+            "backdrop-blur-xl backdrop-saturate-150",
+            "rounded-2xl",
+            "border border-white/25",
+            "ring-1 ring-inset ring-white/20",
+            "text-white",
+            "transition-all duration-300 ease-out"
+          ]
+        },
+        "parameters": [
+          {
+            "id": "visible",
+            "label": "Visible",
+            "labelZh": "可见",
+            "type": "boolean",
+            "default": true,
+            "trueClasses": "opacity-100",
+            "falseClasses": "opacity-0"
+          }
+        ],
+        "variants": {
+          "default": {
+            "id": "default",
+            "label": "Default",
+            "labelZh": "默认",
+            "classes": []
+          },
+          "active": {
+            "id": "active",
+            "label": "Active",
+            "labelZh": "激活",
+            "classes": [
+              "bg-[#007AFF]/40",
+              "border-[#007AFF]/50",
+              "ring-[#007AFF]/30",
+              "shadow-[0_0_16px_rgba(0,122,255,0.4)]"
+            ]
+          }
+        },
+        "slots": [
+          {
+            "id": "icon",
+            "label": "Icon",
+            "labelZh": "图标",
+            "required": true,
+            "type": "icon"
+          },
+          {
+            "id": "label",
+            "label": "Label",
+            "labelZh": "文字",
+            "required": false,
+            "default": "Control",
+            "type": "text"
+          }
+        ],
+        "states": {
+          "hover": [
+            "hover:bg-white/30",
+            "hover:ring-white/30"
+          ],
+          "active": [
+            "active:scale-[0.95]"
+          ]
+        }
+      }
+    }
+  },
+  "readiness": {
+    "styleSlug": "glassmorphism",
+    "source": "curated",
+    "themeModes": [
+      "light",
+      "dark"
+    ],
+    "darkMode": {
+      "support": "partial",
+      "strategy": "explicit-tokens",
+      "guidance": [
+        "Dark glass needs higher surface opacity than light glass to keep text readable.",
+        "Pair translucent panels with solid fallback backgrounds for low-support browsers."
+      ]
+    },
+    "states": {
+      "default": {
+        "support": "complete",
+        "guidance": [
+          "Define a visible default state with semantic tokens, not one-off colors."
+        ]
+      },
+      "hover": {
+        "support": "complete",
+        "guidance": [
+          "Define a visible hover state with semantic tokens, not one-off colors."
+        ]
+      },
+      "focus-visible": {
+        "support": "complete",
+        "guidance": [
+          "Define a visible focus-visible state with semantic tokens, not one-off colors."
+        ]
+      },
+      "active": {
+        "support": "complete",
+        "guidance": [
+          "Define a visible active state with semantic tokens, not one-off colors."
+        ]
+      },
+      "disabled": {
+        "support": "complete",
+        "guidance": [
+          "Define a visible disabled state with semantic tokens, not one-off colors."
+        ]
+      },
+      "loading": {
+        "support": "partial",
+        "guidance": [
+          "Provide a loading state before production use; keep sizing stable across state changes."
+        ]
+      },
+      "skeleton": {
+        "support": "partial",
+        "guidance": [
+          "Provide a skeleton state before production use; keep sizing stable across state changes."
+        ]
+      },
+      "empty": {
+        "support": "partial",
+        "guidance": [
+          "Provide a empty state before production use; keep sizing stable across state changes."
+        ]
+      },
+      "error": {
+        "support": "partial",
+        "guidance": [
+          "Provide a error state before production use; keep sizing stable across state changes."
+        ]
+      },
+      "success": {
+        "support": "partial",
+        "guidance": [
+          "Provide a success state before production use; keep sizing stable across state changes."
+        ]
+      }
+    },
+    "components": {
+      "button": {
+        "states": [
+          "default",
+          "hover",
+          "focus-visible",
+          "active",
+          "disabled",
+          "loading"
+        ],
+        "guidance": [
+          "Keep icon and label positions stable between default and loading states.",
+          "Disabled buttons need lower contrast but must remain readable."
+        ]
+      },
+      "input": {
+        "states": [
+          "default",
+          "hover",
+          "focus-visible",
+          "disabled",
+          "error",
+          "success"
+        ],
+        "guidance": [
+          "Reserve vertical space for helper or error text to avoid layout shift.",
+          "Use focus-visible rings that remain legible against the style background."
+        ]
+      },
+      "card": {
+        "states": [
+          "default",
+          "hover",
+          "focus-visible",
+          "loading",
+          "skeleton",
+          "empty"
+        ],
+        "guidance": [
+          "Card hover should clarify interactivity; static content cards do not need hover lift.",
+          "Skeletons should match the final card rhythm and aspect ratio."
+        ]
+      },
+      "form": {
+        "states": [
+          "default",
+          "focus-visible",
+          "disabled",
+          "loading",
+          "error",
+          "success"
+        ],
+        "guidance": [
+          "Show validation close to the field and include a page-level submit failure message.",
+          "Do not replace form content with a spinner unless the user can still see context."
+        ]
+      },
+      "table": {
+        "states": [
+          "default",
+          "hover",
+          "focus-visible",
+          "loading",
+          "empty",
+          "error"
+        ],
+        "guidance": [
+          "Keep header, density, and horizontal scrolling predictable on mobile.",
+          "Empty and error rows should preserve table structure."
+        ]
+      },
+      "modal": {
+        "states": [
+          "default",
+          "focus-visible",
+          "loading",
+          "error",
+          "success"
+        ],
+        "guidance": [
+          "Trap focus, restore focus on close, and provide Escape plus explicit close controls.",
+          "Avoid long animated entrances; clarity matters more than spectacle."
+        ]
+      },
+      "toast": {
+        "states": [
+          "default",
+          "error",
+          "success"
+        ],
+        "guidance": [
+          "Use polite live-region behavior for non-critical updates.",
+          "Do not rely on color alone for success or error meaning."
+        ]
+      },
+      "empty-state": {
+        "states": [
+          "empty",
+          "loading",
+          "error"
+        ],
+        "guidance": [
+          "Give the user a specific next action, not generic explanatory copy.",
+          "Keep illustrations secondary to the task recovery path."
+        ]
+      }
+    },
+    "motion": {
+      "support": "partial",
+      "duration": "120-220ms",
+      "easing": "cubic-bezier(0.2, 0, 0, 1)",
+      "reducedMotion": "Disable transform-based entrances and preserve opacity-only feedback.",
+      "guidance": [
+        "Use motion for feedback and hierarchy, not decoration.",
+        "Respect prefers-reduced-motion for all non-essential transitions."
+      ]
+    },
+    "accessibility": {
+      "support": "partial",
+      "focus": "Use a 2px visible focus-visible ring with offset from the component edge.",
+      "targetSize": "Interactive controls should be at least 44px tall on touch surfaces.",
+      "aria": "Use native controls first; add ARIA only for composite widgets.",
+      "guidance": [
+        "Check contrast in both light and dark modes.",
+        "Keyboard navigation must cover menus, dialogs, forms, and generated tables."
+      ]
+    },
+    "performance": {
+      "support": "partial",
+      "costs": [
+        "backdrop-filter and large blur radii can hurt scrolling performance on mobile.",
+        "Layered translucent cards increase paint work."
+      ],
+      "guidance": [
+        "Limit backdrop blur to 12-20px and avoid nested glass panels.",
+        "Use transform/opacity animations; do not animate blur values."
+      ]
+    },
+    "promptAddons": [
+      "Use translucent glass surfaces sparingly and include a solid fallback background.",
+      "Keep contrast high enough on every frosted panel in light and dark modes.",
+      "Do not nest multiple backdrop-blur containers."
+    ],
+    "coverage": {
+      "darkMode": 70,
+      "states": 85,
+      "motion": 70,
+      "accessibility": 70,
+      "performance": 70,
+      "overall": 73
+    }
+  },
+  "accessibility": {
+    "overall": 96,
+    "contrast": {
+      "score": 100,
+      "ratio": 18.97,
+      "meetsAA": true,
+      "meetsAAA": true,
+      "pairs": [
+        {
+          "fg": "#ffffff",
+          "bg": "#0B1322",
+          "ratio": 18.58,
+          "aa": true,
+          "aaa": true,
+          "context": "Text on accent 1"
+        },
+        {
+          "fg": "#ffffff",
+          "bg": "#120D0A",
+          "ratio": 19.31,
+          "aa": true,
+          "aaa": true,
+          "context": "Text on accent 2"
+        },
+        {
+          "fg": "#ffffff",
+          "bg": "#081210",
+          "ratio": 19.02,
+          "aa": true,
+          "aaa": true,
+          "context": "Text on accent 3"
+        }
+      ]
+    },
+    "readability": {
+      "score": 85,
+      "fontSize": "text-sm md:text-base",
+      "fontWeight": "font-semibold text-white",
+      "lineHeight": "default"
+    },
+    "grade": "A"
+  },
+  "version": "1.0.0",
+  "changelog": [
+    {
+      "version": "1.0.0",
+      "date": "2026-10-14",
+      "changes": [
+        "Initial release"
+      ]
+    }
+  ]
+}

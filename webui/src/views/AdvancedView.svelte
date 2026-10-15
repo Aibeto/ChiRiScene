@@ -26,7 +26,7 @@
   <header class="bar u-row">
     <button
       type="button"
-      class="ak-button btn btn--ghost bar__back"
+      class="g-btn g-btn--ghost bar__back"
       onclick={() => go("config")}
     >
       <span class="bar__arrow" aria-hidden="true">←</span>
@@ -44,13 +44,13 @@
     />
   {/if}
 
-  <!-- 直写调度进程状态文件与 meta.yaml，不走草稿；ak-form-stack 一行一个控件（ak-choice 是 inline-grid，不套栅格会挤成一行） -->
+  <!-- 直写调度进程状态文件与 meta.yaml，不走草稿；g-form-stack 一行一个控件（g-switch 是 inline 布局，不套栅格会挤成一行） -->
   <Panel
     signal="action"
     title={t("config.advanced")}
     desc={t("config.advanced.hint")}
   >
-    <div class="ak-form-stack">
+    <div class="g-form-stack">
       <ToggleField
         label={t("config.down")}
         hint={downFixed ?
@@ -106,7 +106,7 @@
 
   .bar__title {
     margin: 0;
-    color: var(--ak-text-primary);
+    color: var(--text-primary);
     font-size: 0.9375rem;
     font-weight: 700;
   }

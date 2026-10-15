@@ -12,7 +12,7 @@
     items: SegmentedItem[]
     value: string
     label?: string
-    /** 项多/窄屏时整条左右滑动（项按内容宽度排列，不再压缩）——样式见 app.css [ak-adapt] */
+    /** 项多/窄屏时整条左右滑动（项按内容宽度排列，不再压缩）——样式见 app.css .g-segmented[data-scroll] */
     scroll?: boolean
     onselect: (id: string) => void
   }>()
@@ -28,11 +28,11 @@
   }
 </script>
 
-<!-- 视觉/尺寸/响应式全部来自官方 .ak-segmented（深色终端切换器）；aria-checked 语义由 app.css [ak-adapt] 映射到官方选中态tabindex=-1：
-     roving tabindex 容器（焦点实际在按钮上，方向键事件冒泡至此） -->
+<!-- 视觉/尺寸/响应式来自 app.css .g-segmented（玻璃切换器）；aria-checked 即选中态
+     tabindex=-1：roving tabindex 容器（焦点实际在按钮上，方向键事件冒泡至此） -->
 <div
-  class="ak-segmented"
-  data-ak-scroll={scroll || undefined}
+  class="g-segmented"
+  data-scroll={scroll || undefined}
   role="radiogroup"
   aria-label={label || undefined}
   tabindex={-1}
@@ -42,7 +42,7 @@
     <button
       type="button"
       role="radio"
-      class="ak-segmented__item"
+      class="g-segmented__item"
       aria-checked={value === item.id}
       tabindex={value === item.id ? 0 : -1}
       onclick={() => onselect(item.id)}

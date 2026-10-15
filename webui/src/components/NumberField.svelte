@@ -58,25 +58,26 @@
   }
 </script>
 
-<label class="ak-field num" class:num--disabled={disabled}>
-  <span class="num__text">
-    <span class="num__name">
+<label class="g-field" data-disabled={disabled || undefined}>
+  <span class="g-switch__text">
+    <span class="g-switch__name">
       {label}
       {#if pending || dirty}
-        <span class="num__pending" aria-hidden="true"></span>
+        <span class="g-pending" aria-hidden="true"></span>
       {/if}
     </span>
     {#if hint}
-      <span class="ak-field__hint">{hint}</span>
+      <span class="g-hint">{hint}</span>
     {/if}
   </span>
   <span class="num__row">
     <input
-      class="ak-input num__input"
+      class="g-input num__input"
       type="number"
       inputmode="decimal"
       step="any"
       {disabled}
+      aria-invalid={invalid || undefined}
       min={String(min)}
       max={String(max)}
       value={text}
@@ -100,35 +101,9 @@
 </label>
 
 <style>
-  .num {
-    display: grid;
-    gap: 0.5rem;
-  }
-
-  .num--disabled {
+  .g-field[data-disabled] {
     cursor: not-allowed;
     opacity: 0.55;
-  }
-
-  .num__text {
-    display: grid;
-    gap: 0.2rem;
-  }
-
-  .num__name {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-    color: var(--ak-text-primary);
-    font-size: 0.875rem;
-    font-weight: 600;
-    line-height: 1.4;
-  }
-
-  .num__pending {
-    width: 0.4rem;
-    height: 0.4rem;
-    background: var(--ak-signal-action);
   }
 
   .num__row {
@@ -139,5 +114,9 @@
 
   .num__input {
     width: 8rem;
+  }
+
+  .num__unit {
+    white-space: nowrap;
   }
 </style>

@@ -1,5 +1,5 @@
 <script lang="ts">
-  // LiveStatus.svelte: [status]复用 ak-ui 状态原语（.ak-status 深色底 + 脉冲信号点）；三种存活态用文字 + 修饰类双重表达（不只靠颜色）
+  // LiveStatus.svelte: [status]守护进程存活芯片（.g-status 玻璃胶囊 + 脉冲信号点）；三态用文字 + 数据属性双重表达（不只靠颜色）
   let {
     state,
     label,
@@ -11,16 +11,16 @@
   }>()
 </script>
 
-<!-- 视觉全部来自官方 .ak-status（层级适配在 app.css [ak-adapt]）；三态用修饰类 + 文字双重表达 -->
+<!-- 视觉来自 app.css [primitives] 的 .g-status；三态用修饰类 + 文字双重表达 -->
 <div
-  class="ak-status"
-  class:ak-status--offline={state === 'stopped'}
-  class:ak-status--warning={state === 'unknown'}
+  class="g-status"
+  class:g-status--running={state === 'running'}
+  data-signal={state === 'running' ? 'success' : state === 'stopped' ? 'danger' : 'action'}
   role="status"
 >
-  <span class="ak-status__signal"></span>
-  <span class="ak-status__label">{label}</span>
+  <span class="g-status__signal"></span>
+  <span class="g-status__label">{label}</span>
   {#if detail}
-    <span class="ak-status__detail">{detail}</span>
+    <span class="g-status__detail">{detail}</span>
   {/if}
 </div>

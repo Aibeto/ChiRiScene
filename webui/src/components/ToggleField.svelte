@@ -1,6 +1,5 @@
 <script lang="ts">
-  // ToggleField.svelte: [switch]复用 ak-ui 开关原语（.ak-choice--switch + 原生 checkbox[role=switch]），
-  // 仅把硬编码浅色值映射回语义 token 适配深色
+  // ToggleField.svelte: [switch]玻璃开关（.g-switch）：原生 checkbox[role=switch]，轨道必须作 input 的兄弟元素（项目红线禁 :has()）
   let {
     label,
     hint = '',
@@ -19,53 +18,29 @@
   }>()
 </script>
 
-<label class="ak-choice ak-choice--switch toggle" class:toggle--disabled={disabled}>
+<!-- 轨道/旋钮/选中色/焦点环来自 app.css .g-switch；这里只保留文本结构与「待提交」标记 -->
+<label class="g-switch" data-disabled={disabled || undefined}>
   <input
-    class="ak-choice__input"
+    class="g-switch__input"
     type="checkbox"
     role="switch"
     {checked}
     {disabled}
     onchange={event => onchange((event.currentTarget as HTMLInputElement).checked)}
   />
-  <span class="ak-choice__label toggle__text">
-    <span class="toggle__name">
+  <span class="g-switch__control">
+    <span class="g-switch__track"></span>
+    <span class="g-switch__thumb"></span>
+  </span>
+  <span class="g-switch__text">
+    <span class="g-switch__name">
       {label}
       {#if pending}
-        <span class="toggle__pending" aria-hidden="true"></span>
+        <span class="g-pending" aria-hidden="true"></span>
       {/if}
     </span>
     {#if hint}
-      <span class="ak-field__hint">{hint}</span>
+      <span class="g-hint">{hint}</span>
     {/if}
   </span>
 </label>
-
-<style>
-  /* 开关原语（轨道/旋钮/选中色/焦点环）来自官方 .ak-choice--switch（深色适配在 app.css [ak-adapt]）；这里只保留文本结构与「待提交」标记 */
-  .toggle--disabled {
-    cursor: not-allowed;
-    opacity: 0.55;
-  }
-
-  .toggle__text {
-    display: grid;
-    gap: 0.2rem;
-  }
-
-  .toggle__name {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-    color: var(--ak-text-primary);
-    font-size: 0.875rem;
-    font-weight: 600;
-    line-height: 1.4;
-  }
-
-  .toggle__pending {
-    width: 0.4rem;
-    height: 0.4rem;
-    background: var(--ak-signal-action);
-  }
-</style>

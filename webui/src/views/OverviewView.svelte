@@ -135,7 +135,7 @@
       </div>
       {#if app.isChiri}
         <!-- 耗电情况：PowerAVG.chr（daemon 每 1s 采样写入），口径随 meta.power_avg；量程 = meta.power_max_w（默认 12W），
-             进度条直接复用官方 ak-progress 原语 -->
+             进度条直接复用 g-progress -->
         <div class="power">
           <p class="u-note">
             {app.powerAvgUsesAverage ?
@@ -147,11 +147,11 @@
               "—"
             : `${app.powerAvgWatt.toFixed(2)} ${t("unit.watt")}`}
           </p>
-          <!-- 官方 ak-progress 结构：--ak-progress-signal 与 --ak-progress-value 的默认值都声明在 .ak-progress 根上，
+          <!-- g-progress 结构：--progress-signal 与 --progress-width 的默认值都声明在 .g-progress 根上，
                fill 的宽度与颜色全部由变量驱动此前裸用track/fill 时 fill 取不到 signal 变量 → background 透明，条看着是空的（此前两次修宽度方向都错了，
                宽度早就画上了）壳层由 .power__bar 剥掉 -->
           <div
-            class="ak-progress power__bar"
+            class="g-progress power__bar"
             role="progressbar"
             aria-label={app.powerAvgUsesAverage ?
               t("overview.power.avg")
@@ -159,14 +159,14 @@
             aria-valuemin="0"
             aria-valuemax="100"
             aria-valuenow={Math.round(powerPercent)}
-            style={`--ak-progress-value: ${powerPercent.toFixed(1)}%`}
+            style={`--progress-width: ${powerPercent.toFixed(1)}%`}
           >
-            <div class="ak-progress__track">
-              <span class="ak-progress__fill"></span>
+            <div class="g-progress__track">
+              <span class="g-progress__fill"></span>
             </div>
           </div>
           <!-- 数字与条并列：条看着空时能区分「读数为 0/缺失」与「条没画出来」 -->
-          <span class="ak-progress__value u-mono"
+          <span class="g-progress__value u-mono"
             >{Math.round(powerPercent)}%</span
           >
         </div>
@@ -232,19 +232,19 @@
             : `${app.powerNowWatt.toFixed(2)} ${t("unit.watt")}`}
           </p>
           <div
-            class="ak-progress power__bar"
+            class="g-progress power__bar"
             role="progressbar"
             aria-label={t("overview.power.now")}
             aria-valuemin="0"
             aria-valuemax="100"
             aria-valuenow={Math.round(nowPercent)}
-            style={`--ak-progress-value: ${nowPercent.toFixed(1)}%`}
+            style={`--progress-width: ${nowPercent.toFixed(1)}%`}
           >
-            <div class="ak-progress__track">
-              <span class="ak-progress__fill"></span>
+            <div class="g-progress__track">
+              <span class="g-progress__fill"></span>
             </div>
           </div>
-          <span class="ak-progress__value u-mono"
+          <span class="g-progress__value u-mono"
             >{Math.round(nowPercent)}%</span
           >
         </div>
@@ -310,7 +310,7 @@
     {/if}
     <button
       type="button"
-      class="ak-button btn btn--primary btn--block"
+      class="g-btn g-btn--primary g-btn--block"
       disabled={app.exportPhase === "running"}
       onclick={() => void app.startExport()}
     >
@@ -319,9 +319,9 @@
       : t("overview.export.action")}
     </button>
     {#if app.exportPhase === "running"}
-      <!-- 进度区整块用官方 ak-progress（标题行 + 斜纹刻度轨道）；填充宽度由下方.ak-progress__fill 的内联 width 决定，不再依赖 --ak-progress-value 继承 -->
-      <div class="ak-progress u-mt-3">
-        <div class="ak-progress__header">
+      <!-- 进度区整块用 g-progress（标题行 + 刻度轨道）；填充宽度由下方 .g-progress__fill 的内联 width 决定，不再依赖 --progress-width 继承 -->
+      <div class="g-progress u-mt-3">
+        <div class="g-progress__header">
           <span>
             {app.exportPlanned > 0 ?
               t("overview.export.progress", {
@@ -330,17 +330,17 @@
               })
             : t("overview.export.preparing")}
           </span>
-          <span class="ak-progress__value">{app.exportPercent}%</span>
+          <span class="g-progress__value">{app.exportPercent}%</span>
         </div>
         <div
-          class="ak-progress__track"
+          class="g-progress__track"
           role="progressbar"
           aria-valuemin="0"
           aria-valuemax="100"
           aria-valuenow={app.exportPercent}
         >
           <!-- 同功耗条：宽度直接内联，不依赖上游变量继承 -->
-          <span class="ak-progress__fill" style={`width: ${app.exportPercent}%`}></span>
+          <span class="g-progress__fill" style={`width: ${app.exportPercent}%`}></span>
         </div>
       </div>
     {/if}
@@ -349,7 +349,7 @@
          导出正在 tar logd/，此时 rm 会把半删的目录打进归档 -->
     <button
       type="button"
-      class="ak-button btn btn--danger btn--block u-mt-3"
+      class="g-btn g-btn--danger g-btn--block u-mt-3"
       disabled={app.archivePending || app.exportPhase === "running"}
       onclick={() => (deleteOpen = true)}
     >
@@ -367,7 +367,7 @@
   >
     <button
       type="button"
-      class="ak-button btn btn--danger btn--block"
+      class="g-btn g-btn--danger g-btn--block"
       disabled={app.stopping || app.daemonState !== "running"}
       onclick={() => (confirmOpen = true)}
     >
@@ -414,7 +414,7 @@
   .daemon-card {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
-    gap: var(--ak-space-4);
+    gap: var(--space-4);
     align-items: center;
   }
 
@@ -424,7 +424,7 @@
     min-width: 0;
   }
 
-  /* 耗电读数：口径标签 + 数值 + 官方量程条，右栏紧凑排列（替代原八角仪表盘） */
+  /* 耗电读数：口径标签 + 数值 + 量程条，右栏紧凑排列（替代原八角仪表盘） */
   .power {
     display: grid;
     justify-items: end;
@@ -442,7 +442,7 @@
 
   .power__bar {
     width: 100%;
-    /* 官方 .ak-progress 根自带壳层（内距/边框/深底）——标签与数值在外层栅格，条只取它的轨道/填充机制，壳层剥掉保持原布局 */
+    /* .g-progress 根自带壳层（内距/边框/深底）——标签与数值在外层栅格，条只取它的轨道/填充机制，壳层剥掉保持原布局 */
     padding: 0;
     border: 0;
     background: none;
@@ -452,7 +452,7 @@
   .mode-card {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
-    gap: var(--ak-space-4);
+    gap: var(--space-4);
     align-items: center;
   }
 
@@ -465,13 +465,13 @@
 
   .mode {
     display: grid;
-    gap: var(--ak-space-2);
+    gap: var(--space-2);
   }
 
   /* 家族名：小字上标（与 .mode__id 同档）。此前无规则 → `<p>` 的默认外边距会顶开 .mode__main 的 0.2rem 行距，三行看起来是散的 */
   .mode__family {
     margin: 0;
-    color: var(--ak-text-secondary);
+    color: var(--text-muted);
     font-size: 0.6875rem;
     font-weight: 700;
     letter-spacing: 0.08em;
@@ -485,7 +485,7 @@
   /* 信号色由全局 [data-signal] 映射提供（与 Panel 同一份） */
   .mode__name {
     margin: 0;
-    color: var(--signal, var(--ak-text-primary));
+    color: var(--signal, var(--text-primary));
     font-size: 1.5rem;
     font-weight: 700;
     letter-spacing: 0.01em;
@@ -494,22 +494,22 @@
 
   .mode__id {
     margin: 0;
-    color: var(--ak-text-secondary);
+    color: var(--text-muted);
     font-size: 0.6875rem;
     letter-spacing: 0.08em;
   }
 
   .mode__problems {
     margin: 0;
-    padding-left: var(--ak-space-4);
-    color: var(--ak-signal-danger);
+    padding-left: var(--space-4);
+    color: var(--sig-danger);
     font-size: 0.75rem;
     line-height: 1.6;
   }
 
   /* 提示清单主体来自全局 .u-notice，这里只补与下方按钮的间距 */
   .export__notice {
-    margin-bottom: var(--ak-space-3);
+    margin-bottom: var(--space-3);
   }
 
   /* 产物路径可能很长：允许断行，避免把卡片撑宽（文字样式来自 .u-note） */
@@ -518,6 +518,6 @@
   }
 
   .export__done {
-    color: var(--ak-signal-success);
+    color: var(--sig-success);
   }
 </style>

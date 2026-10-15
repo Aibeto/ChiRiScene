@@ -27,7 +27,7 @@
 
 <div class="u-stack">
   <header class="bar u-row">
-    <button type="button" class="ak-button btn btn--ghost bar__back" onclick={() => go('config')}>
+    <button type="button" class="g-btn g-btn--ghost bar__back" onclick={() => go('config')}>
       <span class="bar__arrow" aria-hidden="true">←</span>
       {t('battery.action.back')}
     </button>
@@ -54,7 +54,7 @@
 
   {#if app.isChiri}
   <Panel signal="action" title={t('battery.source.title')}>
-    <div class="ak-form-stack">
+    <div class="g-form-stack">
       <ToggleField
         label={t('battery.oplusChg')}
         hint={t('battery.oplusChg.hint')}
@@ -73,7 +73,7 @@
   </Panel>
 
   <Panel signal="action" title={t('battery.scale.title')}>
-    <div class="ak-form-stack">
+    <div class="g-form-stack">
       <!-- 私有节点打开时这两项显示为「未开」：daemon 只认私有节点，留着也不生效 -->
       <ToggleField
         label={t('battery.voltageDouble')}
@@ -115,7 +115,7 @@
   </Panel>
 
   <Panel signal="action" title={t('battery.power.title')}>
-    <div class="ak-form-stack">
+    <div class="g-form-stack">
       <ToggleField
         label={t('config.powerAvg')}
         hint={t('config.powerAvg.hint')}
@@ -160,7 +160,7 @@
 
   .bar__title {
     margin: 0;
-    color: var(--ak-text-primary);
+    color: var(--text-primary);
     font-size: 0.9375rem;
     font-weight: 700;
   }

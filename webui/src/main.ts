@@ -1,6 +1,5 @@
 // main.ts: [bootstrap] [ksu-chrome]
 import { mount } from 'svelte'
-import '@yunyoujun/ak-ui/style.css'
 import './app.css'
 import App from './App.svelte'
 import { enableEdgeToEdge, fullScreen, hasKsu } from '@/kernel/ksu'

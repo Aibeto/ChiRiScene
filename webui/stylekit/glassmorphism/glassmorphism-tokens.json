@@ -1,0 +1,68 @@
+{
+  "colors": {
+    "primary": {
+      "value": "rgba(255, 255, 255, 0.08)",
+      "type": "color"
+    },
+    "secondary": {
+      "value": "rgba(255, 255, 255, 0.05)",
+      "type": "color"
+    },
+    "accent": {
+      "accent-1": {
+        "value": "#0B1322",
+        "type": "color"
+      },
+      "accent-2": {
+        "value": "#33517A",
+        "type": "color"
+      },
+      "accent-3": {
+        "value": "#7C9CC4",
+        "type": "color"
+      },
+      "accent-4": {
+        "value": "#E4B863",
+        "type": "color"
+      }
+    },
+    "background": {
+      "value": "#ffffff",
+      "type": "color"
+    },
+    "foreground": {
+      "value": "#000000",
+      "type": "color"
+    }
+  },
+  "typography": {
+    "fontFamily": {
+      "primary": {
+        "value": "Inter, system-ui, sans-serif",
+        "type": "fontFamily"
+      },
+      "mono": {
+        "value": "JetBrains Mono, monospace",
+        "type": "fontFamily"
+      }
+    },
+    "fontSize": {
+      "xs": {
+        "value": "12px",
+        "type": "fontSize"
+      },
+      "sm": {
+        "value": "14px",
+        "type": "fontSize"
+      },
+      "base": {
+        "value": "16px",
+        "type": "fontSize"
+      },
+      "lg": {
+        "value": "18px",
+        "type": "fontSize"
+      }
+    }
+  }
+}

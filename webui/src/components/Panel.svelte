@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Panel.svelte: [layout] [signal]面板容器：复用 .ak-card 结构类，深色表面与切角几何由项目类提供（官方 .ak-card 透明 + 阴影，不适合深色大块布局）
+  // Panel.svelte: [layout] [signal]面板容器：玻璃卡片（.g-card，三层玻璃结构见 app.css [glass]/[primitives]）
   import type { Snippet } from 'svelte'
 
   let {
@@ -11,63 +11,46 @@
   } = $props<{
     title?: string
     desc?: string
-    /** 语义信号：info / action / danger / success / accent（映射 --ak-signal-*） */
+    /** 语义信号：info / action / danger / success / accent（映射 --signal） */
     signal?: string
     actions?: Snippet
     children?: Snippet
   }>()
 </script>
 
-<section class="panel ak-card" data-signal={signal || undefined}>
+<section class="panel g-glass g-card" data-signal={signal || undefined}>
+  <!-- 扫光高光：hover 时斜向扫过（.g-sheen，见 app.css [glass]） -->
+  <span class="g-sheen" aria-hidden="true"></span>
   {#if title || actions}
-    <header class="panel__head ak-card__header u-between">
-      <div class="panel__titles">
-        <h2 class="ak-card__title">{title}</h2>
+    <header class="g-card__header">
+      <div class="g-card__titles">
+        <h2 class="g-card__title">{title}</h2>
         {#if desc}
-          <p class="ak-card__description">{desc}</p>
+          <p class="g-card__desc">{desc}</p>
         {/if}
       </div>
       {#if actions}
-        <div class="panel__actions u-row-tight">{@render actions()}</div>
+        <div class="g-card__actions">{@render actions()}</div>
       {/if}
     </header>
   {/if}
-  <div class="ak-card__content">
+  <div class="panel__body">
     {@render children?.()}
   </div>
 </section>
 
 <style>
-  /* 表面（边框/底色/切角）与排版来自官方 .ak-card（深色适配在 app.css [ak-adapt]）；这里只保留左侧信号条与头部骨架修正 */
+  /* 玻璃结构/信号条/悬浮全部来自 app.css 的 .g-glass 与 .g-card；这里只保留无标题时的首元素贴合 */
   .panel {
-    position: relative;
+    display: block;
   }
 
-  .panel[data-signal]::before {
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    left: 0;
-    width: 3px;
-    content: '';
-    background: var(--signal);
-  }
-
-  /* .u-between 默认居中；标题可能多行，这里保持顶部对齐 */
-  .panel__head {
-    align-items: flex-start;
-  }
-
-  .panel__titles {
+  .panel__body {
     min-width: 0;
   }
 
-  .panel__actions {
-    flex: 0 0 auto;
-  }
-
-  /* 无标题/操作的面板：内容区没有官方 .ak-card__header 的间距可借 */
-  .ak-card__content:first-child {
+  /* 无标题/操作的面板：内容区没有 .g-card__header 的间距可借 */
+  .panel__body:first-child {
     margin-top: 0;
   }
 </style>

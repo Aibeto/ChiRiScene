@@ -114,7 +114,7 @@
 </script>
 
 {#snippet backToBottomButton()}
-  <!-- 回到底部：仅「滑离底部」时出现，绝对定位在所属滚动子块内，不悬浮到页面其它区域 -->
+  <!-- 回到底部：仅「滑离底部」时出现，绝对定位在所属滚动子块内（.pane position:relative），不悬浮到页面其它区域 -->
   <button type="button" class="to-bottom" aria-label={t('action.toBottom')} onclick={backToBottom}>
     ↓
   </button>
@@ -126,8 +126,8 @@
     <Segmented items={sourceItems} value={source} label={t('logs.source')} onselect={pick} />
 
     {#if source === 'daemon'}
-      <div class="ak-field u-mt-3">
-        <span class="ak-label">{t('logs.level')}</span>
+      <div class="g-field u-mt-3">
+        <span class="g-label">{t('logs.level')}</span>
         <!-- 5 档在窄屏压不下：整条左右滑动（scroll），项按内容宽度排列 -->
         <Segmented
           items={levelItems}
@@ -146,7 +146,8 @@
       <StateBox kind="missing" message={t('logs.missing')} detail={t('logs.archive')} />
     {:else}
       <div class="pane">
-        <section class="terminal" data-ak-ui="terminal" aria-label={t('logs.source.daemon')}>
+        <!-- 终端是嵌在玻璃页面里的沉浸深底：一块干玻璃（g-glass--flat，无 backdrop-filter），不再叠模糊玻璃 -->
+        <section class="terminal g-glass--flat" aria-label={t('logs.source.daemon')}>
           <header class="terminal__bar u-between">
             <span class="terminal__path u-mono">logs/daemon.log</span>
             <span class="terminal__count u-mono">{t('logs.lines', { n: visible.length })}</span>
@@ -207,7 +208,7 @@
     {:else}
       <div class="pane">
         <div
-          class="snapshot-wrap u-scroll"
+          class="snapshot-wrap g-glass--flat u-scroll"
           bind:this={snapshotBody}
           onscroll={onStatusScroll}
         >
@@ -246,35 +247,37 @@
 </div>
 
 <style>
+  /* 终端深底是「场景里的屏幕」：等宽日志要沉浸阅读区，干玻璃底 + hairline 边 + 圆角 */
   .terminal {
-    border: var(--ak-line-hairline) solid var(--ak-surface-raised);
-    /* 日志终端的沉浸深底（比 canvas 更深）：组件级变量集中在此定义，不散落色值 */
-    --terminal-surface: #0a0c0e;
-    background: var(--terminal-surface);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    border: var(--hairline) solid var(--glass-border);
+    border-radius: var(--radius-m);
+    /* 沉浸深底走 token（--night-deep 半透）；不支持 color-mix 的旧 WebView 自动落回 .g-glass--flat 的玻璃底 */
+    background: color-mix(in srgb, var(--night-deep) 70%, transparent);
   }
 
   .terminal__bar {
-    padding: var(--ak-space-2) var(--ak-space-3);
-    border-bottom: var(--ak-line-hairline) solid var(--ak-surface-raised);
-    background: var(--ak-surface-panel);
+    padding: var(--space-2) var(--space-3);
+    border-bottom: var(--hairline) solid var(--glass-border);
   }
 
   .terminal__path,
   .terminal__count {
-    color: var(--ak-text-secondary);
+    color: var(--text-muted);
     font-size: 0.6875rem;
   }
 
   .terminal__body {
     max-height: 60vh;
-    padding: var(--ak-space-3);
+    padding: var(--space-3);
   }
 
   .log {
     display: grid;
     /* 全列按内容自适应 + 不换行：长消息靠容器横向滑动查看 */
     grid-template-columns: auto auto auto minmax(0, max-content);
-    gap: var(--ak-space-2);
+    gap: var(--space-2);
     margin: 0 0 0.15rem;
     font-size: 0.6875rem;
     line-height: 1.55;
@@ -282,49 +285,51 @@
   }
 
   .log__time {
-    color: var(--ak-text-secondary);
+    color: var(--text-muted);
   }
 
   /* 级别列不设固定宽：min-width 会让「级别→内容」间距大于「时间→级别」（要求两者一致）；代价是 4/5 字档名混排时模块列起点差约一字宽，可接受 */
   .log__level {
-    color: var(--ak-text-secondary);
+    color: var(--text-muted);
     font-weight: 700;
     letter-spacing: 0.06em;
   }
 
   .log__module {
-    color: var(--ak-text-secondary);
+    color: var(--text-muted);
   }
 
   .log__message {
-    color: var(--ak-text-primary);
+    color: var(--text-secondary);
   }
 
+  /* 信号色只标状态（每级另有级别文字，不靠颜色单独传达）；映射与全局 [signal-map] 一致 */
   .log[data-level='ERROR'] .log__level,
   .log[data-level='ERROR'] .log__message {
-    color: var(--ak-signal-danger);
+    color: var(--sig-danger);
   }
 
   .log[data-level='WARN'] .log__level,
   .log[data-level='WARN'] .log__message {
-    color: var(--ak-signal-action);
+    color: var(--sig-action);
   }
 
   .log[data-level='INFO'] .log__level {
-    color: var(--ak-signal-info);
+    color: var(--sig-info);
   }
 
   .log[data-level='DEBUG'] .log__level,
   .log[data-level='DEBUG'] .log__message {
-    color: var(--ak-text-secondary);
+    color: var(--text-muted);
   }
 
   .snapshot-wrap {
-    /* 列宽随数据自适应；与 daemon 终端同款子滚动窗口：限高 60vh + 双轴滑动（配合跟随底部），滚动行为来自 .u-scroll */
+    /* 列宽随数据自适应；与 daemon 终端同款子滚动窗口：限高 60vh + 双轴滑动（配合跟随底部），滚动行为来自 .u-scroll；
+       干玻璃底不叠模糊（嵌在玻璃页面里），圆角成块 */
     max-width: 100%;
     max-height: 60vh;
-    border: var(--ak-line-hairline) solid var(--ak-surface-raised);
-    background: var(--ak-surface-panel);
+    border: var(--hairline) solid var(--glass-border);
+    border-radius: var(--radius-m);
   }
 
   .snapshot {
@@ -335,7 +340,7 @@
 
   .snapshot__row {
     white-space: nowrap;
-    border-bottom: var(--ak-line-hairline) solid var(--ak-surface-raised);
+    border-bottom: var(--hairline) solid var(--glass-border);
     font-size: 0.6875rem;
     line-height: 1.5;
   }
@@ -343,22 +348,22 @@
   /* 内距必须落在 th/td 上：tr 的 padding 不参与表格布局（列会糊在一起）；全部左对齐 */
   .snapshot th,
   .snapshot td {
-    padding: var(--ak-space-2) var(--ak-space-3);
+    padding: var(--space-2) var(--space-3);
     text-align: left;
   }
 
   .snapshot__row--head {
-    color: var(--ak-text-secondary);
+    color: var(--text-muted);
     font-weight: 700;
     letter-spacing: 0.06em;
   }
 
-  /* 粘性表头必须落在 th 上（tr 上的 sticky + 背景在滚动时不覆盖数据行） */
+  /* 粘性表头必须落在 th 上（tr 上的 sticky + 背景在滚动时不覆盖数据行）：夜景实底，滚动时数据行不透出表头下 */
   .snapshot__row--head th {
     position: sticky;
     top: 0;
     z-index: 1;
-    background: var(--ak-surface-raised);
+    background: var(--night);
   }
 
   .files {
@@ -371,7 +376,7 @@
   }
 
   .files__item {
-    color: var(--ak-text-secondary);
+    color: var(--text-muted);
     font-size: 0.6875rem;
     line-height: 1.6;
     overflow-wrap: anywhere;
@@ -381,19 +386,19 @@
     position: relative;
   }
 
-  /* 右下角回到底部：绝对定位在所属滚动子块右下角，滑离底部时出现、回底即消失 */
+  /* 右下角回到底部：absolute 锚在所属滚动子块（.pane）右下角，滑离底部时出现、回底即消失（项目红线：禁 position: fixed） */
   .to-bottom {
     position: absolute;
-    right: var(--ak-space-3);
-    bottom: var(--ak-space-3);
+    right: var(--space-3);
+    bottom: var(--space-3);
     z-index: 20;
     width: 2.75rem;
     height: 2.75rem;
-    border: var(--ak-line-hairline) solid var(--ak-surface-raised);
+    border: var(--hairline) solid var(--glass-border);
     border-radius: 999px;
-    background: var(--ak-surface-panel);
-    color: var(--ak-text-primary);
+    background: var(--glass-bg-strong);
+    color: var(--text-primary);
     font-size: 1rem;
-    box-shadow: var(--ak-shadow-panel);
+    box-shadow: var(--glass-shadow);
   }
 </style>

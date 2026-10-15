@@ -20,7 +20,7 @@
     {#snippet actions()}
       <button
         type="button"
-        class="ak-button btn"
+        class="g-btn"
         disabled={app.scanning}
         onclick={() => app.loadApps(true)}
       >
@@ -28,10 +28,10 @@
       </button>
     {/snippet}
 
-    <label class="ak-field">
-      <span class="ak-label">{t("apps.search")}</span>
+    <label class="g-field">
+      <span class="g-label">{t("apps.search")}</span>
       <input
-        class="ak-input"
+        class="g-input"
         type="search"
         placeholder={t("apps.search")}
         bind:value={app.appKeyword}
@@ -54,29 +54,29 @@
   {:else if shown === 0}
     <StateBox kind="empty" message={t("apps.empty")} />
   {:else}
-    <ul class="apps u-list-reset">
+    <!-- 列表是一整块玻璃（g-glass），行是嵌在内的干玻璃行（g-glass--flat）：玻璃里禁止再叠模糊玻璃 -->
+    <ul class="apps g-glass u-list-reset">
       {#each app.filteredApps as entry (entry.pkg)}
-        <li class="apps__item">
+        <li class="apps__item g-glass--flat">
           <div class="apps__head">
             <p class="apps__label u-truncate">{entry.label}</p>
             {#if entry.label !== entry.pkg}
               <p class="apps__pkg u-mono u-truncate">{entry.pkg}</p>
             {/if}
           </div>
-          <div class="ak-tag-group apps__tags">
+          <div class="g-tag-group">
             {#if entry.special}
-              <span class="ak-tag ak-tag--advanced">
+              <span class="g-tag g-tag--accent">
                 {t("apps.tag.special")} · {entry.special.fallback}
               </span>
             {/if}
             {#if entry.fasConfig}
-              <span class="ak-tag">{t("apps.tag.fas")} · {entry.fasConfig}</span
-              >
+              <span class="g-tag">{t("apps.tag.fas")} · {entry.fasConfig}</span>
             {/if}
             {#if entry.appMode}
-              <span class="ak-tag ak-tag--neutral"
-                >{t("apps.tag.mode")} · {entry.appMode}</span
-              >
+              <span class="g-tag g-tag--neutral">
+                {t("apps.tag.mode")} · {entry.appMode}
+              </span>
             {/if}
           </div>
         </li>
@@ -121,18 +121,21 @@
 </div>
 
 <style>
-  /* 列表重置来自 .u-list-reset，这里只做 1px 缝隙的分隔线效果 */
+  /* 列表重置来自 .u-list-reset；玻璃底/边/影来自 .g-glass，这里只补圆角与内部排布 */
   .apps {
     display: grid;
-    gap: 1px;
-    background: var(--ak-surface-raised);
+    gap: var(--space-2);
+    padding: var(--space-3);
+    border-radius: var(--radius-l);
   }
 
+  /* 干玻璃行（g-glass--flat 无 backdrop-filter）：补 hairline 边与圆角成「玻璃行」 */
   .apps__item {
     display: grid;
-    gap: var(--ak-space-2);
-    padding: var(--ak-space-3) var(--ak-space-4);
-    background: var(--ak-surface-panel);
+    gap: var(--space-2);
+    padding: var(--space-3) var(--space-4);
+    border: var(--hairline) solid var(--glass-border);
+    border-radius: var(--radius-m);
   }
 
   .apps__head {
@@ -143,6 +146,7 @@
 
   .apps__label {
     margin: 0;
+    color: var(--text-primary);
     font-size: 0.875rem;
     font-weight: 600;
     line-height: 1.4;
@@ -150,12 +154,8 @@
 
   .apps__pkg {
     margin: 0;
-    color: var(--ak-text-secondary);
+    color: var(--text-muted);
     font-size: 0.6875rem;
     line-height: 1.4;
-  }
-
-  .apps__tags {
-    gap: var(--ak-space-2);
   }
 </style>

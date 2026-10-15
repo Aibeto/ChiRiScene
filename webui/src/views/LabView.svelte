@@ -65,7 +65,7 @@
 
 <div class="u-stack">
   <header class="bar u-row">
-    <button type="button" class="ak-button btn btn--ghost bar__back" onclick={() => go('config')}>
+    <button type="button" class="g-btn g-btn--ghost bar__back" onclick={() => go('config')}>
       <span class="bar__arrow" aria-hidden="true">←</span>
       {t('lab.action.back')}
     </button>
@@ -115,11 +115,11 @@
             <div class="u-between">
               <h3 class="mode__name">{t(`lab.mode.${key}`)}</h3>
               {#if current === key}
-                <span class="ak-tag ak-tag--danger mode__tag">{t('lab.status.on')}</span>
+                <span class="g-tag g-tag--danger mode__tag">{t('lab.status.on')}</span>
               {:else if !enableable(key)}
-                <span class="ak-tag ak-tag--neutral mode__tag">{t('lab.status.reserved')}</span>
+                <span class="g-tag g-tag--neutral mode__tag">{t('lab.status.reserved')}</span>
               {:else}
-                <span class="ak-tag ak-tag--neutral mode__tag">{t('lab.status.off')}</span>
+                <span class="g-tag g-tag--neutral mode__tag">{t('lab.status.off')}</span>
               {/if}
             </div>
             <p class="u-note">{t(`lab.mode.${key}.detail`)}</p>
@@ -127,7 +127,7 @@
             {#if current === key}
               <button
                 type="button"
-                class="ak-button btn btn--ghost mode__action"
+                class="g-btn g-btn--ghost mode__action"
                 disabled={busy}
                 onclick={requestDisable}
               >
@@ -139,7 +139,7 @@
             {:else}
               <button
                 type="button"
-                class="ak-button btn btn--primary mode__action"
+                class="g-btn g-btn--primary mode__action"
                 disabled={busy || !enableable(key)}
                 onclick={() => app.setLabMode(key)}
               >
@@ -178,45 +178,60 @@
 />
 
 <style>
+  .bar {
+    align-items: center;
+    gap: 0.5rem;
+  }
+
   .bar__back {
-    padding: 0 var(--ak-space-3);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
   }
 
   .bar__arrow {
-    margin-right: 0.35rem;
+    font-size: 1rem;
+    line-height: 1;
   }
 
   .bar__title {
     margin: 0;
-    font-size: 1rem;
+    color: var(--text-primary);
+    font-size: 0.9375rem;
     font-weight: 700;
-    letter-spacing: 0.04em;
   }
-
 
   .modes {
     display: grid;
-    gap: var(--ak-space-3);
+    gap: var(--space-3);
   }
 
+  /* 单个模式卡：嵌在玻璃面板里，干玻璃（无 backdrop-filter，避免嵌套模糊）。
+     注意：旧版基线在此用了 border-left 3px 单侧信号条，玻璃拟态风格明令禁止
+     单侧粗边框装饰（border-left/right accent stripe）——已改为四边等宽描边，
+     「启用中」的语义由右下角 g-tag--danger「已启用」文字标签 + 整圈危险色描边共同承担，
+     不靠颜色单独传递状态。 */
   .mode {
     display: grid;
     gap: 0.35rem;
-    padding: var(--ak-space-3);
-    border: var(--ak-line-hairline) solid var(--ak-surface-raised);
-    border-left-width: 3px;
-    border-left-color: var(--ak-surface-raised);
-    background: var(--ak-surface-muted);
+    padding: var(--space-3);
+    border: var(--hairline) solid var(--glass-border);
+    border-radius: var(--radius-m);
+    background: var(--glass-bg-weak);
+    box-shadow: var(--glass-shadow-inset);
+    transition: border-color var(--motion) var(--spring), box-shadow var(--motion) var(--spring);
   }
 
-  /* 启用中：只换左侧信号条颜色 + 描边，不做整块染色 */
+  /* 启用中：只换描边颜色 + 一圈内发光，不做整块染色（玻璃无色，颜色只来自场景） */
   .mode[data-active='yes'] {
-    border-color: color-mix(in srgb, var(--ak-signal-danger) 45%, var(--ak-surface-raised));
-    border-left-color: var(--ak-signal-danger);
+    border-color: color-mix(in srgb, var(--sig-danger) 50%, var(--glass-border));
+    box-shadow: var(--glass-shadow-inset), inset 0 0 0 1px color-mix(in srgb, var(--sig-danger) 22%, transparent);
   }
 
+  /* 保留字：整体退后（背景透明化），文字保持原亮度（不再叠 opacity，避免低于 --text-muted 对比线） */
   .mode[data-reserved='yes'] {
-    background: var(--ak-surface-panel);
+    background: transparent;
+    box-shadow: none;
   }
 
   .mode__name {
@@ -226,13 +241,13 @@
     letter-spacing: 0.02em;
   }
 
-  /* 只收字号、保留 .ak-tag 自带高度；启用中配色走官方 .ak-tag--danger（此前只改描边，颜色不成套） */
+  /* 只收字号、保留 .g-tag 自带高度；启用中配色走 .g-tag--danger */
   .mode__tag {
     flex: 0 0 auto;
     font-size: 0.6875rem;
   }
 
-  /* 命中区保持 .btn 的 44px（--ak-density-control-height），不要在这里收 */
+  /* 命中区保持 .g-btn 的 44px（--control-h），不要在这里收 */
   .mode__action {
     justify-self: start;
     margin-top: 0.35rem;
@@ -241,11 +256,7 @@
   /* 文字样式来自 .u-note，这里只补色调（警示色而非次要色）与上间距 */
   .mode__lock {
     margin: 0.35rem 0 0;
-    color: var(--ak-signal-action);
-  }
-
-  .mode[data-reserved='yes'] .mode__action {
-    opacity: 0.55;
+    color: var(--sig-action);
   }
 
   @media (min-width: 40rem) {
