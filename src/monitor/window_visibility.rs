@@ -2,9 +2,19 @@
 
 use std::io::{self, Read};
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, LazyLock, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
+
+/// 最近一次 dumpsys 解析出的焦点 Activity 查表键（空 = 未知）。
+/// 见 `WindowObservation::activity` 的说明：本探针只在 FAS 路径被请求，故该值在非 FAS
+/// 前台会保持为空，消费方必须回退包名级判定。
+static LAST_ACTIVITY: LazyLock<Mutex<Arc<str>>> = LazyLock::new(|| Mutex::new(Arc::from("")));
+
+/// 读最近一次焦点 Activity 查表键（零分配，Arc 克隆）。未知/非 FAS 场景返回空串。
+pub fn last_activity_key() -> Arc<str> {
+    LAST_ACTIVITY.lock().unwrap().clone()
+}
 
 // [api]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -28,6 +38,11 @@ pub struct WindowObservation {
     pub request: WindowRequest,
     pub visibility: WindowVisibility,
     pub observed_at: Instant,
+    /// 当前焦点窗口的 Activity 名（`mCurrentFocus` 的 `pkg/Activity` 段，已归一为短形
+    /// `pkg/.MainActivity`；无焦点/解析失败为空）。**只在 FAS 路径被请求**（本探针的
+    /// request 调用点全在 `chiri::reconcile_fas_focus`），因此非 FAS 前台拿不到 activity，
+    /// 消费方必须把空值当作「未知」并回退包名级判定。
+    pub activity: Arc<str>,
 }
 
 pub const OBSERVATION_TTL: Duration = Duration::from_secs(5);
@@ -198,6 +213,7 @@ fn run_worker_with_query(
                     request,
                     visibility,
                     observed_at,
+                    activity: last_activity_key(),
                 },
             );
         }
@@ -244,6 +260,13 @@ fn query_visibility(
     }
     let snapshot = std::str::from_utf8(&output)
         .map_err(|_| io::Error::other("invalid window snapshot encoding"))?;
+    {
+        let mut slot = LAST_ACTIVITY.lock().unwrap();
+        let fresh = focused_activity_key(snapshot);
+        if *slot != fresh {
+            *slot = fresh;
+        }
+    }
     Ok(parse_windows(snapshot, request, uid))
 }
 
@@ -277,8 +300,38 @@ fn make_nonblocking(pipe: &impl std::os::fd::AsRawFd) -> io::Result<()> {
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn collect_snapshot(cancelled: &dyn Fn() -> bool) -> io::Result<Vec<u8>> {
+    // 两条 dumpsys 子命令**互补**，实测（8550/PHB110, ColorOS）：
+    //   `window`          → 有 mCurrentFocus/mFocusedApp，**没有** mObscured/mViewVisibility
+    //   `window windows`  → 有 mObscured/mViewVisibility，**没有** mCurrentFocus/mFocusedApp
+    // 只用 `window windows`（旧实现）会让焦点判定恒不可达（Focused 永不成立）；只用 `window`
+    // 会让遮挡字段缺失、parse_windows 的 match 落 `_` 分支而连 VisibleUnfocused/Hidden 都拿不到。
+    // 故两段都取，用分隔标记拼接，由 parse_windows 按段解析。
+    // 预算：单命令实测 简单场景 79/63ms、复杂场景（多叠加窗口 + 输入法）180/114ms；
+    // 两次**各自**给 QUERY_TIMEOUT(800ms) 预算（最坏 1600ms），而**不是**共享一份——
+    // 共享会让第一段吃掉大部分预算后第二段只剩零头，复杂场景实测已达 294ms 合计，
+    // 低端机/更多窗口时第二段会先超时 → 整次查询失败 → Unknown → Grace（误判）。
+    // cancelled() 在上层被取代时会提前中止，故实际延迟由请求生命周期约束，不会长期占满。
+    // 输出上限：单段 ≤512KB，两段合计 ≤2×OUTPUT_CAP。
+    let focus_segment = collect_one(&["-t", "1", "window"], cancelled)?;
+    let visibility_segment = collect_one(&["-t", "1", "window", "windows"], cancelled)?;
+    // 注意：不再共享 deadline —— 每段在 collect_one 内各自起算 QUERY_TIMEOUT
+    let mut merged = Vec::with_capacity(focus_segment.len() + visibility_segment.len() + 32);
+    merged.extend_from_slice(&focus_segment);
+    merged.extend_from_slice(SEGMENT_MARKER);
+    merged.extend_from_slice(&visibility_segment);
+    Ok(merged)
+}
+
+/// 两段 dumpsys 输出之间的分隔标记：以 dumpsys 不可能产出的行形式出现，
+/// 便于 `parse_windows` 按段取字段而不会把两段混读。
+const SEGMENT_MARKER: &[u8] = b"\n== CHIRI-DUMPSYS-SEGMENT ==\n";
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn collect_one(args: &[&str], cancelled: &dyn Fn() -> bool) -> io::Result<Vec<u8>> {
+    // 本段自己的预算：不与其他段共享，避免「第一段耗时挤掉第二段」
+    let deadline = Instant::now() + QUERY_TIMEOUT;
     let mut child = Command::new("/system/bin/dumpsys")
-        .args(["-t", "1", "window", "windows"])
+        .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -289,7 +342,6 @@ fn collect_snapshot(cancelled: &dyn Fn() -> bool) -> io::Result<Vec<u8>> {
             .take()
             .ok_or_else(|| io::Error::other("missing stdout"))?;
         make_nonblocking(&stdout)?;
-        let deadline = Instant::now() + QUERY_TIMEOUT;
         let mut output = Vec::new();
         let mut buffer = [0_u8; 8192];
         let mut reached_eof = false;
@@ -335,7 +387,11 @@ fn collect_snapshot(_cancelled: &dyn Fn() -> bool) -> io::Result<Vec<u8>> {
 }
 
 // [parse]
-fn window_identity(text: &str) -> Option<(&str, &str)> {
+/// `Window{token u0 pkg/Activity}` 的公共解析：拆出 `(token, package, activity)`。
+/// 窗口可见性判定与焦点 Activity 提取共用同一口径，避免解析逻辑分叉。
+/// 校验：恰好 3 个字段、第二字段必须是合法 `u<user>`、组件必须含 `/`。
+/// `activity` 为 `/` 后的原文（未归一），**允许为空**（`pkg/` 形式）——调用方按需拒绝。
+fn window_component(text: &str) -> Option<(&str, &str, &str)> {
     let body = text.strip_prefix("Window{")?.split_once('}')?.0;
     let mut fields = body.split_whitespace();
     let token = fields.next()?;
@@ -345,8 +401,61 @@ fn window_identity(text: &str) -> Option<(&str, &str)> {
     if fields.next().is_some() {
         return None;
     }
-    let package = component.split_once('/')?.0;
+    let (package, activity) = component.split_once('/')?;
+    (!package.is_empty()).then_some((token, package, activity))
+}
+
+fn window_identity(text: &str) -> Option<(&str, &str)> {
+    let (token, package, _) = window_component(text)?;
     Some((token, package))
+}
+
+/// 把 dumpsys 的 `pkg/Activity` 归一成**查表键短形** `pkg/.Activity`：
+/// - `.MainActivity`（同包内短形）原样；
+/// - `com.xx.MainActivity`（全限定且以包名开头）剥掉包名前缀 → `.MainActivity`；
+/// - 其余（外部包、含 `$` 的内部类、裸类名）保留原样，内部类**不剥 `$`**（同一 Activity
+///   的不同内部类语义不同）。
+/// 归一后同一 Activity 的两种写法落到同一键，用户从 `dumpsys`/`am` 复制任一形式都可用。
+pub fn activity_key(package: &str, activity: &str) -> String {
+    let short = match activity.strip_prefix(package) {
+        // `rest.starts_with('.')` 守卫防「包名前缀相同但不是该包」的误坍缩：
+        // com.example.game + com.example.gameX.Main → rest = "X.Main"，不剥前缀、保留全串
+        Some(rest) if rest.starts_with('.') && rest.len() > 1 => rest,
+        _ => activity,
+    };
+    let short = if short.starts_with('.') || short.contains('.') {
+        short.to_string()
+    } else {
+        format!(".{short}")
+    };
+    format!("{package}/{short}")
+}
+
+/// 取一段文本里唯一的 `mCurrentFocus=` 值；0 条或多条（快照歧义）都返回 None。
+fn unique_focus(segment: &str) -> Option<&str> {
+    let mut focus = segment
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("mCurrentFocus="))
+        .map(str::trim);
+    let first = focus.next()?;
+    focus.next().is_none().then_some(first)
+}
+
+/// 从 dumpsys 快照里取当前焦点窗口的 Activity 查表键；无唯一焦点或解析失败返回空
+/// （调用方按「未知」处理并回退包名级判定）。
+/// 合并快照下焦点来自 `window` 段，片段缺失时回退到整份（兼容旧快照/测试注入）。
+fn focused_activity_key(snapshot: &str) -> Arc<str> {
+    let (focus_segment, visibility_segment) = split_segments(snapshot);
+    let Some(first) = unique_focus(focus_segment).or_else(|| unique_focus(visibility_segment)) else {
+        return Arc::from("");
+    };
+    match window_component(first) {
+        // 空 activity（`pkg/`）视为未知：没有可查表的键
+        Some((_, package, activity)) if !activity.is_empty() => {
+            Arc::from(activity_key(package, activity))
+        }
+        _ => Arc::from(""),
+    }
 }
 
 fn field<'a>(block: &'a str, name: &str) -> Option<&'a str> {
@@ -360,23 +469,41 @@ fn field<'a>(block: &'a str, name: &str) -> Option<&'a str> {
     Some(value)
 }
 
+/// `u0a10457` / `10457` 两种写法都归一成同一个 Android uid。
+///
+/// AOSP 的 AID 文本形式是 `u<userId>a<appId>`，其中 uid = userId*100000 + appId。
+/// **appId 在文本里已经是最终值**（含 AID 区偏移），不要再加 10000 ——
+/// 真机同块对照证据（8550/PHB110，两次独立采样）：
+///   `mSession=Session{… u0a10231}` 与同块 `mOwnerUid=10231`  → 必须都归一到 10231；
+///   `mSession=Session{… u0a10457}` 与同块 `mOwnerUid=10457`  → 必须都归一到 10457。
+/// 旧实现多加了 10000（算成 20231/20457），与 `mOwnerUid` 侧恒不相等，
+/// 使 `window_session(&block) != Some((pid, uid))` 永远成立 → 窗口全部计入 `unknown_owned`
+/// → `owned_count == 0` → 恒返回 `Unknown`（`Focused`/`VisibleUnfocused` 都不可达）。
 fn android_uid(value: &str) -> Option<u32> {
     if let Ok(uid) = value.parse() {
         return Some(uid);
     }
     let body = value.strip_prefix('u')?;
     let (user, application) = body.split_once('a')?;
-    user.parse::<u32>()
-        .ok()?
-        .checked_mul(100000)?
-        .checked_add(10000)?
-        .checked_add(application.parse().ok()?)
+    let user = user.parse::<u32>().ok()?;
+    let app_id = application.parse::<u32>().ok()?;
+    // 多用户：userId*100000 + appId；单用户 userId=0 时即 appId 本身
+    user.checked_mul(100000)?.checked_add(app_id)
 }
 
+/// 从窗口块里取 `(pid, uid)`。
+///
+/// 旧实现要求 `mSession=Session{` 位于**行首**（`line.trim().strip_prefix(...)`），但真机
+/// （8550/PHB110）该字段是**行内**出现的：
+///   `    mDisplayId=0 taskId=851 mSession=Session{24fa3ae 5630:u0a10457} mClient=…`
+/// → 行首前缀匹配失败 → 返回 None → 该窗口被判 `unknown_owned` → `owned_count == 0`
+/// → 恒 `Unknown`（`Focused`/`VisibleUnfocused` 都不可达）。旧测试 fixture 恰好把
+/// `mSession` 写在行首，掩盖了真实形态。
+/// 现改为按**子串**定位，并保留「恰好一条 session」的歧义拒绝。
 fn window_session(block: &str) -> Option<(u32, u32)> {
     let mut sessions = block
         .lines()
-        .filter_map(|line| line.trim().strip_prefix("mSession=Session{"));
+        .filter_map(|line| line.trim().split_once("mSession=Session{").map(|(_, rest)| rest));
     let body = sessions.next()?.split_once('}')?.0;
     if sessions.next().is_some() {
         return None;
@@ -390,29 +517,54 @@ fn window_session(block: &str) -> Option<(u32, u32)> {
     Some((pid.parse().ok()?, android_uid(uid)?))
 }
 
+/// 按 `SEGMENT_MARKER` 把合并快照拆成两段。只有一段时（旧快照/测试注入）视为「可见性段」，
+/// 兼容原有单命令行为。
+fn split_segments(snapshot: &str) -> (&str, &str) {
+    match snapshot.split_once(SEGMENT_TEXT) {
+        // 段序：先 `window`（焦点），后 `window windows`（可见性）
+        Some((focus, visibility)) => (focus, visibility),
+        None => (snapshot, snapshot),
+    }
+}
+
+const SEGMENT_TEXT: &str = "== CHIRI-DUMPSYS-SEGMENT ==";
+
 fn parse_windows(snapshot: &str, request: &WindowRequest, uid: u32) -> WindowVisibility {
+    // 两段来源不同：靠 `WINDOW MANAGER WINDOWS` 头是否存在判定可用性。
+    // 任一段缺少该头不直接判 Unknown —— 真机上 `window` 段实测含该头（计数 1），
+    // 但若某 ROM 两者都缺，仍应回退 Unknown 而不是误判为 Hidden。
     if !snapshot
         .lines()
         .any(|line| line.trim() == "WINDOW MANAGER WINDOWS (dumpsys window windows)")
     {
         return WindowVisibility::Unknown;
     }
-    let focus = snapshot
-        .lines()
-        .filter_map(|line| line.trim().strip_prefix("mCurrentFocus="))
-        .map(str::trim)
-        .collect::<Vec<_>>();
-    let focused = if focus.len() == 1 {
-        window_identity(focus[0])
+    let (focus_segment, visibility_segment) = split_segments(snapshot);
+    // 焦点**只**从 `window` 段取（`window windows` 段实测没有 mCurrentFocus；
+    // 若某 ROM 反转，则两段都能命中，见下方回退）
+    let focused = unique_focus(focus_segment)
+        .or_else(|| unique_focus(visibility_segment))
+        .and_then(window_identity);
+    // 可见性字段（mObscured/mViewVisibility/mHasSurface/isOnScreen）从 `window windows` 段取。
+    // 该段缺失时回退到整份快照，保持旧行为。
+    let visibility_source = if visibility_segment.trim().is_empty() {
+        snapshot
     } else {
-        None
+        visibility_segment
     };
-    let lines = snapshot.lines().collect::<Vec<_>>();
+    // [token] 焦点来自焦点段、窗口块来自可见性段，判据仍是 `token` 相等。
+    // 若某 ROM 两段 token 编码不一致，Focused 会不可达 —— 这**必须靠真机数据确认**
+    // （见 devimpbin/1016-001727/probe3.sh 的 C 段）。这里**不做**包名放宽：包名宽松匹配
+    // 会让「叠加窗口盖住游戏」时错判 Focused，直接破坏「有叠加画面时退出是预期行为」。
+    let lines = visibility_source.lines().collect::<Vec<_>>();
     let mut owned_count = 0;
     let mut unknown_owned = false;
     let mut visible = false;
     let mut obscured = false;
     for (index, line) in lines.iter().enumerate() {
+        // 兼容两种格式：`Window #0 Window{token u0 pkg/Act}`（window windows）
+        // 与 `Window #0: WindowStateAnimator{...}`（window，带冒号）。后者无组件名，
+        // 其可见性信息在 `window windows` 段里已覆盖，故解析不出组件时跳过而不计 unknown。
         let Some(header) = line.trim().strip_prefix("Window #") else {
             continue;
         };
@@ -558,6 +710,7 @@ mod tests {
             request: request(),
             visibility: WindowVisibility::Focused,
             observed_at: now,
+            activity: Arc::from("com.example.game/.MainActivity"),
         };
         assert!(matches_observation(&observation, &request(), now));
         let mut changed = request();
@@ -596,6 +749,7 @@ mod tests {
                 request: request(),
                 visibility: WindowVisibility::Focused,
                 observed_at: Instant::now(),
+                activity: Arc::from(""),
             },
         );
         assert!(state.observation.is_none());
@@ -747,5 +901,224 @@ mod tests {
             parse_windows(&missing, &request(), 10042),
             WindowVisibility::Unknown
         );
+    }
+}
+
+// [activity] Activity 级前台识别：解析 / 归一 / 回退
+#[cfg(test)]
+mod activity_tests {
+    use super::*;
+
+    fn request() -> WindowRequest {
+        WindowRequest {
+            package: "com.example.game".into(),
+            pid: 42,
+            generation: 7,
+            foreground: "com.android.systemui".into(),
+        }
+    }
+
+    fn snapshot(surface: bool, on_screen: bool) -> String {
+        format!(
+            "WINDOW MANAGER WINDOWS (dumpsys window windows)\n  Window #0 Window{{abc u0 com.example.game/.Main}}:\n    mSession=Session{{def 42:10042}}\n    mOwnerUid=10042\n    mHasSurface={surface} isOnScreen={on_screen} mObscured=false\n  mCurrentFocus=Window{{abc u0 com.example.game/.Main}}\n"
+        )
+    }
+
+    #[test]
+    fn short_form_activity_is_normalized_to_key() {
+        assert_eq!(
+            activity_key("com.example.game", ".MainActivity"),
+            "com.example.game/.MainActivity"
+        );
+    }
+
+    #[test]
+    fn fully_qualified_activity_collapses_to_same_key() {
+        assert_eq!(
+            activity_key("com.example.game", "com.example.game.MainActivity"),
+            "com.example.game/.MainActivity"
+        );
+        // 两种写法必须落到同一键，否则用户按 dumpsys 原文配置会失配
+        assert_eq!(
+            activity_key("com.example.game", ".MainActivity"),
+            activity_key("com.example.game", "com.example.game.MainActivity")
+        );
+    }
+
+    #[test]
+    fn bare_class_name_gets_leading_dot() {
+        assert_eq!(
+            activity_key("com.example.game", "MainActivity"),
+            "com.example.game/.MainActivity"
+        );
+    }
+
+    #[test]
+    fn inner_class_dollar_is_preserved() {
+        // `$` 不剥：同一 Activity 的不同内部类语义不同
+        assert_eq!(
+            activity_key("com.example.game", ".Main$Sub"),
+            "com.example.game/.Main$Sub"
+        );
+    }
+
+    #[test]
+    fn focused_activity_key_reads_unique_current_focus() {
+        assert_eq!(
+            focused_activity_key(&snapshot(true, true)).as_ref(),
+            "com.example.game/.Main"
+        );
+    }
+
+    #[test]
+    fn focused_activity_key_empty_without_component_slash() {
+        // 焦点窗口没有 pkg/Activity 组件名（系统窗口）→ 未知，调用方回退包名级
+        let no_slash = "WINDOW MANAGER WINDOWS (dumpsys window windows)\n  mCurrentFocus=Window{abc u0 com.example.game}\n";
+        assert_eq!(focused_activity_key(no_slash).as_ref(), "");
+    }
+
+    #[test]
+    fn focused_activity_key_empty_on_ambiguous_multiple_focus_lines() {
+        let two = "WINDOW MANAGER WINDOWS (dumpsys window windows)\n  mCurrentFocus=Window{a u0 com.a/.A}\n  mCurrentFocus=Window{b u0 com.b/.B}\n";
+        assert_eq!(focused_activity_key(two).as_ref(), "");
+    }
+
+    #[test]
+    fn focused_activity_key_empty_when_missing() {
+        assert_eq!(focused_activity_key("nothing here").as_ref(), "");
+    }
+
+    // [merged] 双查询合并快照：焦点来自 `window` 段、可见性来自 `window windows` 段。
+    // 真机依据见 HANDOFF.md 第 10.1 节（`window windows` 无 mCurrentFocus，`window` 无 mObscured）。
+    fn merged(focus_lines: &str, vis_body: &str) -> String {
+        format!(
+            "WINDOW MANAGER WINDOWS (dumpsys window windows)\n{focus_lines}\n== CHIRI-DUMPSYS-SEGMENT ==\nWINDOW MANAGER WINDOWS (dumpsys window windows)\n{vis_body}\n"
+        )
+    }
+
+    #[test]
+    fn merged_snapshot_takes_focus_from_first_segment() {
+        // 第一段（window）有 mCurrentFocus 与冒号格式的 Window #；第二段（window windows）没有焦点
+        // 注意 token 必须两段一致（真实 dumpsys 是同一个 window token；不一致会正确地判为未聚焦）
+        let snap = merged(
+            "  Window #0: WindowStateAnimator{14d9077 com.android.systemui.wallpapers.ImageWallpaper}\n  mCurrentFocus=Window{abc u0 com.example.game/.Main}",
+            "  Window #0 Window{abc u0 com.example.game/.Main}:\n    mSession=Session{def 42:10042}\n    mOwnerUid=10042\n    mHasSurface=true isOnScreen=true mObscured=false",
+        );
+        assert_eq!(
+            focused_activity_key(&snap).as_ref(),
+            "com.example.game/.Main"
+        );
+        assert_eq!(
+            parse_windows(&snap, &request(), 10042),
+            WindowVisibility::Focused,
+            "focus from segment 1 + visibility fields from segment 2 must prove Focused"
+        );
+    }
+
+    #[test]
+    fn merged_snapshot_obscured_from_second_segment_wins() {
+        // 第二段 mObscured=true（第一段完全没有该字段）→ 必须判 Hidden，而不是 Unknown/VisibleUnfocused
+        let snap = merged(
+            "  mCurrentFocus=Window{abc u0 com.example.game/.Main}",
+            "  Window #0 Window{abc u0 com.example.game/.Main}:\n    mSession=Session{def 42:10042}\n    mOwnerUid=10042\n    mHasSurface=true isOnScreen=true mObscured=true",
+        );
+        assert_eq!(parse_windows(&snap, &request(), 10042), WindowVisibility::Hidden);
+    }
+
+    #[test]
+    fn merged_snapshot_visible_unfocused_when_focus_is_other_package() {
+        let snap = merged(
+            "  mCurrentFocus=Window{zzz u0 com.other.app/.A}",
+            "  Window #0 Window{abc u0 com.example.game/.Main}:\n    mSession=Session{def 42:10042}\n    mOwnerUid=10042\n    mHasSurface=true isOnScreen=true mObscured=false",
+        );
+        assert_eq!(parse_windows(&snap, &request(), 10042), WindowVisibility::VisibleUnfocused);
+    }
+
+    #[test]
+    fn single_segment_snapshot_keeps_legacy_behaviour() {
+        // 无分隔标记（旧快照/测试注入）：两段都取整份，行为与改动前一致
+        assert_eq!(parse_windows(&snapshot(true, true), &request(), 10042), WindowVisibility::Focused);
+        assert_eq!(parse_windows(&snapshot(false, false), &request(), 10042), WindowVisibility::Hidden);
+        assert_eq!(
+            parse_windows(&"WINDOW MANAGER WINDOWS (dumpsys window windows)\n  nothing\n", &request(), 10042),
+            WindowVisibility::Unknown
+        );
+    }
+
+    #[test]
+    fn aid_uid_form_matches_owner_uid_in_same_block() {
+        // 真机证据（8550/PHB110，两次独立采样）：同块内 `u0aNNNNN` 与 `mOwnerUid=NNNNN` 必须相等。
+        // 旧实现给 AID 形式多加 10000 → 两者恒不等 → 所有窗口落 unknown_owned → 恒 Unknown。
+        assert_eq!(android_uid("u0a10457"), Some(10457));
+        assert_eq!(android_uid("u0a10231"), Some(10231));
+        assert_eq!(android_uid("10457"), Some(10457));
+        // 多用户仍按 userId*100000 + appId
+        assert_eq!(android_uid("u10a10457"), Some(10 * 100000 + 10457));
+    }
+
+    #[test]
+    fn real_device_window_block_proves_focused() {
+        // 用真机 D 段原文构造的块（AID 形式 uid + 无 isOnScreen= 字段，靠 isReadyForDisplay()+mViewVisibility）
+        let block = "WINDOW MANAGER WINDOWS (dumpsys window windows)\n  Window #18 Window{b1b876b u0 com.levelinfinite.sgameGlobal/com.levelinfinite.sgameGlobal.SGameGlobalActivity}:\n    mDisplayId=0 taskId=851 mSession=Session{24fa3ae 5630:u0a10457} mClient=android.os.BinderProxy@9f64cba\n    mOwnerUid=10457 showForAllUsers=false package=com.levelinfinite.sgameGlobal appop=NONE\n    mHasSurface=true isReadyForDisplay()=true mWindowRemovalAllowed=false\n    mViewVisibility=0x0 mHaveFrame=true mObscured=false\n  mCurrentFocus=Window{b1b876b u0 com.levelinfinite.sgameGlobal/com.levelinfinite.sgameGlobal.SGameGlobalActivity}\n";
+        let req = WindowRequest {
+            package: "com.levelinfinite.sgameGlobal".into(),
+            pid: 5630,
+            generation: 7,
+            foreground: "".into(),
+        };
+        // uid 参数这里传 10457（= android_uid("u0a10457")），必须判 Focused
+        assert_eq!(
+            parse_windows(&block, &req, android_uid("u0a10457").unwrap()),
+            WindowVisibility::Focused,
+            "real device block with AID-form uid must prove Focused"
+        );
+    }
+
+
+    #[test]
+    fn merged_snapshot_without_header_is_unknown() {
+        // 两段都缺 `WINDOW MANAGER WINDOWS` 头 → Unknown（不误判 Hidden）
+        let snap = "== CHIRI-DUMPSYS-SEGMENT ==\n  mCurrentFocus=Window{abc u0 com.example.game/.Main}\n";
+        assert_eq!(parse_windows(snap, &request(), 10042), WindowVisibility::Unknown);
+    }
+
+    #[test]
+    fn focused_activity_key_survives_empty_first_segment() {
+        // 第一段为空（`window` 查询失败已在上游整体失败，但防御性保留）：回退第二段
+        let snap = merged("", "  mCurrentFocus=Window{abc u0 com.example.game/.Main}");
+        assert_eq!(focused_activity_key(&snap).as_ref(), "com.example.game/.Main");
+    }
+
+    #[test]
+    fn activity_key_is_stable_across_dumpsys_spellings() {
+        // 用户从 dumpsys 复制的两种写法必须落到同一键，否则规则静默失配
+        let a = activity_key("com.tencent.tmgp.sgame", ".SGameActivity");
+        let b = activity_key("com.tencent.tmgp.sgame", "com.tencent.tmgp.sgame.SGameActivity");
+        assert_eq!(a, b);
+        assert_eq!(a, "com.tencent.tmgp.sgame/.SGameActivity");
+    }
+
+    #[test]
+    fn activity_key_keeps_foreign_package_component_intact() {
+        // 组件属于别的包（如 systemui 面板盖在游戏上）时不伪造前缀
+        assert_eq!(
+            activity_key("com.example.game", "com.android.systemui/.Panel"),
+            "com.example.game/com.android.systemui/.Panel"
+        );
+    }
+
+    #[test]
+    fn observation_carries_activity_but_identity_match_ignores_it() {
+        let now = Instant::now();
+        let observation = WindowObservation {
+            request: request(),
+            visibility: WindowVisibility::Focused,
+            observed_at: now,
+            activity: Arc::from("com.example.game/.Main"),
+        };
+        // activity 不参与 request 匹配（身份 = 包名/pid/generation/foreground），
+        // 否则每次 Activity 切换都会让窗口观测失效
+        assert!(matches_observation(&observation, &request(), now));
+        assert_eq!(observation.activity.as_ref(), "com.example.game/.Main");
     }
 }
