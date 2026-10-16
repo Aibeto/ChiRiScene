@@ -346,6 +346,8 @@ clampev-node-missing = [Diag] clamp-evidence node unavailable: { $key } ({ $path
 notify-fas-openloop-title = Warning: FAS open-loop
 notify-fas-openloop-body = FAS is not working properly while { $pkg } is running and has entered open-loop mode
 notify-post-failed = [Notify] cmd notification post failed (channel={ $channel } title={ $title }): not delivered, dedup not recorded so it retries
+# Startup-complete notification (main.rs startup tail, channel ChiRi-Status, direct post without interceptor; title/body are literals, not i18n)
+notify-startup-posted = [Notify] startup-complete notification posted (channel ChiRi-Status)
 
 # --- Telemetry ---
 monitor-thread-start-telemetry = [Main] starting telemetry monitor thread (PSI/GPU/battery)...

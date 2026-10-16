@@ -346,6 +346,8 @@ clampev-node-missing = [Diag] clamp-evidence 佐证节点不可用: { $key } ({ 
 notify-fas-openloop-title = 警告：FAS 开环运行
 notify-fas-openloop-body = 在 { $pkg } 运行时 FAS 未正常工作，已进入开环运行
 notify-post-failed = [Notify] cmd notification 投递失败（channel={ $channel } title={ $title }）：本条无法送达，去重未记账以便下次重试
+# 启动完成通知（main.rs 启动尾部，渠道 ChiRi-Status，直发无拦截器；标题/正文为字面量不走 i18n）
+notify-startup-posted = [Notify] 已投递启动完成通知（渠道 ChiRi-Status）
 
 # --- Telemetry（遥测）---
 monitor-thread-start-telemetry = [Main] 启动遥测监控线程（PSI/GPU/电池）...

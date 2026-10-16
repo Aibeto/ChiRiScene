@@ -35,12 +35,13 @@ static FAS_GUARD: Mutex<FasGuard> = Mutex::new(FasGuard {
 });
 
 // [post]
-/// 三参直发通知。同步执行（调用方为低频事件路径，如 FAS 开环翻转沿；不要在调度热循环里调用）
+/// 三参直发通知。同步执行（调用方为低频事件路径，如 FAS 开环翻转沿、启动完成一次；不要在调度热循环里调用）
 pub fn post_notification(title: &str, channel: &str, body: &str) {
     // [notify-switch] 刻意**不**接 `meta.notify` 总开关：该字段是已删除的「常驻状态通知」子系统的遗留
     // （meta.yaml 兼容 + WebUI 读写契约，见 `src/chiri/config.rs` 字段注释），5 个机型 meta.yaml 全部
-    // 写 `notify: false`。本函数如今是**唯一**投递点、且只发 FAS 开环告警（需人介入的功能性失效）——
-    // 接上开关会让真机默认静默该告警，正是本轮要消灭的静默失效。若将来要恢复总开关，须先移除各机型
+    // 写 `notify: false`。本函数是**唯一**投递点，当前两处调用：① FAS 开环告警（需人介入的功能性
+    // 失效，`ChiRi-FAS` 渠道走拦截器）；② 启动完成通知（`main.rs` 启动尾部，`ChiRi-Status` 渠道直发
+    // 一次）。接上开关会让真机默认静默①，正是要消灭的静默失效。若将来要恢复总开关，须先移除各机型
     // meta.yaml 的 `notify: false` 并重新定义其用途
     let guarded = channel == FAS_CHANNEL;
     // 放行判定只读状态、不记账——成功与否要等 `cmd` 返回才知道

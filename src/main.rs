@@ -459,6 +459,13 @@ fn main() -> Result<()> {
 
     info!("{}", t("monitor-module-started"));
 
+    // [startup_notify] 启动完成通知：调度线程与监控线程都已起来才算「本次启动真正完成」——放更早
+    // （如 scheduler_start 之前）会让「起一半」与「起完」在通知栏上同形。标题/正文/渠道按用户
+    // 2026-10-17 指定，均为字面量（`ChiRi已启动` / `ChiRi-Status`），不走 i18n、不经 FAS 拦截器
+    // （拦截器只认 `ChiRi-FAS`，本渠道直发）。此处是主线程启动路径、非调度热循环，同步投递一次
+    notify::post_notification("ChiRi已启动", "ChiRi-Status", "ChiRi已启动");
+    info!("{}", t("notify-startup-posted"));
+
     // [suspend] 8. 挂起：join 监控线程
     monitor_thread.join().unwrap();
 
