@@ -325,18 +325,11 @@ corectl-scenemode-halt = [CoreCtl] scenemode 目标簇已由 core_ctl max_cpus �
 corectl-reserved-core-halted = [CoreCtl] 写 core_ctl 保留档后引导核 CPU0 掉线（该内核把保留档当停摆档），已回滚 max_cpus 并放弃 core_ctl 压制
 clampev-node-missing = [Diag] clamp-evidence 佐证节点不可用: { $key } ({ $path })
 
-# --- Notify（常驻状态通知）---
-# 通知内容由 daemon 组装（src/notify.rs），通过 `cmd notification post` 投递/更新
-notify-title-fallback = ChiRi 调度
-# 正文各参数只出值、不带字段标签，由 notify::SEPARATOR（· ）拼接
-notify-line-mode = { $mode }
-notify-line-family = { $family }
-notify-line-submode = { $sub }
-notify-line-temp = { $batt }/{ $cpu } °C
-notify-line-power = { $watt } W
-notify-mode-scenemode = 息屏场景
-notify-mode-unknown = 未知
-notify-post-failed = [Notify] cmd notification 的三条候选命令行全部失败，状态通知无法投递（本进程只报一次）
+# --- Notify（通用通知组件，src/notify.rs 三参直发）---
+# FAS 开环运行警告（经 ChiRi-FAS 渠道拦截器限流：前 120 条静默 + 1 小时同文去重）
+notify-fas-openloop-title = 警告：FAS 开环运行
+notify-fas-openloop-body = 在 { $pkg } 运行时 FAS 未正常工作，已进入开环运行
+notify-post-failed = [Notify] cmd notification 投递失败（channel={ $channel } title={ $title }）：本条无法送达，去重未记账以便下次重试
 
 # --- Telemetry（遥测）---
 monitor-thread-start-telemetry = [Main] 启动遥测监控线程（PSI/GPU/电池）...

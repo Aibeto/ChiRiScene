@@ -3224,9 +3224,9 @@ pub fn start_scheduler_thread(
                     // 等权全史会拉低均值）；③ 参考值保留息屏（滑动参考要反映整段放电）
                     // 判定式 `!use_average || is_screen_on`：平均 = 放电 && 亮屏，参考 = 放电（含息屏）
                     // 不满足时传 None → 递推整体跳过；开关 meta.power_avg 热重载即时生效
-                    let (use_average, notify_on) = {
+                    let use_average = {
                         let cfg = config_clone.read().unwrap();
-                        (cfg.meta.power_avg, cfg.meta.notify)
+                        cfg.meta.power_avg
                     };
                     let sample_ok =
                         charge_state == "discharging" && (!use_average || is_screen_on);
@@ -3258,24 +3258,10 @@ pub fn start_scheduler_thread(
                         }
                         None => sample_skip_reason.clear(),
                     }
-                    let power_now = crate::logger::power_avg_update(power_reading, use_average);
-                    // 首轮标记必须在自增**之前**取——自增后判断恒为 false，首轮清残留通知不会执行
-                    let first_tick = telemetry_log_counter == 0;
+                    // power_avg_update 有副作用（PowerAVG 递推缓存更新），调用必须保留；返回值仅旧常驻通知用过，现已无消费者
+                    let _power_now = crate::logger::power_avg_update(power_reading, use_average);
                     telemetry_log_counter += 1;
-                    // 常驻状态通知：每 5s 更新（内容不变不重投，内部自带失败候选与告警去重）标题 = 前台包名，正文 = 模式/家族/子模式/温度/功耗（口径随 meta.power_avg）
-                    // 这里只组装并**非阻塞投递**到 notify 线程，调度循环照常跑
-                    if !notify_on {
-                        // 开关关闭：撤销已投递通知；首轮无条件清掉上次运行残留的那条（此后幂等）
-                        crate::notify::cancel(first_tick);
-                    } else if telemetry_log_counter % crate::notify::INTERVAL_SECS == 0 {
-                        crate::notify::update(&crate::notify::Snapshot {
-                            pkg: &fg_package,
-                            mode: &current_mode,
-                            batt_temp: last_batt_temp,
-                            cpu_temp: last_cpu_temp,
-                            power_w: power_now,
-                        });
-                    }
+                    // 常驻状态通知已移除（notify.rs 重构为三参直发组件）；通知现仅 FAS 开环翻转沿触发（fas_manager）
                     // 开发记录 snap 行（1s）：开启 dev_record 才有 IO；前台包名行内自动填充
                     if let Some((cpu_cur, cpu_max, cpu_min, cpu_gov)) = cpu_snapshot {
                         // 频率/调速器快照只在诊断开启时采集（常态零开销，不缓存——内核会随时改值）CPU 每秒采；GPU 受 GPU_SNAPSHOT_ENABLED 总开关（当前关闭）控制，

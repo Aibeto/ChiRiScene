@@ -325,18 +325,11 @@ corectl-scenemode-halt = [CoreCtl] scenemode target cluster converged by core_ct
 corectl-reserved-core-halted = [CoreCtl] boot core CPU0 went offline after the core_ctl keep value was written (kernel treats it as halt); max_cpus rolled back, core_ctl clamp abandoned
 clampev-node-missing = [Diag] clamp-evidence node unavailable: { $key } ({ $path })
 
-# --- Notify (ongoing status notification) ---
-# The daemon builds the text (src/notify.rs) and posts/updates it via `cmd notification post`
-notify-title-fallback = ChiRi scheduler
-# values only, no field labels; joined by notify::SEPARATOR (" · ")
-notify-line-mode = { $mode }
-notify-line-family = { $family }
-notify-line-submode = { $sub }
-notify-line-temp = { $batt }/{ $cpu } °C
-notify-line-power = { $watt } W
-notify-mode-scenemode = Screen-off scene
-notify-mode-unknown = Unknown
-notify-post-failed = [Notify] all three candidate cmd notification command lines failed; the status notification cannot be posted (reported once)
+# --- Notify (generic notification component, src/notify.rs three-arg direct post) ---
+# FAS open-loop warning (rate-limited by the ChiRi-FAS channel interceptor: first 120 silenced + 1h same-text dedup)
+notify-fas-openloop-title = Warning: FAS open-loop
+notify-fas-openloop-body = FAS is not working properly while { $pkg } is running and has entered open-loop mode
+notify-post-failed = [Notify] cmd notification post failed (channel={ $channel } title={ $title }): not delivered, dedup not recorded so it retries
 
 # --- Telemetry ---
 monitor-thread-start-telemetry = [Main] starting telemetry monitor thread (PSI/GPU/battery)...
