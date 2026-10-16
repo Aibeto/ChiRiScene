@@ -4,7 +4,7 @@
 use crate::chiri::config::SpecialTunedConfig;
 use crate::monitor::FasSignal;
 use crate::utils::FastWriter;
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 use std::fs;
 
 /// 跨核迁移成本（ns，全局节点）：稳态场景（视频）接管期间调高、退出时恢复
@@ -173,8 +173,14 @@ impl TunedGovernor {
 
         let policies = crate::chiri::get_cpu_policies();
 
+        // [init_release] 降级接管标记：频率表走 soc.yaml 兜底、或调速器/min 初写失败 —— 这些
+        // 情形下调频决策照常生效、输出数据与正常接管完全同形，事后必须留痕
+        let mut init_degraded = false;
+
         for policy in &policies {
             let pid = policy.id;
+            // [init_release] 本簇是否走了降级路径（兜底频率表 / 初写失败），循环尾统一汇总
+            let mut freq_fallback = false;
             let gov_path = format!(
                 "/sys/devices/system/cpu/cpufreq/policy{}/scaling_governor",
                 pid
@@ -200,8 +206,26 @@ impl TunedGovernor {
                 // scaling_available_frequencies 读不到/空表：按 policy 首核映射核心组，回退 soc.yaml [freq_khz] 兜底（只补表，
                 // 不改取档/floor 对齐逻辑）
                 match crate::common::soc_freq_fallback_for_policy(pid) {
-                    Some(f) => freqs = f,
-                    None => continue,
+                    Some(f) => {
+                        freq_fallback = true;
+                        freqs = f;
+                    }
+                    None => {
+                        // [init_release] 频率表与 soc.yaml 兜底双双取不到：本 policy 静默跳过（与 active 的
+                        // 区别在输出数据上完全不可见），必须留痕
+                        warn!(
+                            "{}",
+                            t_with_args(
+                                "tuned-cluster-skipped",
+                                &fluent_args!(
+                                    "mode" => self.mode.clone(),
+                                    "pid" => pid.to_string(),
+                                    "reason" => "no-freq-table".to_string()
+                                )
+                            )
+                        );
+                        continue;
+                    }
                 }
             }
             freqs.sort_unstable();
@@ -209,6 +233,18 @@ impl TunedGovernor {
 
             let affected = Self::read_affected_cpus(pid);
             if affected.is_empty() {
+                // [init_release] affected_cpus 读不到/为空（节点缺失或格式异常）：静默跳过，留痕
+                warn!(
+                    "{}",
+                    t_with_args(
+                        "tuned-cluster-skipped",
+                        &fluent_args!(
+                            "mode" => self.mode.clone(),
+                            "pid" => pid.to_string(),
+                            "reason" => "no-affected-cpus".to_string()
+                        )
+                    )
+                );
                 continue;
             }
 
@@ -266,22 +302,57 @@ impl TunedGovernor {
             });
 
             // 统一默认调速器（选型见 common.rs [governor]）+ min 压到硬件最低（避免设备出厂高 min 导致频率降不下去）
-            let _ = crate::utils::try_write_file(
-                &gov_path,
-                crate::common::cpu_governor_for_policy(pid),
-            );
+            // 这里用 write_to_file（返回 Result）而非 try_write_file（恒 Ok）：节点缺失(ENOENT)时
+            // try_write_file 只打 debug，INFO 级下完全看不见接管缺了一条腿
+            let mut init_writes_ok = true;
+            if let Err(e) =
+                crate::utils::write_to_file(&gov_path, crate::common::cpu_governor_for_policy(pid))
+            {
+                init_writes_ok = false;
+                warn!(
+                    "[Tuned] {} P{} default governor write failed: {}",
+                    self.mode, pid, e
+                );
+            }
             let min_hw = freqs[0];
-            let _ = crate::utils::try_write_file(&min_path, min_hw.to_string());
+            if let Err(e) = crate::utils::write_to_file(&min_path, min_hw.to_string()) {
+                init_writes_ok = false;
+                warn!(
+                    "[Tuned] {} P{} scaling_min_freq write to hw min ({}kHz) failed: {}",
+                    self.mode, pid, min_hw, e
+                );
+            }
+            // [init_release] 调速器/min 写失败 = 该簇接管不完整（max 控制不被内核跟随 / 高 min 卡住降频）
+            if !init_writes_ok {
+                freq_fallback = true;
+            }
 
             let current_max = *freqs.last().unwrap();
-            let _ = max_writer.write_value_force(current_max);
+            let write_ok = max_writer.write_value_force(current_max);
+            if !write_ok {
+                // [init_release] 接管初写 max 失败：该簇上限停留在系统原值（可能非硬件最高），
+                // 后续 tick 只在目标偏离超 hysteresis 时才动它，低负载下可长期不被纠正
+                warn!(
+                    "[Tuned] {} P{} takeover initial scaling_max_freq ({}kHz) write failed; cap stays at system value",
+                    self.mode, pid, current_max
+                );
+            }
 
             self.clusters.push(ClusterState {
                 policy_id: pid,
                 core_name: name,
                 available_freqs: freqs,
                 max_writer,
-                current_max,
+                // [init_release] 初写成功 = 账面即真值；失败则回读系统当下上限（前移会让后续
+                // hysteresis 判据与账面对不上，低负载下这个偏差可能长期不被纠正）
+                current_max: if write_ok {
+                    current_max
+                } else {
+                    fs::read_to_string(&max_path)
+                        .ok()
+                        .and_then(|s| s.trim().parse::<u32>().ok())
+                        .unwrap_or(current_max)
+                },
                 down_since: None,
                 down_target: 0,
                 ema_util: -1.0,
@@ -294,9 +365,20 @@ impl TunedGovernor {
                 last_write_dir: 0,
                 last_failed: false,
             });
+            // [init_release] 本簇走了兜底频率表或初写失败：接管程度不完整但仍在 active，
+            // 与完全正常接管在输出数据上同形，必须留痕
+            if freq_fallback {
+                init_degraded = true;
+            }
         }
 
         self.apply_migration_cost();
+        if init_degraded {
+            warn!(
+                "[Tuned] {} takeover incomplete: some clusters used fallback freq table or failed initial writes; cap/governor may not be followed by kernel",
+                self.mode
+            );
+        }
 
         self.active = !self.clusters.is_empty();
         if self.active {
@@ -316,7 +398,9 @@ impl TunedGovernor {
             // 非 playback 模式恒清零——`init_policies` 开头已 `release()` 清过一次，这里按模式重设，两种模式切换不留残位
             self.fas_signal.set_playback(self.mode == "playback");
         } else {
-            warn!(
+            // [init_release] 无有效集群 = 特调整条链路失效（所有调用点都会进 5 分钟冷却 + CLG 接管），
+            // 不靠本进程重试自愈、需人介入修配置/硬件 —— 按契约属 error，稳态运行时不得出现
+            error!(
                 "{}",
                 t_with_args(
                     "tuned-no-clusters",
@@ -392,7 +476,10 @@ impl TunedGovernor {
         let orig = fs::read_to_string(MIGRATION_COST_PATH)
             .ok()
             .map(|s| s.trim().to_string());
-        if crate::utils::try_write_file(MIGRATION_COST_PATH, &want.to_string()).is_ok() {
+        // [fix-1017] 原用 try_write_file(..).is_ok() 判定：该函数吞错恒返 Ok(())，`is_ok()` 恒真 →
+        // migration_cost_restore 恒置位，即便一个字节都没写下去也当「已改、退出需还原」，与注释
+        // 「写失败当未配置」相反。改用 write_to_file（真实 Result），只在真写成功时才记快照。
+        if crate::utils::write_to_file(MIGRATION_COST_PATH, &want.to_string()).is_ok() {
             self.migration_cost_restore = orig;
         }
     }

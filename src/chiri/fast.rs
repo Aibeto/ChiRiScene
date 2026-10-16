@@ -92,7 +92,18 @@ impl FastLock {
                 // 不改取档/floor 对齐逻辑）
                 match crate::common::soc_freq_fallback_for_policy(pid) {
                     Some(f) => freqs = f,
-                    None => continue,
+                    None => {
+                        // [level] 频率表彻底不可用（sysfs 空表 + soc.yaml 无兜底）时原样 continue：该簇不接管，
+                        // 但外部只看得到「极速已激活」，无法区分少锁一簇与全锁成功——补 warn 说明缺哪一簇
+                        warn!(
+                            "{}",
+                            t_with_args(
+                                "fast-freq-table-unavailable",
+                                &fluent_args!("pid" => pid.to_string(), "path" => freq_path.clone())
+                            )
+                        );
+                        continue;
+                    }
                 }
             }
             freqs.sort_unstable();

@@ -17,7 +17,7 @@ use crate::chiri::config::{AffinityConfig, AffinityTuningConfig};
 use crate::chiri::energy_cost;
 use crate::common::CoreGroup;
 use crate::utils::{FastReader, SysPathExist};
-use log::{debug, info};
+use log::{debug, error, info, warn};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -487,6 +487,17 @@ pub(crate) fn move_self_to_cpuset_root() -> Option<String> {
             "self_root",
         );
     }
+    // [silent_fail] 静默失败补日志：移组失败时返回值仍是 Some(orig)，与成功同形——调用方（core_ctl
+    // scenemode）无法据此区分，且专用核自钉会被原组掩码二次过滤、独占退化为「尽力而为」且无自愈路径
+    if let Err(e) = &last {
+        error!(
+            "{}",
+            t_with_args(
+                "affinity-self-root-failed",
+                &fluent_args!("errno" => e.raw_os_error().unwrap_or(0).to_string())
+            )
+        );
+    }
     Some(orig)
 }
 
@@ -706,9 +717,9 @@ fn logged_write(path: &str, val: &str) -> std::io::Result<()> {
     let res = std::fs::write(path, val);
     if let Err(e) = &res {
         if e.kind() == std::io::ErrorKind::NotFound {
-            log::debug!("write skipped (node missing): {path}");
+            debug!("write skipped (node missing): {path}");
         } else {
-            log::warn!("Failed to write to {path}: {e}");
+            warn!("Failed to write to {path}: {e}");
         }
     }
     res
@@ -2631,7 +2642,7 @@ impl AffinityManager {
             let node_ok = std::path::Path::new(UCLAMP_MAX_PATH).exists();
             if !ver_ok || !node_ok {
                 self.uclamp_max_support = UclampSupport::Unsupported;
-                log::warn!(
+                warn!(
                     "{}",
                     t_with_args(
                         "affinity-uclamp-unavailable",

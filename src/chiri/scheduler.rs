@@ -101,13 +101,27 @@ impl CpuScheduler {
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         if snap.is_empty() {
+            // [snapshot] 空快照（启动即停摆、或本轮从未下发过 tweak）此前完全无声：与「有快照但一个都没还原成功」
+            // 在日志上同形，排查时无从区分，故补一条显式的「无需还原」
+            log::info!("[Tweaks] DOWN 停摆：一次性系统调整快照为空，无节点需要还原");
             return;
         }
+        let total = snap.len();
         let mut restored = 0usize;
         for (path, value) in snap.drain() {
-            if utils::try_write_file(&path, &value).is_ok() {
+            // 用不吞错的 write_sysfs 判定真实成败：try_write_file 恒返回 Ok(())，会让 restored 恒等于 total、「还原不完整」告警永不触发
+            if utils::write_sysfs(&path, &value).is_ok() {
                 restored += 1;
             }
+        }
+        // [snapshot] 还原数与快照数不一致 = 有节点没还回去（停摆期残留 ChiRi 改动、基线失真）。
+        // `write_sysfs` 不吞错、返回真实写入结果（失败细节走 debug 日志），INFO 级别下只看得见汇总，故这里显式报警
+        if restored != total {
+            log::warn!(
+                "[Tweaks] DOWN 停摆：一次性系统调整还原不完整，{}/{} 个节点写回失败（失败细节仅 debug 级可见：write sysfs failed）",
+                restored,
+                total
+            );
         }
         log::info!(
             "{}",
@@ -138,7 +152,15 @@ impl CpuScheduler {
         if !sched.enabled {
             return Ok(());
         }
+        // [sched] 段已启用但配了零个合法参数：与「写了 N 个」同样往下走、同样打 applied 汇总，
+        // 唯一区别是 count=0 —— 误配/空表的静默失效在此显式点出（否则真机只见一条 count=0 的 info）
+        if sched.params.is_empty() {
+            log::warn!("[Sched] 内核调度器参数段已启用但参数表为空，本轮无任何写入");
+        }
         let mut applied = 0usize;
+        let mut rejected = 0usize;
+        let mut empty = 0usize;
+        let mut missing = 0usize;
         for (key, value) in &sched.params {
             if !Self::SCHED_ALLOWED_PARAMS.contains(&key.as_str()) {
                 log::warn!(
@@ -148,15 +170,36 @@ impl CpuScheduler {
                         &fluent_args!("key" => key.as_str())
                     )
                 );
+                rejected += 1;
                 continue;
             }
             if value.trim().is_empty() {
+                // [sched] 空值此前静默跳过：键配了却没值，真机只看到 applied 计数偏小，看不出丢的是哪一项
+                log::warn!("[Sched] 内核调度器参数 {key} 值为空，已跳过");
+                empty += 1;
                 continue;
             }
             let path = format!("/proc/sys/kernel/{key}");
+            // [sched] 白名单内的参数配了、但本机内核没有这个 /proc/sys/kernel 节点：`try_write_file` 只把
+            // ENOENT 降 debug，日志上「写了 N 项」与「一项都没生效」同形（真机无法区分）。此处显式点名，
+            // 不改变下发流程与 applied 口径（快照与写入照旧，缺失节点本就写不进去）
+            if !std::path::Path::new(&path).exists() {
+                log::warn!("[Sched] 内核调度器参数节点不存在，该项微调未生效: {path}");
+                missing += 1;
+            }
             let _ = Self::snapshot_write(&path, value);
             applied += 1;
             log::debug!("SchedTuning: wrote {} = {}", path, value);
+        }
+        // [sched] 三类跳过的总数：汇总只报成功数，失败侧无声会让「配了 7 项只生效 2 项」这种部分失效
+        // 与全部生效同形。空值/节点缺失属配置或机型问题、写失败已由 utils 打 warn，这里只补总账
+        if rejected + empty + missing > 0 {
+            log::warn!(
+                "[Sched] 内核调度器参数下发不完整: 白名单拒绝 {} 项、空值 {} 项、节点不存在 {} 项",
+                rejected,
+                empty,
+                missing
+            );
         }
         log::info!(
             "{}",
@@ -207,6 +250,12 @@ impl CpuScheduler {
                 );
                 // 仅在真正发起写入时输出"已完成"，避免开关未开启时误报
                 log::info!("{}", t("apply-cpu-idle-governor-start"));
+            } else {
+                // [cpu_idle] 开关与目标 governor 都配了、节点却不存在：整项功能静默失效，此前无任何日志
+                log::warn!(
+                    "[CpuIdle] cpuidle current_governor 节点不存在，目标 governor {} 未下发",
+                    config.cpu_idle.current_governor
+                );
             }
         }
         Ok(())

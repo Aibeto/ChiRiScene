@@ -312,7 +312,18 @@ impl DiagWorker {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(task)) => {
                 // 队满：记一次回压，随后阻塞交付（不覆盖、不丢帧）
-                self.backpressure.fetch_add(1, Ordering::Relaxed);
+                let pressure = self.backpressure.fetch_add(1, Ordering::Relaxed);
+                // [回压可观测] backpressure 目前**没有生产侧读取方**，纯计数等于静默：
+                // 写盘跟不上采样时诊断数据会持续滞后/缺帧，而 devimp 与 status.csv 上只是
+                // 「间隔变大/整段空白」，与正常态同形，排查时看不出是回压造成的。
+                // 首次 + 之后每 60 次报一次（帧间隔缺省 1s → 至多每分钟一条），
+                // 条件不满足时不进入 format，INFO 级别下无额外开销
+                if pressure == 0 || pressure % 60 == 0 {
+                    log::warn!(
+                        "diag render worker: submit backpressure (queue full, hit #{}); disk writes lag sampling, diagnostic data may be delayed or missing frames",
+                        pressure + 1
+                    );
+                }
                 // 阻塞 send 失败同样交还任务（worker 在阻塞期间退出）
                 tx.send(task).map_err(|e| e.0)
             }
@@ -334,7 +345,28 @@ impl DiagWorker {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(worker_handle) = handle.take() {
-            let _ = worker_handle.join();
+            // [静默失败] join 返回 Err = worker 线程体在 catch_unwind **之外** panic 退出：
+            // 排空未走完、`drain_finished` 可能永远为假，devimp 该时段帧整段缺失且无人上报
+            if worker_handle.join().is_err() {
+                log::error!(
+                    "diag render worker: thread ended with panic (join failed), drain incomplete; devimp @S frames for this period may be missing entirely"
+                );
+                // join 失败是**硬失败**（排空中断、无逐帧记账），与正常态在 devimp 上同形
+                // （该时段无 @S 帧），真机排查必须能看见——维持 error!
+            }
+            // [缺帧收尾] lost_frames / recovered_frames 目前**无生产侧读取方**，只记账不汇总等于静默：
+            // 丢帧在 devimp 里表现为「该时段没有 @S 帧」，与「没采样」同形，排查时区分不出来。
+            // 故在工作线程生命周期结束时（停机 / 失败态提交）汇总一次：有缺帧必须可见。
+            // 频率：每个 worker 生命周期至多一条，不是每帧路径。
+            let lost = self.lost_frames.load(Ordering::Relaxed);
+            let recovered = self.recovered_frames.load(Ordering::Relaxed);
+            if lost > 0 {
+                let last = *self.last_lost.lock().unwrap_or_else(|p| p.into_inner());
+                // 逐帧缺帧已在发生处 error! 上报（及时），此处只做生命周期收尾汇总，故用 warn
+                log::warn!(
+                    "diag render worker: {lost} frames not written this run (panic drain recovered {recovered}); last missing frame {last:?} — devimp @S frames incomplete for this period, do not read as a complete series"
+                );
+            }
         }
     }
 

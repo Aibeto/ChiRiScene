@@ -166,6 +166,10 @@ impl CoreCtlManager {
             return;
         }
         self.discovered = true;
+        // [silent-skip] discover 里每个 policy 有多条 `continue` 静默跳过路径：跳过的簇不进 clusters，
+        // 后续 halt/boost/离线全部对它无效，而对外只表现为「clusters 数少一个」——与「该内核本就
+        // 没有 core_ctl 节点」同形。这里逐簇记录原因，末尾汇总一条（discover 每次接管一次，低频）
+        let mut skipped: Vec<String> = Vec::new();
         for policy in get_cpu_policies() {
             // related_cpus 首个 CPU 即该 cluster 的代表（core_ctl 挂在 cluster 首 CPU 下）
             let related = fs::read_to_string(format!(
@@ -184,6 +188,7 @@ impl CoreCtlManager {
                 .filter_map(|s| s.parse().ok())
                 .collect();
             let Some(first) = cpus.first() else {
+                skipped.push(format!("policy{} related_cpus 为空", policy.id));
                 continue;
             };
             let dir = format!("/sys/devices/system/cpu/cpu{}/core_ctl", first);
@@ -191,6 +196,7 @@ impl CoreCtlManager {
             if let Ok(val) = fs::read_to_string(&min_path) {
                 let val = val.trim().to_string();
                 if val.is_empty() {
+                    skipped.push(format!("policy{} min_cpus 为空", policy.id));
                     continue;
                 }
                 let mut max_cpus = fs::read_to_string(format!("{dir}/max_cpus"))
@@ -259,7 +265,19 @@ impl CoreCtlManager {
                     enable,
                 });
                 // TODO: 快照为启动期单次读取，接管后厂商改写 max_cpus 时恢复会按旧快照覆盖；纠偏冷却已部分缓解，彻底解决需恢复前重读比对
+            } else if std::path::Path::new(&dir).exists() {
+                // 节点存在但读取失败 ≠ 内核没有 core_ctl：仅前者计入 skipped，避免无 core_ctl 机型逐簇误报
+                skipped.push(format!("policy{} min_cpus 读取失败", policy.id));
             }
+        }
+        if !skipped.is_empty() {
+            // [silent-skip] 有簇被跳过：core_ctl 只接管到部分簇，halt/boost/scenemode 对这些簇全部无效，
+            // 而外部从 clusters 数量看不出与「全接管成功」的差别
+            warn!(
+                "[CoreCtl] {} 个簇未纳入接管: {}",
+                skipped.len(),
+                skipped.join("; ")
+            );
         }
         if self.clusters.is_empty() {
             info!("{}", t("corectl-unavailable"));

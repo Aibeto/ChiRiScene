@@ -1133,18 +1133,54 @@ struct WorkerHandle {
     policy_id: i32,
     load_tx: LoadSender,
     handle: Option<JoinHandle<()>>,
+    /// [silent-drop] Disconnected 已上报标记（翻转沿去重）：Worker 死亡后本句柄的每一次
+    /// send_load 都会 Disconnected，逐 tick 重报会刷屏——首次 warn，之后降 debug；
+    /// 发送恢复成功（重 spawn / stop_workers 后重建句柄，本字段随句柄重建归 false）即复位
+    dead_reported: bool,
 }
 
 impl WorkerHandle {
     /// 发送负载数据到 Worker（非阻塞，满则丢弃本 tick）
-    fn send_load(&self, core_utils: Arc<Vec<f32>>) {
-        let _ = self.load_tx.try_send(core_utils);
+    fn send_load(&mut self, core_utils: Arc<Vec<f32>>) {
+        // [silent-drop] 丢弃本 tick 负载此前无痕：Worker 若已退出（panic/被 join），此后**每一次**
+        // 负载都静默丢弃，该簇频率永久停在最后一次决策上——与「负载一直没变」同形，且**无自愈路径**
+        // （Worker 不会重 spawn，直到 stop_workers/release 或重载），故按翻转沿报 warn：首次上报，
+        // 之后降 debug 门控；发送恢复成功即复位（重 spawn 后允许下次故障再报）。
+        // try_send 是每 tick 路径，故 Full（正常背压）不报——与既有语义一致
+        match self.load_tx.try_send(core_utils) {
+            Ok(()) => {
+                // 从 Disconnected 恢复（重 spawn / 重建句柄）：状态翻转，复位允许下次失败再报
+                self.dead_reported = false;
+            }
+            Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                if self.dead_reported {
+                    if log::log_enabled!(log::Level::Debug) {
+                        log::debug!(
+                            "[CLG] load channel disconnected (worker exited); cluster keeps its last frequency"
+                        );
+                    }
+                } else {
+                    log::warn!(
+                        "[CLG] load channel disconnected (worker exited); cluster keeps its last frequency and will not be re-tuned until restart/reload"
+                    );
+                    self.dead_reported = true;
+                }
+            }
+            // 队满属正常背压：负载包丢弃但 Worker 活着，不打点
+            Err(std::sync::mpsc::TrySendError::Full(_)) => {}
+        }
     }
 
     /// 等待 Worker 线程退出
     fn join(&mut self) {
         if let Some(h) = self.handle.take() {
-            let _ = h.join();
+            // [silent-drop] join 失败 = worker 线程体 panic 退出：该簇此后不再调频（频率冻结在最后
+            // 一次决策），而调度器仍认为它在管——与正常运行同形，必须留痕
+            if h.join().is_err() {
+                log::warn!(
+                    "[CLG] worker thread exited with panic; its cluster is no longer being tuned"
+                );
+            }
         }
     }
 }
@@ -1276,6 +1312,7 @@ impl CpuLoadGovernor {
                     policy_id: policy.id,
                     load_tx,
                     handle: Some(handle),
+                    dead_reported: false,
                 });
             }
         }
@@ -1353,6 +1390,7 @@ impl CpuLoadGovernor {
                     policy_id: policy.id,
                     load_tx,
                     handle: Some(handle),
+                    dead_reported: false,
                 });
             }
         }
@@ -1396,7 +1434,7 @@ impl CpuLoadGovernor {
         } else {
             shared = Arc::new(core_utils.to_vec());
         }
-        for w in &self.workers {
+        for w in &mut self.workers {
             w.send_load(Arc::clone(&shared));
         }
         self.load_buf = Some(shared);
@@ -1427,7 +1465,7 @@ impl CpuLoadGovernor {
         self.touch
             .set(floor, Duration::from_millis(self.cfg.touch_boost_ms));
         // 空负载包仅触发 flush（大核应用触摸地板，小核写频去重无副作用）；try_send 满时丢弃——排队的真实负载同样会应用触摸升频，不丢结果
-        for w in &self.workers {
+        for w in &mut self.workers {
             w.send_load(Arc::new(Vec::new()));
         }
         debug!(

@@ -2,7 +2,7 @@
 //! 激活时快照各 policy 的 `scaling_governor` 原值并写 `performance`，release 逐 policy 恢复。与 FastLock 同构：对象归调度线程独占、无内部锁；
 //! 快照读不到原值的 policy 直接跳过（宁可不管它，也不留下恢复不回去的残留）。健壮性边界：release 覆盖 FAS 退出 / contingency 退出 / DOWN 进入 / panic 自愈收尾 / 进程收尾；
 //! SIGKILL 场景收尾不执行，残留由 [residue] 启动清理兜底
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 use std::fs;
 
 use crate::fluent_args;
@@ -49,6 +49,11 @@ struct GovernorSnapshot {
 pub struct GovernorGuard {
     snapshots: Vec<GovernorSnapshot>,
     active: bool,
+    /// [no-op] activate 全军覆没 error 已报标记（翻转沿去重）：governor 节点只读的机型上
+    /// ok==0 属常态（performance 写不进，靠 min=max 锁频窗口等效），每次 FAS 激活 /
+    /// contingency/babel 切换都重报会刷屏并掩盖真异常——首次 error，之后降 debug；
+    /// 接管成功或 release 时复位，状态真变了允许再报
+    noop_reported: bool,
 }
 
 impl GovernorGuard {
@@ -56,6 +61,7 @@ impl GovernorGuard {
         Self {
             snapshots: Vec::new(),
             active: false,
+            noop_reported: false,
         }
     }
 
@@ -64,13 +70,18 @@ impl GovernorGuard {
     }
 
     // [activate]
-    /// 快照各 policy 原调速器并切到 performance。重复激活是 no-op（先幂等释放）
+    /// 快照各 policy 原调速器并切到 performance。重复激活是 no-op
+    /// 部分 policy 读不到原值属常态（离线簇 / 无 cpufreq policy），跳过不打点；**一个 policy 都拿不到**则是
+    /// 接管失败——contingency/babel/FAS 的 performance 语义整条丢失，且与「从未调用 activate」在日志上同形，
+    /// 按 error 记账（与 FAS 开环同口径：能力丢失且不可自愈）
     pub fn activate(&mut self) {
         if self.active {
             return;
         }
         let mut ok = 0usize;
+        let mut total = 0usize;
         for policy in crate::chiri::get_cpu_policies() {
+            total += 1;
             let pid = policy.id;
             let path = format!(
                 "/sys/devices/system/cpu/cpufreq/policy{}/scaling_governor",
@@ -81,6 +92,11 @@ impl GovernorGuard {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
             else {
+                // 读不到原值的 policy 不接管（宁可不管，也不留下恢复不回去的残留）：单 policy 跳过属常态（离线簇/无该节点），
+                // 只打 debug 留痕——全军覆没由下方 activate 末尾的 error 覆盖
+                debug!(
+                    "governor policy{pid} original governor unreadable, skipping takeover: {path}"
+                );
                 continue;
             };
             if write_governor(&path, "performance") {
@@ -108,16 +124,51 @@ impl GovernorGuard {
                 );
             }
         }
+        // [no-op] 一个 policy 都没接管到：performance 语义整条未生效，与「activate 从未被调用」在日志上完全同形（都是无 governor-switched 行），
+        // 真机无法区分——按功能性失效记账。policy 列表本身为空（cpufreq 不可见）也算，一并覆盖。
+        // [no-op] 去重（翻转沿）：governor 节点只读的机型上本态是已知常态（mod.rs 的
+        // sync_lab_governor_gpu 注释「governor 节点只读的机型写不进 performance，靠锁频窗口等效」），
+        // 每次 FAS 激活 / contingency-babel 切换都会走到这里重报，error 刷屏且掩盖真异常——
+        // 首次报 error，此后降 debug；状态变化（接管成功 / release）即复位，允许再次上报
+        if ok == 0 {
+            if self.noop_reported {
+                debug!(
+                    "{}",
+                    t_with_args(
+                        "governor-activate-noop",
+                        &fluent_args!("total" => total.to_string()),
+                    )
+                );
+            } else {
+                error!(
+                    "{}",
+                    t_with_args(
+                        "governor-activate-noop",
+                        &fluent_args!("total" => total.to_string()),
+                    )
+                );
+                self.noop_reported = true;
+            }
+        }
         if ok > 0 {
             self.active = true;
+            // [no-op] 从全军覆没恢复成功（如临时性读失败后节点恢复）：状态翻转，复位允许下次失败再报
+            self.noop_reported = false;
         }
     }
 
     // [release]
     /// 恢复全部快照的原调速器；未接管时为 no-op
+    /// 快照为空会静默跳过还原——调用方（退出路径 / 收尾）看起来 release 成功，performance 却留在节点上，
+    /// 与「还原成功」在日志上完全同形（都没有 governor-restore-failed），下一次启动只能靠残留清理兜底，故显式打点
     pub fn release(&mut self) {
         if !self.active {
             return;
+        }
+        if self.snapshots.is_empty() {
+            warn!(
+                "[Governor] empty snapshot: release has no policy to restore, performance may remain on the nodes (cleaned up by residue cleanup on next start)"
+            );
         }
         for snap in self.snapshots.drain(..) {
             let path = format!(
@@ -149,6 +200,8 @@ impl GovernorGuard {
             }
         }
         self.active = false;
+        // [no-op] release 完成一次完整生命周期：复位去重位，下次 activate 若再全军覆没按首报 error 记账
+        self.noop_reported = false;
     }
 
     // [residue]

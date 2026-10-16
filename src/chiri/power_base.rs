@@ -13,7 +13,7 @@
 
 use crate::chiri::config::PowerBaseConfig;
 use crate::utils::FastWriter;
-use log::{info, warn};
+use log::{debug, error, info, warn};
 use std::fs;
 use std::time::{Duration, Instant};
 
@@ -216,7 +216,19 @@ impl PowerBase {
                 // 不改取档/floor 对齐逻辑）
                 match crate::common::soc_freq_fallback_for_policy(pid) {
                     Some(f) => freqs = f,
-                    None => continue,
+                    None => {
+                        // 频率表读不到且 soc.yaml [freq_khz] 兜底也取不到：该集群整段跳过接管（无痕迹）——
+                        // 能力丢失且不可自愈（节点/配置都不在），按契约记 error，避免「接管成功」与
+                        // 「只有部分集群被接管」在日志上完全同形
+                        error!(
+                            "{}",
+                            t_with_args(
+                                "powerbase-takeover-skipped",
+                                &fluent_args!("pid" => pid.to_string())
+                            )
+                        );
+                        continue;
+                    }
                 }
             }
             freqs.sort_unstable();
@@ -300,11 +312,33 @@ impl PowerBase {
             // 起手把 min 压到硬件最低、max 写到标准档上界，写完才把 perf 记为 1.0；失败保持 0.0，下一 tick 按目标重试。
             // min 一次性压到硬件最低并保持（CLG 口径：只压上限，下限交回默认调速器），此后只写 max——
             // 写序必须是「先 min 后 max」：接管前系统 min 可能高于标准档，先压 max 会被内核以 min>max 拒
-            let _ = min_writer.write_value_force(hw_min);
+            // min 初写失败与 max 侧对称留痕：FastWriter 构造期打开失败的节点 do_write 恒 false **零内部日志**，
+            // 且 min 压不下去时后续每次 max 写入都被内核以 min>max 拒（do_write 里 EINVAL 只落 debug）——
+            // 该簇下界停在系统原值、调频上限整条失效，INFO 级完全不可见。5s 防篡改重写有自愈重试 → warn（key
+            // 见报告建议 powerbase-init-min-failed，ftl 由 Lead 车道补齐）
+            if !min_writer.write_value_force(hw_min) {
+                warn!(
+                    "{}",
+                    t_with_args(
+                        "powerbase-init-min-failed",
+                        &fluent_args!("pid" => pid.to_string())
+                    )
+                );
+            }
             let start_ceil = tier_ceils[0];
             let mut perf = 0.0_f32;
             if max_writer.write_value_force(start_ceil) {
                 perf = 1.0;
+            } else {
+                // 起手写失败原本静默（perf 保持 0.0）：下一 tick 会把该簇从「内存 perf」一路砍向 hw_min，
+                // 与硬件实际频率分叉且无痕迹。可自愈（tick / 5s 防篡改重写会按目标重试）→ warn
+                warn!(
+                    "{}",
+                    t_with_args(
+                        "powerbase-init-write-failed",
+                        &fluent_args!("pid" => pid.to_string())
+                    )
+                );
             }
 
             self.policies.push(BasePolicy {
@@ -322,6 +356,14 @@ impl PowerBase {
         // TODO: 真机验证——档位启用后触摸是唯一的放开通道，非触摸期频率硬顶在标准档（8550 是 #13）；
         // 触摸链路不可达（evdev 无权限/无设备）时无降级通道，确认要不要补「长期无触摸事件」抬 tier_touch
         self.tier_enabled = tier_any;
+        if !tier_any {
+            // 档位体系整体回退（配置三桶号任一为 0 / 非 PF SoC 无前沿表 / 桶越界 / 该桶该簇无目标）：
+            // 三档上界全 = hw_max，此时触摸只剩「功耗豁免窗口」、不再抬频。行为与「档位体系未启用」完全同形，
+            // 排障时无从分辨是配置没开还是前沿表缺失 → 补一条 debug 留痕（init 低频，无需门控）
+            debug!(
+                "[PowerBase] tier system inactive (frontier table/bucket unavailable); all tiers = hw_max, touch only extends the power exemption window"
+            );
+        }
         self.tier_idx = 0;
         self.touch_until = None;
         self.active = !self.policies.is_empty();
@@ -428,9 +470,23 @@ impl PowerBase {
         self.last_write = now;
         for p in &mut self.policies {
             let want = p.freq_for(p.perf);
-            let _ = p.max_writer.write_value_force(want);
+            // 兜底重写本身失败原本被 `let _ =` 吞掉：节点不可写时状态与硬件会持续分叉（5s 一轮的重写
+            // 是唯一的收敛通道，它一直失败就永远收敛不了）。可自愈（下一轮重试）→ debug；
+            // 本分支每 REWRITE_INTERVAL 每 policy 必走一次，按高频路径口径用 log_enabled! 门控省分配。
+            // **写入次数不变**：只在失败且 debug 开启时打点，不额外重写
+            let max_ok = p.max_writer.write_value_force(want);
+            if !max_ok && log::log_enabled!(log::Level::Debug) {
+                debug!(
+                    "[PowerBase] anti-tamper max rewrite failed; frequency cap may stay diverged from hardware until a later rewrite succeeds"
+                );
+            }
             // min 补写：只在这里兜底重写（接管/负载决策都不碰它），防节点被外部改写后失去下界
-            let _ = p.min_writer.write_value_force(p.hw_min);
+            let min_ok = p.min_writer.write_value_force(p.hw_min);
+            if !min_ok && log::log_enabled!(log::Level::Debug) {
+                debug!(
+                    "[PowerBase] anti-tamper min rewrite failed; frequency floor may stay diverged from hardware until a later rewrite succeeds"
+                );
+            }
         }
         Some(REWRITE_INTERVAL)
     }
