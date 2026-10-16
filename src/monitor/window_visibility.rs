@@ -6,6 +6,8 @@ use std::sync::{Arc, Condvar, LazyLock, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use crate::i18n::t;
+
 /// 最近一次 dumpsys 解析出的焦点 Activity 查表键（空 = 未知）。
 /// 见 `WindowObservation::activity` 的说明：本探针只在 FAS 路径被请求，故该值在非 FAS
 /// 前台会保持为空，消费方必须回退包名级判定。
@@ -66,6 +68,11 @@ impl WindowVisibilityProbe {
             .spawn(move || run_worker(worker_shared))
             .ok();
         if worker.is_none() {
+            // [FAS] 窗口查询线程起不来 ⇒ 后续所有 request 都石沉大海，probe.latest() 恒返回
+            // None ⇒ reconcile_fas_focus 的 evidence 为空 ⇒ 走 Grace ⇒ 延迟退出 FAS。
+            // 现象上「 praying 」和「应用真的失去焦点」完全一致（都不聚焦+无 FPS），
+            // 稳态打不出来、日志也没有 ⇒ 排查时必踩坑。这是功能性失效且不可自愈，按 error!。
+            log::error!("{}", t("window-probe-worker-failed"));
             shared.0.lock().unwrap().stopped = true;
         }
         Self { shared, worker }
@@ -76,6 +83,10 @@ impl WindowVisibilityProbe {
         if !state.stopped {
             state.enqueue(request);
             self.shared.1.notify_one();
+        } else if log::log_enabled!(log::Level::Debug) {
+            // [FAS] 探针已停摆（工作线程未起来/已退出）却仍在被请求：请求被静默丢弃，
+            // 调用方拿到的 latest() 依旧是 None，与「窗口还没查完」同形。高频路径仅 debug。
+            log::debug!("{}", t("window-probe-stopped"));
         }
     }
 
@@ -155,11 +166,50 @@ impl ProbeState {
     }
 }
 
+/// worker 退出哨兵：Drop 无条件置位 `stopped` 并失效全部状态、唤醒等待者。
+/// 覆盖 worker 的两条死亡路径 —— 正常 return（probe Drop 已先行置位 ⇒ 幂等）与
+/// 运行期 panic unwind（此前无人置位 ⇒ 唯一补救）。缺了后者：worker 线程 panic 死亡后
+/// `stopped` 恒 false，`request()` 恒走 enqueue、请求静默石沉大海、`latest()` 恒 None，
+/// `:86-90` 的 `window-probe-stopped` 分支永不可达 —— 与「启动失败」同级的静默失效，
+/// 而 ftl 文案 `window-probe-worker-failed`（启动/运行失败）的「运行」一半无留痕。
+/// 锁可能已被 worker panic 毒化：Drop 里禁 unwrap（Drop 中再 panic = abort）。
+struct WorkerStopGuard(Arc<(Mutex<ProbeState>, Condvar)>);
+
+impl Drop for WorkerStopGuard {
+    fn drop(&mut self) {
+        let mut state = self.0.0.lock().unwrap_or_else(|e| e.into_inner());
+        state.stopped = true;
+        state.invalidate();
+        self.0.1.notify_one();
+    }
+}
+
 fn run_worker(shared: Arc<(Mutex<ProbeState>, Condvar)>) {
     run_worker_with_query(shared, query_visibility);
 }
 
 fn run_worker_with_query(
+    shared: Arc<(Mutex<ProbeState>, Condvar)>,
+    query: impl Fn(&WindowRequest, &dyn Fn() -> bool) -> io::Result<WindowVisibility>,
+) {
+    // panic 隔离：与 `mod.rs` 的 `spawn_guarded` 同属 monitor 口径 —— worker 循环任何 panic
+    // 都就地收场（catch_unwind），随后 guard Drop 置位 stopped，`request()` 从此转入
+    // `window-probe-stopped` 分支，不再静默吞请求。error 只补一次：若 panic 时 stopped 已为
+    // true，说明启动失败路径（:70-77 已打 `window-probe-worker-failed`）或 probe 自身 Drop
+    // 已先收尾——前者已有留痕，后者意味着探针正在析构、调用方即将不再使用它，均无需再报。
+    let guard = WorkerStopGuard(shared.clone());
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        worker_loop(shared.clone(), query)
+    }))
+    .is_err();
+    if panicked && !shared.0.lock().unwrap_or_else(|e| e.into_inner()).stopped {
+        log::error!("{}", t("window-probe-worker-failed"));
+    }
+    drop(guard);
+}
+
+/// worker 主体循环（由 `run_worker_with_query` 在 catch_unwind 内调用）。
+fn worker_loop(
     shared: Arc<(Mutex<ProbeState>, Condvar)>,
     query: impl Fn(&WindowRequest, &dyn Fn() -> bool) -> io::Result<WindowVisibility>,
 ) {
@@ -193,6 +243,23 @@ fn run_worker_with_query(
             state.stopped || state.revision != revision
         };
         let result = query(&request, &cancelled);
+        // [FAS] 查询失败原本是完全静默的：只体现在 backoff 变长、observation 不更新。
+        // 下游 `reconcile_fas_focus` 拿到 `None` 证据就走 Grace ⇒ 关帧反馈 + 延迟退出 FAS，
+        // 和「应用真的失去焦点」在调度行为、status.csv 输出上完全同形，排查时无从区分。
+        // 这里补一条 warn：单次失败可自愈（下次 3~5s 后重试），故不提 error。
+        if let Err(error) = &result {
+            log::warn!(
+                "{}",
+                crate::i18n::t_with_args(
+                    "window-probe-query-failed",
+                    &crate::fluent_args!(
+                        "pkg" => request.package.to_string(),
+                        "pid" => request.pid.to_string(),
+                        "error" => error.to_string()
+                    )
+                )
+            );
+        }
         let delay = match result {
             Ok(WindowVisibility::Unknown) => UNSUPPORTED_BACKOFF,
             Ok(_) => QUERY_INTERVAL,

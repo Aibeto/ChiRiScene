@@ -353,7 +353,15 @@ struct FpsManager {
     last_attach_error: Option<String>,
     /// 下次允许重试 attach 的时刻（退避窗口内不解析 libgui）
     attach_retry_at: Instant,
+    /// 探针在挂期间最近一次收到 ring 帧事件的时刻（帧静默检测依据）
+    last_ring_event_at: Option<Instant>,
+    /// 帧静默 WARN 现行态：true = 已报静默（恢复供帧时打 INFO 并复位，翻转沿只打一次）
+    frame_silent_warned: bool,
 }
+
+/// 帧静默判定窗口：探针在挂但这么久无任何 ring 事件即视为帧源静默
+/// （uprobe 挂错符号/内核 uprobe→BPF 传递失效的典型症状，包1 小米 ChirunoNeko 内核实症）
+const FRAME_SILENT_WARN_AFTER: Duration = Duration::from_secs(5);
 
 impl FpsManager {
     /// 加载 eBPF 程序（只执行一次），获取 RingBuf fd
@@ -402,6 +410,8 @@ impl FpsManager {
             blocked_source: None,
             last_attach_error: None,
             attach_retry_at: Instant::now(),
+            last_ring_event_at: None,
+            frame_silent_warned: false,
         })
     }
 
@@ -542,6 +552,9 @@ impl FpsManager {
         // （attach_fail_total 保留作会话累计，供「本次会话共失败多少次」观测）
         self.last_attach_error = None;
         self.attach_retry_at = Instant::now();
+        // 新 attach = 新一轮静默窗口：复位检测态，从挂上那一刻起重新计 5s
+        self.last_ring_event_at = Some(Instant::now());
+        self.frame_silent_warned = false;
         debug!(
             "{}",
             t_with_args(
@@ -631,9 +644,53 @@ impl FpsManager {
             // SAFETY: 长度已验证，整数事件字段允许任意位模式；ring 事件不保证对齐。
             let event = unsafe { ptr::read_unaligned(data.as_ptr().cast::<FrameTimestampEvent>()) };
 
+            // 帧静默恢复沿：收到事件即刷新时刻并复位 WARN 态（恢复供帧的 INFO 由 check_frame_silent 打）
+            self.last_ring_event_at = Some(Instant::now());
             if let Some(state) = self.states.get_mut(&event.pid) {
                 state.ingest(event.ktime_ns);
             }
+        }
+    }
+
+    /// 帧静默检测：探针在挂但 `FRAME_SILENT_WARN_AFTER` 内无任何 ring 事件 → WARN（翻转沿只打一次）。
+    /// 恢复供帧时打 INFO 复位。uprobe 挂错符号/内核 uprobe→BPF 传递失效时「attach 成功零帧」由此显性化
+    /// （包1 小米 ChirunoNeko 内核实证：挂载日志齐全但全程 0 帧事件，daemon.log 无任何告警，问题隐形）。
+    fn check_frame_silent(&mut self) {
+        if !self.has_active_probe() {
+            return;
+        }
+        let silent = self
+            .last_ring_event_at
+            .is_none_or(|t| t.elapsed() >= FRAME_SILENT_WARN_AFTER);
+        if silent && !self.frame_silent_warned {
+            self.frame_silent_warned = true;
+            // secs 报**实际静默时长**（None = 自 attach 起整段无帧，用 attach 时刻起算）
+            // ——恒量 FRAME_SILENT_WARN_AFTER.as_secs() 与 uptime 无关且在 last_ring_event_at
+            // 缺失时低估实情（attach 成功后从未收到帧 ⇒ 实际静默早已远超 5s）
+            let secs = match self.last_ring_event_at {
+                Some(t) => t.elapsed().as_secs(),
+                None => 0,
+            }
+            .max(FRAME_SILENT_WARN_AFTER.as_secs());
+            warn!(
+                "{}",
+                t_with_args(
+                    "fps-monitor-frame-silent",
+                    &fluent_args!(
+                        "pid" => self.current_pid.to_string(),
+                        "secs" => secs.to_string()
+                    )
+                )
+            );
+        } else if !silent && self.frame_silent_warned {
+            self.frame_silent_warned = false;
+            info!(
+                "{}",
+                t_with_args(
+                    "fps-monitor-frame-resumed",
+                    &fluent_args!("pid" => self.current_pid.to_string())
+                )
+            );
         }
     }
 
@@ -1121,6 +1178,7 @@ pub async fn start_fps_loop(
                     continue;
                 }
                 manager.poll_frames();
+                manager.check_frame_silent();
 
 // 出队/投喂前存活门：pidfd 零超时判定目标已退出则立即 detach 丢 pending（旧 generation 封锁不重挂）；
 // 无 pidfd 时仅在确有新帧时以 starttime 复验一次。

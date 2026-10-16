@@ -26,14 +26,25 @@ use crate::i18n::{t, t_with_args};
 /// 由看门狗 3s 后按进程级拉起全新daemon（main 启动初始化会重建全部监控）仅 `Err`（panic）触发退出，正常返回行为不变；消息刻意不走 i18n：运行在 panic 收尾路径，
 /// 纯英文便于检索且避免碰 i18n 锁
 fn spawn_guarded<F: FnOnce() + Send + 'static>(name: &'static str, f: F) -> std::io::Result<()> {
-    thread::Builder::new()
+    if let Err(e) = thread::Builder::new()
         .name(name.to_string())
         .spawn(move || {
             if std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).is_err() {
                 log::error!("[PANIC] monitor thread \"{name}\" died, exiting for watchdog restart");
                 std::process::exit(1);
             }
-        })?;
+        })
+    {
+        // [silent-cascade] 语义注意：本函数**并未**消除级联跳过 —— spawn 失败仍经 `return Err(e)`
+        // 上抛，`start_monitor` 的后续 `spawn_guarded(...)?` 调用点全部不再执行（旧 `})?;` 行为等价）。
+        // 改进仅在于：多一条含线程名的 error，点名「是哪个线程没起来 + 后续线程不会启动」，
+        // 由上层（main.rs 的 monitor-module-crashed）决定处置。若要真正「失败只跳过该线程、
+        // 继续启动其余」，需把 6 个 spawn 点逐个改为记录后继续 —— 目前未做，勿误读为已修。
+        log::error!(
+            "[Monitor] thread \"{name}\" spawn failed (subsequent monitor threads will not start): {e}"
+        );
+        return Err(e);
+    }
     Ok(())
 }
 

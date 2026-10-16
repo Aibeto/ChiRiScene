@@ -38,6 +38,17 @@ fn update_state_if_changed(state_arc: &Arc<Mutex<bool>>, new_state: bool, source
             .map(|t| t.elapsed() < SCREEN_MIN_FLIP_INTERVAL)
             .unwrap_or(false)
         {
+            // 去抖挡下的翻转原本零痕迹：共享状态保持旧值、等下一轮再来（不是丢弃）。
+            // 排障要能区分「去抖顺延」与「判定源读失败沿用旧值」——两者在共享状态上完全同形。
+            // 本函数被属性轮询（150ms）+ verify 自愈（主循环）高频调用，按高频路径口径 debug + 门控
+            if log::log_enabled!(log::Level::Debug) {
+                debug!(
+                    "screen-detect: flip deferred by min-flip-interval ({}ms); src={} requested={}",
+                    SCREEN_MIN_FLIP_INTERVAL.as_millis(),
+                    source,
+                    new_state
+                );
+            }
             return false;
         }
         *last = Some(Instant::now());
@@ -544,7 +555,22 @@ pub fn monitor_screen_state_uevent(
                     } */
                 }
             }
-            Err(_) => thread::sleep(Duration::from_secs(1)),
+            Err(e) => {
+                // netlink 接收失败原本只 sleep 1s 重试、零痕迹：套接字一旦持续报错（缓冲区/权限问题），
+                // uevent 侧（CPU hotplug 脏标记）就永久失效，而日志上与「安静无事件」完全同形。
+                // 可自愈（下轮重试）→ debug；本分支紧邻 `thread::sleep(1s)`，天然限频，门控只为省分配。
+                // 文案走既有 key `screen-uevent-recv-failed`（ftl 已声明，此前是死 key 未被引用）
+                if log::log_enabled!(log::Level::Debug) {
+                    debug!(
+                        "{}",
+                        t_with_args(
+                            "screen-uevent-recv-failed",
+                            &fluent_args!("error" => e.to_string())
+                        )
+                    );
+                }
+                thread::sleep(Duration::from_secs(1))
+            }
         }
     }
 }

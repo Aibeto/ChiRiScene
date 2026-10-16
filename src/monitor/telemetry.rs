@@ -259,9 +259,17 @@ pub fn telemetry_loop() {
             ("/proc/pressure/io", &TELEMETRY.psi_io_some),
             ("/proc/pressure/memory", &TELEMETRY.psi_mem_some),
         ] {
-            let v = std::fs::read_to_string(path)
-                .map(|t| psi_some_avg10(&t))
-                .unwrap_or(0.0);
+            let v = match std::fs::read_to_string(path) {
+                Ok(t) => psi_some_avg10(&t),
+                Err(e) => {
+                    // [静默失效] 读失败按 0.0 落盘：与「本周期真的没有压力」同形，稳态 1s 一条会刷屏，
+                    // 故只允许 debug + 门控（门控内做 format，INFO 级别零开销）
+                    if log::log_enabled!(log::Level::Debug) {
+                        log::debug!("[Telemetry] PSI read failed {path}: {e}, counted as 0");
+                    }
+                    0.0
+                }
+            };
             cell.store(v.to_bits(), Ordering::Relaxed);
         }
 
@@ -278,10 +286,30 @@ pub fn telemetry_loop() {
             }
         }
         if let Some(p) = gpu_path {
-            let busy = std::fs::read_to_string(p)
-                .ok()
-                .and_then(|s| s.trim().trim_end_matches('%').trim().parse::<f32>().ok())
-                .map(|v| v.clamp(0.0, 100.0));
+            let busy = match std::fs::read_to_string(p) {
+                // 三态：读失败 / 读到但解析失败 / 成功 —— 前两者在落盘侧都是 NaN 同形，
+                // 原注释自称覆盖「读/解析失败」实际只覆盖读失败，解析失败零留痕，补齐
+                Ok(s) => match s.trim().trim_end_matches('%').trim().parse::<f32>() {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        // [静默失效] 节点可读但内容非法 → 同样存 NaN，与读失败同形无区分；
+                        // 1s 高频 → debug + 门控，与 Err 分支共用同款口径（字面量，不依赖新 key）
+                        if log::log_enabled!(log::Level::Debug) {
+                            log::debug!("[Telemetry] GPU busy parse failed {p}: {e}, raw: {s:?}");
+                        }
+                        None
+                    }
+                },
+                Err(e) => {
+                    // [静默失效] 节点存在但读失败 → 存 NaN（devimp 显示为无效），与「GPU 空闲 0%」
+                    // 在解析侧都是无值，排查时分不清；1s 高频 → debug + 门控
+                    if log::log_enabled!(log::Level::Debug) {
+                        log::debug!("[Telemetry] GPU busy read failed {p}: {e}");
+                    }
+                    None
+                }
+            }
+            .map(|v| v.clamp(0.0, 100.0));
             let bits = busy.map(|v| v.to_bits()).unwrap_or(0x7FC00000);
             TELEMETRY.gpu_busy.store(bits, Ordering::Relaxed);
         }

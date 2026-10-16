@@ -46,21 +46,42 @@ fn percpu_total(map: Option<&PerCpuArray<&mut aya::maps::MapData, u64>>) -> u64 
     let Some(map) = map else {
         return 0;
     };
-    map.get(&0u32, 0)
-        .map(|v| v.iter().sum::<u64>())
-        .unwrap_or(0)
+    let Ok(values) = map.get(&0u32, 0) else {
+        // [静默失效] 逐核计数读取失败（核离线/查找失败）时返回 0：BpfStats 增量恒 0，与「本周期真的没有唤醒/迁移/频切」同形；
+        // 调用方 2s 一次，按高频路径口径只允许 debug + 门控
+        if log::log_enabled!(log::Level::Debug) {
+            debug!("{}", t("cpu-monitor-percpu-read-failed"));
+        }
+        return 0;
+    };
+    values.iter().sum::<u64>()
 }
 
 /// 读前台进程全部 TID消费方：foreground 利用率降级路径（仅 FAS_FG_UTIL_ENABLED 置位时）与 chiri 1s 块 aff `@S` 下钻（diag_active 时每秒一次）
 pub fn get_thread_tids(pid: u32) -> Vec<u32> {
     let task_dir = format!("/proc/{}/task", pid);
     let mut tids = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&task_dir) {
-        for entry in entries.flatten() {
-            if let Some(name) = entry.file_name().to_str() {
-                if let Ok(tid) = name.parse::<u32>() {
-                    tids.push(tid);
+    match std::fs::read_dir(&task_dir) {
+        Ok(entries) => {
+            for entry in entries.flatten() {
+                if let Some(name) = entry.file_name().to_str() {
+                    if let Ok(tid) = name.parse::<u32>() {
+                        tids.push(tid);
+                    }
                 }
+            }
+        }
+        // [静默失效] 线程表读不到时返回空列表：降级路径取「最重线程」恒为 0，与「前台真的不占 CPU」同形；
+        // 该函数每 tick（TGID 主路径降级期）与 devimp @S 每秒都会走，只允许 debug + 门控
+        Err(e) => {
+            if log::log_enabled!(log::Level::Debug) {
+                debug!(
+                    "{}",
+                    t_with_args(
+                        "cpu-monitor-tids-read-failed",
+                        &fluent_args!("pid" => pid.to_string(), "error" => e.to_string())
+                    )
+                );
             }
         }
     }
@@ -269,6 +290,20 @@ pub async fn start_cpu_loop(
             // 五个逐核字段来自同一个 CoreState map：一次查找即可（原先 5 次）
             let per_cpu_state = core_state_map.get(&zero_key, 0);
 
+            // [静默失效] 整表读取失败时下面逐核取值全部落 0 → core_utils 全 0，与「真的全核空闲」同形（CLG/FAS 会按空载处理）；
+            // 本处是每 tick 路径，只允许 debug + 门控
+            if let Err(e) = per_cpu_state.as_ref() {
+                if log::log_enabled!(log::Level::Debug) {
+                    debug!(
+                        "{}",
+                        t_with_args(
+                            "cpu-monitor-core-state-read-failed",
+                            &fluent_args!("error" => e.to_string())
+                        )
+                    );
+                }
+            }
+
             let mut core_utils = vec![0.0_f32; max_cpu_id + 1];
 
             // [global-util]
@@ -323,7 +358,8 @@ pub async fn start_cpu_loop(
                 } else {
                     // PID 切换时重置 TGID 基线，避免跨进程累计值比较
                     if fg_pid != last_tgid_pid {
-                        debug!(
+                        // 状态迁移（前台换应用，低频）：且它解释了「切换后一 tick 前台 util 归 0」的数据形状 → 按契约 info
+                        info!(
                             "{}",
                             t_with_args(
                                 "cpu-monitor-fg-baseline-reset",
@@ -496,11 +532,19 @@ pub fn snapshot_procs() -> Vec<ProcSnap> {
     let ptr = SNAP_TGID_MAP.load(Ordering::Acquire);
     if ptr.is_null() {
         // start_cpu_loop 尚未注册句柄 / map 缺失：无数据可采
+        // [静默失效] 返回空 = @S 帧进程段为空，与「系统确无进程」同形；1s 一帧，不升 warn（持续失效会刷屏）
+        if log::log_enabled!(log::Level::Debug) {
+            debug!("{}", t("cpu-monitor-snap-handle-missing"));
+        }
         return Vec::new();
     }
     // SAFETY: 指针指向 Box::leak 常驻 Ebpf 内的 Map（见 SNAP_TGID_MAP），生命周期覆盖进程；只构造只读句柄，不写入
     let map: &aya::maps::Map = unsafe { &*ptr };
     let Ok(tgid_run_map) = BpfHashMap::<&aya::maps::MapData, u32, u64>::try_from(map) else {
+        // [静默失效] 只读句柄打不开时同样返回空：本帧进程段为空，与「系统确无进程」同形
+        if log::log_enabled!(log::Level::Debug) {
+            debug!("{}", t("cpu-monitor-snap-map-open-failed"));
+        }
         return Vec::new();
     };
     let mut st = SNAP_STATE

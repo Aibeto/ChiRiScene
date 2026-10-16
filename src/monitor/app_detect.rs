@@ -42,7 +42,8 @@ fn get_system_ime_packages() -> HashSet<String> {
                 let clean_pkg = pkg.trim();
                 if !clean_pkg.is_empty() {
                     imes.insert(clean_pkg.to_string());
-                    debug!(
+                    // 启动期一次性发现（影响后续前台过滤行为），稳态不再出现 → info
+                    info!(
                         "{}",
                         t_with_args("app-detect-ime-auto", &fluent_args!("pkg" => clean_pkg))
                     );
