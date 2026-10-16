@@ -86,6 +86,8 @@ cpu-monitor-channel-closed = [CPU Monitor] 通道已关闭，退出循环。
 fps-monitor-init = [FPS Monitor] 正在初始化 eBPF FPS 监控...
 fps-monitor-attached = [FPS Monitor] 已挂载 uprobe 到 PID: { $pid }
 fps-monitor-attach-failed-initial = [FPS Monitor] 初始挂载失败: { $error }
+fps-monitor-frame-silent = [FPS Monitor] 帧源静默: PID { $pid } 探针在挂但 { $secs }s 无帧事件，uprobe 疑似未命中逐帧路径或内核传递失效（FAS 将开环运行）
+fps-monitor-frame-resumed = [FPS Monitor] 帧源恢复: PID { $pid } 重新收到帧事件
 fps-monitor-pid-switch-failed = [FPS Monitor] PID 切换失败: { $error }
 fps-monitor-started = [FPS Monitor] eBPF FPS 监控启动成功（per-PID uprobe 模式）
 fps-monitor-passive = [FPS Monitor] FAS 未激活，探针待机（不挂载 uprobe，零开销）
@@ -212,7 +214,12 @@ tuned-profile-missing = [Tuned] 白名单模式 { $mode } 没有对应参数组�
 # --- Touch（触摸升频） ---
 touch-detect-started = [Touch] 触摸检测线程已启动（读取 /dev/input 输入设备）
 touch-detect-no-devices = [Touch] 未找到可读的输入设备，3 秒后重试
-touch-detect-poll-error = [Touch] poll 输入设备失败，重新枚举设备
+touch-detect-poll-error = [Touch] poll 输入设备失败，重新枚举设备: { $error }
+touch-detect-input-unreadable = [Touch] /dev/input 不可读（权限/路径异常），触摸检测无法枚举设备，触摸升频失效
+touch-detect-device-open-failed = [Touch] { $count } 个输入设备打开失败，这些设备上的触摸不会被检测到: { $list }
+touch-detect-device-error = [Touch] 输入设备 { $index } 上报异常事件（revents={ $revents }），重新枚举
+touch-detect-read-failed = [Touch] 输入设备 { $index } 读取失败或已断开，重新枚举
+touch-detect-thread-exit = [Touch] 触摸检测线程已退出（含 panic）：触摸升频永久失效，需重启守护进程恢复
 touch-detect-down = [Touch] 检测到触摸按下 (type={ $type } code={ $code })
 touch-event-received = [Touch] 收到触摸事件，触发大核升频并立即写频
 touch-boost-disable-node = [TouchBoost] 已写 { $path } = 0（屏蔽系统触摸升频）
@@ -225,6 +232,7 @@ system-tweaks-skipped-down = [Tweaks] DOWN 停摆期间跳过一次性系统调�
 # --- FAS ---
 fas-auto-capacity = [FAS] 自动计算算力权重:
 fas-auto-capacity-core = [FAS]   P{ $pid }: 算力={ $cap } -> 权重={ $weight }
+fas-capacity-probe-failed = [FAS] capacity 权重自动探测失败，回退手工权重: probes={ $probes } zero_cap={ $zero }
 fas-policy-init = [FAS] P{ $pid } { $min }-{ $max } MHz | 权重={ $weight }
 fas-init-summary = [FAS] 初始化 | { $fps }fps 冗余:{ $margin } 集群:{ $clusters } P:{ $perf } 配置数:{ $profiles }
 fas-app-switch = [FAS] 应用切换 ({ $ms }ms) | P -> { $perf }
@@ -238,6 +246,8 @@ fas-floor-rescue = [FAS] 触底救援 | 卡在地板 { $frames }帧 P={ $old }, 
 fas-tick-log = [FAS] { $target }fps 平均:{ $avg } | { $ms }ms ema:{ $ema } | 误差:{ $err_ema }/{ $err_inst } | { $act } | P:{ $perf } 前台利用率:{ $util }{ $cd }{ $damp }{ $temp }{ $offset }
 fas-set-game = [FAS] 设置游戏 | 包名={ $pkg } | 档位={ $gears } | 目标={ $target }fps
 fas-no-profile = [FAS] 未找到 '{ $pkg }' 的专属配置，使用全局档位 { $gears }
+fas-loop-open = [FAS] 帧反馈静默，进入开环（仅负载控制），档位不再调整: { $pkg }
+fas-loop-close = [FAS] 帧反馈恢复，回到闭环: { $pkg }
 fas-pid-reloaded = [FAS] PID 系数热重载: Kp={ $kp } Ki={ $ki } Kd={ $kd }
 fas-rules-reloaded = [FAS] 规则已热重载 (冗余={ $margin }, 地板={ $floor }, 天花板={ $ceil }, 配置数={ $profiles })
 fas-policy-writer-invalid = [FAS] P{ $pid } 策略写入器无效 (max_valid: { $max_valid }, min_valid: { $min_valid })，已跳过。
@@ -245,6 +255,12 @@ fas-qos-clamp-enter = [FAS] P{ $pid } 锁频被 QoS 钳制（写 { $wrote }kHz�
 fas-qos-clamp-exit = [FAS] P{ $pid } QoS 钳制解除（持续 { $held }s，max 恢复 { $freq }kHz）
 fas-qos-clamp-long = [FAS] P{ $pid } QoS 钳制已持续 { $held }s（写 { $wrote }kHz，读回 { $read }kHz），热控疑似长期钳死锁频
 fas-freq-tamper = [FAS] P{ $pid } 锁频被异常改写（写 { $wrote }kHz，读回 { $read }kHz）-> 重新收敛
+fas-native-gear-skip-samples = [FAS] 原生档识别跳过: 窗口样本不足 { $count }/{ $need } 帧，平均帧:{ $avg }
+fas-native-gear-no-match = [FAS] 原生档识别未命中: 平均帧:{ $avg } 标准差:{ $stddev } 无档位落在 ±8fps 内 (当前目标 { $target }fps)
+fas-native-gear-skip-jitter = [FAS] 原生档识别跳过: 抖动超限 标准差:{ $stddev } ≥ { $limit }，平均帧:{ $avg }
+fas-native-gear-detected = [FAS] 原生档识别生效: 平均帧:{ $avg } 标准差:{ $stddev }，目标档 { $from } -> { $to }fps (绕过确认计数)
+fas-downgrade-deferred-dwell = [FAS] 降档被驻留期暂缓: 剩余 { $dwell } 帧，平均帧:{ $avg } 已低于降档门槛 { $threshold } (目标 { $target }fps)
+fas-extreme-jank-fasttrack = [FAS] 极端卡顿快车道: 平均帧:{ $avg } 远低于目标 { $target }fps (标准差:{ $stddev })，绕过加速直接推进降档
 
 # --- FAS（白名单/调度集成）---
 main-fas-whitelist-exported = [Main] 已导出 { $count } 个 FAS 白名单条目到 fas_whitelist.yaml
@@ -345,3 +361,50 @@ telemetry-summary = [Telemetry] PSI cpu={ $cpu }% io={ $io }% mem={ $mem }% | GP
 
 # --- Config 热重载联动 ---
 scheduler-config-dirty-reload = [Scheduler] feature.yaml 热重载已同步到调度器 (mode={ $mode })
+
+# --- 静默失效补点（2026-10-17 日志级别重排） ---
+app-detect-activity-override = [AppDetect] 前台 Activity 覆盖包名映射: { $pkg } <- { $activity }
+config-feature-parse-failed = [Config] feature.yaml 解析失败: { $error }
+config-meta-fallback = [Config] meta 配置回退内嵌默认（外部文件不可用）: { $path }
+down-chr-created = [Down] down.chr 缺失，已补建模板（非停摆）
+down-chr-read-failed = [Down] down.chr 读取失败，按不停摆处理: { $error }
+down-chr-recreate-failed = [Down] down.chr 补建失败：文件持续缺失，只能靠监听感知，重启后可能停在停摆
+rhine-state-write-failed = [Rhine] rhine.chr 状态写回失败：状态文件与内存状态不一致，界面可能显示旧态
+rule-app-modes-empty = [AppDetect] rules 的 app_modes 为空或 null，按空表处理
+rule-global-mode-defaulted = [AppDetect] rules 未给 global_mode，回退默认模式: { $mode }
+logger-status-write-failed = [Logger] status.csv 连续第 { $n } 次写入失败：该秒行丢失，分析口径出现空洞
+affinity-self-root-failed = [Affinity] 守护进程自身移回原 cpuset 组失败 (errno={ $errno })：自身线程可能留在被接管的组内
+gpu-lock-partial = [GPU] 锁频只成功 { $ok }/{ $total } 个节点：其余节点未被接管，与全锁成功在读数上同形
+gpu-probe-rejected = [GPU] devfreq 目录被拒绝收录: { $path } ({ $reason })
+gpu-snapshot-unavailable = [GPU] 接管前快照不可用：释放时可能无法恢复原 governor/频率
+gpu-lock-failed = [GPU] { $nodes } 个节点全部锁频失败：contingency 的 GPU 锁频能力丢失（lock 无重试）
+gpu-release-max-stuck = [GPU] { $nodes } 个节点恢复原 max 频率失败：卡在最高频且不会再重试
+window-probe-query-failed = [WindowProbe] 查询失败 pkg={ $pkg } pid={ $pid }: { $error }
+window-probe-stopped = [WindowProbe] 探针线程已停止，可见性判定不再更新
+window-probe-worker-failed = [WindowProbe] 查询线程启动/运行失败：窗口可见性能力整条丢失，FAS 可见性判定将回退
+fas-verify-read-failed = [FAS] P{ $pid } 锁频校验读回失败：写入是否生效不可判定，校验链路断供
+fas-verify-read-restored = [FAS] P{ $pid } 锁频校验读回恢复，校验链路重建
+fas-boost-ceil-clamped = [FAS] { $act } 升频被上限钳制: 请求 { $req } -> P { $perf } (上限 { $ceil })
+fas-boost-max-inc-clamped = [FAS] { $act } 升频受单次步长限制: 请求 { $req } -> P { $perf } (最大增量 { $max_inc })
+fas-boost-damped-cap-clamped = [FAS] { $act } 升频被阻尼上限钳制: 请求 { $req } -> P { $cap }
+fas-frame-dropped = [FAS] 帧样本被丢弃: { $ms }ms ({ $reason })
+fast-freq-table-unavailable = [Fast] P{ $pid } 频率表不可用且无 soc.yaml 兜底，该簇不锁频: { $path }
+governor-activate-noop = [Governor] 一个 policy 都未接管（共 { $total } 个）：performance 语义整条未生效
+
+powerbase-takeover-skipped = [PowerBase] P{ $pid } 频率表与 soc.yaml 兜底均不可用，该集群跳过接管（能力丢失）
+powerbase-init-write-failed = [PowerBase] P{ $pid } 接管初写上限失败：该簇 perf 停在 0，频率会一路砍向硬件最低
+powerbase-init-min-failed = [PowerBase] P{ $pid } 接管初写下限失败：min 压不下去，后续 max 写入会被内核以 min>max 拒绝，该簇调频整条失效
+
+cpu-monitor-percpu-read-failed = [CPU Monitor] eBPF 逐核计数读取失败（核离线/查找失败），本轮计数按 0 计
+cpu-monitor-tids-read-failed = [CPU Monitor] 读取 pid { $pid } 的线程列表失败: { $error }
+cpu-monitor-core-state-read-failed = [CPU Monitor] 核心在线状态读取失败，该核按离线处理: { $error }
+cpu-monitor-snap-handle-missing = [CPU Monitor] eBPF 进程快照句柄未注册/映射缺失，@S 帧进程段为空
+cpu-monitor-snap-map-open-failed = [CPU Monitor] eBPF 进程快照映射打开失败，@S 帧进程段为空
+screen-uevent-recv-failed = [Screen] uevent 接收失败，1s 后重试: { $error }
+
+fas-no-policies = [FAS] 未发现任何 cpufreq policy，FAS 接管失败，档位与保护停摆，请检查内核/环境
+fas-governor-write-failed = [FAS] P{ $pid } 写入 performance governor 失败: { $error }，可能受系统调频干扰
+fas-freq-table-unavailable = [FAS] P{ $pid } 频率表不可用且无 soc.yaml 兜底 ({ $path })，该 policy 已跳过
+fas-policy-none-taken = [FAS] 所有 policy 均被跳过，实际未接管任何集群，FAS 档位控制停摆
+fas-freq-hold-skip = [FAS] P{ $pid } 频率保持期剩余 { $frames } 帧，跳过本次写入
+fas-freq-hysteresis-skip = [FAS] P{ $pid } 频差 { $diff } ≤ 迟滞 { $hysteresis }，跳过本次写入

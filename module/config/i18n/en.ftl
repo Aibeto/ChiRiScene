@@ -86,6 +86,8 @@ cpu-monitor-channel-closed = [CPU Monitor] Channel closed, exiting loop.
 fps-monitor-init = [FPS Monitor] Initializing eBPF FPS monitor...
 fps-monitor-attached = [FPS Monitor] Attached uprobe to PID: { $pid }
 fps-monitor-attach-failed-initial = [FPS Monitor] Initial attach failed: { $error }
+fps-monitor-frame-silent = [FPS Monitor] frame source silent: PID { $pid } probe attached but no frame events for { $secs }s, uprobe likely missing the per-frame path or kernel delivery broken (FAS will run open-loop)
+fps-monitor-frame-resumed = [FPS Monitor] frame source resumed: PID { $pid } receiving frame events again
 fps-monitor-pid-switch-failed = [FPS Monitor] PID switch failed: { $error }
 fps-monitor-started = [FPS Monitor] eBPF FPS monitor started (per-PID uprobe mode)
 fps-monitor-passive = [FPS Monitor] FAS not active, probe standing by (no uprobe attached, zero overhead)
@@ -212,7 +214,12 @@ tuned-profile-missing = [Tuned] whitelist mode { $mode } has no profile; takeove
 # --- Touch (touch boost) ---
 touch-detect-started = [Touch] Touch detection thread started (reading /dev/input devices).
 touch-detect-no-devices = [Touch] No readable input devices found, retrying in 3s.
-touch-detect-poll-error = [Touch] poll on input devices failed, re-enumerating.
+touch-detect-poll-error = [Touch] poll on input devices failed, re-enumerating: { $error }
+touch-detect-input-unreadable = [Touch] /dev/input is unreadable (permission/path issue), touch detection cannot enumerate devices; touch boost is dead
+touch-detect-device-open-failed = [Touch] { $count } input device(s) failed to open; touches on them will not be detected: { $list }
+touch-detect-device-error = [Touch] input device { $index } reported an error event (revents={ $revents }), re-enumerating
+touch-detect-read-failed = [Touch] input device { $index } read failed or disconnected, re-enumerating
+touch-detect-thread-exit = [Touch] touch detection thread exited (including panic): touch boost is permanently dead, restart the daemon to recover
 touch-detect-down = [Touch] Touch down detected (type={ $type } code={ $code })
 touch-event-received = [Touch] Touch event received, boosting big cores and flushing immediately.
 touch-boost-disable-node = [TouchBoost] Wrote { $path } = 0 (disabled system touch boost)
@@ -225,6 +232,7 @@ system-tweaks-skipped-down = [Tweaks] one-shot system tweaks skipped during DOWN
 # --- FAS ---
 fas-auto-capacity = [FAS] auto capacity weight:
 fas-auto-capacity-core = [FAS]   P{ $pid }: cap={ $cap } -> w={ $weight }
+fas-capacity-probe-failed = [FAS] capacity auto-probe failed, falling back to manual weights: probes={ $probes } zero_cap={ $zero }
 fas-policy-init = [FAS] P{ $pid } { $min }-{ $max } MHz | w={ $weight }
 fas-init-summary = [FAS] init | { $fps }fps margin:{ $margin } clusters:{ $clusters } P:{ $perf } profiles:{ $profiles }
 fas-app-switch = [FAS] app switch ({ $ms }ms) | P -> { $perf }
@@ -238,6 +246,8 @@ fas-floor-rescue = [FAS] floor-rescue | stuck { $frames } frames at P={ $old }, 
 fas-tick-log = [FAS] { $target }fps avg:{ $avg } | { $ms }ms ema:{ $ema } | err:{ $err_ema }/{ $err_inst } | { $act } | P:{ $perf } fg_util:{ $util }{ $cd }{ $damp }{ $temp }{ $offset }
 fas-set-game = [FAS] set_game | pkg={ $pkg } | gears={ $gears } | target={ $target }fps
 fas-no-profile = [FAS] no per-app profile for '{ $pkg }', using global gears { $gears }
+fas-loop-open = [FAS] frame feedback silent, entering open-loop (load-only), gear adjustments suspended: { $pkg }
+fas-loop-close = [FAS] frame feedback restored, back to closed-loop: { $pkg }
 fas-pid-reloaded = [FAS] PID coefficients hot-reloaded: Kp={ $kp } Ki={ $ki } Kd={ $kd }
 fas-rules-reloaded = [FAS] rules hot-reloaded (margin={ $margin }, floor={ $floor }, ceil={ $ceil }, profiles={ $profiles })
 fas-policy-writer-invalid = [FAS] P{ $pid } policy writer invalid (max_valid: { $max_valid }, min_valid: { $min_valid }), skipping.
@@ -245,6 +255,12 @@ fas-qos-clamp-enter = [FAS] P{ $pid } locked freq clamped by QoS (wrote { $wrote
 fas-qos-clamp-exit = [FAS] P{ $pid } QoS clamp released after { $held }s (max restored to { $freq }kHz)
 fas-qos-clamp-long = [FAS] P{ $pid } QoS clamped for { $held }s (wrote { $wrote }kHz, read { $read }kHz), thermal may be pinned
 fas-freq-tamper = [FAS] P{ $pid } locked freq tampered (wrote { $wrote }kHz, read { $read }kHz) -> re-applying
+fas-native-gear-skip-samples = [FAS] native gear detect skipped: { $count }/{ $need } samples, avg:{ $avg }
+fas-native-gear-no-match = [FAS] native gear no match: avg:{ $avg } stddev:{ $stddev }, no gear within ±8fps (target { $target }fps)
+fas-native-gear-skip-jitter = [FAS] native gear detect skipped: jitter { $stddev } ≥ { $limit }, avg:{ $avg }
+fas-native-gear-detected = [FAS] native gear detected: avg:{ $avg } stddev:{ $stddev }, { $from } -> { $to }fps (confirm bypassed)
+fas-downgrade-deferred-dwell = [FAS] downgrade deferred by dwell: { $dwell } frames left, avg:{ $avg } below { $threshold } (target { $target }fps)
+fas-extreme-jank-fasttrack = [FAS] extreme jank fast-track: avg:{ $avg } far below target { $target }fps (stddev:{ $stddev }), bypassing boost
 
 # --- FAS (whitelist / scheduler integration) ---
 main-fas-whitelist-exported = [Main] exported { $count } FAS whitelist entries to fas_whitelist.yaml
@@ -345,3 +361,50 @@ telemetry-summary = [Telemetry] PSI cpu={ $cpu }% io={ $io }% mem={ $mem }% | GP
 
 # --- Config hot-reload sync ---
 scheduler-config-dirty-reload = [Scheduler] feature.yaml hot reload synced to scheduler (mode={ $mode })
+
+# --- silent-failure coverage (2026-10-17 log level re-triage) ---
+app-detect-activity-override = [AppDetect] foreground activity overrides package mapping: { $pkg } <- { $activity }
+config-feature-parse-failed = [Config] feature.yaml parse failed: { $error }
+config-meta-fallback = [Config] meta config fell back to embedded defaults (external file unusable): { $path }
+down-chr-created = [Down] down.chr missing, template recreated (not halted)
+down-chr-read-failed = [Down] down.chr read failed, treating as not-halted: { $error }
+down-chr-recreate-failed = [Down] down.chr recreate failed: file stays missing, only watch can detect it, may stay halted after restart
+rhine-state-write-failed = [Rhine] rhine.chr state write-back failed: file and in-memory state diverge, UI may show a stale state
+rule-app-modes-empty = [AppDetect] rules app_modes empty or null, treating as empty map
+rule-global-mode-defaulted = [AppDetect] rules global_mode missing, defaulted to: { $mode }
+logger-status-write-failed = [Logger] status.csv write failed for the { $n }th consecutive time: that second's row is lost, analysis has a gap
+affinity-self-root-failed = [Affinity] failed to move daemon's own threads back to original cpuset (errno={ $errno }): may stay in the managed group
+gpu-lock-partial = [GPU] lock succeeded on only { $ok }/{ $total } nodes: the rest stay unmanaged, invisible in readings
+gpu-probe-rejected = [GPU] devfreq dir rejected: { $path } ({ $reason })
+gpu-snapshot-unavailable = [GPU] pre-takeover snapshot unavailable: original governor/freq may not be restorable on release
+gpu-lock-failed = [GPU] all { $nodes } nodes failed to lock: contingency GPU frequency lock capability lost (lock has no retry)
+gpu-release-max-stuck = [GPU] { $nodes } nodes failed to restore original max frequency: stuck at the highest frequency with no further retry
+window-probe-query-failed = [WindowProbe] query failed pkg={ $pkg } pid={ $pid }: { $error }
+window-probe-stopped = [WindowProbe] probe thread stopped, visibility decisions no longer update
+window-probe-worker-failed = [WindowProbe] query worker failed to start/run: window visibility capability lost, FAS falls back
+fas-verify-read-failed = [FAS] P{ $pid } verify read-back failed: write effectiveness unknown, verification chain is down
+fas-verify-read-restored = [FAS] P{ $pid } verify read-back restored, verification chain re-established
+fas-boost-ceil-clamped = [FAS] { $act } boost clamped by ceiling: requested { $req } -> P { $perf } (ceiling { $ceil })
+fas-boost-max-inc-clamped = [FAS] { $act } boost limited by max step: requested { $req } -> P { $perf } (max inc { $max_inc })
+fas-boost-damped-cap-clamped = [FAS] { $act } boost clamped by damped cap: requested { $req } -> P { $cap }
+fas-frame-dropped = [FAS] frame sample dropped: { $ms }ms ({ $reason })
+fast-freq-table-unavailable = [Fast] P{ $pid } freq table unavailable with no soc.yaml fallback, cluster not locked: { $path }
+governor-activate-noop = [Governor] no policy taken over (of { $total }): performance semantics not in effect at all
+
+powerbase-takeover-skipped = [PowerBase] P{ $pid } freq table and soc.yaml fallback both unavailable, cluster takeover skipped (capability lost)
+powerbase-init-write-failed = [PowerBase] P{ $pid } initial max write failed: cluster perf stays 0, freq will decay to hardware min
+powerbase-init-min-failed = [PowerBase] P{ $pid } initial min write failed: min cannot be lowered, subsequent max writes are rejected by the kernel (min>max), cluster tuning is fully ineffective
+
+cpu-monitor-percpu-read-failed = [CPU Monitor] eBPF per-cpu counter read failed (cpu offline / lookup failed), counted as 0 this round
+cpu-monitor-tids-read-failed = [CPU Monitor] failed to read thread list of pid { $pid }: { $error }
+cpu-monitor-core-state-read-failed = [CPU Monitor] core online state read failed, treating core as offline: { $error }
+cpu-monitor-snap-handle-missing = [CPU Monitor] eBPF process-snapshot handle unregistered / map missing, @S frame process section empty
+cpu-monitor-snap-map-open-failed = [CPU Monitor] failed to open eBPF process-snapshot map, @S frame process section empty
+screen-uevent-recv-failed = [Screen] uevent recv failed, retrying in 1s: { $error }
+
+fas-no-policies = [FAS] No cpufreq policy found, FAS takeover failed - gears and protections stalled; check kernel/environment
+fas-governor-write-failed = [FAS] P{ $pid } failed to write performance governor: { $error }; system governor interference possible
+fas-freq-table-unavailable = [FAS] P{ $pid } frequency table unavailable and no soc.yaml fallback ({ $path }); policy skipped
+fas-policy-none-taken = [FAS] All policies skipped - no cluster taken over, FAS gear control stalled
+fas-freq-hold-skip = [FAS] P{ $pid } freq hold { $frames } frames left, write skipped
+fas-freq-hysteresis-skip = [FAS] P{ $pid } freq diff { $diff } <= hysteresis { $hysteresis }, write skipped
