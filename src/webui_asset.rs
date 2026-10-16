@@ -13,6 +13,7 @@ pub fn restore_webroot(root: &Path) -> usize {
     }
     let dir = root.join("webroot");
     let mut restored = 0usize;
+    let mut failed: Vec<&str> = Vec::new();
     for (rel, bytes) in FILES {
         let path = dir.join(rel);
         if fs::read(&path).is_ok_and(|cur| cur == *bytes) {
@@ -23,7 +24,18 @@ pub fn restore_webroot(root: &Path) -> usize {
         }
         if crate::common::write_file_no_panic(&path, bytes) {
             restored += 1;
+        } else {
+            // [log] 单文件还原失败原本静默跳过——界面被篡改却没还原成功时，
+            // 日志里只有一行「还原 N 个文件」，看不出哪几个没还原。启动路径，低频。
+            failed.push(rel);
         }
+    }
+    if !failed.is_empty() {
+        log::warn!(
+            "[WebUI] {} 个资产文件还原失败（界面可能不完整）: {}",
+            failed.len(),
+            failed.join(", ")
+        );
     }
     restored
 }

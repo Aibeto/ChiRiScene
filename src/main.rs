@@ -16,7 +16,7 @@ mod webui_asset;
 use crate::i18n::{load_language, t, t_with_args};
 use crate::monitor::FasSignal;
 use anyhow::Result;
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc;
 use std::sync::{Arc, RwLock};
@@ -116,25 +116,36 @@ fn main() -> Result<()> {
     // [config_path] 3. 解析配置路径：8550 等 Chiri 目标 SoC 优先用处理器子目录 config/{soc}/meta.yaml，
     // 其余机型回退默认 config/meta.yaml（可修改抬头；调优段 feature.yaml 仅存于二进制）
     let config_path = common::get_config_path();
+    // [deferred_write_fails] 启动期（logger::init 之前）的对外文件写入失败全部先攒在这里：那时候 log 会被静默丢弃，
+    // utils::try_write_file 内部的 warn 同样落不了盘，写失败了磁盘上留的是旧值、日志里却一行不剩——与「根本没写」在 WebUI 上完全同形。
+    // 攒到 logger::init 之后再统一补打，与归档结果 / rhine 启动期结果同一套延迟打点口径
+    let mut deferred_write_fails: Vec<(&'static str, String)> = Vec::new();
     // 写生效 meta.yaml 相对 config 目录的路径，WebUI 拼接 `config/{相对路径}` 读取同一份文件，避免改错文件
     let config_rel = config_path
         .strip_prefix(root.join("config"))
         .unwrap_or(&config_path);
     // as_encoded_bytes 未稳定化（各 toolchain 均不可用），用 to_string_lossy 兼容
-    let _ = utils::try_write_file(
+    // [log] 三个对外文件写入原本一律 `let _ =` 吞错：写失败时磁盘留旧值、日志零痕迹，与「根本没写」在 WebUI 上同形
+    // [fix-1017-c1] 判定成败必须用真实返回 Result 的原语：try_write_file 恒 Ok(())，`if let Err` 是死分支，
+    // deferred_write_fails 恒空、补打循环恒零迭代——改用 utils::write_to_file，保留「失败延后到 init 后补打」设计
+    if let Err(e) = utils::write_to_file(
         root.join("active_config.chr"),
         config_rel.to_string_lossy().as_bytes(),
-    );
+    ) {
+        deferred_write_fails.push(("active_config.chr", e.to_string()));
+    }
     // [pf_chr] 写本机 CLG 是否启用帕累托前沿落点（`1` = 启用，仅 8550；`0` = 未启用）：静态资产（soc.yaml 编入二进制、
     // SoC 硬件固定）→ 启动写一次即定，与 active_config.chr 同口径只作 WebUI 只读接触点（家族名显示 CLG-PF，与 daemon 日志前缀一致）
-    let _ = utils::try_write_file(
+    if let Err(e) = utils::write_to_file(
         root.join("pf.chr"),
         if common::soc_frontier_policy().is_some() {
             b"1"
         } else {
             b"0"
         },
-    );
+    ) {
+        deferred_write_fails.push(("pf.chr", e.to_string()));
+    }
 
     // meta.yaml 快照自愈：可修改字段的基准是编译期嵌入的 meta.yaml，启动时校验磁盘副本——字段非法用嵌入默认整体覆盖并在文件尾追加警告注释；文件缺失则原子重建（不加注释）「不改」开关（meta
     // yaml 可选字段 nofix）= true 时跳过所有覆盖类操作（meta 自愈 +webui 资产还原），必须在自愈之前读——晚了文件可能已被覆盖、开关本身先丢了
@@ -174,18 +185,28 @@ fn main() -> Result<()> {
             .iter()
             .map(|e| format!("{}:{}:{}\n", e.package, e.modes.join(","), e.fallback))
             .collect();
-        let _ = utils::try_write_file(
+        // [fix-1017-c4] 用真实 Result 判成败：try_write_file 恒 Ok，原 `let _ =` + 无条件置位即使一个字节没写
+        // 下去也报「已导出 N 条」。失败入 deferred（init 后补打），exported_special 仅真成功置位
+        if let Err(e) = utils::write_to_file(
             root.join("special_tuned.yaml"),
             special_tuned_content.as_bytes(),
-        );
-        exported_special = Some(exact.len());
+        ) {
+            deferred_write_fails.push(("special_tuned.yaml", e.to_string()));
+        } else {
+            exported_special = Some(exact.len());
+        }
 
         // 导出 FAS 白名单（编译期嵌入，WebUI 只读展示用；WebUI 不可修改，daemon 不读磁盘）
         let fas_content: String = common::fas_whitelist()
             .iter()
             .map(|(pkg, cfg)| format!("{pkg}:{cfg}\n"))
             .collect();
-        if utils::try_write_file(root.join("fas_whitelist.yaml"), fas_content.as_bytes()).is_ok() {
+        // [fix-1017-c4] 原 .is_ok() 恒真 → exported_fas 恒置位；同上改真实成败入口
+        if let Err(e) =
+            utils::write_to_file(root.join("fas_whitelist.yaml"), fas_content.as_bytes())
+        {
+            deferred_write_fails.push(("fas_whitelist.yaml", e.to_string()));
+        } else {
             exported_fas = Some(common::fas_whitelist().len());
         }
     }
@@ -278,6 +299,29 @@ fn main() -> Result<()> {
     }
     // 实验室启动期结果：同样发生在 init 之前，这里补打
     rhine::report_startup(&rhine_report);
+
+    // [deferred_write_fails] 启动期对外文件写入失败：那时 log 落不了盘，写失败只留旧值、
+    // 日志零痕迹，与「根本没写」在 WebUI 上完全同形。这里统一补打（非高频，启动一次）
+    for (name, err) in &deferred_write_fails {
+        warn!("[Main] 启动期写入 {name} 失败，磁盘保留旧值: {err}");
+    }
+
+    // [fix-1017-c3] 首次 Config::load（上面的语言探测路径）早于 logger::init，其 error/warn 被静默
+    // 丢弃；非 ChiRi 机型没有二次 load 重放，告警将全程零痕迹。这里取走暂存的一条补打
+    // （取走即清空，ChiRi 路径二次 load 的同款告警不会被重复上报）。
+    // 两个可能的 key 参数名不同（feature 失败用 $error、meta 回退用 $path），一并塞入由 fluent 自取，
+    // 未用参数会被忽略
+    if let Some((level, key, detail)) = chiri::config::drain_startup_issue() {
+        let msg = t_with_args(
+            key,
+            &fluent_args!("error" => detail.clone(), "path" => detail.clone()),
+        );
+        if level == "error" {
+            error!("{msg}");
+        } else {
+            warn!("{msg}");
+        }
+    }
 
     // 白名单导出结果（文件写入在 logger::init 之前完成，日志延后到此处才可见）
     if let Some(count) = exported_special {

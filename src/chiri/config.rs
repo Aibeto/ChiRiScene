@@ -3,6 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 
 use crate::fluent_args;
 use crate::i18n::t_with_args;
@@ -130,7 +131,11 @@ pub struct Meta {
     #[serde(default = "crate::utils::default_power_max_w", alias = "PowerMaxW")]
     pub power_max_w: f32,
 
-    /// 常驻状态通知开关（meta.yaml `notify`，默认 true）：false = 不投递通知，并撤销已投递的那条（daemon 自己还在跑，有能力清理）。热重载即时生效
+    /// 【已废弃/遗留】常驻状态通知开关（meta.yaml `notify`）：原属「每 5s 把调度状态写进常驻通知」子系统，
+    /// 该子系统已随 `notify.rs` 重构（改为三参直发组件）整体删除，`notify.rs::cancel/update` 等均已移除。
+    /// 现仅存字段本身供 meta.yaml 兼容与 WebUI 读写契约（`webui/src/contract/meta.ts`）——**daemon 内无任何
+    /// 读取点**，调频/告警行为不受它影响。**注意：5 个机型 meta.yaml 均写 `notify: false`**，若将来要让
+    /// 它重新生效（例如门控 FAS 开环告警），必须先移除各机型该行，否则会默认静默唯一的功能性失效告警
     #[serde(default = "crate::utils::default_true", alias = "Notify")]
     pub notify: bool,
 
@@ -1846,17 +1851,82 @@ fn default_scene_mode_delay_secs() -> u64 {
 }
 
 // [config_impl]
+// [startup_issue] 启动期告警留痕：首次 Config::load（main.rs 走在 logger::init 之前）发出的 error/warn
+// 会被静默丢弃；ChiRi 路径靠 main.rs 的二次 load 重放可落盘，**非 ChiRi 路径只有一次 load**——
+// feature 解析失败 error / meta 回退 warn 直接丢失，进程带着全默认配置跑且零痕迹。这里按「本进程首次
+// 发生」latch 存最近一条，由 main 在 logger::init 之后经 [`drain_startup_issue`] 取走补打。
+// `STARTUP_ISSUE_DRAINED` 保证「取走即止」：main 只 drain 一次，此后 logger 已就绪、告警自身可见，
+// 二次 load / 热重载再调用 record 会被短路（否则会再 latch 一条永不消费的条目，与注释「不再记录」不符）
+static STARTUP_ISSUE: OnceLock<Mutex<Option<(&'static str, &'static str, String)>>> =
+    OnceLock::new();
+static STARTUP_ISSUE_DRAINED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// 记录一条启动期告警（仅首次调用生效；`level` = "error" | "warn"，i18n key + 已格式化错误文本）
+fn record_startup_issue(level: &'static str, key: &'static str, detail: String) {
+    if STARTUP_ISSUE_DRAINED.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    let slot = STARTUP_ISSUE.get_or_init(|| Mutex::new(None));
+    if let Ok(mut g) = slot.lock() {
+        if g.is_none() {
+            *g = Some((level, key, detail));
+        }
+    }
+}
+
+/// 取走启动期告警（None = 无）。返回 `(level, i18n key, detail)`，由 main 在 logger::init 之后
+/// 调用一次补打；取走即清空并置 `STARTUP_ISSUE_DRAINED`（此后不再记录，logger 已就绪）
+pub fn drain_startup_issue() -> Option<(&'static str, &'static str, String)> {
+    let slot = STARTUP_ISSUE.get_or_init(|| Mutex::new(None));
+    let mut g = slot.lock().ok()?;
+    let taken = g.take();
+    STARTUP_ISSUE_DRAINED.store(true, std::sync::atomic::Ordering::Relaxed);
+    taken
+}
+
 impl Config {
     /// 加载生效配置：feature 段以嵌入 feature.yaml 为基准（磁盘不落盘，防篡改），meta 以嵌入 meta.yaml 为默认值（common::embedded_meta_defaults），
     /// 再被磁盘 meta.yaml 覆盖（sync_meta_snapshot 已先行校验/纠正；缺失或非法时沿用嵌入默认）。`path` 为生效 meta.yaml 路径（common::get_config_path()
     /// ）。加载后合并嵌入的 akmode/scenemode 段，并把功能总开关同步到进程级原子标志（fas_available / scenemode 判定读取）
     pub fn load(path: &str) -> anyhow::Result<Self> {
-        let mut config: Config = serde_yaml::from_str(crate::common::embedded_feature_str())?;
+        // 内嵌 feature.yaml 解析失败 = 调度配置整体不可用。调用方都静默兜底（main.rs 用 unwrap_or_default、diag 线程用 if let Ok
+        // 跳过），不在失败点留痕的话进程会带着全默认配置继续跑，真机上与「配置正常生效」完全同形
+        let mut config: Config = match serde_yaml::from_str(crate::common::embedded_feature_str()) {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!(
+                    "{}",
+                    t_with_args(
+                        "config-feature-parse-failed",
+                        &fluent_args!("error" => e.to_string())
+                    )
+                );
+                // [fix-1017-c3] 首次 load 若发生在 logger::init 之前（main 的语言探测路径），这条 error 落不了盘；
+                // 非 ChiRi 路径只有这一次 load，错误将全程零痕迹。暂存一条供 main 在 init 后经 drain_startup_issue 补打
+                record_startup_issue("error", "config-feature-parse-failed", e.to_string());
+                return Err(e.into());
+            }
+        };
         // 缺省 = 沿用上一层：先内嵌默认，再按磁盘文件「写了哪个字段才覆盖哪个」
         let d = crate::common::embedded_meta_defaults();
         apply_meta_overrides(&mut config.meta, &d);
-        if let Some(m) = crate::common::read_external_meta(std::path::Path::new(path)) {
-            apply_meta_overrides(&mut config.meta, &m);
+        match crate::common::read_external_meta(std::path::Path::new(path)) {
+            Some(m) => apply_meta_overrides(&mut config.meta, &m),
+            // 磁盘 meta.yaml 缺失或字段非法 → 整文件判非法、本轮全部沿用内嵌默认（用户改的 loglevel / fas_enabled /
+            // dev_record 等一律不生效）。这是「故障态与生效态同形」的静默路径：nofix 模式下 sync_meta_snapshot 还会跳过自愈，
+            // 本条就成了唯一提示
+            None => {
+                log::warn!(
+                    "{}",
+                    t_with_args(
+                        "config-meta-fallback",
+                        &fluent_args!("path" => path.to_string())
+                    )
+                );
+                // [fix-1017-c3] 同上：首次 load 早于 logger::init 时这条 warn 落不了盘，暂存供 init 后补打
+                record_startup_issue("warn", "config-meta-fallback", path.to_string());
+            }
         }
         // 功能总开关同步到进程级原子标志（覆盖启动 + config_watcher 热重载两条路径）
         crate::common::set_fas_enabled(config.meta.fas_enabled);

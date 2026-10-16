@@ -25,7 +25,9 @@ fn load_bundle(
     lang: &str,
 ) -> Result<FluentBundle<FluentResource, IntlLangMemoizer>, anyhow::Error> {
     let ftl_string = crate::common::embedded_ftl_str(lang).to_string();
-    log::info!("[i18n] Loading embedded language '{}' (zh/en)", lang);
+    // [level] 语言切换的三条边界日志（发起 / 成功 / 失败）都在 load_language；本行只是加载过程的解析细节，
+    // 与它们重复，按 info =「生命周期与状态迁移」的口径降到 debug
+    log::debug!("[i18n] Loading embedded language '{}' (zh/en)", lang);
 
     let resource = FluentResource::try_new(ftl_string)
         .map_err(|e| anyhow::anyhow!("Failed to parse embedded FTL resource: {:?}", e))?;
@@ -85,13 +87,33 @@ pub fn t(key: &str) -> String {
         return hit.clone();
     }
     let bundle = BUNDLE.read().unwrap_or_else(|p| p.into_inner());
+    // [level] 回退裸 key 原本全程静默，排障时日志里只剩一个裸 key 名、无从判断是「key 写错」还是
+    // 「语言包没加载」。补 debug 打点：t() 是热路径（25-tick 摘要、状态行），故 log_enabled 门控 +
+    // 文案一律字面量——**绝不在这里调 t()/t_with_args()**，否则 key 缺失时「打日志 → 走 i18n →
+    // 又缺失」会无限递归（logger 自身的失败打点也走 t_with_args）
     let msg = match bundle.get_message(key) {
         Some(msg) => msg,
-        None => return key.to_string(),
+        None => {
+            if log::log_enabled!(log::Level::Debug) {
+                log::debug!(
+                    "[i18n] message missing for key '{}', fallback to raw key",
+                    key
+                );
+            }
+            return key.to_string();
+        }
     };
     let pattern = match msg.value() {
         Some(pattern) => pattern,
-        None => return key.to_string(),
+        None => {
+            if log::log_enabled!(log::Level::Debug) {
+                log::debug!(
+                    "[i18n] message has no value for key '{}', fallback to raw key",
+                    key
+                );
+            }
+            return key.to_string();
+        }
     };
 
     let mut errors = Vec::new();
@@ -120,13 +142,30 @@ pub fn t(key: &str) -> String {
 /// 获取带参数的翻译文本
 pub fn t_with_args(key: &str, args: &FluentArgs) -> String {
     let bundle = BUNDLE.read().unwrap_or_else(|p| p.into_inner());
+    // [level] 同 t()：回退裸 key 静默，补 debug 打点；字面量文案 + log_enabled 门控，不调 t() 防递归
     let msg = match bundle.get_message(key) {
         Some(msg) => msg,
-        None => return key.to_string(),
+        None => {
+            if log::log_enabled!(log::Level::Debug) {
+                log::debug!(
+                    "[i18n] message missing for key '{}', fallback to raw key",
+                    key
+                );
+            }
+            return key.to_string();
+        }
     };
     let pattern = match msg.value() {
         Some(pattern) => pattern,
-        None => return key.to_string(),
+        None => {
+            if log::log_enabled!(log::Level::Debug) {
+                log::debug!(
+                    "[i18n] message has no value for key '{}', fallback to raw key",
+                    key
+                );
+            }
+            return key.to_string();
+        }
     };
 
     let mut errors = Vec::new();

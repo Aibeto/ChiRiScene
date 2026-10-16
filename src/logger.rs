@@ -417,6 +417,28 @@ const STATUS_LOG_MAX_BYTES: u64 = 8 * 1024 * 1024;
 /// 每 N 行巡检一次（轮转 + 被删自愈）：常驻句柄被外部删除后指向孤儿 inode、写入不报错，只能靠巡检发现；1s 一行时 16 行 ≈ 16s 自愈窗口，stat 开销可忽略
 const STATUS_CHECK_EVERY: u64 = 16;
 
+/// status.csv 连续写失败计数（成功即归零）：状态行每秒一条，写盘失败被静默丢弃会让
+/// status.csv 出现「这段时间的状态凭空消失」，离线分析时与「该时段无快照」无从区分
+static STATUS_FAIL_STREAK: AtomicU64 = AtomicU64::new(0);
+/// status.csv 写失败告警间隔：连续失败的第几次之后再报一条（首次必报，防持续故障时每秒刷屏）
+const STATUS_FAIL_REPORT_EVERY: u64 = 100;
+
+/// 报一次 status.csv 写失败（首次必报 + 每 [`STATUS_FAIL_REPORT_EVERY`] 次报一条）。
+/// **调用方不得持有 STATUS_WRITER 锁**：warn 走 daemon.log 的 `append_line`，与本锁不成环，
+/// 但仍按既有约定（见 `note_write`）一律在锁外打点
+fn report_status_failure() {
+    let n = STATUS_FAIL_STREAK.fetch_add(1, Ordering::Relaxed) + 1;
+    if n == 1 || n % STATUS_FAIL_REPORT_EVERY == 0 {
+        log::warn!(
+            "{}",
+            t_with_args(
+                "logger-status-write-failed",
+                &fluent_args!("n" => n.to_string())
+            )
+        );
+    }
+}
+
 /// CSV 表头（27 列，列序由 status_log_snapshot 保证对齐，完整列名见下方STATUS_HEADER 字符串）fps 为**预留列**，schema 恒定存在：
 /// 仅 FAS 激活且帧窗口有样本时为实测值，其余一律 "-"；列只在末尾追加，避免打乱既有列索引。
 /// 末尾两列 daemon_utime_ms / daemon_stime_ms = daemon 自身累计用户态/内核态 CPU 时间（ms，自测量基线），
@@ -487,13 +509,21 @@ fn status_write_line(fields: &[&str]) {
             .is_ok(),
         None => false,
     };
+    let mut write_ok = write_ok;
     if !write_ok {
         // 写失败（磁盘/句柄异常）：重开重试一次，仍失败则丢弃本行
         w.file = status_open();
         if let Some(f) = w.file.as_mut() {
-            let _ = f.write_all(line.as_bytes());
-            let _ = f.write_all(b"\n");
+            write_ok = f
+                .write_all(line.as_bytes())
+                .and_then(|_| f.write_all(b"\n"))
+                .is_ok();
         }
+    }
+    // [log] 本行写到丢弃为止原本零痕迹：分析时「这段时间没有快照」与「该时段无数据」无从区分。
+    // 首次必报 + 每 STATUS_FAIL_REPORT_EVERY 次一条，成功即归零（在锁外打点，见 report_status_failure 注释）
+    if write_ok {
+        STATUS_FAIL_STREAK.store(0, Ordering::Relaxed);
     }
     w.since_check += 1;
     if w.since_check >= STATUS_CHECK_EVERY {
@@ -501,6 +531,9 @@ fn status_write_line(fields: &[&str]) {
         status_check(&mut w);
     }
     drop(w);
+    if !write_ok {
+        report_status_failure();
+    }
     // 记账（含换行）：写入即事件触发，logs/ 累计增长达 128MB 触发重启打包
     note_write(&LOGS_BYTES_WRITTEN, "logs/", line.len() as u64 + 1);
 }

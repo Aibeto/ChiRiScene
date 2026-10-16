@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use log::{info, warn};
+use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
 
 use crate::common;
@@ -57,11 +57,30 @@ pub struct RhineModeDef {
 
 static DEFS: OnceLock<HashMap<String, RhineModeDef>> = OnceLock::new();
 
+/// defs 解析失败的留痕：`get_or_init` 首执行只在当下发一条 error，而启动期首次 converge 早于
+/// logger::init，那条日志会被静默丢弃，之后命中缓存永不重发——本进程生命周期内该失效零痕迹。
+/// 存在这里，由 [`StartupReport::defs_error`] 带出、[`report_startup`] 在 init 之后补打
+/// （None = 解析成功或尚未初始化）
+static DEFS_ERROR: OnceLock<String> = OnceLock::new();
+
 /// 全部实验室模式定义（来自嵌入的 rhine-init.yaml）；嵌入内容损坏时退化为空表——任何 key 都判非法，rhine.chr 兜底成未启用
 fn defs() -> &'static HashMap<String, RhineModeDef> {
     DEFS.get_or_init(|| {
-        serde_yaml::from_str::<HashMap<String, RhineModeDef>>(common::embedded_rhine_init_str())
-            .unwrap_or_default()
+        match serde_yaml::from_str::<HashMap<String, RhineModeDef>>(
+            common::embedded_rhine_init_str(),
+        ) {
+            Ok(m) => m,
+            Err(e) => {
+                // [log] 内嵌定义解析失败原本被 unwrap_or_default 静默吞掉：退化空表后任何 key 都判非法，
+                // 现象是「用户写的模式名一律被重置」，日志只有一条 rhine-state-invalid（内容其实没写错），
+                // 真正原因完全不可见。编译期嵌入文本，只可能打包损坏 → 不可自愈的功能性失效，按 error 落盘。
+                // [fix-1017-c3] 首发若发生在 logger::init 之前（启动期 converge），这条 error 落不了盘：
+                // 同时存入 DEFS_ERROR，由 report_startup 在 init 后补打，保证进程生命周期内至少落盘一次
+                let _ = DEFS_ERROR.set(e.to_string());
+                error!("[Rhine] rhine-init.yaml 内嵌定义解析失败，全部模式 key 将被判非法: {e}");
+                HashMap::new()
+            }
+        }
     })
 }
 
@@ -138,17 +157,30 @@ fn read_state(root: &Path) -> (State, Option<StateFix>) {
     let path = root.join(RHINE_CHR);
     let Ok(text) = fs::read_to_string(&path) else {
         // 缺失（首次安装 / 被误删）：补建内置默认内容，让用户看得到该文件与格式说明
-        let wrote = common::write_file_no_panic(&path, RHINE_DEFAULT_CHR.as_bytes());
+        let wrote = write_state(&path, RHINE_DEFAULT_CHR.as_bytes());
         return (State::Off, wrote.then_some(StateFix::Created));
     };
     match parse_state(&text) {
         State::Bad => {
             let raw: String = text.trim().chars().take(64).collect();
-            let wrote = common::write_file_no_panic(&path, RHINE_DEFAULT_CHR.as_bytes());
+            let wrote = write_state(&path, RHINE_DEFAULT_CHR.as_bytes());
             (State::Off, wrote.then_some(StateFix::Reset(raw)))
         }
         s => (s, None),
     }
+}
+
+/// rhine.chr 写回的唯一入口：所有写失败在这里统一留痕
+/// [log] 写失败原本被各调用点的返回值整条吞掉，与「写成功」完全同形——磁盘满/只读时文件仍是修复前的旧内容，
+/// 下一轮收敛又判非法又重写，无声自转；写回动作必须落一条日志，让「修复没落地」与「已修复」可分
+/// 返回写入结果：调用方（read_state 的 StateFix、watch 的收敛路径）据此决定「修复了但没落地」时是否
+/// 仍置修复标记——写入失败时磁盘还是旧内容，不置位会让下一轮把同一问题再当新修复报一遍
+fn write_state(path: &Path, bytes: &[u8]) -> bool {
+    if common::write_file_no_panic(path, bytes) {
+        return true;
+    }
+    warn!("{}", t("rhine-state-write-failed"));
+    false
 }
 
 /// rhine.chr 修复动作打点（启动期那一路由 main 在 logger::init 之后补打）
@@ -556,7 +588,7 @@ fn converge_from(
             let prev = lock_mode();
             if !matches!(state, State::On(_)) {
                 // 文件为空/被清空：把启用状态写回去（内容非法时文件已在 read_state 重置，写回同一模式 = 继续启用）
-                common::write_file_no_panic(&root.join(RHINE_CHR), format!("{key}\n").as_bytes());
+                write_state(&root.join(RHINE_CHR), format!("{key}\n").as_bytes());
                 if !just_reset {
                     // 只有「内容为空」才是关闭请求；刚被重置的已留过 state-reset，再补 close-rejected 会带偏排查
                     out.refused = true;
@@ -585,7 +617,7 @@ fn converge_from(
     out.restored = restore(root, meta_path);
     // 强制关闭后写回「未启用」（内置模板只有注释）：off 是一次性请求，留在文件里会被反复解释、界面停在第三态写回自身会触发一次监听事件，但那时 next == current == None，不会再收敛一轮
     if force_off {
-        common::write_file_no_panic(&root.join(RHINE_CHR), RHINE_DEFAULT_CHR.as_bytes());
+        write_state(&root.join(RHINE_CHR), RHINE_DEFAULT_CHR.as_bytes());
     }
     out.wanted = state.key();
     if let Some(key) = out.wanted.clone() {
@@ -662,6 +694,9 @@ pub struct StartupReport {
     pub refused: bool,
     /// 本次走的是强制关闭（rhine.chr 写了 off）：已清标记并按正常路径还原
     pub forced: bool,
+    /// [fix-1017-c3] 内嵌 rhine-init.yaml 解析失败留痕（首次 converge 早于 logger::init 时那条
+    /// error 落不了盘，靠本字段由 report_startup 在 init 之后补打）；None = 解析正常
+    pub defs_error: Option<String>,
 }
 
 /// 启动期处理，main 在首次 Config::load 之前调用（只有 Chiri 调用）。先还原后套用，三条路径自洽：
@@ -680,6 +715,7 @@ pub fn on_startup(root: &Path, meta_path: &Path) -> StartupReport {
         state_fix: c.state_fix.clone(),
         refused: c.refused,
         forced: c.forced,
+        defs_error: DEFS_ERROR.get().cloned(),
     };
     if report.restored.is_some() || report.enabled.is_some() {
         refresh_mode();
@@ -699,6 +735,13 @@ pub fn report_startup(report: &StartupReport) {
         forced: report.forced,
         ..Default::default()
     });
+    // [fix-1017-c3] defs 解析失败的 error 若首发于 logger::init 之前已被静默丢弃，这里补打落盘。
+    // 发生在 init 之后（watch 首次触发 defs()）时首发本身可见，补打同一条无害（一次性事件，非热路径）
+    if let Some(e) = &report.defs_error {
+        error!(
+            "[Rhine] rhine-init.yaml 内嵌定义解析失败（启动期首发早于日志初始化，此处补打），全部模式 key 将被判非法: {e}"
+        );
+    }
 }
 
 // [watch]

@@ -1220,8 +1220,15 @@ pub(crate) fn embedded_config_file(rel: &str) -> Option<&'static str> {
 /// 嵌入的 meta.yaml（用户可修改字段默认值）：按命中处理器取 {soc}/meta.yaml，未命中取 meta.yaml
 pub fn embedded_meta_str() -> &'static str {
     if let Some(soc) = matched_soc_hint() {
-        if let Some(text) = embedded_config_file(&format!("{soc}/meta.yaml")) {
-            return text;
+        match embedded_config_file(&format!("{soc}/meta.yaml")) {
+            Some(text) => return text,
+            // [silent-fallback] 命中 SoC 却没有它的 meta.yaml：静默回退根文件后，该机型会拿到
+            // 通用默认（如 power_max_w / 日志级别基准），与「SoC 专属默认正常生效」完全同形。
+            // 编译期嵌入，运行时只可能打包缺文件 → 一次性告警（本函数仅启动期少量调用）
+            None => log::warn!(
+                "[Meta] SoC '{}' 命中但无专属 meta.yaml，回退根默认（该机型默认值可能不符）",
+                soc
+            ),
         }
     }
     embedded_config_file("meta.yaml").unwrap_or_default()
@@ -1377,8 +1384,9 @@ pub struct ExternalMetaOverrides {
     /// 功耗口径开关（PowerAVG.chr）：false（默认）= 参考值（旧值先乘 10 再按 10:1 加权递推，偏历史，含息屏样本）；true = 累计平均（等权全史，仅亮屏放电样本）两者都只在放电时取样；
     /// 仅 ChiRi 1s 状态采样消费；写侧走单次读-改-写顶层行替换，见 WebUI contract/meta.ts
     pub power_avg: Option<bool>,
-    /// 常驻状态通知开关（notify，默认 true）：daemon 每 5s 把调度状态（前台包名/模式/家族/子模式/温度/功耗）写进常驻通知，见 src/notify.rs
-    /// false = 不投递并撤销已投递通知；仅 ChiRi 1s 循环消费
+    /// 【已废弃/遗留】常驻状态通知开关（notify）：原属「每 5s 写常驻调度通知」子系统，该子系统已随
+    /// `notify.rs` 重构删除，daemon 内**无读取点**；仅存字段供 meta.yaml 兼容与 WebUI 读写契约。
+    /// 5 个机型 meta.yaml 均写 `notify: false`，将来要复用须先移除那些行
     pub notify: Option<bool>,
     /// OPlus 私有电压/电流节点（`oplus_chg`，默认 false）：true = 优先读 `/sys/class/oplus_chg/battery/bcc_parms`（下标 6 电芯电压0、8 电流、11 电芯电压1，
     /// mV/mA），读不到回退标准 power_supply 节点。仅 OPlus 机型有意义
@@ -1407,8 +1415,25 @@ pub struct ExternalMetaOverrides {
 
 /// 读磁盘 meta.yaml（先经 sync_meta_snapshot 校验/纠正）：文件缺失或仍非法返回 None，调用方沿用嵌入默认——绝不 panic，不让坏文件拖垮配置加载
 pub fn read_external_meta(path: &Path) -> Option<ExternalMetaOverrides> {
-    let text = std::fs::read_to_string(path).ok()?;
-    parse_disk_meta(&text)
+    // [silent-fallback] 读不到与「读到了但解析/校验判非法」此前都返回 None、调用方无从区分：
+    // 前者是首装常态，后者是用户配置被整体丢弃（回退内嵌默认）。debug 下按原因分开留痕
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) => {
+            if log::log_enabled!(log::Level::Debug) {
+                log::debug!("[Meta] {} unreadable: {}", path.display(), e);
+            }
+            return None;
+        }
+    };
+    let parsed = parse_disk_meta(&text);
+    if parsed.is_none() && log::log_enabled!(log::Level::Debug) {
+        log::debug!(
+            "[Meta] {} parsed but rejected (invalid fields / unknown keys), caller falls back to embedded defaults",
+            path.display()
+        );
+    }
+    parsed
 }
 
 /// 提前读「不改」开关（nofix）：必须在 sync_meta_snapshot 之前调用——晚了文件可能已被内嵌默认覆盖（该覆盖本身就是待跳过操作之一）文件缺失/非法返回 false（照常自愈）
@@ -1584,7 +1609,7 @@ pub fn sync_rules_snapshot(path: &Path) -> bool {
     false
 }
 
-/// 无 panic 的原子文件写：tmp + rename 失败回退 try_write_file，全程不 panic；供快照复制使用（调用方自定失败策略）
+/// 无 panic 的原子文件写：tmp + rename 失败回退直写（utils::write_to_file），全程不 panic；供快照复制使用（调用方自定失败策略）
 pub(crate) fn write_file_no_panic(path: &Path, bytes: &[u8]) -> bool {
     let file_name = path
         .file_name()
@@ -1594,10 +1619,25 @@ pub(crate) fn write_file_no_panic(path: &Path, bytes: &[u8]) -> bool {
     let tmp_path = path.with_file_name(format!("{}.tmp", file_name));
     let atomic_ok =
         std::fs::write(&tmp_path, bytes).is_ok() && std::fs::rename(&tmp_path, path).is_ok();
-    if !atomic_ok {
-        let _ = std::fs::remove_file(&tmp_path);
+    if atomic_ok {
+        return true;
     }
-    atomic_ok || crate::utils::try_write_file(path, bytes).is_ok()
+    let _ = std::fs::remove_file(&tmp_path);
+    // [silent-fallback] 原子写失败后回退直写：两条路都失败才返回 false，但**调用方普遍丢弃返回值**
+    // （`let _ = write_file_no_panic(...)`）——磁盘留旧值、日志零痕迹，与「根本没写」在 WebUI 上同形。
+    // 这里在最终失败点兜底留痕（debug 级：本函数是通用写入口，成功路径绝不能刷屏）
+    // [fix-1017-c2] 判定成败必须用真实返回 Result 的原语：try_write_file 恒 Ok(())，.is_ok() 恒真会把
+    // 「两条路全失败」误报成「兜底直写成功」，本函数的 false 从此不可达、调用方失败分支全成死代码。
+    if crate::utils::write_to_file(path, bytes).is_ok() {
+        return true;
+    }
+    if log::log_enabled!(log::Level::Debug) {
+        log::debug!(
+            "[Common] file write failed (atomic + fallback): {}",
+            path.display()
+        );
+    }
+    false
 }
 
 /// meta.yaml 顶层行替换：只匹配缩进为 0 的 `键: 值` 行，保留键名大小写、分隔空白与行内注释；字段不存在返回 None，调用方放弃写入，绝不退化成整文件重排不走 serde 反序列化再序列化：

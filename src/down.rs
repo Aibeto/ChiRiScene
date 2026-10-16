@@ -33,10 +33,33 @@ const WATCH_RETRY_BACKOFF: Duration = Duration::from_secs(2);
 /// 解析 `down.chr`：写了保留字 `down`（忽略大小写、允许成对引号）= 停摆；空/注释/其它 = 正常；缺失就地补建模板
 fn read_down(root: &Path) -> bool {
     let path = root.join(DOWN_CHR);
-    let Ok(text) = fs::read_to_string(&path) else {
-        // 读不到按「不停摆」处理——绝不因为一个状态文件异常就让调度自己关掉
-        let _ = common::write_file_no_panic(&path, DOWN_DEFAULT_CHR.as_bytes());
-        return false;
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) => {
+            // [level] 读不到原本全程静默：「状态文件读不了、按不停摆继续」与「用户写了空内容、正常调度」
+            // 在日志上完全同形，真机排查时无从判断调度为什么没停摆。补打点，两条按性质分级别——
+            // 文件缺失补建属正常首装（info），其余读错误是异常但可降级（warn，不停摆处理）
+            let not_found = e.kind() == std::io::ErrorKind::NotFound;
+            if !not_found {
+                warn!(
+                    "{}",
+                    t_with_args(
+                        "down-chr-read-failed",
+                        &fluent_args!("error" => e.to_string())
+                    )
+                );
+            }
+            // 就地补建模板：失败也要留痕——文件一直缺失则只能靠监听感知，重启后可能停在停摆
+            if common::write_file_no_panic(&path, DOWN_DEFAULT_CHR.as_bytes()) {
+                if not_found {
+                    info!("{}", t("down-chr-created"));
+                }
+            } else {
+                warn!("{}", t("down-chr-recreate-failed"));
+            }
+            // 读不到按「不停摆」处理——绝不因为一个状态文件异常就让调度自己关掉
+            return false;
+        }
     };
     let body: Vec<&str> = text
         .lines()

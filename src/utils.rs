@@ -59,7 +59,14 @@ pub fn try_write_file<P: AsRef<Path>, C: AsRef<[u8]>>(path: P, content: C) -> Re
 pub fn write_sysfs<P: AsRef<Path>, C: AsRef<[u8]>>(path: P, content: C) -> Result<()> {
     let path = path.as_ref();
     let _ = enable_perm(path);
-    Ok(fs::write(path, content)?)
+    // 本函数是 sysfs 写入统一入口，部分调用方以 `let _ =` 吞掉返回值（FAS governor 切换等）——
+    // 这里留一条 debug 兜底，免得「写失败但调用方不判成败」变成零痕迹（高频路径才走 FastWriter，本入口非每 tick）
+    fs::write(path, content).map_err(|e| {
+        if log::log_enabled!(log::Level::Debug) {
+            log::debug!("write sysfs {} failed: {}", path.display(), e);
+        }
+        anyhow::Error::from(e)
+    })
 }
 
 /// 多节点写入的失效告警去重表：`what` 进入「全部节点不可用」态记一条，任一节点写成功即移除（重新武装），防 1~2s 热路径刷屏
@@ -252,6 +259,8 @@ pub fn find_cpu_temp_path() -> Result<String> {
     let thermal_dir = Path::new(thermal_path);
 
     if !thermal_dir.exists() {
+        // 热保护探温整体失效（调用方据此把 CPU 参考停用、只留电池温度），属能力丢失
+        log::warn!("thermal dir {} missing: cpu temp unavailable", thermal_path);
         return Err(anyhow::anyhow!("Thermal directory not found"));
     }
 
@@ -470,7 +479,9 @@ impl FastWriter {
             .write(true)
             .open(path)
             .map_err(|e| {
-                log::error!(
+                // [level] 降级 warn：节点缺失（机型没有该频点节点、测试用 /nonexistent）在稳态就会出现，
+                // 且调用方一律经 `is_valid()` 跳过该 policy/节点、其余功能照常——非「不可自愈、需人介入」
+                log::warn!(
                     "{}",
                     t_with_args(
                         "sysfs-open-failed",
@@ -692,14 +703,27 @@ impl FastReader {
                     self.state = ReadState::Ok;
                     Some(s)
                 }
-                Err(_) => {
+                // 非法 UTF-8：节点内容不是文本（多为 sysfs 导出异常），丢 fd 下次重开重试
+                Err(e) => {
+                    if log::log_enabled!(log::Level::Debug) {
+                        log::debug!(
+                            "read {} invalid utf-8, reopen next call: {}",
+                            self.path.display(),
+                            e
+                        );
+                    }
                     self.state = ReadState::Failed;
                     self.file = None;
                     None
                 }
             },
+            // 重开重试后仍失败：此处是唯一出口，不打点即「读失败」全静默（Missing 是机型常态，不打点）
             Err(e) => {
-                self.state = Self::err_state(&e);
+                let state = Self::err_state(&e);
+                if state == ReadState::Failed && log::log_enabled!(log::Level::Debug) {
+                    log::debug!("read {} failed after reopen: {}", self.path.display(), e);
+                }
+                self.state = state;
                 self.file = None;
                 None
             }
