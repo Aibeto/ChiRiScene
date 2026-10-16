@@ -45,6 +45,10 @@ pub struct PolicyController {
     /// 长窗口告警只打一次的标记，退出钳制时复位
     qos_clamp_warned: bool,
 
+    /// 校验读回失败只报一次的标记：scaling_max_freq 读不到时「写入有没有生效」不可判定，
+    /// 校验链路断供但对外表现与正常态同形，故进失效态报一次，读回恢复时复位（允许下次再报）
+    verify_read_failed: bool,
+
     pub ignore_write: bool,
 
     /// 接管前该 policy 的原始 governor（load_policies 快照）。FAS 接管期间把 governor 改写为 performance 配合 min=max 锁频，退出必须恢复，
@@ -102,6 +106,7 @@ impl PolicyController {
             qos_clamped: false,
             qos_clamped_since: None,
             qos_clamp_warned: false,
+            verify_read_failed: false,
             ignore_write: false,
             orig_governor,
         }
@@ -174,8 +179,30 @@ impl PolicyController {
         }
         self.verify_timer = Instant::now();
         let Some(actual) = self.read_scaling_max_freq() else {
+            // [verify-read-failed] 读回失败 = 「写入有没有生效」不可判定，校验链路断供，但对外
+            // 与正常态同形（既不报警也不钳制）。进失效态报一次，读回恢复时复位允许再报
+            if !self.verify_read_failed {
+                self.verify_read_failed = true;
+                warn!(
+                    "{}",
+                    t_with_args(
+                        "fas-verify-read-failed",
+                        &fluent_args!("pid" => self.policy_id.to_string())
+                    )
+                );
+            }
             return;
         };
+        if self.verify_read_failed {
+            self.verify_read_failed = false;
+            warn!(
+                "{}",
+                t_with_args(
+                    "fas-verify-read-restored",
+                    &fluent_args!("pid" => self.policy_id.to_string())
+                )
+            );
+        }
         if actual == expected {
             // QoS 钳制解除：读回恢复 == 写入值
             if self.qos_clamped {
@@ -310,6 +337,7 @@ impl PolicyController {
         self.qos_clamped = false;
         self.qos_clamped_since = None;
         self.qos_clamp_warned = false;
+        self.verify_read_failed = false;
         // 恢复接管前的 governor：performance 泄漏到 CLG/akmode/系统调频会让功耗停在「性能拉满」档
         if let Some(gov) = self.orig_governor.clone() {
             let _ = crate::utils::write_sysfs(

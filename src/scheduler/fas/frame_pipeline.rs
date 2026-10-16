@@ -262,6 +262,26 @@ impl FasController {
 
     pub fn update_frame(&mut self, frame_delta_ns: u64) {
         if !self.frame_feedback_enabled || frame_delta_ns == 0 || self.policies.is_empty() {
+            // [静默失效排查] 入口即丢弃：稳态不会出现，DEBUG 下区分「未启用 / 时间戳为 0 / 无策略」三种断供入口
+            if log::log_enabled!(log::Level::Debug) {
+                let reason = if !self.frame_feedback_enabled {
+                    "帧反馈未启用"
+                } else if frame_delta_ns == 0 {
+                    "帧间隔为 0（时间戳异常）"
+                } else {
+                    "无可用集群策略"
+                };
+                debug!(
+                    "{}",
+                    t_with_args(
+                        "fas-frame-dropped",
+                        &fluent_args!(
+                            "ms" => format!("{:.2}", frame_delta_ns as f32 / 1_000_000.0),
+                            "reason" => reason
+                        )
+                    )
+                );
+            }
             return;
         }
 
@@ -270,6 +290,20 @@ impl FasController {
         let max_ns = (self.cfg.fixed_max_frame_ms * 1_000_000.0) as u64;
 
         if frame_delta_ns < self.min_frame_ns() {
+            // [静默失效排查] 短于半帧（>2× 最高档位）视为噪声/重复帧：帧源侧已按 1ms 下限过滤，
+            // 此处丢弃说明帧源与档位口径不符（如档位抬高后旧样本仍涌入）
+            if log::log_enabled!(log::Level::Debug) {
+                debug!(
+                    "{}",
+                    t_with_args(
+                        "fas-frame-dropped",
+                        &fluent_args!(
+                            "ms" => format!("{:.2}", actual_ms),
+                            "reason" => "短于半帧间隔（噪声/重复帧）"
+                        )
+                    )
+                );
+            }
             return;
         }
 
@@ -281,6 +315,24 @@ impl FasController {
         }
         if self.warmup_remaining > 0 {
             if frame_delta_ns > max_ns || actual_ms > self.cfg.app_switch_gap_ms {
+                // [静默失效排查] 预热期的超长帧：整帧丢弃并回到 12 帧预热，产品侧表现为「预热迟迟不结束」
+                if log::log_enabled!(log::Level::Debug) {
+                    let reason = if frame_delta_ns > max_ns {
+                        "预热期超长帧（>fixed_max_frame_ms）"
+                    } else {
+                        "预热期超长帧（>app_switch_gap_ms）"
+                    };
+                    debug!(
+                        "{}",
+                        t_with_args(
+                            "fas-frame-dropped",
+                            &fluent_args!(
+                                "ms" => format!("{:.2}", actual_ms),
+                                "reason" => reason
+                            )
+                        )
+                    );
+                }
                 return;
             }
             self.last_frame_at = Some(std::time::Instant::now());
@@ -310,6 +362,19 @@ impl FasController {
             return;
         }
         if frame_delta_ns > max_ns {
+            // [静默失效排查] 超长帧既不入窗口也不进 PID：卡顿期整帧被吞，PID/EMA 完全看不到这次长帧
+            if log::log_enabled!(log::Level::Debug) {
+                debug!(
+                    "{}",
+                    t_with_args(
+                        "fas-frame-dropped",
+                        &fluent_args!(
+                            "ms" => format!("{:.2}", actual_ms),
+                            "reason" => "超长帧（>fixed_max_frame_ms，不入窗口/PID）"
+                        )
+                    )
+                );
+            }
             return;
         }
 
@@ -324,6 +389,7 @@ impl FasController {
         // 冷却递减
         self.upgrade_cooldown = self.upgrade_cooldown.saturating_sub(1);
         self.gear_dampen_frames = self.gear_dampen_frames.saturating_sub(1);
+        self.downgrade_dwell_frames = self.downgrade_dwell_frames.saturating_sub(1);
         self.post_loading_downgrade_guard = self.post_loading_downgrade_guard.saturating_sub(1);
         self.jank_cooldown = self.jank_cooldown.saturating_sub(1);
 
@@ -362,9 +428,11 @@ impl FasController {
         self.apply_steady_decay(avg_fps);
         self.update_stability_forgiveness(avg_fps);
 
-        // 心跳日志
+        // 心跳日志。log_enabled! 与模运算同条件：DEBUG 未开时 format!/t_with_args 全部落在
+        // 门控内（agentsdocs/02-convention.md「高频路径 format! 须在门控内」；本文件其余
+        // [静默失效排查] 打点 :266/:295/:319/:366 同款）
         self.log_counter = self.log_counter.wrapping_add(1);
-        if self.log_counter % 30 == 0 {
+        if self.log_counter % 30 == 0 && log::log_enabled!(log::Level::Debug) {
             let eff_target = self.effective_target_fps();
             let ema_err = 1000.0 / (eff_target - self.fps_margin).max(1.0) - self.ema_actual_ms;
             let inst_err = 1000.0 / eff_target.max(1.0) - actual_ms;

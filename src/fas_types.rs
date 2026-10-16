@@ -259,7 +259,9 @@ fn d_post_guard() -> u32 {
     90
 }
 fn d_up_confirm() -> u32 {
-    60
+    // 2026-10-16 快升慢降（非对称滞回）：升档确认 60 → 45 帧（0.75s@60fps），
+    // 升档要快；慢降由 gear_state.rs 升档后最短驻留 + 现有降档确认保证
+    45
 }
 fn d_dn_confirm() -> u32 {
     90
@@ -289,7 +291,10 @@ fn d_sd_min() -> f32 {
     0.004
 }
 fn d_fas_exit_delay() -> u32 {
-    15
+    // 2026-10-16 用户定：15s → 3s。15s 本意是白名单应用间切换无缝续期，但非白名单
+    // 前台（淘宝/launcher）接管时 mode 残留 fas 造成归因污染与功耗虚高
+    // （logd_1016-165413 实测 26 样本），3s 足以覆盖同引擎快速切换
+    3
 }
 fn d_jank_cd() -> u32 {
     15
@@ -336,54 +341,48 @@ fn d_util_cap_divisor() -> f32 {
 impl FasRulesConfig {
     /// 校验并规范化配置：非有限值（NaN/±Inf）回退默认，防止污染 PID 控制链；perf/步长交叉约束保证 clamp 永不 panic；fps_gears 过滤非法值，空时回退默认档位
     pub fn normalize(&mut self) {
-        if !self.perf_floor.is_finite() {
-            self.perf_floor = d_perf_floor();
+        // [log] 非法值（NaN/±Inf）回退默认原本完全静默——用户改错配置后被无声丢弃，
+        // 排障时只看到「行为不对」而没有任何线索（与 FAS 开环同形的静默失效）。
+        // 这里累计被修正的字段名，末尾一次性 warn（仅在真有修正时打，稳态不出现）。
+        let mut fixed: Vec<&'static str> = Vec::new();
+        macro_rules! finite_or_default {
+            ($field:expr, $default:expr) => {
+                if !($field).is_finite() {
+                    $field = $default;
+                    fixed.push(stringify!($field));
+                }
+            };
         }
-        if !self.perf_ceil.is_finite() {
-            self.perf_ceil = d_perf_ceil();
-        }
-        if !self.perf_init.is_finite() {
-            self.perf_init = d_perf_init();
-        }
-        if !self.perf_cold_boot.is_finite() {
-            self.perf_cold_boot = d_perf_cold();
-        }
-        if !self.steady_decay_max_step.is_finite() {
-            self.steady_decay_max_step = d_sd_max();
-        }
-        if !self.steady_decay_min_step.is_finite() {
-            self.steady_decay_min_step = d_sd_min();
-        }
-        if !self.freq_hysteresis.is_finite() {
-            self.freq_hysteresis = d_hysteresis();
-        }
-        if !self.max_inc_normal.is_finite() {
-            self.max_inc_normal = d_max_inc_n();
-        }
-        if !self.max_inc_damped.is_finite() {
-            self.max_inc_damped = d_max_inc_d();
-        }
-        if !self.damped_perf_cap.is_finite() {
-            self.damped_perf_cap = d_damped_cap();
-        }
-        if !self.pid.kp.is_finite() {
-            self.pid.kp = default_kp();
-        }
-        if !self.pid.ki.is_finite() {
-            self.pid.ki = default_ki();
-        }
-        if !self.pid.kd.is_finite() {
-            self.pid.kd = default_kd();
-        }
+        finite_or_default!(self.perf_floor, d_perf_floor());
+        finite_or_default!(self.perf_ceil, d_perf_ceil());
+        finite_or_default!(self.perf_init, d_perf_init());
+        finite_or_default!(self.perf_cold_boot, d_perf_cold());
+        finite_or_default!(self.steady_decay_max_step, d_sd_max());
+        finite_or_default!(self.steady_decay_min_step, d_sd_min());
+        finite_or_default!(self.freq_hysteresis, d_hysteresis());
+        finite_or_default!(self.max_inc_normal, d_max_inc_n());
+        finite_or_default!(self.max_inc_damped, d_max_inc_d());
+        finite_or_default!(self.damped_perf_cap, d_damped_cap());
+        finite_or_default!(self.pid.kp, default_kp());
+        finite_or_default!(self.pid.ki, default_ki());
+        finite_or_default!(self.pid.kd, default_kd());
 
+        let gears_before = self.fps_gears.len();
         self.fps_gears.retain(|&g| g.is_finite() && g > 0.0);
+        if self.fps_gears.len() != gears_before {
+            fixed.push("fps_gears");
+        }
         if self.fps_gears.is_empty() {
             self.fps_gears = default_fps_gears();
         }
         // per-app 的 target_fps 同理过滤（set_game 时直接使用，绕过顶层过滤）
         for profile in self.per_app_profiles.values_mut() {
             if let Some(gears) = &mut profile.target_fps {
+                let before = gears.len();
                 gears.retain(|&g| g.is_finite() && g > 0.0);
+                if gears.len() != before {
+                    fixed.push("per_app_profiles.target_fps");
+                }
                 if gears.is_empty() {
                     profile.target_fps = None;
                 }
@@ -391,31 +390,23 @@ impl FasRulesConfig {
         }
 
         // perf 交叉约束（顺序保证 clamp 边界合法）
+        let (floor0, ceil0) = (self.perf_floor, self.perf_ceil);
         self.perf_floor = self.perf_floor.clamp(0.0, 1.0);
         self.perf_ceil = self.perf_ceil.clamp(0.0, 1.0);
         if self.perf_floor > self.perf_ceil {
             self.perf_floor = self.perf_ceil;
         }
+        if self.perf_floor != floor0 || self.perf_ceil != ceil0 {
+            fixed.push("perf_floor/perf_ceil");
+        }
         self.perf_init = self.perf_init.clamp(self.perf_floor, self.perf_ceil);
         self.perf_cold_boot = self.perf_cold_boot.clamp(self.perf_floor, self.perf_ceil);
-        if !self.loading_perf_floor.is_finite() {
-            self.loading_perf_floor = d_load_pf();
-        }
-        if !self.loading_perf_ceiling.is_finite() {
-            self.loading_perf_ceiling = d_load_pc();
-        }
-        if !self.post_loading_perf.is_finite() {
-            self.post_loading_perf = d_post_perf();
-        }
-        if !self.core_temp_throttle_perf.is_finite() {
-            self.core_temp_throttle_perf = d_temp_perf();
-        }
-        if !self.util_cap_divisor.is_finite() {
-            self.util_cap_divisor = d_util_cap_divisor();
-        }
-        if !self.app_switch_resume_perf.is_finite() {
-            self.app_switch_resume_perf = d_switch_perf();
-        }
+        finite_or_default!(self.loading_perf_floor, d_load_pf());
+        finite_or_default!(self.loading_perf_ceiling, d_load_pc());
+        finite_or_default!(self.post_loading_perf, d_post_perf());
+        finite_or_default!(self.core_temp_throttle_perf, d_temp_perf());
+        finite_or_default!(self.util_cap_divisor, d_util_cap_divisor());
+        finite_or_default!(self.app_switch_resume_perf, d_switch_perf());
         // loading 上下限拍平，防止 frame_pipeline clamp(min>max) panic
         if self.loading_perf_floor > self.loading_perf_ceiling {
             self.loading_perf_floor = self.loading_perf_ceiling;
@@ -429,21 +420,48 @@ impl FasRulesConfig {
         self.post_loading_perf = self
             .post_loading_perf
             .clamp(self.perf_floor, self.perf_ceil);
+        // [钳制留痕] damped_perf_cap 硬钳制会改变行为，与上面 perf_floor/perf_ceil 一样 push 进
+        // fixed（warn 只在 !fixed.is_empty() 时打，漏 push 则「配置被改却无任何线索」）
+        let damped_perf_cap0 = self.damped_perf_cap;
         self.damped_perf_cap = self.damped_perf_cap.clamp(self.perf_floor, self.perf_ceil);
+        if self.damped_perf_cap != damped_perf_cap0 {
+            fixed.push("damped_perf_cap");
+        }
         self.app_switch_resume_perf = self
             .app_switch_resume_perf
             .clamp(self.perf_floor, self.perf_ceil);
 
-        // steady_decay 步长约束：min <= max*0.6（decay_scale 最坏 0.6），否则 clamp 边界反转 panic
+        // steady_decay 步长约束：min <= max*0.6（decay_scale 最坏 0.6），否则 clamp 边界反转 panic。
+        // [钳制留痕] min_step 有两步可改值（负数归零、超上限拍平），两步都要与原值比较，
+        // 任一生效即 push（dedup 兜底重复）
+        let steady_decay_min_step0 = self.steady_decay_min_step;
         self.steady_decay_max_step = self.steady_decay_max_step.max(0.0);
         self.steady_decay_min_step = self.steady_decay_min_step.max(0.0);
         if self.steady_decay_min_step > self.steady_decay_max_step * 0.6 {
             self.steady_decay_min_step = self.steady_decay_max_step * 0.6;
         }
+        if self.steady_decay_min_step != steady_decay_min_step0 {
+            fixed.push("steady_decay_min_step");
+        }
         // 延迟退出：1s 下限防抖，10 分钟上限防呆（配得再大也不该常驻接管）
+        // [钳制留痕] 同上，硬钳制改变行为需进 fixed
+        let deactivate_delay_secs0 = self.deactivate_delay_secs;
         self.deactivate_delay_secs = self.deactivate_delay_secs.clamp(1, 600);
+        if self.deactivate_delay_secs != deactivate_delay_secs0 {
+            fixed.push("deactivate_delay_secs");
+        }
         // 防篡改强制重写间隔最小 1：旧实现 interval=0 是除零 panic（看门狗反复重启，FAS 停摆）；时间基准后 0 会令「已到期」判定恒真（每帧强制重写），同样必须钳到 ≥ 1
         self.freq_force_reapply_interval = self.freq_force_reapply_interval.max(1);
+
+        // [log] 仅在真有修正时打一条 warn：字段名列表直接给出被改了什么，
+        // 避免「配置不生效却无任何线索」。normalize 在启动/热重载时调用，非高频路径。
+        if !fixed.is_empty() {
+            fixed.dedup();
+            log::warn!(
+                "[FAS] 配置存在非法值，已回退默认/钳制: {}",
+                fixed.join(", ")
+            );
+        }
     }
 
     /// 将旧的 per_app_margins 迁移到 per_app_profiles

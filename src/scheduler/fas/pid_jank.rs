@@ -1,6 +1,6 @@
 //! pid_jank.rs: [boost] [pid-jank]
 
-use log::info;
+use log::{debug, warn};
 
 use crate::fluent_args;
 use crate::i18n::t_with_args;
@@ -184,7 +184,9 @@ impl FasController {
                 self.pid.reset();
                 self.floor_stuck_frames = 0;
                 act = "floor-rescue";
-                info!(
+                // [log] 触底救援 = 死锁后的可自愈兜底（PID 复位 + 强制抬 perf），按 warn 级而非 info：
+                // 稳态不应反复出现，出现即说明 perf 被压在地板上出不来，属异常但已自愈
+                warn!(
                     "{}",
                     t_with_args(
                         "fas-floor-rescue",
@@ -214,7 +216,27 @@ impl FasController {
         };
 
         // Clamp：effective floor 上限 0.45 可能超过低 perf_ceil 配置，min 保证 clamp 边界合法
+        let before_clamp = self.perf_index;
         self.perf_index = self.perf_index.clamp(effective_floor.min(ceil), ceil);
+        // [静默失效排查] 抬频动作（jank crit/heavy/emergency）算出的 perf 被 perf_ceil 上限吃掉：
+        // 控制器认为已升频，实际 perf 停在天花板，卡顿不会缓解且无任何痕迹。每帧路径，故 debug 级 + log_enabled! 门控
+        if (act == "crit" || act == "heavy" || act == "emergency-inc")
+            && before_clamp > self.perf_index
+            && log::log_enabled!(log::Level::Debug)
+        {
+            debug!(
+                "{}",
+                t_with_args(
+                    "fas-boost-ceil-clamped",
+                    &fluent_args!(
+                        "act" => act,
+                        "req" => format!("{:.3}", before_clamp),
+                        "perf" => format!("{:.3}", self.perf_index),
+                        "ceil" => format!("{:.3}", ceil)
+                    )
+                )
+            );
+        }
         // base * (fps/60)^0.3，高刷时允许更大的单帧增量
         let scale = (self.current_target_fps / 60.0).powf(0.3).clamp(0.8, 1.8);
         // crit/emergency 不受常规 max_inc 限制：原版 max_inc≈0.092 在 120fps 下需 7-8 帧才能从 floor 爬到 1.0，超大帧（139ms，卡 16+ vsync）
@@ -228,9 +250,40 @@ impl FasController {
         };
         // floor-rescue 是死锁自救，必须真正跳出 perf_floor，否则会被 max_inc 截断成一次无效的小幅抬升
         if act != "floor-rescue" && self.perf_index > old_perf + max_inc {
+            // [静默失效排查] 紧急抬频（crit/emergency）本该豁免常规爬升限制，仍被 max_inc 截断说明
+            // damped_perf_cap/档位阻尼与紧急路径冲突，抬频请求被无声削减。每帧路径，debug 级 + log_enabled! 门控
+            if (act == "crit" || act == "emergency-inc") && log::log_enabled!(log::Level::Debug) {
+                debug!(
+                    "{}",
+                    t_with_args(
+                        "fas-boost-max-inc-clamped",
+                        &fluent_args!(
+                            "act" => act,
+                            "req" => format!("{:.3}", self.perf_index),
+                            "perf" => format!("{:.3}", old_perf + max_inc),
+                            "max_inc" => format!("{:.3}", max_inc)
+                        )
+                    )
+                );
+            }
             self.perf_index = old_perf + max_inc;
         }
         if damped && self.perf_index > self.cfg.damped_perf_cap {
+            // [静默失效排查] 档位阻尼期内阻尼帽压掉抬频结果：阻尼是设计内的暂态，
+            // 但若 jank 期间长期停留在此处，卡顿不会缓解且 perf 曲线与「已升频」同形，故打点
+            if (act == "crit" || act == "emergency-inc") && log::log_enabled!(log::Level::Debug) {
+                debug!(
+                    "{}",
+                    t_with_args(
+                        "fas-boost-damped-cap-clamped",
+                        &fluent_args!(
+                            "act" => act,
+                            "req" => format!("{:.3}", self.perf_index),
+                            "cap" => format!("{:.3}", self.cfg.damped_perf_cap)
+                        )
+                    )
+                );
+            }
             self.perf_index = self.cfg.damped_perf_cap;
         }
 

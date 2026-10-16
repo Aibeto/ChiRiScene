@@ -61,6 +61,8 @@ pub struct FasManager {
     exit_delay: Duration,
     /// performance 调速器接管（activate 时切，deactivate 时按快照恢复）
     governor: GovernorGuard,
+    /// 上次 on_load_update 时的开环状态：false→true 翻转沿发警告通知（拦截器在 notify 侧限流）
+    was_open_loop: bool,
     last_temp: f64,
     last_temp_read: Instant,
     /// FAS 温度源节点路径。原始读数刻度因内核而异，每次刷新经 `utils::battery_temp_divisor()` 取全局预识别结论（与 CLG 热保护同源），避免两处口径漂移）；
@@ -79,8 +81,16 @@ impl FasManager {
         Self {
             instance: None,
             exit_deadline: None,
-            exit_delay: Duration::from_secs(15),
+            // 契约缺省值直接取 `fas_types` 的缺省规则（`d_fas_exit_delay()` 是模块私有 fn，本文件不可见，
+            // 改取同源的 `FasRulesConfig::default().deactivate_delay_secs`），避免与契约数字 3s 漂移；
+            // 正常路径 activate(:109) 仍按应用配置覆写
+            exit_delay: Duration::from_secs(u64::from(
+                crate::fas_types::FasRulesConfig::default()
+                    .deactivate_delay_secs
+                    .max(1),
+            )),
             governor: GovernorGuard::new(),
+            was_open_loop: false,
             last_temp: 0.0,
             last_temp_read: Instant::now(),
             temp_path,
@@ -132,6 +142,9 @@ impl FasManager {
                 inst.frame_source.generation = self.generation;
                 inst.controller.set_game(pid, pkg);
                 inst.controller.reset_frame_feedback();
+                // 新会话（PID 替换）同样重置开环沿状态：reset_frame_feedback 使 warmup_remaining>0，
+                // 该会话开局即 uses_load_control()=true；不复位则上一会话残留的 was_open_loop=true 会把这条沿吞掉
+                self.was_open_loop = false;
             }
             self.exit_deadline = None;
             self.set_frame_feedback_enabled(true);
@@ -212,6 +225,10 @@ impl FasManager {
             return;
         };
         self.exit_deadline = None;
+        // 会话拆除即复位开环沿状态：否则上一会话在开环态收尾后，下一会话「开局即开环」
+        // （warmup_remaining>0 使 uses_load_control() 恒为 true）时 false→true 沿永不触发，
+        // 通知与 [fas] warn 一并静默（对齐 controller.rs 的 load_only_warned = false）
+        self.was_open_loop = false;
         self.fas_signal.set_frame_source(None);
         // 迁移成本与 perfmgr 先于频率恢复，让后续 governor 快照到系统原状
         if let Some(orig) = inst.migration_cost_restore.take() {
@@ -379,6 +396,24 @@ impl FasManager {
             }
             inst.controller.update_core_utils(core_utils);
             inst.controller.update_load_control();
+            // 开环翻转沿检测：false→true（进入开环）发警告通知（拦截器在 notify 侧限流，发送侧不节流）；
+            // true→false（恢复闭环）只记 INFO。uses_load_control 为 pub(crate)（原 pub(super)，fas_manager 不可见，本次提权）
+            let open_loop = inst.controller.uses_load_control();
+            if open_loop && !self.was_open_loop {
+                let title = crate::i18n::t("notify-fas-openloop-title");
+                let body = t_with_args(
+                    "notify-fas-openloop-body",
+                    &fluent_args! {"pkg" => inst.package.as_str()},
+                );
+                log::warn!(
+                    "[fas] open-loop entered: {} — posting ChiRi-FAS warning",
+                    inst.package
+                );
+                crate::notify::post_notification(&title, "ChiRi-FAS", &body);
+            } else if !open_loop && self.was_open_loop {
+                log::info!("[fas] closed-loop restored: {}", inst.package);
+            }
+            self.was_open_loop = open_loop;
         }
     }
 

@@ -2,7 +2,7 @@
 
 use std::time::{Duration, Instant};
 
-use log::info;
+use log::{debug, info, warn};
 
 use crate::fluent_args;
 use crate::i18n::t_with_args;
@@ -14,6 +14,13 @@ use super::pid::scale_frames;
 /// 必要性：退避计数不再被升档清零后（见下），若没有时间衰减，`min(4)` 会让一次抖动期的
 /// 16 倍冷却（≈24s）永久咬住后续的孤立降档——24s 不许升档对真实场景过重
 const DOWNGRADE_BACKOFF_RESET: Duration = Duration::from_secs(60);
+
+/// 升档后最短驻留帧数（快升慢降的「慢降」半边）：升档后未住满该帧数不允许降档。
+/// 必要性：logd_1016-165413 实测升档确认 60 帧后升档、随即 90 帧降档确认即可再降，
+/// 短帧率低谷就能造成 1~3 秒级 30↔45 往返（daemon.log 15:13 附近 30↔45 连打）。
+/// 驻留期给新档位 PID/dampen 充分收敛时间，短谷被驻留吸收；深谷仍由原生档识别
+/// 与极端卡顿路径（它们绕过驻留，见 evaluate_gear 降档段）兜底
+const DOWNGRADE_MIN_DWELL_FRAMES: u32 = 120;
 
 /// 升档落点 perf 的下限上限：`(new_fps / 144)` 在高帧率档会超出本值、被截断成本值，
 /// 即升档瞬间的 perf 落点。调低 = 升档后从更低处起步（稳态由 PID decay 收敛），
@@ -31,16 +38,66 @@ pub(super) enum GearDecision {
 
 impl FasController {
     pub(super) fn detect_native_gear(&self, avg_fps: f32) -> Option<f32> {
-        if self.fps_window.count() < 20 {
+        // [silent-return] 以下两处 None 提前返回与一次空匹配都是静默失效：调用方（evaluate_gear
+        // 降档段）拿到 None 就退回常规确认流，而「样本不足 / 抖动过大 / 无档位落在 ±8fps」与
+        // 「帧率正常不需降档」在 status.csv 上完全同形。本函数每帧调用（高频）→ debug! +
+        // log_enabled! 门控，INFO 级别下不产生任何 format! 开销
+        let count = self.fps_window.count();
+        let stddev = self.fps_window.stddev();
+        if count < 20 {
+            if log::log_enabled!(log::Level::Debug) {
+                debug!(
+                    "{}",
+                    t_with_args(
+                        "fas-native-gear-skip-samples",
+                        &fluent_args!(
+                            "count" => count.to_string(),
+                            "need" => "20".to_string(),
+                            "avg" => format!("{:.1}", avg_fps)
+                        )
+                    )
+                );
+            }
             return None;
         }
-        if avg_fps > 5.0 && self.fps_window.stddev() < avg_fps * 0.10 {
-            self.fps_gears
+        if avg_fps > 5.0 && stddev < avg_fps * 0.10 {
+            let hit = self
+                .fps_gears
                 .iter()
                 .rev()
                 .copied()
-                .find(|&g| g < self.current_target_fps - 0.5 && (avg_fps - g).abs() < 8.0)
+                .find(|&g| g < self.current_target_fps - 0.5 && (avg_fps - g).abs() < 8.0);
+            // [silent-return] 样本与抖动都已达标，却没有档位落在 ±8fps 内：既判不出原生档、
+            // 也拿不到常规降档依据，静默丢失。这种「差一点命中」最易在真机排查时被误判成
+            // 降档链路失效，故单独落一条
+            if hit.is_none() && log::log_enabled!(log::Level::Debug) {
+                debug!(
+                    "{}",
+                    t_with_args(
+                        "fas-native-gear-no-match",
+                        &fluent_args!(
+                            "avg" => format!("{:.1}", avg_fps),
+                            "stddev" => format!("{:.1}", stddev),
+                            "target" => format!("{:.0}", self.current_target_fps)
+                        )
+                    )
+                );
+            }
+            hit
         } else {
+            if log::log_enabled!(log::Level::Debug) {
+                debug!(
+                    "{}",
+                    t_with_args(
+                        "fas-native-gear-skip-jitter",
+                        &fluent_args!(
+                            "avg" => format!("{:.1}", avg_fps),
+                            "stddev" => format!("{:.1}", stddev),
+                            "limit" => format!("{:.1}", avg_fps * 0.10)
+                        )
+                    )
+                );
+            }
             None
         }
     }
@@ -63,6 +120,12 @@ impl FasController {
         };
         self.perf_index = final_perf;
         self.gear_dampen_frames = dampen;
+        // 快升慢降：升档进入降档驻留期（按档位缩放，墙钟约 2s）；降档/平切不驻留
+        self.downgrade_dwell_frames = if new_fps > old {
+            scale_frames(DOWNGRADE_MIN_DWELL_FRAMES, new_fps)
+        } else {
+            0
+        };
         self.downgrade_boost_active = false;
         self.downgrade_boost_remaining = 0;
         self.floor_stuck_frames = 0;
@@ -186,6 +249,10 @@ impl FasController {
 
         // ── 降档判断 ──
         if let Some(prev) = self.prev_gear() {
+            // 快升慢降契约（agentsdocs/03-chiri.md「FAS 快升慢降」）：驻留检查**不得**放在原生档识别
+            // 与极端卡顿两条兜底之前。驻留门在下方 `avg_fps < target - 10.0` 分支内、两条兜底与
+            // recent30 取消分支之后，只挡「慢降」常规确认流与 boost 抢救；载入后守卫在本 if 首支，
+            // 原生档/极端卡顿在驻留门之前——驻留期内这四条路径均可达，深谷不会被驻留门吞掉。
             if self.post_loading_downgrade_guard > 0 {
                 self.downgrade_confirm_frames = 0;
                 self.cancel_boost();
@@ -196,6 +263,20 @@ impl FasController {
                 // 里面，两者交集为空：tfps=120 时需 `avg < 48` 且 `avg ∈ (52,60)`，g=60 这一支恒不可达
                 // （只剩 30 档能命中），「游戏原生 60fps」这个主场景永远识别不到原生档。
                 if let Some(native) = self.detect_native_gear(avg_fps) {
+                    // [silent-rewrite] 原生档识别改写了降档落点：不经验证计数、直接降到游戏自锁档，
+                    // 全程静默；与常规确认降档在 status.csv 上同形，事后无法回溯降档依据
+                    warn!(
+                        "{}",
+                        t_with_args(
+                            "fas-native-gear-detected",
+                            &fluent_args!(
+                                "avg" => format!("{:.1}", avg_fps),
+                                "from" => format!("{:.0}", self.current_target_fps),
+                                "to" => format!("{:.0}", native),
+                                "stddev" => format!("{:.1}", self.fps_window.stddev())
+                            )
+                        )
+                    );
                     return GearDecision::Downgrade {
                         target: native,
                         perf: 0.55,
@@ -209,6 +290,22 @@ impl FasController {
                 if is_extreme {
                     self.cancel_boost();
                     self.downgrade_confirm_frames += 1;
+                    // [silent-rewrite] 极端卡顿判定改写了降档节奏：绕过常规 boost/确认流直接累加
+                    // 计数（快车道），全程静默，事后无法区分「兜底生效」与「降档链路失效」。
+                    // 只在卡顿段起始帧（计数 0→1）落一行，避免整段每帧刷屏
+                    if self.downgrade_confirm_frames == 1 {
+                        warn!(
+                            "{}",
+                            t_with_args(
+                                "fas-extreme-jank-fasttrack",
+                                &fluent_args!(
+                                    "avg" => format!("{:.1}", avg_fps),
+                                    "target" => format!("{:.0}", tfps),
+                                    "stddev" => format!("{:.1}", self.fps_window.stddev())
+                                )
+                            )
+                        );
+                    }
                 // 取消阈值与升档判据同源：进入本分支的前提已是 `avg < tfps - 10.0`（**长窗**低），此时若
                 // **短窗** `recent30` 也回到 `tfps - 10.0` 以上，说明只是瞬时长窗低谷 → 清零计数、不降档。
                 // 原取 `tfps - 5.0` 时 `recent30 ∈ [tfps-10, tfps-5)`（tfps=120 即 110~115fps）**拿不到
@@ -221,6 +318,32 @@ impl FasController {
                 } else if recent30 >= tfps - 10.0 {
                     self.cancel_boost();
                     self.downgrade_confirm_frames = 0;
+                } else if self.downgrade_dwell_frames > 0 {
+                    // [silent-defer] 驻留期暂缓普通降档：升档后给新档位 PID/dampen 收敛时间，短谷被
+                    // 驻留吸收。本分支已由外层 `avg_fps < target - 10.0` 保证「确实压住了降档门槛」
+                    // （原生档 A1 / 极端卡顿 A2 / recent30 取消都在本分支之前），故此处直接落一行，
+                    // 无需再复制门槛判据（原 `dwell_defer_visible` 只读预判已随之删除）。
+                    // 每帧走到这里（高频）→ debug! + log_enabled! 门控，INFO 级下无 format! 开销。
+                    // 注：dwell>0 时 `downgrade_boost_active` 必为 false（boost 仅在本函数设置，
+                    // 而 dwell 仅在 do_gear_switch 升档路径设置、同一处又把 boost 清零），故不存在
+                    // 「驻留冻结进行中 boost」的存活窗口；此处 `cancel_boost() + confirm=0` 与
+                    // post_loading 守卫分支同形，cancel 为幂等防御。
+                    if log::log_enabled!(log::Level::Debug) {
+                        debug!(
+                            "{}",
+                            t_with_args(
+                                "fas-downgrade-deferred-dwell",
+                                &fluent_args!(
+                                    "dwell" => self.downgrade_dwell_frames.to_string(),
+                                    "avg" => format!("{:.1}", avg_fps),
+                                    "target" => format!("{:.0}", self.current_target_fps),
+                                    "threshold" => format!("{:.1}", self.current_target_fps - 10.0)
+                                )
+                            )
+                        );
+                    }
+                    self.cancel_boost();
+                    self.downgrade_confirm_frames = 0;
                 } else if !self.downgrade_boost_active && self.downgrade_confirm_frames == 0 {
                     let boost_inc = self.scaled_boost_inc();
                     self.downgrade_boost_active = true;
@@ -229,7 +352,9 @@ impl FasController {
                     self.downgrade_boost_remaining = scaled_duration;
                     self.downgrade_boost_perf_saved = self.perf_index;
                     self.perf_index = (self.perf_index + boost_inc).min(0.90);
-                    info!(
+                    // [level] 降档加速 = 「降级被暂缓」：帧率跌破门槛后先给一次 perf 抢救机会，
+                    // 加速期满自动衰减回落（可自愈、可降级）→ warn；每个 boost 周期只落一次
+                    warn!(
                         "{}",
                         t_with_args(
                             "fas-downgrade-boost",
@@ -250,7 +375,8 @@ impl FasController {
                         self.perf_index = blended.max(self.downgrade_boost_perf_saved);
                         self.downgrade_boost_active = false;
                         self.downgrade_confirm_frames += 10;
-                        info!(
+                        // [level] 加速期满 = 抢救失败、转入降档快车道（可自愈的降级续段）→ warn
+                        warn!(
                             "{}",
                             t_with_args(
                                 "fas-boost-expired",

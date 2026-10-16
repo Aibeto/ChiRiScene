@@ -1,7 +1,7 @@
 //! controller.rs: [struct] [load] [helpers] [game]
 
 use crate::fas_types::{FasRulesConfig, PerAppProfile};
-use log::{info, warn};
+use log::{error, info, warn};
 use std::time::Instant;
 
 use crate::fluent_args;
@@ -51,11 +51,15 @@ pub struct FasController {
     pub(super) downgrade_confirm_frames: u32,
     pub(super) upgrade_cooldown: u32,
     pub(super) gear_dampen_frames: u32,
+    /// 快升慢降：升档后降档驻留剩余帧数（>0 时普通降档被抑制），见 gear_state.rs
+    pub(super) downgrade_dwell_frames: u32,
     pub(super) consecutive_downgrade_count: u32,
     pub(super) last_downgrade_from_fps: f32,
     /// 上次降档时刻：退避计数的时间衰减依据（距上次超过 `DOWNGRADE_BACKOFF_RESET` 视为新一轮降档，计数归 1）
     pub(super) last_downgrade_at: Option<Instant>,
     pub(super) stable_gear_frames: u32,
+    /// 开环（load-only）状态翻转沿告警的现行态：true = 已在开环（WARN 已打，不重复刷）
+    pub(super) load_only_warned: bool,
 
     // 降档 Boost
     pub(super) downgrade_boost_active: bool,
@@ -134,10 +138,12 @@ impl FasController {
             downgrade_confirm_frames: 0,
             upgrade_cooldown: 0,
             gear_dampen_frames: 0,
+            downgrade_dwell_frames: 0,
             consecutive_downgrade_count: 0,
             last_downgrade_from_fps: 0.0,
             last_downgrade_at: None,
             stable_gear_frames: 0,
+            load_only_warned: false,
             downgrade_boost_active: false,
             downgrade_boost_remaining: 0,
             downgrade_boost_perf_saved: 0.0,
@@ -225,7 +231,7 @@ impl FasController {
         }
     }
 
-    pub(super) fn uses_load_control(&self) -> bool {
+    pub(crate) fn uses_load_control(&self) -> bool {
         !self.frame_feedback_enabled
             || self.warmup_remaining > 0
             || self
@@ -252,6 +258,31 @@ impl FasController {
         let was_holding = self.thermal_hold;
         self.update_thermal_hold();
         let load_only = self.uses_load_control();
+        if load_only && !self.load_only_warned {
+            self.load_only_warned = true;
+            // [log] 开环 = FAS 功能性失效（档位/卡顿/保护全停摆），按 error 级落盘并触发通知。
+            // 注意：用户通知与 `[fas]` warn 由 src/chiri/fas_manager.rs 侧的 was_open_loop 翻转沿发
+            // （fas_manager.rs:386-399 的 on_load_update），本处只负责 error 级留痕（本 flag 使
+            // error/info 仅在翻转沿各打一行，防逐帧重复）；同一事件存在两条独立记录链，
+            // 属有意设计，勿删任一条。
+            // fas-loop-open 文案（zh/en）不含 $secs，勿再传无用实参。
+            error!(
+                "{}",
+                t_with_args(
+                    "fas-loop-open",
+                    &fluent_args!("pkg" => self.current_package.as_str())
+                )
+            );
+        } else if !load_only && self.load_only_warned {
+            self.load_only_warned = false;
+            info!(
+                "{}",
+                t_with_args(
+                    "fas-loop-close",
+                    &fluent_args!("pkg" => self.current_package.as_str())
+                )
+            );
+        }
         let entering_hold = !was_holding && self.thermal_hold;
         if load_only {
             let demand = self
@@ -456,10 +487,12 @@ impl FasController {
         self.downgrade_confirm_frames = 0;
         self.upgrade_cooldown = 0;
         self.gear_dampen_frames = 0;
+        self.downgrade_dwell_frames = 0;
         self.consecutive_downgrade_count = 0;
         self.last_downgrade_from_fps = 0.0;
         self.last_downgrade_at = None;
         self.stable_gear_frames = 0;
+        self.load_only_warned = false;
         self.downgrade_boost_active = false;
         self.downgrade_boost_remaining = 0;
         self.jank_cooldown = 0;

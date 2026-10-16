@@ -2,7 +2,7 @@
 
 use crate::fas_types::{ClusterProfile, FasRulesConfig};
 use crate::utils::FastWriter;
-use log::{info, warn};
+use log::{error, info, warn};
 use std::fs;
 use std::time::{Duration, Instant};
 
@@ -226,6 +226,19 @@ impl FasController {
             };
             if policy.freq_hold_frames > 0 && !force && !load_only && thermal_cap.is_none() {
                 policy.freq_hold_frames = policy.freq_hold_frames.saturating_sub(1);
+                // [silent-skip] 频率保持期内跳过写入：每 tick 高频路径，debug 门控
+                if log::log_enabled!(log::Level::Debug) {
+                    log::debug!(
+                        "{}",
+                        t_with_args(
+                            "fas-freq-hold-skip",
+                            &fluent_args!(
+                                "pid" => policy.policy_id.to_string(),
+                                "frames" => policy.freq_hold_frames.to_string()
+                            )
+                        )
+                    );
+                }
                 continue;
             }
             policy.freq_hold_frames = policy.freq_hold_frames.saturating_sub(1);
@@ -245,6 +258,20 @@ impl FasController {
 
                 // 变化小于迟滞阈值且非强制时跳过
                 if diff <= self.cfg.freq_hysteresis && !force && thermal_cap.is_none() {
+                    // [silent-skip] 迟滞窗口内跳过写入：每 tick 高频路径，debug 门控
+                    if log::log_enabled!(log::Level::Debug) {
+                        log::debug!(
+                            "{}",
+                            t_with_args(
+                                "fas-freq-hysteresis-skip",
+                                &fluent_args!(
+                                    "pid" => policy.policy_id.to_string(),
+                                    "diff" => format!("{:.3}", diff),
+                                    "hysteresis" => format!("{:.3}", self.cfg.freq_hysteresis)
+                                )
+                            )
+                        );
+                    }
                     continue;
                 }
 
@@ -282,6 +309,12 @@ impl FasController {
         let _ = crate::utils::write_nodes(&perfmgr_items, "perfmgr-disable");
 
         let clusters = crate::scheduler::get_cpu_policies();
+        if clusters.is_empty() {
+            // [silent-fail] 读不到任何 cpufreq policy（tmpfs 环境驱动未就绪/异常）时原本零日志：
+            // 后续循环体直接跳过， fas-init-summary 照打 clusters=0，故障态与「全部接管成功」同形。
+            // FAS 接管功能性失效，不可自愈、需人介入 → error（初始化路径，低频）
+            error!("{}", t("fas-no-policies"));
+        }
 
         let auto_w = if fas_rules.auto_capacity_weight {
             crate::scheduler::auto_compute_capacity_weights(&clusters).map(|w| {
@@ -309,13 +342,23 @@ impl FasController {
             .ok()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
-            let _ = crate::utils::write_sysfs(
+            // [silent-skip] governor 切换失败原本被 `let _ =` 吞掉（utils::write_sysfs 仅留 debug 兜底）：
+            // 锁频仍生效但可能受系统调频竞争者干扰，属可降级/可自愈异常 → warn（接管初始化路径，低频）
+            if let Err(e) = crate::utils::write_sysfs(
                 &format!(
                     "/sys/devices/system/cpu/cpufreq/policy{}/scaling_governor",
                     pid
                 ),
                 "performance",
-            );
+            ) {
+                warn!(
+                    "{}",
+                    t_with_args(
+                        "fas-governor-write-failed",
+                        &fluent_args!("pid" => pid.to_string(), "error" => e.to_string())
+                    )
+                );
+            }
 
             let mut freqs: Vec<u32> = fs::read_to_string(format!(
                 "/sys/devices/system/cpu/cpufreq/policy{}/scaling_available_frequencies",
@@ -329,7 +372,26 @@ impl FasController {
                 // 读不到/空表时按 policy 首核映射核心组，回退 soc.yaml [freq_khz] 兜底（只补表）
                 match crate::common::soc_freq_fallback_for_policy(pid) {
                     Some(f) => freqs = f,
-                    None => continue,
+                    // [silent-skip] 频率表读空且无 soc.yaml 兜底 → 该 policy 整条被跳过：
+                    // 不再进入 policies，锁频/触摸升频对它全部不生效，但结尾的 fas-init-summary
+                    // 照打、集群计数只是少一个，与「全部接管成功」在输出上同形。异常但可自愈
+                    // （配置补齐/换机型后重启即恢复），按 warn
+                    None => {
+                        warn!(
+                            "{}",
+                            t_with_args(
+                                "fas-freq-table-unavailable",
+                                &fluent_args!(
+                                    "pid" => pid.to_string(),
+                                    "path" => format!(
+                                        "/sys/devices/system/cpu/cpufreq/policy{}/scaling_available_frequencies",
+                                        pid
+                                    )
+                                )
+                            )
+                        );
+                        continue;
+                    }
                 }
             }
             freqs.sort_unstable();
@@ -419,6 +481,14 @@ impl FasController {
         self.perf_index = self.cfg.perf_cold_boot;
         self.temp_threshold = fas_rules.core_temp_threshold;
         self.apply_freqs();
+
+        // [silent-skip] 全部 policy 都被跳过（频率表不可用/写入器无效）时 self.policies 为空：
+        // 下面的 fas-init-summary 照打、内容与「接管成功」同形（只是 clusters=0），而 FAS 实际
+        // 一个簇都没接管 —— 档位、触摸升频、保护全部停摆。异常但可自愈（重启/换机型/修配置
+        // 即恢复），按 warn 单列一条，避免故障态被正常的 info 摘要盖过
+        if self.policies.is_empty() && !clusters.is_empty() {
+            warn!("{}", t("fas-policy-none-taken"));
+        }
 
         info!(
             "{}",

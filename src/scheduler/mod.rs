@@ -4,6 +4,9 @@
 
 use std::fs;
 
+use crate::fluent_args;
+use crate::i18n::t_with_args;
+
 // [mods]
 // FAS（帧感知调度）引擎：ChiRi 侧经 crate::scheduler::fas::FasController 使用
 pub mod fas;
@@ -85,6 +88,18 @@ pub(super) fn auto_compute_capacity_weights(policies: &[CpuPolicy]) -> Option<Ve
         .filter_map(|p| probe_policy_capacity(p.id).map(|c| (p.id, c)))
         .collect();
     if caps.is_empty() || caps.iter().any(|&(_, c)| c == 0) {
+        // [log] 自动 capacity 权重探测失败原本静默返回 None，上层回退手工权重后
+        // 表现为「权重不对但无任何线索」。探测只在 FAS 接管初始化时发生，低频。
+        log::warn!(
+            "{}",
+            t_with_args(
+                "fas-capacity-probe-failed",
+                &fluent_args!(
+                    "probes" => caps.len().to_string(),
+                    "zero" => caps.iter().any(|&(_, c)| c == 0).to_string()
+                )
+            )
+        );
         return None;
     }
     let min_cap = caps.iter().map(|&(_, c)| c).min().unwrap() as f32;
