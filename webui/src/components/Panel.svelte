@@ -19,8 +19,7 @@
 </script>
 
 <section class="panel g-glass g-card" data-signal={signal || undefined}>
-  <!-- 扫光高光：hover 时斜向扫过（.g-sheen，见 app.css [glass]） -->
-  <span class="g-sheen" aria-hidden="true"></span>
+  <!-- 2026-10-16 用户要求：无点击元素去掉扫光闪光（.g-sheen 已从 .g-card 宿主选择器移除），原 sheen span 已删 -->
   {#if title || actions}
     <header class="g-card__header">
       <div class="g-card__titles">

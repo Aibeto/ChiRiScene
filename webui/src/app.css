@@ -6,10 +6,11 @@
  * 上游给的是 Tailwind 类名口径；本项目不用 Tailwind，这里把同一套数值落成原生 CSS 变量 + 原子类。
  *
  * 不可违反（违反即风格报废）：
- *   ① 玻璃无色——面板一律白色低透明度 5%~12%，颜色只能来自 [scene] 光源；禁止给面板上色
- *   ② 必须有场景——深墨夜景 + 2~3 个大半径 radial 光源光斑；纯色平面背景下玻璃无可折射之物
- *   ③ backdrop-blur 按用户要求两次下调（上游 40/60 → 25% → 再四分之一）：
- *      --glass-blur 2.5px / --glass-blur-heavy 3.75px ——远低于上游 SKILL.md 的 ≥30px，
+ *   ① 玻璃无色——面板一律白色低透明度 5%~12%，颜色只能来自 [scene] 场景底（现纯色夜景）；禁止给面板上色
+ *   ② 必须有场景——深墨夜景纯色底（2026-10-16 用户要求去除所有渐变：原三个大半径 radial
+ *      光源光斑已删，副作用与恢复口径见下方 [scene] 注）；纯色平面上玻璃质感随之削弱
+ *   ③ backdrop-blur 按用户要求三次下调（上游 40/60 → 25% → 再四分之一 → 2026-10-16 再减半）：
+ *      --glass-blur 1.25px / --glass-blur-heavy 1.875px（2026-10-16 再次减半，前值 2.5/3.75）——远低于上游 SKILL.md 的 ≥30px，
  *      是刻意的用户口径，且必须带 saturate(180%)，缺一不可
  *   ④ 阴影必须三层（外层深度 + inset 顶边受光 + inset 底边暗缘）；单层扁平阴影即失去光的方向
  *   ⑤ 唯一强调色香槟金 #E4B863，只用于主 CTA / 关键数字 / 高亮文字；禁止第二强调色、禁止紫粉渐变
@@ -91,9 +92,9 @@
   /* —— 夜景场景（背景承载全部颜色）—— */
   --night-deep: #060a13; /* 近黑：页面边缘 */
   --night: #0b1322; /* 深墨蓝：主背景 */
-  --night-steel: #16233a; /* 钢蓝抬升：分区色带 */
-  --moon-steel: #33517a; /* 月光钢蓝：光源光斑（深） */
-  --moonlight: #7c9cc4; /* 月光：光源光斑（亮）/ 信息信号 */
+  --night-steel: #16233a; /* 钢蓝抬升：原 165° 夜空渐变的第三色标；渐变 2026-10-16 已删，当前无引用，留作色阶备用 */
+  --moon-steel: #33517a; /* 月光钢蓝（深）：原光源光斑配色；光斑 2026-10-16 已删，当前无引用，留作色阶备用 */
+  --moonlight: #7c9cc4; /* 月光（亮）：信息信号色（signal/progress/notice 的 var 回退）；原光源光斑配色，光斑已删 */
 
   /* —— 唯一强调色（克制使用：主 CTA / 关键数字 / 高亮文字）—— */
   --champagne: #e4b863;
@@ -106,10 +107,11 @@
   --glass-bg-weak: rgb(255 255 255 / 6%);
   --glass-border: rgb(255 255 255 / 15%);
   --glass-border-hover: rgb(255 255 255 / 30%);
-  /* 模糊半径按用户要求两次下调：上游 40/60 → 25% → 再四分之一（即 40/16、60/16）。
+  /* 模糊半径按用户要求三次下调：上游 40/60 → 25% → 再四分之一（40/16=2.5、60/16=3.75）
+     → 2026-10-16 再减半（最终 40/32=1.25、60/32=1.875）。
      saturate 保持 180%：饱和度增强是「暗景光透玻璃发亮」的来源，与模糊强弱无关，不随之缩放 */
-  --glass-blur: 2.5px;
-  --glass-blur-heavy: 3.75px;
+  --glass-blur: 1.25px; /* 2026-10-16 用户要求再减半（前值 2.5px） */
+  --glass-blur-heavy: 1.875px; /* 同上再减半（前值 3.75px） */
   --glass-saturate: 180%;
 
   /* —— 文本（正文 ≥ white/60 才够对比度；white/60 在 #0B1322 上约 8.9:1，远超 AA）—— */
@@ -191,34 +193,34 @@ label {
 
 /*
  * [scene]
- * .g-scene 提供「深墨夜景 + 三个大半径柔和光源光斑」；.g-grain 叠 2.5% feTurbulence 噪点消塑料感。
- * 光斑用伪元素而非 background 多层渐变，是为了让它们能被 backdrop-filter 真实模糊到——
- * 玻璃必须"有东西可模糊"，纯色平面上做玻璃是本风格的头号禁止项。
+ * .g-scene 提供「深墨夜景纯色底」（2026-10-16 用户要求去除所有渐变，原三个大半径光源光斑已删）；
+ * .g-grain 叠 2.5% feTurbulence 噪点消塑料感。光斑原用伪元素而非 background 多层渐变，
+ * 是为了让它们能被 backdrop-filter 真实模糊到——玻璃必须"有东西可模糊"，
+ * 纯色平面上做玻璃是本风格的头号禁止项；光斑删除后该前提削弱，副作用说明见下方 .g-scene::before。
  */
 .g-scene {
   position: relative;
   min-height: 100vh;
   min-height: 100dvh;
-  background: linear-gradient(165deg, var(--night-deep) 0%, var(--night) 55%, var(--night-steel) 100%);
+  background: var(--night); /* 2026-10-16 用户要求去除所有渐变：原为 165deg 夜空三色渐变 */
   /* 关键：isolate 让下面 z-index:-1 的伪元素被约束在本元素的层叠上下文里。
      否则负 z-index 会逃到根上下文、被 body 背景盖住，光源光斑整个不可见 */
   isolation: isolate;
 }
 
 /*
- * 光源光斑：absolute + inset:0 覆盖整个（可滚动的）场景高度，而不是固定在视口——
- * 长列表滚到底部时那里的玻璃仍然有光可借。z-index:-1 让它落在场景底色之上、内容之下
+ * 光源光斑：2026-10-16 用户要求去除所有渐变，三个 radial-gradient 光斑已删。
+ * 副作用自记：原 [scene] 风格规则②（"玻璃必须有可折射之物"）不再满足——
+ * backdrop-filter 模糊的对象只剩纯色底 + 颗粒噪点，玻璃质感会明显减弱。
+ * 纯色替代口径（如需恢复"有东西可模糊"）：可改用同色系大半径纯色圆（border-radius:50% + 低透明度纯色，非渐变）。
  */
 .g-scene::before {
   position: absolute;
   z-index: -1;
   inset: 0;
   content: '';
-  /* 三个光源：右上月光（亮）/ 左下月光钢蓝（深）/ 中偏左单一暖色点缀 */
-  background:
-    radial-gradient(640px circle at 85% 10%, rgb(124 156 196 / 28%) 0%, transparent 65%),
-    radial-gradient(560px circle at 8% 88%, rgb(51 81 122 / 35%) 0%, transparent 65%),
-    radial-gradient(420px circle at 32% 42%, rgb(228 184 99 / 10%) 0%, transparent 60%);
+  /* 原：三个 radial-gradient 光源（右上月光/左下月光钢蓝/中偏左暖色）——按用户要求删除 */
+  background: none;
   pointer-events: none;
 }
 
@@ -247,13 +249,14 @@ label {
   box-shadow: var(--glass-shadow);
 }
 
-/* 第 2 层内发光：顶边受光、向下渐隐 */
+/* 第 2 层内发光：顶边受光。2026-10-16 用户要求去除所有渐变：原为向下渐隐 linear-gradient，
+   改为顶边纯色高光（box-shadow inset 等价物，保持"顶边受光"语义，规则④不破坏） */
 .g-glass::before {
   position: absolute;
   inset: 0;
   border-radius: inherit;
   content: '';
-  background: linear-gradient(to bottom, rgb(255 255 255 / 12%), transparent 50%);
+  background: rgb(255 255 255 / 5%);
   pointer-events: none;
 }
 
@@ -302,7 +305,8 @@ label {
   transition: transform 700ms ease-out;
 }
 
-:where(.g-card, .g-btn, .g-row-item):hover .g-sheen::after {
+/* 2026-10-16 用户要求：闪光只保留在可点击元素——.g-card（状态页大卡片，无点击语义）已移出宿主列表 */
+:where(.g-btn, .g-row-item):hover .g-sheen::after {
   transform: translateX(150%) skewX(-20deg);
 }
 
@@ -856,8 +860,8 @@ label {
 
 .g-dialog::backdrop {
   background: rgb(6 10 19 / 62%);
-  -webkit-backdrop-filter: blur(0.5px);
-  backdrop-filter: blur(0.5px);
+  -webkit-backdrop-filter: blur(0.25px); /* 2026-10-16 用户要求模糊减半（前值 0.5px） */
+  backdrop-filter: blur(0.25px);
 }
 
 .g-dialog__header {

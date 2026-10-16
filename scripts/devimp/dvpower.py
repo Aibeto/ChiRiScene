@@ -35,6 +35,87 @@ import dvcommon as dc  # noqa: E402
 # 按包的 max 与均值拉飞，归因时会被误读成「这个包功耗爆表」
 PW_SANITY_MAX_W = 20.0
 
+# FAS 延迟退出窗口（2026-10-16 加标记）：daemon 在白名单应用失去前台后不立即退出 FAS，
+# 残留 deactivate_delay_secs（新构建缺省 3s，2026-10-16 由 15s 改；旧包仍按 15s 判，
+# 见 src/fas_types.rs::d_fas_exit_delay）——窗口内
+# mode 列仍为 fas 但前台已是新包（淘宝/launcher 等），按 mode 归因会把这段功耗记到
+# 新包名下（logd_1016-165413 实测 26 样本 0.2%）。标记规则：mode==fas 且包名不在
+# FAS 白名单，且该包 fas 样本距上一白名单包末样本 ≤ FAS_EXIT_WINDOW_SECS。
+FAS_WHITELIST = {
+    "com.hypergryph.endfield", "com.levelinfinite.sgameGlobal",
+    "com.tencent.tmgp.sgame", "com.tencent.tmgp.speedmobile",
+    "com.tencent.lolm", "com.tencent.tmgp.dfm",
+}
+# 刻意保守取值 15s（≠ rust 侧 d_fas_exit_delay() 的 3s 新缺省）：旧包未升级仍按 15s 判，
+# 取大者才不会把旧包的退出窗口样本漏掉（取小会漏标，取大只是多标几个样本）
+FAS_EXIT_WINDOW_SECS = 15.0
+
+
+def _secs(row):
+    """timestamp HH:MM:SS → 秒；解析失败返回 None。"""
+    try:
+        h, m, s = map(float, ((row.get("timestamp") or "").strip() or "").split(":"))
+        return h * 3600 + m * 60 + s
+    except (ValueError, TypeError):
+        return None
+
+
+def mark_fas_exit_windows(rows):
+    """[1]/[7] 前，给延迟退出窗口内的 fas 残留行打 `_fas_exit` 标记。
+
+    判定（行序 = 批次内采样序）：mode==fas 且包名不在白名单，且该包首个 fas 样本
+    距上一白名单包最后一个 fas 样本 ≤ FAS_EXIT_WINDOW_SECS → 本包连续 fas 段
+    （直到白名单包重新出现，且每行仍须落在窗口内）整段标记。
+    """
+    rows = list(rows)
+    last_whitelist_ts = None
+    prev_batch = None
+    for i, (batch, r) in enumerate(rows):
+        mode = (r.get("mode") or "-").strip()
+        pkg = (r.get("package") or "").strip()
+        ts = _secs(r)
+        # timestamp 无日期 → 跨批次或时间回绕（跨午夜）时上一白名单样本不可信，重置
+        if batch != prev_batch or (ts is not None and last_whitelist_ts is not None
+                                   and ts < last_whitelist_ts):
+            last_whitelist_ts = None
+        prev_batch = batch
+        if mode == "fas" and pkg in FAS_WHITELIST:
+            last_whitelist_ts = ts
+            continue
+        if mode == "fas" and pkg and pkg != "-" and pkg not in FAS_WHITELIST:
+            in_window = (last_whitelist_ts is not None and ts is not None
+                         and 0 <= ts - last_whitelist_ts <= FAS_EXIT_WINDOW_SECS)
+            if in_window:
+                r["_fas_exit"] = True
+                # 向后延续本包连续 fas 段：包名相同、mode 仍 fas、且不超出窗口
+                # （时间断裂/跨包切换即停，防止长时间段落被错误延续标记）
+                for j in range(i + 1, len(rows)):
+                    b2, r2 = rows[j]
+                    m2 = (r2.get("mode") or "-").strip()
+                    p2 = (r2.get("package") or "").strip()
+                    ts2 = _secs(r2)
+                    if (m2 == "fas" and p2 == pkg and ts2 is not None and ts is not None
+                            and 0 <= ts2 - ts <= FAS_EXIT_WINDOW_SECS):
+                        r2["_fas_exit"] = True
+                    else:
+                        break
+    return rows
+
+
+def fas_exit_summary(rows):
+    """被标记行的功耗小计（供报告输出）。"""
+    n = 0
+    total_w = 0.0
+    pkgs = collections.Counter()
+    for _batch, r in rows:
+        if r.get("_fas_exit"):
+            pw = dc.num(r.get("batt_power_w"))
+            if r.get("charge") == "discharging" and pw is not None and 0 < pw <= PW_SANITY_MAX_W:
+                n += 1
+                total_w += pw
+                pkgs[(r.get("package") or "-").strip()] += 1
+    return n, total_w, pkgs
+
 
 def cap_tier(raw):
     """`thermal_cap_pct` 归一到整数档。
@@ -195,6 +276,13 @@ def status_report(paths, rows):
     for k in sorted(agg, key=lambda k: (-sum(agg[k]["pw"]), k[0], k[1])):
         e = sum(agg[k]["pw"]) / 3600.0
         out.append(_row_mode_pkg(k[0], k[1], agg[k], e, total_wh))
+    # 延迟退出窗口标记（2026-10-16）：上表把窗口内 fas 残留记到了新前台包名下，
+    # 这里单独列出，判读时从该包的 fas 归因里扣除
+    exit_n, exit_w, exit_pkgs = fas_exit_summary(rows)
+    if exit_n:
+        detail = ", ".join(f"{p} {c}行" for p, c in exit_pkgs.most_common())
+        out.append(f"#     [!] FAS 延迟退出窗口残留 {exit_n} 行 / {exit_w / 3600.0:.4f} Wh"
+                   f"（mode=fas 但前台已切走，daemon deactivate_delay 内；勿记入该包 fas 归因）: {detail}")
     out.append("")
     out.append("# [2] 放电段 按 package 汇总（跨 mode；归因看这张表）")
     out.append(f"{'package':28s} {'n':>6s} {'avg W':>6s} {'p50':>5s} {'p95':>6s} {'max':>6s} "
@@ -352,6 +440,7 @@ def main(argv=None):
     except ValueError as error:
         ap.error(str(error))
     rows = read_status(paths)
+    rows = mark_fas_exit_windows(rows)
 
     out = ["# dvpower —— 按包功耗归因（status.csv 权威 + devimp 侧交叉验证）",
            f"# dir   : {root}",

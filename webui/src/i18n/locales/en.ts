@@ -101,8 +101,6 @@ export default {
   'config.scenemodeEnabled': 'SceneMode',
   'config.scenemodeEnabled.hint': 'Before the moon overhears, before the lights doze off',
 
-  'config.notify': 'Ongoing status notification',
-  'config.notify.hint': 'Not implemented yet',
   'battery.title': 'Battery readings',
   'battery.action.back': 'Back to config',
   'battery.entry.hint': 'Where battery readings come from, and how they are calibrated',

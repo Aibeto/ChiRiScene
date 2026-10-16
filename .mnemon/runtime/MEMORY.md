@@ -6,22 +6,16 @@ ChiRi 工具与落盘口径：一次性分析脚本只要放在 devimpbin/ 文�
 §
 ChiRi 收口与汇报要求（2026-10-11 用户定）：收口/汇报前必做三重核查 list_agents + job_list + ps -eo pid,etimes,args，确认无活跃子代理与未收后台任务；派子代理的 prompt 必须写明终端调用上限、scratch 单文件路径、收尾清理要求与互斥写范围（曾有子代理覆盖主线程文档：.cursor/rules/parallel-agent-file-ownership.mdc）。汇报结构最低要求：问题→原因（含源码路径）→后果→影响（量化）→快速判定方法（用哪个 dv*.py 看哪一段）+改哪一行，缺一不可；结论数字必须标注口径与可复现脚本（例：main tick 行 screen_on 恒为 '-' 无法按屏筛选；fas 无 tick 行；同一指标多口径必须并列）。
 §
-ChiRi 测试与计划基线（2026-10-16 更新）：唯一权威计划 = .cursor/plans/2026-10-11-调度改进方案.md，P1~P5 全部落地（含 P1 取消二段式息屏）。回归基线与 2026-10-12 不同：rust_regression 59（原 34）、affinity_cpuset 17、clg_tuning 5、diag_slice 6、app_mode_activity 6（新增）、Python 70+1、replay_clg 真实数据 selfcheck 三簇过。实机 adb 功耗验收仍未做。审查口径：BLOCKER 必修（除零类断言硬伤），doc-bug 类改注释；曾判「保持现状」的 4 项（end<1024 硬编码、dedup 组迁移、doze 删后语义差异、replay_clg.py None 防御）仍维持原判。agentsdocs/03-chiri.md 的 doze 语义已同步。
-§
-ChiRi 历史教训补遗（.codebuddy 2026-09-13~09-23 + .trae 归并）： ①子代理注释修改必须按同一文件单批一次，禁止分两批按原行号重放（曾因行号错位吞行恢复，2026-09-26）。②8650 status.csv batt_power_w 全程 ~1e-3~1e-6W 真相：非 oplus_chg 阶段走标准节点不可靠；oplus_chg 开启后 config/8650/meta.yaml 的 voltage/current_divisor 需改 1000（勿改仓库嵌入默认值，改磁盘机）。 ③devimp 状态口径：息屏均值 0.93W 不可与 0.45W 基线比；息屏期间前台包名不可信；8550 场景能效口径 = 每 mW 能提供多少算力，跨簇取舍看 46 点下凸前沿。 ④tick 节流 key 两级结构 MAIN_TICK_STATE（主tick 首参加 policy_id）。⑤统一能效词汇表：能效 = 算力/mW 正向写法。
-§
 ChiRi P1 落地状态翻转（critical）：P1 取消二段式息屏已落地（2026-10-12 c48a06c）：doze 段 4 行专用覆盖已删（src/chiri/mod.rs 原 :3725/:3728/:3729/:3730 及 :3321-3329、:4222-4233 同口径），息屏后 CLG 即 reduce 同参；五机型 feature.yaml scene_mode_delay_secs 300→3000，config.rs 缺省同步 3000（含 2026-10-05 7e14783 的预活）。回退 = 恢复 doze 覆盖构造 + YAML 改回 300。净收益口径沿用 logd_1011 定稿（保守 +0.36 / 中枢 +1.59 / 乐观 +3.08 Wh）。
 §
 审查口径（2026-10-13 用户定）：① 审查时必须避让他人正在进行的修改——只检查本会话自己改的部分（git diff 中自己负责的文件/行），不碰不评判他人 WIP 文件（如 src/chiri/config.rs、cpu_load_governor.rs、feature.yaml、clg_replay.rs 等并行改动）；② 审查默认不包含构建测试（cargo check / svelte-check / vitest 不属于审查动作，除非用户点名要求），审查 = 静态读 diff + 逻辑核对 + 必要的最小功能验证。
 §
-ChiRi 提交规范：读 .trae/rules/git-commit-message.md——Conventional Commits，type(scope): 中文祈使主题行，scope 用 chiri/scheduler/monitor/config/webui/xtask/module/ci 及子作用域；长文案先 Write 到 devimpbin/ 内文件再 git commit -F；正文写动机与背景（每行≤80 字符），默认不写「验证无异常」这类流水账、不写预期影响。2026-10-16 状态：截至 commit f8e8d03，上游 ChiRiScene/main 已含本轮全部提交（本地曾领先 9 个），历史遗留的「5 项未提交」（package-lock、agentsdocs 等）已随 WebUI 重构提交清空。分组的既有惯例：按主题拆多次提交，每次只含同一逻辑变更的文件集。
-§
 【铁律】ChiRi 代码改动后必须立即格式化改动的文件（cargo fmt / rustfmt），再收口或提交；CI 用 nightly 工具链跑 `cargo fmt --all --check`（.github/workflows/build.yml:100，且 fmt 前置在所有重编译之前），本机默认是 stable，改动后应两套工具链都跑一遍确认干净（2026-10-13 用户明确要求写入记忆）。
-§
-ChiRi 提交信息口径（2026-10-13 用户定）：commit 文本遵循 .trae/rules/git-commit-message.md（Conventional Commits，type(scope): 中文祈使主题，scope 用 chiri/scheduler/monitor/config/webui/xtask/module/ci 及子作用域）；默认**不写**「验证情况无异常」这类流水账，也**不写**预期影响；正文要写得详细（动机与背景，每行≤80 字符）。
-§
-ChiRi 长期口径命名（2026-10-16 用户定稿）：**混合前台焦点算法** = `src/chiri/fas_focus.rs` 的 `Focused`/`LoadOnly`/`Grace` 决策体系（含 2026-10-16 新增的「帧率可取则不因叠加窗口降级为仅调频」规则），配套验证活动名 **混合窗口验证**（真机多类窗口共存时验证窗口解析与帧率降级行为）。术语对齐 `agentsdocs/03-chiri.md` 的「当前所有权与叠加契约」；注意勿与 `agentsdocs/07-todos.md:125` 的「混合值」（息屏+亮屏段混合的功率读数）混淆。
 §
 ChiRi 温控安全关闭（2026-10-16 用户要求，勿当回归）：全部软件温控已关闭并标注「安全关闭」，共三处需同关才叫温控全关——① module/config/{8475,8550,8650,8998,zumapro}/feature.yaml 的 Thermal.enabled=false；② 同段 tuned_resp_enabled=false（tuned 通道）；③ module/config/normal/fas/{dfm,endfield,lolm,sgame,speedmobile}.yaml 的 core_temp_threshold=0.0（FAS 通道，0=禁用是 d_temp_thresh() 既有缺省）。安全依据：内核 thermal 独立于 ChiRi（~95°C 起控 + LMh/DCVS），ChiRi 只做提前轻压，关掉不新增过热风险。恢复 = 三处改回 true/45.0，阈值与回滞参数原样保留。FAS 活跃时 src/chiri/mod.rs:3651 会整体跳过 ChiRi 热保护，故漏关第三处则游戏场景仍有温控。
 §
 ChiRi 窗口解析真机教训（2026-10-16，值得复用）：合成 fixture 的「字段布局」会掩盖真实 ROM 形态，新增窗口/dumpsys 解析逻辑一律用真机原文做夹具。实测（8550/PHB110 ColorOS）三条必须兼容：① dumpsys window 与 dumpsys -t 1 window windows 两条命令互补——前者有 mCurrentFocus/mFocusedApp 但无 mObscured/mViewVisibility，后者反之，只用后者则 Focused 恒不可达，只用前者则连 VisibleUnfocused/Hidden 都判不出；② mSession=Session{...} 是行内出现（mDisplayId=0 taskId=851 mSession=... mClient=...），按行首前缀匹配必然失败；③ AID 形式 u0aNNNNN 与同块 mOwnerUid=NNNNN 必须归一到同一 uid（appId 在文本里已是最终值，不得再加 10000，否则恒不相等 → 全落 unknown_owned → 恒 Unknown）。取证脚本 devimpbin/1016-001727/probe3.sh。
+§
+ChiRi 包1 fps 失效根因定案（2026-10-16 用户裁决）：= ChirunoNeko 自编内核问题（假设 B 实锤，假设 A「符号不在逐帧路径」撤销）。决定性证据=同机对照：同台小米 2210132C/同 A17，stock 5.15.194（devimpbin/1006-123730）fps 非空率 25.9~45.3%，ChirunoNeko 5.15.220（devimpbin/1016-151808）8 会话 0~0.08%，唯一实质变量=内核。修法方向（未实施）：内核侧 uprobe/BPF config 对 stock diff、帧静默 WARN+frame_src=silent 落标、FAS 开环档位死锁权衡。
+§
+ChiRi fps 探针验证环境坑（2026-10-16 一加/高通 5.15 实测，复验时必读）：①adb shell su -c 必须三层引号 adb shell "su -c '...'"，否则 su 未提权（id=2000）且报错被 2>/dev/null 吞；②高通 5.15 内核 uprobe 事件目录扁平化在 events/qb/（无 events/uprobes/ 前缀）；③per-event count 文件被裁（只有 enable/filter/format/hist/id/trigger），count 读 0 不可信，计数用 hist trigger（echo 'hist:keys=common_pid' > trigger 后读 hist 的 hitcount 列）；④手动验证读数通道坏 ≠ ChiRi 病症（两层「卡」勿混淆）。

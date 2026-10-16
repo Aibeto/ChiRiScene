@@ -45,7 +45,7 @@ const RULES = [
   },
   {
     pattern: /backdrop-blur(-sm)?\b(?!-\[)/,
-    why: 'backdrop-blur-sm / 裸 backdrop-blur 模糊不足，必须用具体数值（本项目 --glass-blur 2.5px / --glass-blur-heavy 3.75px）'
+    why: 'backdrop-blur-sm / 裸 backdrop-blur 模糊不足，必须用具体数值（本项目 --glass-blur 1.25px / --glass-blur-heavy 1.875px）'
   },
   {
     pattern: /shadow-none\b/,

@@ -115,9 +115,9 @@ cp /sdcard/my-wallpaper.jpg /data/adb/modules/chiri/webroot/backend.chr
 
 六条不可违反的红线（`npm run style-check` 会静态拦截）：
 
-1. 玻璃无色——面板只用 `rgba(255,255,255,5%~12%)`，颜色只能来自夜景光源
-2. 必须有场景——深墨夜景 + 2~3 个大半径 radial 光源（`.g-scene`）+ 2.5% 颗粒噪点（`.g-grain`）
-3. `backdrop-filter` 用具体数值（`--glass-blur` 2.5px / `--glass-blur-heavy` 3.75px，上游 40/60 的 1/16）**且**带 `saturate(180%)`
+1. 玻璃无色——面板只用 `rgba(255,255,255,5%~12%)`，颜色只能来自夜景场景底
+2. 必须有场景——深墨夜景纯色底（`.g-scene`，2026-10-16 用户要求去除渐变，原 2~3 个大半径 radial 光源已删）+ 2.5% 颗粒噪点（`.g-grain`）
+3. `backdrop-filter` 用具体数值（`--glass-blur` 1.25px / `--glass-blur-heavy` 1.875px，2026-10-16 再次减半；上游 40/60 的 1/16 再半）**且**带 `saturate(180%)`
 4. 阴影必须三层：外层深度 + `inset 0 1px 0` 顶边受光 + `inset 0 -1px 0` 底边暗缘
 5. 唯一强调色香槟金 `#E4B863`（主 CTA / 关键数字 / 当前项）；禁止第二强调色与紫粉渐变
 6. 圆角 ≥16px；过渡一律 `500ms cubic-bezier(0.16,1,0.3,1)`

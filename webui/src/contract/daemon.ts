@@ -15,9 +15,6 @@ import {
 import { isLive, run } from '@/kernel/shell'
 import { absent, failed, ok, shellError, type ReadResult } from './errors'
 
-/** 常驻状态通知的 tag（与 daemon 侧 src/notify.rs::TAG 对齐）：更新与取消都靠它定位 */
-const NOTIFY_TAG = 'chiri-status'
-
 // [liveness]
 export type DaemonState =
   /** 心跳新鲜 = 有活跃实例 */
@@ -92,8 +89,6 @@ export async function stopScheduler(): Promise<ReadResult<true>> {
     `case "$p" in ''|0|*[!0-9]*) ;; *) kill "$p" 2>/dev/null ;; esac; ` +
     `killall -9 chiri 2>/dev/null || pkill -9 chiri 2>/dev/null; ` +
     `rm -f ${pidFile}; ` +
-    // daemon 被 -9 杀死无清理时机，常驻通知由这里撤销（失败静默，部分 ROM 无 -d 旗标）
-    `cmd notification post -d ${NOTIFY_TAG} >/dev/null 2>&1; ` +
     `sleep 1; echo done`
   try {
     const { errno, stderr } = await run(cmd)

@@ -35,7 +35,6 @@
   const devRecord = $derived(Boolean(value('dev_record', false)))
   const fasEnabled = $derived(Boolean(value('fas_enabled', true)))
   const scenemodeEnabled = $derived(Boolean(value('scenemode_enabled', true)))
-  const notifyOn = $derived(Boolean(value('notify', true)))
 
   /** 实验室接管的开关：置灰不可切换（守护进程正按实验室定义写它，手改也会被写回去） */
   const takeover = $derived(new Set(app.labTakeover))
@@ -148,16 +147,6 @@
         pending={app.draft.scenemode_enabled !== undefined}
         disabled={!app.metaValid || takeover.has('scenemode_enabled')}
         onchange={next => app.setDraft('scenemode_enabled', next)}
-      />
-
-      <!-- 常驻状态通知：功能未完成，长期置灰（保留开关位置，文案见 config.notify.hint） -->
-      <ToggleField
-        label={t('config.notify')}
-        hint={t('config.notify.hint')}
-        checked={notifyOn}
-        pending={app.draft.notify !== undefined}
-        disabled
-        onchange={next => app.setDraft('notify', next)}
       />
     </div>
 

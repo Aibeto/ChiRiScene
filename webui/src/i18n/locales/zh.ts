@@ -98,8 +98,6 @@ export default {
   'config.scenemodeEnabled': 'SceneMode',
   'config.scenemodeEnabled.hint': '趁月亮还未听到 趁灯火还未睡着',
 
-  'config.notify': '常驻状态通知',
-  'config.notify.hint': '功能未完成',
   'battery.title': '电池读数',
   'battery.action.back': '返回配置',
   'battery.entry.hint': '电池数据的来源与校准',

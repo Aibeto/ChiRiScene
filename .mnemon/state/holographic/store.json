@@ -261,6 +261,129 @@
       "trustScore": 1,
       "createdAt": "2026-10-15T20:49:42.285Z",
       "updatedAt": "2026-10-15T20:49:42.285Z"
+    },
+    {
+      "id": "holo-ca922f82-3e58-4ec1-b3da-e100131f38d8",
+      "content": "ChiRi 测试与计划基线（2026-10-16 更新）：唯一权威计划 = .cursor/plans/2026-10-11-调度改进方案.md，P1~P5 全部落地（含 P1 取消二段式息屏）。回归基线与 2026-10-12 不同：rust_regression 59（原 34）、affinity_cpuset 17、clg_tuning 5、diag_slice 6、app_mode_activity 6（新增）、Python 70+1、replay_clg 真实数据 selfcheck 三簇过。实机 adb 功耗验收仍未做。审查口径：BLOCKER 必修（除零类断言硬伤），doc-bug 类改注释；曾判「保持现状」的 4 项（end<1024 硬编码、dedup 组迁移、doze 删后语义差异、replay_clg.py None 防御）仍维持原判。agentsdocs/03-chiri.md 的 doze 语义已同步。",
+      "category": "context",
+      "tags": [],
+      "entities": [
+        "ChiRi",
+        "P1",
+        "P5",
+        "Python",
+        "BLOCKER",
+        "None"
+      ],
+      "trustScore": 1,
+      "createdAt": "2026-10-16T14:25:23.023Z",
+      "updatedAt": "2026-10-16T14:25:23.023Z"
+    },
+    {
+      "id": "holo-0283b664-4067-49fe-8064-9c0291c5fc2d",
+      "content": "审查口径（2026-10-13 用户定）：① 审查时必须避让他人正在进行的修改——只检查本会话自己改的部分（git diff 中自己负责的文件/行），不碰不评判他人 WIP 文件（如 src/chiri/config.rs、cpu_load_governor.rs、feature.yaml、clg_replay.rs 等并行改动）；② 审查默认不包含构建测试（cargo check / svelte-check / vitest 不属于审查动作，除非用户点名要求），审查 = 静态读 diff + 逻辑核对 + 必要的最小功能验证。",
+      "category": "context",
+      "tags": [],
+      "entities": [
+        "WIP"
+      ],
+      "trustScore": 1,
+      "createdAt": "2026-10-16T14:25:23.026Z",
+      "updatedAt": "2026-10-16T14:25:23.026Z"
+    },
+    {
+      "id": "holo-7d072e65-95b8-4cd0-97bb-032ea975dbc7",
+      "content": "ChiRi 提交规范：读 .trae/rules/git-commit-message.md——Conventional Commits，type(scope): 中文祈使主题行，scope 用 chiri/scheduler/monitor/config/webui/xtask/module/ci 及子作用域；长文案先 Write 到 devimpbin/ 内文件再 git commit -F；正文写动机与背景（每行≤80 字符），默认不写「验证无异常」这类流水账、不写预期影响。2026-10-16 状态：截至 commit f8e8d03，上游 ChiRiScene/main 已含本轮全部提交（本地曾领先 9 个），历史遗留的「5 项未提交」（package-lock、agentsdocs 等）已随 WebUI 重构提交清空。分组的既有惯例：按主题拆多次提交，每次只含同一逻辑变更的文件集。",
+      "category": "context",
+      "tags": [],
+      "entities": [
+        "ChiRi",
+        "Conventional Commits",
+        "Write",
+        "ChiRiScene",
+        "WebUI"
+      ],
+      "trustScore": 1,
+      "createdAt": "2026-10-16T14:25:23.027Z",
+      "updatedAt": "2026-10-16T14:25:23.027Z"
+    },
+    {
+      "id": "holo-3183776e-3b1e-4448-bdc3-3f7051ad655e",
+      "content": "【铁律】ChiRi 代码改动后必须立即格式化改动的文件（cargo fmt / rustfmt），再收口或提交；CI 用 nightly 工具链跑 `cargo fmt --all --check`（.github/workflows/build.yml:100，且 fmt 前置在所有重编译之前），本机默认是 stable，改动后应两套工具链都跑一遍确认干净（2026-10-13 用户明确要求写入记忆）。",
+      "category": "context",
+      "tags": [],
+      "entities": [
+        "ChiRi",
+        "CI"
+      ],
+      "trustScore": 1,
+      "createdAt": "2026-10-16T14:25:23.027Z",
+      "updatedAt": "2026-10-16T14:25:23.027Z"
+    },
+    {
+      "id": "holo-97c3f5b1-72cb-48d9-b4b2-b09cf090987e",
+      "content": "ChiRi 提交信息口径（2026-10-13 用户定）：commit 文本遵循 .trae/rules/git-commit-message.md（Conventional Commits，type(scope): 中文祈使主题，scope 用 chiri/scheduler/monitor/config/webui/xtask/module/ci 及子作用域）；默认**不写**「验证情况无异常」这类流水账，也**不写**预期影响；正文要写得详细（动机与背景，每行≤80 字符）。",
+      "category": "context",
+      "tags": [],
+      "entities": [
+        "ChiRi",
+        "Conventional Commits"
+      ],
+      "trustScore": 1,
+      "createdAt": "2026-10-16T14:25:23.028Z",
+      "updatedAt": "2026-10-16T14:25:23.028Z"
+    },
+    {
+      "id": "holo-cadb2fd9-9e34-4e1a-9ade-b97e04121995",
+      "content": "ChiRi 长期口径命名（2026-10-16 用户定稿）：**混合前台焦点算法** = `src/chiri/fas_focus.rs` 的 `Focused`/`LoadOnly`/`Grace` 决策体系（含 2026-10-16 新增的「帧率可取则不因叠加窗口降级为仅调频」规则），配套验证活动名 **混合窗口验证**（真机多类窗口共存时验证窗口解析与帧率降级行为）。术语对齐 `agentsdocs/03-chiri.md` 的「当前所有权与叠加契约」；注意勿与 `agentsdocs/07-todos.md:125` 的「混合值」（息屏+亮屏段混合的功率读数）混淆。",
+      "category": "context",
+      "tags": [],
+      "entities": [
+        "ChiRi",
+        "Focused",
+        "LoadOnly",
+        "Grace"
+      ],
+      "trustScore": 1,
+      "createdAt": "2026-10-16T14:25:23.028Z",
+      "updatedAt": "2026-10-16T14:25:23.028Z"
+    },
+    {
+      "id": "holo-4b7944a7-54e6-4347-8483-dc1ca4ac0d0f",
+      "content": "ChiRi 温控安全关闭（2026-10-16 用户要求，勿当回归）：全部软件温控已关闭并标注「安全关闭」，共三处需同关才叫温控全关——① module/config/{8475,8550,8650,8998,zumapro}/feature.yaml 的 Thermal.enabled=false；② 同段 tuned_resp_enabled=false（tuned 通道）；③ module/config/normal/fas/{dfm,endfield,lolm,sgame,speedmobile}.yaml 的 core_temp_threshold=0.0（FAS 通道，0=禁用是 d_temp_thresh() 既有缺省）。安全依据：内核 thermal 独立于 ChiRi（~95°C 起控 + LMh/DCVS），ChiRi 只做提前轻压，关掉不新增过热风险。恢复 = 三处改回 true/45.0，阈值与回滞参数原样保留。FAS 活跃时 src/chiri/mod.rs:3651 会整体跳过 ChiRi 热保护，故漏关第三处则游戏场景仍有温控。",
+      "category": "context",
+      "tags": [],
+      "entities": [
+        "ChiRi",
+        "Thermal",
+        "FAS",
+        "LMh",
+        "DCVS"
+      ],
+      "trustScore": 1,
+      "createdAt": "2026-10-16T14:25:23.029Z",
+      "updatedAt": "2026-10-16T14:25:23.029Z"
+    },
+    {
+      "id": "holo-2ec01aca-8181-4fac-8e3b-dee153e10b6e",
+      "content": "ChiRi 窗口解析真机教训（2026-10-16，值得复用）：合成 fixture 的「字段布局」会掩盖真实 ROM 形态，新增窗口/dumpsys 解析逻辑一律用真机原文做夹具。实测（8550/PHB110 ColorOS）三条必须兼容：① dumpsys window 与 dumpsys -t 1 window windows 两条命令互补——前者有 mCurrentFocus/mFocusedApp 但无 mObscured/mViewVisibility，后者反之，只用后者则 Focused 恒不可达，只用前者则连 VisibleUnfocused/Hidden 都判不出；② mSession=Session{...} 是行内出现（mDisplayId=0 taskId=851 mSession=... mClient=...），按行首前缀匹配必然失败；③ AID 形式 u0aNNNNN 与同块 mOwnerUid=NNNNN 必须归一到同一 uid（appId 在文本里已是最终值，不得再加 10000，否则恒不相等 → 全落 unknown_owned → 恒 Unknown）。取证脚本 devimpbin/1016-001727/probe3.sh。",
+      "category": "context",
+      "tags": [],
+      "entities": [
+        "ChiRi",
+        "ROM",
+        "PHB110 ColorOS",
+        "Focused",
+        "VisibleUnfocused",
+        "Hidden",
+        "Session",
+        "AID",
+        "NNNNN",
+        "Unknown"
+      ],
+      "trustScore": 1,
+      "createdAt": "2026-10-16T14:25:23.029Z",
+      "updatedAt": "2026-10-16T14:25:23.029Z"
     }
   ]
 }

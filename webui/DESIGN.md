@@ -10,15 +10,17 @@
 | 1 | 给玻璃面板上色（`bg-purple-500/20`、`--md-*` 之类） | **玻璃无色**，颜色只能来自场景 |
 | 2 | 纯色平面背景上做玻璃 | 没有可模糊之物，玻璃不成立 |
 | 3 | 玻璃不透明度 > 15% | 会变实心色块，失去玻璃错觉 |
-| 4 | `backdrop-blur` 无具体数值（裸用）/ 省略 `saturate(180%)` | 模糊不足 / 场景光透不过来。本项目模糊按用户要求两次下调（上游 40/60 → 25% → 再四分之一）：`--glass-blur` 2.5px、`--glass-blur-heavy` 3.75px |
+| 4 | `backdrop-blur` 无具体数值（裸用）/ 省略 `saturate(180%)` | 模糊不足 / 场景光透不过来。本项目模糊按用户要求三轮下调（上游 40/60 → 25% → 再四分之一 → 2026-10-16 再减半）：`--glass-blur` 1.25px、`--glass-blur-heavy` 1.875px |
 | 5 | 单层扁平阴影 | 没有光的方向 = 平面半透明 |
 | 6 | 紫粉 AI 渐变、第二强调色、`rounded-none/sm`、`duration-100/150` | 风格身份红线 |
 
 ## 1. 场景先于玻璃
 
-背景由 `App.svelte` 的 `.g-scene` 提供：深墨夜景底色（`#060A13 → #0B1322 → #16233A` 165° 渐变）
-+ 三个大半径 radial 光源（右上月光 `rgba(124,156,196,.28)`、左下钢蓝 `rgba(51,81,122,.35)`、
-中部香槟点缀 `rgba(228,184,99,.10)`），加 `.g-grain` 的 2.5% `feTurbulence` 噪点。
+背景由 `App.svelte` 的 `.g-scene` 提供：深墨夜景纯色底（`--night`，2026-10-16 用户要求去除所有渐变，
+原为 `#060A13 → #0B1322 → #16233A` 165° 渐变）+ `.g-grain` 的 2.5% `feTurbulence` 噪点。
+原三个大半径 radial 光源（右上月光 `rgba(124,156,196,.28)`、左下钢蓝 `rgba(51,81,122,.35)`、
+中部香槟点缀 `rgba(228,184,99,.10)`）**已按用户要求删除**；副作用见 `app.css` 的 [scene] 注：
+「有东西可模糊」的立风格前提被削弱，如需恢复可改用同色系大半径低透明度纯色圆。
 
 **视图不要自己画背景。** 你的根节点只需 `.u-stack`；玻璃面板直接放上去即可。
 
@@ -31,8 +33,8 @@
   `file://` 下 fetch 常被同源策略拒绝；`src` 是运行时字符串，Vite 不参与解析，故相对**文档**解析）。
 - 铺满方式：`object-fit: cover` —— 始终填满视口、允许出界裁切，宽高等比，**禁止单边拉伸**。
 - 层级：`position: fixed` + `z-index: -1`（定位元素若为 0 会盖住非定位正文）。
-- 启用时 `.g-scene--custom-bg` 关掉夜景底与光源光斑：背景图自己就是"可折射之物"，
-  再叠假光源会让画面浑浊（同一时刻只应有一个场景）。
+- 启用时 `.g-scene--custom-bg` 关掉夜景底（光源光斑 2026-10-16 已删，其 `::before` 现为空规则）：
+  背景图自己就是"可折射之物"（同一时刻只应有一个场景）。
 
 ## 2. Token（全部已定义在 `src/app.css` `:root`，直接用，不要硬编码色值）
 
@@ -41,7 +43,7 @@
       --moon-steel #33517A  --moonlight #7C9CC4
 强调  --champagne #E4B863    --champagne-bright #F3DCA8   ← 唯一强调色
 玻璃  --glass-bg / -strong / -hover / -weak   --glass-border / -hover
-      --glass-blur 2.5px   --glass-blur-heavy 3.75px   --glass-saturate 180%
+      --glass-blur 1.25px  --glass-blur-heavy 1.875px  --glass-saturate 180%
 文本  --text-primary #fff  --text-secondary 78%  --text-muted 58%  --text-faint 40%
       （正文一律 ≥ --text-muted；风格自检要求 white/60 或更亮）
 阴影  --glass-shadow-sm / --glass-shadow / --glass-shadow-hover / --glass-shadow-lifted
@@ -116,9 +118,9 @@ ConfirmSheet { open, title, message?, notes?: string[], confirmText, cancelText,
 
 ## 6. 交付前自检
 
-- [ ] 背景是深墨夜景 + 光源光斑（不是平面渐变，更不是紫粉渐变）
+- [ ] 背景是深墨夜景纯色底 + `.g-grain` 噪点（2026-10-16 起光源光斑已删，禁止重新引入渐变光斑）
 - [ ] 面板只用 `g-glass`/`g-card`/`g-btn`/`g-input`/`g-notice` 等原子类，透明度 5%~12%
-- [ ] 玻璃处都有具体 blur 值（`--glass-blur` 2.5px / `--glass-blur-heavy` 3.75px）**且** `saturate(180%)`（.g-glass--flat 除外，它是刻意的干玻璃）
+- [ ] 玻璃处都有具体 blur 值（`--glass-blur` 1.25px / `--glass-blur-heavy` 1.875px）**且** `saturate(180%)`（.g-glass--flat 除外，它是刻意的干玻璃）
 - [ ] 阴影有方向性（外层深度 + inset 顶边高光 + inset 底边暗缘）
 - [ ] 圆角是 `--radius-m` / `--radius-l`（16/24px）
 - [ ] 香槟金 `--champagne` 只出现在主 CTA / 关键数字 / 当前项 / 高亮文字

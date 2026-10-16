@@ -1,6 +1,7 @@
 <script lang="ts">
   // App.svelte: [shell] [bar] [views] [nav]顶层骨架：顶栏（关闭 / 模块名版本 + 守护进程状态 + 界面语言）、路由视图区、玻璃底栏
-  // 场景（深墨夜景 + 光源光斑 + 噪点）挂在 .g-scene/.g-grain 上，玻璃才"有东西可模糊"——见 app.css [scene]
+  // 场景（深墨夜景纯色底 + 噪点，2026-10-16 起光源光斑已删）挂在 .g-scene/.g-grain 上——见 app.css [scene]
+  // 光斑删除后「有东西可模糊」的前提削弱：玻璃质感由纯色底 + 颗粒噪点 + 自定义背景图承担
   import { onMount } from 'svelte'
   import LiveStatus from '@/components/LiveStatus.svelte'
   import AppsView from '@/views/AppsView.svelte'
@@ -59,7 +60,7 @@
   }
 </script>
 
-<!-- 场景层：底色 + 光源光斑 + 全屏噪点（.g-grain 的 ::after 固定在视口上，不随滚动位移） -->
+<!-- 场景层：底色 + 全屏噪点（2026-10-16 起光源光斑已删；.g-grain 的 ::after 固定在视口上，不随滚动位移） -->
 <div class="shell g-scene g-grain {customBg ? 'g-scene--custom-bg' : ''}">
   {#if customBg}
     <!-- 自定义背景：与 index.html 同目录的 backend.chr（src 是运行时字符串，Vite 不参与解析，
@@ -142,7 +143,7 @@
 
   /* [custom-bg] 自定义背景层：与 index.html 同目录的 backend.chr，铺满视口。
      position:fixed 而非 absolute——absolute 的包含块是 .g-scene，页面比视口长时背景会随内容拉长、
-     滚动到底露出空白；fixed 恒定贴合视口。层级用 z-index:-1，与 .g-scene::before 光源光斑同一套路：
+     滚动到底露出空白；fixed 恒定贴合视口。层级用 z-index:-1，与 .g-scene::before（原光源光斑）同一套路：
      落在场景底色之上、所有内容之下。**不能给 0**——定位元素（含 z-index:0）会画在非定位的正文之上，
      把 .shell__main 里没套玻璃面板的文字整段盖住；-1 才是在流内容之下。 */
   .shell__bg {
@@ -161,8 +162,8 @@
     filter: brightness(0.72) saturate(1.05);
   }
 
-  /* 有自定义背景时关掉 .g-scene 的夜景底与光源光斑：
-     背景图自己就是"可折射之物"，再叠一层假光源只会让画面浑浊（风格铁律：颜色由场景承载，只能有一个场景） */
+  /* 有自定义背景时关掉 .g-scene 的夜景底（含已空的 ::before 光斑层；光斑 2026-10-16 已删）：
+     背景图自己就是"可折射之物"（叠纯色夜景底只会盖掉背景图，风格铁律：颜色由场景承载，只能有一个场景） */
   .g-scene--custom-bg {
     background: var(--night-deep);
   }

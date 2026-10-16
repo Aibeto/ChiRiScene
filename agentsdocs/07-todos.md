@@ -52,6 +52,7 @@
 - **【定案 2026-10-04】压制判定的温度源只取电池**：`mod.rs` 的 cap 分支已删掉 CPU 阶梯（2026-10-03 前实现为两路各自判档后取较小值），`config.rs` 的 `[hyst_invariant]` 随之只对电池阶梯取 room；CPU 温度继续落到 snap / status.csv / `thermal_change` 事件文本，性质是**遥测**，`feature.yaml` 的 `cpu_*_temp_c` 对 cap 无效。由此 `devimpbin/1003-214440`（Pixel/zumapro）`cpu_temp` 列全文 `-`、`thermal_cap_pct` 73161 行全 100 属**预期结果**——电池最高 40℃ 未到 zumapro 软限 41℃（2026-10-03 曾把它列为 P0「CPU 温度源缺失导致热保护失效」，按本口径撤回）。遗留两条低优先：**①** `scripts/devimp/dvcommon.py` 的 `avg()/pct()` 空样本返回 0.0，报告会渲染成「某列恒 0.0」，回原始列确认是不是 `-`；**②** `clg-thermal-no-sensor` 仍是 `debug!`，CPU zone 缺失在运行期不可见，现在只影响遥测列完整度。**T2（thermal zone 全清单 + cpu_temp 口径）随之降级**：CPU zone 只决定遥测列有没有值。
 - **【P1，2026-10-03 实证】CLG 升降频数量悬殊（棘轮），三 SoC 同状**：up 类 : down 类 = 25:1（8650 `com.tencent.mm`）、22:1（8650 `default -`）、6:1（8550 incallui/minimap）、5:1（Pixel dragon.read）；`deb_up` 最大连续 522。根因在源码侧（`cpu_load_governor.rs`）：① 簇内取 max(util) `:205-211,:410`；② 升侧渐近逼近使 `current_perf` 恒低于 target → 每 tick 都进 up 分支并清零 `down_wait`（`:522,:537`）；③ down 后 `current_perf` 塞回 ≤ target 立刻重建 up（`:569`）→ 「降一档回半档」无驻留带；④ up 分支不清零自己的 `up_wait`（`:530-545`）→ deb_up 失去确认进度语义；⑤ 触摸 floor 免确认即时改写 `current_perf`（`:584-591,:653-655`），8650 上 policy2/5 双 big 同时被抬；⑥ 唯一回落机制 `steady_decay` 触摸期停用、`util ≥ 0.88` 即清零、上限仅 0.20。**「降后 N tick 禁止再抬」已否决（2026-10-04 用户裁决：连续加压场景必须能立刻再抬）**，不再往这个方向做；up 分支清零 `up_wait` 一并搁置。注意阈值本身并不对称（default 档 `down_rate_limit_ticks=2` < `up_rate_limit_ticks=3`），不要往「调阈值」方向改。
 - **【暂缓，2026-10-04 用户裁决】FPS 探针 `perf_event_open` 失败 217 次**（214440 124 / 220345 85 / 213457 16）：同 app 多进程交替占坑 → 直方图实际只覆盖当前挂住的进程。候选修法（退避 + 失败计数落 status.csv）**先不动，只留记录**；判读时记住 `[7]` 段长尾率可能被漏采抹平，别读成「该时段无卡顿」。
+- **【主嫌疑定案（待真机终证）2026-10-16】包1 fps 失效根因 = ChirunoNeko 内核问题（假设 B 主嫌疑，假设 A 权重大降）**：决定性对照 = 同机同系统——同一台小米 2210132C + 同 A17，stock 内核 5.15.194（`devimpbin/1006-123730`，10-05~10-06 数据）fps 非空率 **25.9~45.3%**（4 会话，独立复核口径）vs 包1 ChirunoNeko 5.15.220 8 会话 **0~0.08%**；混杂变量已排除（代码仅注释/格式化改动、libgui 旧签名存在可挂），**唯一实质变量=内核**。但严格终证还差一步：小米机同符号双内核 hist 对比（ChirunoNeko 0/停滞 vs stock 正常 = B 终证实锤）。历史日志无同内核包（15 包逐一扫 report.md 定版），1006-123730 是唯一同机同 A17 对照。**后续修法方向（未实施）**：①内核侧排查——自编内核 uprobe/BPF 相关 config 对 stock 5.15.194 diff（`CONFIG_UPROBE_EVENTS`、uprobe→perf_event→BPF 传递路径），或换帧源方案；②无论结论，帧静默 WARN + `frame_src=silent` 落标都值得做（开环隐形问题：`controller.rs:229-236` uses_load_control 转负载控制后档位死锁初始 60、jank 升档/降档保护全失效、唯一症状 fps 列全 '-'）。环境坑（su 三层引号、events/qb 扁平化、count 文件被裁不可信、hist trigger 替代）已录 memory；一加机 dynsym 偏移表与验证全史见 `devimpbin/fps_probe_check.md`，复验工具 `devimpbin/ub.sh`。
 - **【已复核 2026-10-05，结案】8650 tick 去重 key 修复生效**（上一项的「待下包复核」，样本 `devimpbin/1004-233049`，8650 / PJX110 / **A01-04 + A01-06 混装** / 20.5 h / 13 批次）。分簇 tick 密度（行/簇/秒，bili playback）：A01-04 批次 big **29.35 / 40.92 / 40.0**（1003-194056 / 213109 / 233042，little 3.7~5.2）→ A01-06 批次 big **2.98 / 2.75**（1004-153222 / 223902，little 0.8）。修复前基线（1003-213457）big 50.03。**降幅约一个数量级，确认生效**。残余 big:little ≈ 3.6:1 属结构预期（8650 的 big 含 policy2 与 policy5 两个 policy，各计一次），不再动。**判读提醒**：本包前 7 批仍是 A01-04（10-04 10:06:34 起才是 A01-06），跨版本段的 tick 行数与包体不可直接比。
 - **【新增，同上包】`batt_power_w` 尖峰读数**：放电段出现量级不可能的 max（lolm 25.48 W / mm 33.25 / mark.via 28.82），与 1005-021253 记录的「2 行 31.48 / 25.93 W」同源。**已落地（2026-10-05）**：`dvpower.py` 新增 `PW_SANITY_MAX_W = 20.0`，超限行计入「异常读数」单独计数、不进均值/p50/p95/max/Wh，并在 `[3]` 后打出剔除行数与最大值；摘要 dict 增 `pw_bad`/`pw_bad_max`。本包实测剔除 5 行（最大 33.25 W），lolm 的 max 由 25.48 → 16.61 W、微信 33.25 → 16.01 W，均值与 Wh 不变。
 
@@ -63,45 +64,14 @@
 
 ### 调度 / 机制验证
 
-- **热档中档解除点修复（`hysteresis_mid_c`，2026-09-28 落地）——已实测生效（2026-10-01 结案）**：
-  原中档与软档共用 `hysteresis_c=3` → 中档解除点 `43−3=40°C` **低于软限跳闸 41°C**，中档一咬住即跳过
-  软档、须一路冷过 40°C 才恢复。8550 取 `hysteresis_mid_c: 1.5` → 解除点 `41.5°C`（> 软限 41）。
-  **本包实证**（`devimpbin/1001-190148` `power.txt [5][6]`）：cap=60 温度带 **min 41℃**（0928 为 40，
-  含 2556 s 落 40~41 桶）、驻留 **1251 s**（0928 5152 s），解除后直接交软档 cap=85（不再跨档跳过）。
-  正文与 normalize 不变量见 `03-chiri.md` 四级判定条。
+- ~~热档中档解除点修复（`hysteresis_mid_c`）~~ **已结案（2026-10-01）**：8550 取 1.5 → 解除点 41.5℃（> 软限 41），`devimpbin/1001-190148` 实证 cap=60 温度带 min 41℃、驻留 1251s（原 5152s）、解除后直接交软档不跨档跳过。正文与 normalize 不变量见 `03-chiri.md` 四级判定条。
 - ~~**息屏离核策略改为「下线 little」的真机验证（2026-09-28 落地，最高优先）**~~ → **2026-10-01 已结案（结论：不成立，已按修法3 改为不下线）**。结论来自 `logd_1001-045147`（A08-08/8550/PHB110/A16，9 批次、息屏 7.4 h）：**26 次进入 scenemode，20 次（77%）在 11~414 s 内被 `scenemode 持续顶满性能上限（little util 100%）→ 退回 reduce + 300 s 冷却` 撤销**，有效驻留 ≈3.6 h、另有 ≈1.7 h 处于禁入冷却（≈20×300 s）→ 下线 little 并没消除抖动，只是把瓶颈从「3 个小核」搬到了唯一在线的引导核 CPU0（判据 ①② 均命中，② 的「预期仍会触发」被证实，但对象是 little 引导核而非 big）。
   处置：`CoreCtl.scenemode_offline` 该字段此前是**死字段**（`mod.rs` 未接线，下线由 `enabled` 无条件驱动），已接线为真门控并在 8550 置 **false**（不下线任何核、保留全核，仅靠 `perf_ceil` 0.12 + uclamp 压制）。**待下包复核**：① 进入 scenemode 后是否仍出 saturation 撤销（目标：显著减少）；② 息屏段 `batt_power_w` 走向（全核在线的漏电 vs 免冷却的净收益）；③ 亮屏唤醒/电源键响应与 `corectl` 恢复是否干净（此时 core_ctl 不再介入 scenemode，`max_cpus`/`min_cpus` 应保持快照值不动）。
   其余子项（⑥⑦⑧⑨⑩）随「不下线」直接失效，无需再验；**软回退** = 8550/feature.yaml 的 `CoreCtl.scenemode_offline` 改回 true。
-- **息屏期 little 被顶满 100%（2026-09-28 包实锤）**：**2026-10-01 更新**——本包给出定量结论（见上条结案），根因确认为「下线 little → CPU0 单核承压」；`logd_0928-170828` 里 7 次撤销属同一机制。以下原始取证线索保留备用：
-  由 `ranges.prime` 改为 `ranges.little`（引导核 CPU0 无法热拔出，8550 实际下线 CPU1-2），core_ctl `max_cpus`
-  写 **1**（`scenemode_keep_cpus()`，**不是 0**——0 是 walt_halt_cpus 整簇停摆语义，对含引导核的簇写 0 会把
-  CPU0 一起停摆），big / prime 改常驻低频，调度服务独占核由「编号最大 little」改为「编号最大 big」。
-  判据（同版本长时观察，不做对照）：① `status.csv` 息屏段 `batt_power_w` 与 `dvpower [5][6]` 的档位/温度带
-  ——**大核最低频能效低于小核，息屏底噪可能不降反升**；② 是否仍出 `scheduler-scene-mode-saturation`
-  （判据取 little∪big 每核 util 最大值，换常驻核不影响它生效，**预期仍会触发**，只是对象从 little 变 big）；
-  ③ `corectl-reassert-offline` / `corectl-vendor-override` 是否刷屏（= core_ctl 把核拉回、在拉锯）；
-  ④ 亮屏唤醒/电源键响应延迟、`corectl-scenemode-off` 恢复是否干净（含 max_cpus 快照回写）；
-  ⑤ 独占大核后业务少 1 颗 big 的影响（亮屏恢复时应释放）。**软备份**：把 `scenemode_targets()` 换回
-  `ranges.prime`（core_ctl 路径会自动回到 halt 语义）。
-  ⑥（独立审查后补的护栏，需真机确认其是否触发）真机确认 little 簇快照 `min_cpus` 是否 >1——>1 时实现会先把它
-  压到 `keep`(=1)、退出再按快照写回；日志出现 `corectl-reserved-core-halted` 说明该内核把保留档也当停摆档
-  （引导核掉线），必须放弃 core_ctl 路径只走逐核 offline。
-  ⑦（元审查后补）`min_cpus` 的压低/写回是**独立记账**（`min_cpus_lowered`），不受 `max_cpus` 是否写回成功影响；
-  真机看退出后 `min_cpus` 是否回到快照（`cat .../core_ctl/min_cpus`）——若长期停在 1，说明写回一直被内核拒
-  （`max_cpus` 尚未解除或节点被锁），日志会持续 `corectl-write-failed`（debug 级）。
-  ⑧（元审查后如实记录，非缺陷）进程在 scenemode 中途被杀时，被独占大核的 **cpuset 排除会残留在磁盘**上，
-  而该排除是 ChiRi 用快照恢复的、快照随进程丢失 → 能否自愈**依赖系统 CpusetManager 重写组 cpus**（代码注释
-  既有观察）与「之后进入 boost 时覆盖写回」，ChiRi 自身不保证；真机可 `cat /dev/cpuset/top-app/cpus` 复核
-  编号最大的大核是否在列。
-  ⑨（第二轮审查发现并已修的 **P0**）目标簇定位原按 `first_cpu == scenemode_targets().first()` 比对——目标已
-  retain 掉引导核 CPU0，其 `first()` 是 CPU1，而 little 簇首核恒为 0 → **恒不命中**，core_ctl 路径整体静默失效
-  （max_cpus 钳制 / 引导核护栏 / min_cpus 压低与两处记账全是死代码）。现已改按「首核号 + 簇内核数」区间定位。
-  真机验证：进 scenemode 后 `cpu0/core_ctl/max_cpus` 应为 **1**（little 簇，`min_cpus` 同为 1），退出后两值都
-  回到快照，daemon.log 有对应 @A 帧（`max_cpus=1 ok`）；若仍无 corectl 打点 → 定位或节点仍不可用。
-  ⑩（第二轮审查记录的边界，**刻意不做自动修复**）`min_cpus` 残留无自愈路径：崩溃残留的
-  `min_cpus == max_cpus == keep` 会让 `discover()` 的残留判据（`max < min`）恒假，而 `force_online_all()`
-  只修 max_cpus / online——**不能**盲写 `cluster_size`（厂商把 little 的 min_cpus 配成小于簇规模是正常省电，
-  盲写会破坏它）。触发需「快照 min_cpus > keep」+「崩溃」同时成立；彻底解决需持久化「scenemode 进行中」标记。
+  （原「下线 little」时代的原始取证线索 ①~⑩ 已随 2026-10-01 结案失效，仅留两条仍有效的边界备注：⑧ 进程
+  scenemode 中途被杀时 cpuset 排除残留在磁盘、自愈依赖系统 CpusetManager 与后续 boost 覆盖写回，ChiRi 不保证；
+  ⑩ `min_cpus` 崩溃残留无自愈路径，`force_online_all()` 不能盲写 `cluster_size`，彻底解决需持久化「scenemode
+  进行中」标记——两者均刻意不做自动修复，复现时按此判读。）
 - **[已落地 2026-09-28] 分析侧「建账」三视图**（只读日志，不改调度行为）：`dvpower.py` 的 `[5]` cap 档迁移时间线 /
   `[6]` 档位温度带 / `[7]` 按 mode 能量汇总（gpu/psi 能量加权）；`dvmain.py` 的 `[7]` 播放态帧间隔直方图
   （活跃窗 `n>=15` + 长尾率 >52ms/>100ms）。**先有账再动参数**：本项目已禁 A/B，没有这三张表就只能盲调。
@@ -116,27 +86,14 @@
   「无长尾」只能读作「无 52~200ms 级卡顿」（命令文档与 `dvmain [7]` 输出已注明口径）。若要覆盖到档表上限
   1020ms，需给直方图**单列**一个上限，**不能**直接抬 `MAX_FRAME_NS`——它同时喂 FAS 的 `frametimes`，把极端
   间隔算进窗口会拉低 avg_fps、引发过度降档。
-- **息屏期 little 被顶满 100%（2026-09-28 包实锤，能量价值最高的待查项）**：`logd_0928-170828` 的 batch1
-  息屏段（05:59–09:39、09:51–12:25 等）里，daemon.log **7 次**报
-  `scenemode 持续顶满性能上限（little util 100%），退回 reduce 并进入 300s 冷却`，且每次都在息屏窗口内
-  （前后最近的界标是「息屏已超过阈值，切换到 scenemode」与「亮屏触发事件」）→ **息屏省电在反复自我撤销**。
-  配套数字：息屏+放电行 8345（占全部放电行 40%）均值 **0.42 W**（分桶 0.1~0.6 W 连续分布）、迁移 ≈2186/s、
-  `psi_cpu 23.8`；这些秒数的 `package` 是息屏前残留的 `me.weishu.kernelsu`（95% screen*on=0），
-  故 `[1]` 表里 kernelsu 的 0.59 W 是「息屏 0.42 W 段 + 少量亮屏段」的混合值，**不要当亮屏空转读**。
-  **下一步判据（全部可用本包现成数据）**：① 按息屏时间窗过滤 `aff*\_.log`，看 little（core 0-2）上的
-`u=`与 comm 是谁；②`main\_\_.log`息屏段 tick 行的`max*util`/`cur_perf`看负载形态；③ status.csv 息屏段的`gpu_busy`判别 CPU 侧还是 GPU 侧。**候选嫌疑**：dev_record 采集本身（息屏 2.3 h 写了 19 MB main + aff 每秒
-全线程采样 + 每帧 eBPF，属观测者效应）/ 第三方后台（little 上高频出现`V8_DefaultWorke`、`Chrome_ProcessL`、
-`CookieMonsterCl`、`TracingMuxer`、`perfetto_hprof*` 等 Chromium 系线程名）/ ChiRi 自身巡检。
-  **若指向采集开销 → 结论是「诊断期不可测待机基线」（写判读口径，不改调度）；若指向第三方 → 才是压制策略问题。**
+- ~~息屏期 little 被顶满 100%（2026-09-28 包实锤）~~ **已随 2026-10-01「不下线 little」结案**（见上条）：根因 = 下线 little → CPU0 单核承压。留一条判读口径：`logd_0928-170828` 息屏+放电行均值 0.42 W，其 package 是息屏前残留的 kernelsu，`[1]` 表里 kernelsu 的功耗是「息屏 + 少量亮屏」混合值，**不要当亮屏空转读**。
 
 - 亮屏 gap①：电源键亮屏无 touch 事件 → 20% 稳态 3 tick 降到地板；候选 = 亮屏复用 `on_touch()` 做一次性 400ms ceiling 窗口（待用户批准）。
 - 亮屏 gap②：亮屏恢复「任一权威节点报亮即恢复」不对称判定（0926 换属性轮询后需在新机制下重评；息屏保留多数票语义）。
 - FAS 无帧降级（退出 FAS 交回 CLG 或固定档保底）——会改调度行为，先定取向。
 - FAS 白名单真机验证：speedmobile / lolm / 国服 sgame 首刷看 devimp fps 是否贴 target 档（玩家开 90 帧则 target_fps 调 [60,90,120]）。
 - playback 参数复核（tuned*profiles.yaml 内 TODO）：hysteresis 0.06 / down_hold 150、`steady_decay*\*` 实际效果（headroom 0.85 与三簇 per_cluster 天花板已于 2026-09-28 按天花板全拆删除）。
-- **播放态掉帧验证（P0-3 收尾）【已答 2026-09-28】**：`logd_0928-170828` 已按「占优簇反推基线 + 超基线长尾档」
-  判读完成——中/硬档窗口（272 / 246 / 793 个活跃窗）长尾率 **0.0~0.4%**、未压制基线 **0.0%**，**基线没动**。
-  **遗留缺口**：本包只有常规码率视频（占优簇 12~16ms 档），无 4K/高码率样本；**在线判据不做**（无差异 = 不值得在线化）。
+- ~~播放态掉帧验证（P0-3 收尾）~~ **已答（2026-09-28，`logd_0928-170828`）**：中/硬档长尾率 0.0~0.4% vs 基线 0.0%，基线没动；遗留缺口 = 无 4K/高码率样本（出现 4K 掉帧投诉再查）；在线判据不做。
 - **播放态「边充边放」温度曲线【本包无样本，待采集】**：`charge ∈ {charging, full}` ∩ `mode=playback` = **0 行**
   （本包充电时段没有在播视频），下次采集需特意覆盖该场景。**嫌疑与判据**：`tuned.rs` 的
   `profile_ceil.min(cap.max(floor))` 在硬档（cap 0.40）下由 `tuned_thermal_floor`（**0.55**，见
@@ -157,15 +114,7 @@
 - devimp 真机验证：main/aff 拆分后 @A/@S 实录 + 失败注入 e{errno} + 归档双文件。
 - 「先读回 scaling_max_freq 再决定写」未实施（需真机确认内核同值写是否真触发重新锁频）；FastLock/PowerBase 5s 盲写改读校验、`cpu_freq_snapshot` 复用句柄（前置：cpufreq 节点支持重复读——FastReader 依赖 seek(0)，不支持 llseek 的节点读失败）。
 - clamp_change 内直接加 `smax ≤ cap 档位` 校验未做（现用 governor 侧 `clamp_apply` 跃迁事件作行为级证据替代）。
-- **帕累托前沿（CLG-PF）真机验证（2026-09-28 落地，仅 8550）**：① 确认接管日志出现 `clg-pf-enabled`（指纹 `92bcedf210e6aed1`、桶数 46），稳态期打 `clg-pf-tick-log`；② 若出现 `clg-pf-fallback`（缺容量 / 桶越界 / 该簇无目标）说明表与真机口径有漂移，先查 capacity 与桶边界再谈落点；③ 落点是「只下调」，观察**同场景稳态频率是否下移而掉帧不增**（R3 口径：只做长时观察，不做开关对照）；④ 触摸窗口内 PF 已与 decay 同口径关闭（`pf_target = None`）——若在触摸/滑动场景看到落点被压回低频桶，先确认 `touch_active` 状态而不是怀疑表数据。
-  - **①②已结案（2026-10-01，`devimpbin/1001-190148` A08-11/8550 两批次）**：两批次接管时均打
-    `[CLG-PF] 帕累托前沿查表已启用 | 指纹=92bcedf210e6aed1 桶数=46`（与 soc.yaml 逐字一致）；
-    **全程无 `clg-pf-fallback`**（`capacity-missing` / `bucket-out-of-range` / `cluster-target-missing` /
-    `unknown-cluster` 均未出现）→ 0928 的「头号待办 ②：capacity-missing 全程回退」在本包**已消失、PF 全程生效**。
-    历史（0928）：启用后数分钟即 `[CLG-PF] 前沿表不可用（capacity-missing），回退比例路径（只此一次）`，两段均复现
-    → CLG-PF 全程未生效（落点 = 旧比例路径）；诊断已增强为带核编号（`capacity-missing(cpu=N)`）。已排除
-    「soc.yaml capacity 段缺失」（FDP 用同一个 `soc_capacity_for_group` 且无 `nodata` Skip）。
-    **③④ 现可观察**（PF 已真正生效）：落点只下调、同场景稳态频率是否下移而掉帧不增（R3 口径：只做长时观察）。
+- **帕累托前沿（CLG-PF）真机验证（2026-09-28 落地，仅 8550）**：**①②已结案（2026-10-01，`devimpbin/1001-190148`）**——两批次接管均打 `clg-pf-enabled`（指纹 `92bcedf210e6aed1`、桶数 46，与 soc.yaml 逐字一致），全程无 `clg-pf-fallback`（0928 的 capacity-missing 回退已消失、PF 全程生效）。**③④ 仍待观察**（R3 口径：只做长时观察）：③ 落点只下调，看同场景稳态频率是否下移而掉帧不增；④ 触摸窗口内 PF 与 decay 同口径关闭——若触摸/滑动场景看到落点被压回低频桶，先确认 `touch_active` 状态而不是怀疑表数据。
 - **`modes` / `anticipate`（三模式取点与预判交叠带）已生成但运行期未消费**：当前只落地了「需求桶 → 三簇目标频点」。要在 CLG 里消费三模式差异与交叠带，需先把「流畅度下界（`reserve_pct`）」与「预判基准提前量（`lead_frac`）」从占位值（reduce 0 / default 0.10 / boost 0.25；`lead_frac` 0.30）定稿——重跑脚本即可覆盖（`--reserve` / `--lead-frac`），不需要改代码。
 - **FDP（前沿主导的放置内核）已落地（2026-09-28），待真机验证**：`src/chiri/energy_cost.rs` 用**双边净收益**给后台/批处理 promote 选目的簇——「等算力下把这份算力放到边际 mW/Mdmips 更低的地方」；数据不手抄，直接读 `soc_frontier_policy().per_cluster.<簇>.{freq_khz, power_w}`（由 `scripts/frontier_policy.py` 从文档 §3 生成）。缺省 `fdp_enabled: false`（8550 已开 true）；`bg_promote_exclude_prime` 仍把关 prime 资格（静态表不含漏电/idle-exit，且判不出 P-b 的 >2600 Mdmips 门槛）。**降级口径（2026-09-28 用户定）**：`fdp_enabled` 为真但静态数据缺失（无 `capacity` / 无 `per_cluster` 功耗表）时，经 `energy_cost::fdp_available()` 判定后**回退原 A3 放置路径**（不把后台 promote 整段停掉）；FDP 自身的配额/净收益/选核否决仍不回退。**待验证**：① 日志 `action=fdp` 的 `net` 与真机 `batt_power_w` 走向是否同号（R3 口径：只做长时观察，不做开关对照）；② 自算例（little u=0.5 / big u=0.3 / prime u=0，d=168）在真机上是否落在同一档（模型 vs 实测 `scaling_cur_freq`）；③ 若出现「该升不升」（后台批处理变慢）先把 `fdp_cost_hysteresis_w` 调到 0.01。
   - **真机实证（A08-04/8550 两段会话，2026-09-28）**：`action=fdp` 帧 91 条**全部 Skip**（`hysteresis` 90 + `dstfreq` 1），**零 Move 帧、`pin bg_busy` 零出现**——该场景下 FDP 未批准任何迁移（这些时刻旧 A3 路径会 promote，属可观测的行为变化）。保守来源 = 成本包络口径（见下条「不同底」）与 `fdp_cost_hysteresis_w` 阈值；**阈值先不动**，按 ③ 收集「后台批处理是否变慢」的证据再定。另：`fdp_ready` 判据已与准入同源（防「数据缺失时 FDP 与 big 饱和保护同失」，2026-09-28 修）。
@@ -177,11 +126,14 @@
 - **8650（PJX110 / 一加 Ace 3 Pro / 8 Gen 3）首版适配待真机复核（2026-10-02 落地）**：`config/8650/` 三件套已建、`CHIRI_SOC_HINTS` 已加 `8650`，参数沿用 8550 同代际口径，**本机零实测**。复核清单：① 识别是否命中（真机 `ro.soc.model` / `ro.board.platform` / `/sys/devices/soc0/machine` 至少一处须含 `8650`；若只暴露板级名 pineapple，则片段与目录名要随之改）；② 拓扑 little 0..2 / big 2..7 / prime 7..8（2+3+2+1 四 policy，两组 A720 同归 big）与真机一致；③ 标 TODO 的项：`top_app_uclamp_max_pct`、`background_uclamp_max_pct`、`CoreCtl.scenemode_offline`、`hysteresis_mid_c`、default 的 `per_cluster.little`（8550 抬到 0.95 抑制贴顶）、触摸 600ms/2 档、`powerbase.target_power_w`；④ `soc.yaml` 的完整频表缺口（capacity 已用真机值补齐：379 / 923 / 1024）——参考内核 `android_kernel_oneplus_sm8650` 内无 vendor DTS（`dts/qcom` 止于 sm8450，不可套用），频表由 EPSS 硬件 LUT 运行时注册，只能取真机 `scaling_available_frequencies` / `cpu_capacity`；⑤ 该机 `debug.tracing.screen_state` 缺失只影响 `screen_prop` 列（写 `-`）与属性轮询路径，**息屏判定本身正常**（uevent 路径照常翻转：status.csv 有 `screen_on=0` 行、daemon 有成对的息屏/亮屏事件）。**scenemode 是否入场仍待观察**——本包最长一次息屏不足 `scene_mode_delay_secs=300`。
 - **8650 首包实证（`devimpbin/1002-143231`，A01-02 / 30000）**：① 识别已命中（`# soc=8650`、"检测到特定处理器，已启用 Chiri 专用调度器"），CLG 接管 4 policy（P0 [0,1] / P2 [2,3,4] / P5 [5,6] / P7 [7]），调速器选型 uag 四 policy 一致；② **FAS 帧源不稳**：lolm 会话里「已挂载 uprobe 到 PID」在同一秒被刷十几次（26102 / 7745 / 20329 / 3105 / 18862 …多 PID 交替占坑），夹杂 6 次 `PID 切换失败: perf_event_open failed`，平均帧在 21.3~109.9 之间跳 → 档位 120↔60 每隔几秒反复切（07:48:49–07:49:55 十余次）。与 8550 已修的「降/升档重叠区」不是同一处：这里根因在帧源（多进程占坑 + perf_event_open 偶发失败），帧源不稳时判据改得再准也会抖。待办与 F3/F4 同源（`monitor/fps_monitor.rs`：PID 选择与失败退避），**先别在 8650 上调档位参数**；③ 环境性告警（非缺陷）：`/sys/module/cpu_boost/parameters/input_boost_enabled` 与 `perfmgr` 节点不存在、`core_ctl/enable=0`（不接管）、msmp/horae clamp 佐证节点不可用。
 - **zumapro（Pixel 9 Pro / Tensor G4）首版适配待真机复核（2026-10-02 落地）**：`config/zumapro/` 三件套已建、`CHIRI_SOC_HINTS` 已加 `zumapro`（`ro.board.platform=zumapro` 已在 devimp 头里确认，识别应无悬念）。复核清单：① 拓扑 little 0..4 / big 4..7 / prime 7..8（4+3+1 三 policy）与真机一致；② 调速器选型会取 `sched_pixel`（Google 自家），若它与 CLG 的上限写入打架就删掉该表项回退 schedutil；③ `Sched` 段已置 `enabled: false`——真机 `ls /proc/sys/kernel/sched_*` 已确认只有 12 个节点（与 8650 同形态），无 `sched_migration_cost_ns` / `sched_nr_migrate`，无需再验；④ `soc.yaml` 的 capacity 与完整频表缺口：DT 只有 `capacity-dmips-mhz`（193/927/1024，与 sysfs `cpu_capacity` 不同量纲，勿直接填），DT 无 CPU OPP（频表来自 cpufreq_domain 驱动/固件）；⑤ 该机 `debug.tracing.screen_state` 缺失只影响 `screen_prop` 列（写 `-`），息屏判定走 uevent 路径仍可翻转（同 8650 的订正口径）；GPU 候选节点全无 → gpu 列恒 `-`。
-- **F3 / F4 待真机**：F3 = fps 探针 attach 累计失败数（已补打点 `fps-monitor-attach-stats`）需真机看真实失败率；F4 = FAS 延迟退出时长（`deactivate_delay_secs`）**本轮刻意未改数值**——缩短会提高「短暂离开（弹窗/画中画/后台配音）被误判为真退出」的概率并引发 activate/deactivate 抖动，应先测「离开→回来」时长分布。
+- **F3 / F4 待真机**：F3 = fps 探针 attach 累计失败数（已补打点 `fps-monitor-attach-stats`）需真机看真实失败率；F4 = FAS 延迟退出时长（`deactivate_delay_secs`）——**2026-10-16 已改 3s（用户批准，见上文「延迟退出窗口标记」条），本项剩「观察 3s 下弹窗/画中画类短暂离开是否引发 activate/deactivate 抖动」，出现抖动再议回调时长。**
 - **T11 三模式取点待真机复核（8550）**：`reduce.steady_decay_target_ratio = 0.80` 是刻意低于 default 的 0.90（天花板拆除后 reduce 与 default 其余参数已很接近，靠取点保住省电档差异）；`boost` 的 `steady_decay_enabled: false` 是「对功耗宽松档不主动下探」的选择。判据 = 省电档滑动手感 + 同场景稳态频率；省电档过钝就把该行删掉回到缺省 0.90。**8475/8998/根兜底的 boost 档同批也已显式 `steady_decay_enabled: false`**（同判据：`up_threshold` 0.55~0.65 时 T 落进常态负载区、削掉响应优势），这三份的 reduce/default 仍走缺省开启，待真机复核。
 - **【P1，2026-10-05 实证】FAS 游离在热阶梯之外**（`devimpbin/1004-233049`，8650 / lolm）：CLG 侧电池 41/43/45℃ → cap 0.85/0.60/0.40 三级（`module/config/8650/feature.yaml`），FAS 侧只有电池 **45℃ 单点**护栏（`module/config/normal/fas/*.yaml` 的 `core_temp_threshold: 45.0`，命中才把 perf 压到 `core_temp_throttle_perf`），两者不互通。实测 lolm FAS 放电 21216 s（5.9 h）：batt 41.4~45.7℃、均值 42.5℃，其中 **11375 s（53.6%）落在 CLG 中档（≥43℃）区间、2864 s ≥44℃、仅 966 s（4.6%）真正触发 45℃ 护栏**；同期 CLG 的 `thermal_cap_pct` 已给到 60，FAS 一行不理。代价是电池长时间贴在中限带（本包 cap=60 档 14193 s，其中 lolm 12897 s）。**TODO:** FAS 写频入口把统一 `thermal_cap` 与 `effective_perf` 取 min，或把 45℃ 单点改成 41/43/45 三档 perf 阶梯；判据 = 同版本长时观察下 batt 峰值与中档驻留秒数（不做 A/B）。**热侧并不伤帧**：cap=60 档 lolm fps avg 112.8 / p50 123 反高于 cap=100 档的 106.45，低帧集中在切场景/加载（fps<60 共 868 行 = 4.1%）。
 - **【P2，同上】FAS 120 档 perf 过供**：lolm 目标 120fps，fps 分桶 `<70` 18.6% / `100~115` 3.8% / `115~125` 43.0% / **`>=125` 33.9%**（p50 123 / p95 128）→ 超目标 ≥5fps 的时间占三分之一。由 snap 反解稳态 perf_index ≈ 0.59（little 1498 / big 1930 / prime 1979 MHz vs hw_max 2265 / 3148 / 3302）。**TODO:** 复核 120 档升档落点 P=0.70 是否可下探（掉帧由 PID 抬回）；**前置条件**：8650 的 fps 探针多进程占坑尚未修（见 8650 首包实证条），帧源不稳时先别动档位参数。
-- **【P2，同上】FAS 延迟退出期 mode 污染 + 频率/调速器未即时回落**：`mod.rs:2692` 在 `request_delayed_exit()` 后 `continue`，mode 列仍是 `fas`，退出期（默认 15 s）内任何切到前台的包都被记成 fas 并吃着 FAS 频率：本包 com.tencent.mm 23 行 8.12 W、launcher 10 行 7.53 W、tim 49 行 6.43 W、酷安/京东/bili 共 115 行（合计约 0.6 Wh，量小但污染离线归因）。**TODO:** **只动诊断列**——把 `pending_mode_after_fas` 暴露给 devimp 写入端（新增 `mode_eff` 列，或 mode 列直接写 pending 值）。**不要在退出期提前降 perf / 恢复调速器**：`mod.rs:2690` 注释已明确「mode_clone 不动，否则出现『文件写 default、FAS 还持着频率』中间态」，且延迟退出的设计目的就是 15 s 内切回白名单应用时由 activate 无缝续期，提前松手会引入 activate/deactivate 抖动（与 F4「延迟时长先别改数值」同源）。
+- **【P1，2026-10-16 实证】充电热判定缺口（`devimpbin/1016-165413`，8550/PHB110 复现条件坐实）**：`eval_thermal_cap`（`src/chiri/mod.rs:168-178`）只吃电池温度不看 charge 状态——插电打游戏时充电热叠加进电池温度，battT 45~47.6℃ 时 cap=40 咬死（`8550/feature.yaml` batt_hard_temp_c:45 上方注释已载未决问题）。本次包2 后半段全程插电但以放电段为主未触发咬死，无量化样本。**TODO:** `eval_thermal_cap` 纳入 charge 状态（充电时放宽阈值或辅以 cpu_temp），动参数前先在下一包收真实咬死时长证据（R3 口径：同版本长时观察，不做 A/B）。
+- **【P1，2026-10-16 实证】FAS 档位短时震荡**：包2 daemon.log 185 次档位切换（60→45 58 次、45→30 33 次、30→45 34、45→60 59），15:13 附近 1~3 秒级 30↔45 连打——confirm=10 帧快车道下仍抖。**已修（2026-10-16，快升慢降非对称滞回，用户批准）**：`src/fas_types.rs` d_up_confirm 60→45 帧（升快）；`gear_state.rs` 新增 `DOWNGRADE_MIN_DWELL_FRAMES=120`（升档后驻留 ≈2s 内抑制普通降档，原生档识别/极端卡顿兜底路径不受限）+ `downgrade_dwell_frames` 字段（`controller.rs` 构造/重置、`frame_pipeline.rs` 逐帧递减）。**待下包复核**：同场景 30↔45 秒级往返是否消失；深谷场景（真掉帧）降档是否仍及时（驻留不应掩盖真实卡顿）。
+- **【P1，2026-10-16 实证+真机实锤】包1（小米 2210132C / HyperOS）fps 探针失效——候选符号表对 Android 14+ libgui 过时**：子代理排查（报告 `devimpbin/fps_probe_check.md`）+ 真机 ub.sh 实测**已实锤**：MIUI/HyperOS 新 libgui 的 dynsym 里，`fps_monitor.rs:28` 所挂短签名（`...EP19ANativeWindowBufferi`）**精确匹配不存在**、长签名 `...ii` 连前缀候选都没有；实际逐帧主路径是 Android 14+ 新重载 **`_ZN7android7Surface11queueBufferEP19ANativeWindowBufferiPNS_24SurfaceQueueBufferOutputE` @ 0x10bc48**（`queueBuffer(buffer, int, SurfaceQueueBufferOutput*)`）。与包1「attach 成功但帧事件不到达控制器、爆发 1-2s 随后归零」完全吻合；老符号只被边缘路径遗留调用。**影响**：包1 全部 FAS 会话无帧反馈开环运行。**修法（待做）**：`fps_monitor.rs` 候选表首位插入新重载签名；顺带 (a) 补「帧静默」可观测性（激活+挂载在但 N 秒无 ring 事件 → WARN，attach_stats 带 ring 计数）；(d) 帧静默超阈值时 status/event 落显式标记防下游误读。（原修法候选 b/c 已被真机实测取代——不需要 simpleperf 也不需要验内核，内核 uprobe 本身工作正常。）
+- **【P2，2026-10-16 已修（分析侧）】dvpower 延迟退出窗口标记**：`scripts/devimp/dvpower.py` 新增 `FAS_WHITELIST`/`FAS_EXIT_WINDOW_SECS=15`/`mark_fas_exit_windows()`——mode=fas 且前台非白名单、距上一白名单包 ≤15s 的连续段打 `_fas_exit` 标记并在 `[1]` 表后单独列出，归因时扣除。包2 实测 20 行（taobao 13 + launcher 7）与手工分析吻合；包1 实测 272 行（多为 gamehelper 紧跟 sgame 后，判定正确）。**注意**：产品侧 3s 缺省（`fas_types.rs` d_fas_exit_delay 15→3，2026-10-16 用户定）只影响新构建；旧包 daemon 仍 15s，分析侧按 15s 判窗口。
 - **【P1，同上】异常退出后 governor 残留 performance**：23:12:10 `Governor` 已把 4 个 policy 由 performance 恢复为 uag，但 23:14:40 新一轮启动仍报 4 条「检测到残留 performance 调速器（上次可能异常退出）」→ 中间两分钟有人又写成 performance 且没释放。候选根因：FAS 引擎 `policy_controller::reset()` 按 `orig_governor` 写回，而该快照若取自 GovernorGuard 已切 performance 之后（`fas_manager.rs` 已有「GovernorGuard 必须先于 load_policies 快照」的顺序约束）就会把 performance 写回去。**TODO:** `reset()` 里 `orig_governor == "performance"` 时改回 uag/schedutil 并 warn。附带结论：23:14~23:30 的四次重启**不是** daemon 自归档（无 128MB 行、无 panic、间隔 8m27s/6m52s/43s），23:30:49 即产出抓包 → 判为外部触发。
 - **【P2，同上】daemon.log 在进程存活期提前停写**：x_1004-232307 那轮进程活到 23:23:07，daemon.log 末行却停在 23:14:53（8m14s 无日志），而 status.csv 写到 23:22:16 → 死亡现场被抹掉，「达到门限才重启」这条唯一可见路径随之失效。**已加失败可见性（2026-10-05，根因仍未定）**：`append_open` 的 `.ok()` 与写失败分支原本全程静默（只丢弃句柄），故「没有事件」与「写不进去」事后无从区分。现加 `APPEND_FAIL_STREAK` + `report_append_failure()`：写成功归零，失败累计，首次与之后每 100 次各报一条 warn（新 i18n key `logger-append-failed`）；`APPEND_REPORTING` 防 warn 自身重入递归，报告一律在锁外发。**下一步**：下个包看是否出现该 warn 及其连续次数——有则按次数定位是「目录被删/重建失败」还是「句柄失效」，无则说明原现象只是该时段没有 INFO 事件（本包无法区分这两种）。
 - **【记录，同上包】`status.csv` 无 `cpu_dyn_w`/`resid_w` 属预期不是回归**：本包采集于 10-03~10-04（A01-04 / A01-06），两列 2026-10-05 才落地 → `dvenergy.py` 只报提示不产表。标定复核仍按上面「功耗分解两列已落地」那条，等 A01-07+ 的包。

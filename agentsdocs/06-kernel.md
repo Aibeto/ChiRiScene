@@ -102,3 +102,4 @@
   `("handle_cpufreq_transition","power","cpu_frequency")`（`cpu_monitor.rs`，本包 `x_*/daemon.log` 实错路径为证）。
   **待下包复核 `freq_trans` 是否开始计数**；若仍 0，再查厂商是否另改了 tracepoint（ftrace 候选 `trace_dcvsh_freq`，07 T6）。
 - 检索口径：daemon.log 是 fluent 本地化文案非 key 字面量；Grep/rg 读不动部分 x\_\*/daemon.log（编码异常），走显式解码脚本（详见 05）。
+- **ChirunoNeko 5.15.220 自编内核 uprobe→eBPF 帧事件链路疑似裁剪/损坏（2026-10-16 定性，用户裁决不再深究）**：该内核上 fps 探针全失效——uprobe 挂载成功（符号存在可挂）但 eBPF 帧事件几乎不到达 FAS 控制器，包1（2210132C）8 会话 fps 非空率 0~0.08%；**同机同 A17 同 ChiRi 代码的 stock 内核 5.15.194 对照（`devimpbin/1006-123730`）fps 非空率 25.9~45.3%**，混杂变量已排除（代码仅注释/格式化改动、libgui 未变），唯一实质变量=内核。验证全史见 `devimpbin/fps_probe_check.md`（含一加机 tracefs 验证：su 三层引号、events/qb 扁平化、count 文件被裁等环境坑）。影响=该内核上 FAS 帧反馈开环（`controller.rs:231-236` load-only 路径，档位死锁/降档保护失效，见 03 帧源小节④）。修法三选未实施（内核 config 对 stock diff / 帧静默 WARN+`frame_src=silent` 标记 / FAS 开环升档权衡），见 07-todos。
