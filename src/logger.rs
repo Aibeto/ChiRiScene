@@ -849,10 +849,10 @@ static DIAG_MODE: Mutex<String> = Mutex::new(String::new());
 /// 当前前台包名（set_diag_package 每秒同步，原始未清洗值），诊断各行 package 列自动填充；行主体有更精确包名时（event）由调用方覆盖。空 = 尚未检测到前台应用，package 列保持 "-"
 static DIAG_FG_PKG: Mutex<String> = Mutex::new(String::new());
 
-/// 当前前台 Activity 查表键（set_diag_activity 每秒同步窗口探针最近值，`pkg/.MainActivity` 短形）；
-/// 诊断各行 activity 列自动填充，空 = 未知（列保持 "-"）。探针只在 FAS 路径运行 ⇒ **非 FAS 不刷新，
-/// 同包内保留最后一次探针值（可能陈旧）**；跨包脏值（换包后的旧键、外部包 component）在入口丢弃；
-/// 非 ChiRi 的 diag_writer 路径从不调用 set_diag_activity，恒空
+/// 当前前台 Activity 查表键（set_diag_activity 每秒同步最近采样值，`pkg/.MainActivity` 短形）；
+/// 诊断各行 activity 列自动填充，空 = 未知（列保持 "-"）。采样由全局 `ActivitySampler` 与 FAS
+/// 窗口探针共同刷新（**不限 FAS**，屏幕亮且前台有效时按节流采样）；跨包脏值（换包后的旧键、
+/// 外部包 component）在入口丢弃；非 ChiRi 的 diag_writer 路径不采样，恒空
 static DIAG_ACTIVITY: Mutex<String> = Mutex::new(String::new());
 
 /// 设置开发记录总开关
@@ -920,7 +920,8 @@ pub fn set_diag_package(pkg: &str) {
 
 /// Activity 列取值（纯函数，便于单测）：只接受「属于当前前台包」的查表键（`pkg/…` 前缀），
 /// 其余（未知空串、换包后的陈旧值、外部包 component、仅前缀相同但不同段）一律返回空串写 "-"。
-/// 窗口探针只在 FAS 路径刷新，FAS 退出后同包旧值可能保留；这层校验保证旧键绝不挂到别的包的行上
+/// 采样是节流的（3s，换包 1s 内），换包瞬间/叠加层抢焦点时可能读到其他包或空值；这层校验
+/// 保证旧键绝不挂到别的包的行上
 fn activity_cell<'a>(pkg: &str, activity: &'a str) -> &'a str {
     if pkg.is_empty() || activity.is_empty() {
         return "";

@@ -8,6 +8,8 @@ dynamic_enabled: true
 global_mode: "default"
 
 app_modes:
+# Activity 级规则：键可写成 `pkg/.SomeActivity`（命中优先于同包名键，示例 `com.tencent.mm/.Chat`）。
+# activity 由全局采样器在屏幕亮且有前台时按 3s 节流采样，普通应用同样生效；采不到时自动回退包名级。
 
 # [ignored-apps]
 ignored_apps:

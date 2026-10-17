@@ -79,9 +79,9 @@
       "importance": "critical"
     },
     {
-      "content": "ChiRi devimp main_ 45 列 + activity（2026-10-18 契约，项目档案有完整版）：main_ CSV 末尾追加第 45 列 `activity` = 前台 Activity 查表键短形 `pkg/.MainActivity`（来源 `window_visibility::last_activity_key()`，调度 1s 块经 `logger::set_diag_activity` 同步，tick/snap/event 全行自动填充；按当前前台包前缀校验，换包旧值/外部包 component 写 `-`）。窗口探针只在 FAS 路径运行 ⇒ 非 FAS 通常 `-`、FAS 退出后同包可能陈旧；训练样本须过滤 `activity != \"-\"` 且前缀 == `package + \"/\"`。`aff_` 文件头自 2026-10-18 起只写标题 + 4 行可解析 schema（@A/@S/p/t）+ 元信息，差分/刷新帧/NaN 说明不再写入（语义在 agentsdocs/02 与 `dvaff.py`）。",
+      "content": "ChiRi devimp main_ 45 列 + activity（2026-10-18 契约，项目档案含全局采样完整版）：main_ CSV 末尾追加第 45 列 `activity`（`pkg/.MainActivity` 短形；既有 44 列索引不变）。**采样已全局化（不限 FAS）**：屏幕亮且有有效前台时由 `ActivitySampler` 采样（同包 3s、换包 1s 内立即，只跑 `dumpsys window` 取 mCurrentFocus），触发条件 = 配置了 Activity 级规则（`dynamic_enabled` 且 `app_modes` 含 `pkg/.Activity` 键）或开启 `meta.dev_record`。`app_detect` 只接受属于当前前台包的键（换包旧值/系统叠加层丢弃），同包 activity 变化重算模式（generation 不递增、不触发 FAS 重接管），规则因此对非 FAS 应用生效。`-` = 从未采到或焦点属其他包；屏幕灭/采样失败/同包空焦点会保留最后采样值（可能陈旧，落行前仍有 package 前缀复核）；DOWN 停摆期间采样继续；非 ChiRi 的 diag_writer 路径不采样，恒 `-`。`aff_` 文件头自 2026-10-18 起只写标题 + 4 行 schema（@A/@S/p/t）+ 元信息。",
       "created_at": "2026-10-17T19:50:06.403Z",
-      "updated_at": "2026-10-17T19:50:06.403Z",
+      "updated_at": "2026-10-17T21:19:02.079Z",
       "target": "memory",
       "importance": "normal"
     }

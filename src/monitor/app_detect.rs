@@ -25,6 +25,16 @@ static VALID_CGROUP_IDX: AtomicUsize = AtomicUsize::new(usize::MAX);
 
 static CURRENT_PID: AtomicI32 = AtomicI32::new(0);
 
+/// Activity 级规则是否配置（`activity_aware` 且 `app_modes` 里存在 `pkg/.Activity` 键）。
+/// 由检测循环每轮更新；调度 1s 块据此决定是否请求全局 Activity 采样，避免无 activity 配置时
+/// 白白承担 dumpsys 自耗。
+static ACTIVITY_RULES_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// 当前是否配置了 Activity 级规则（供调度侧决定采样开关）
+pub fn activity_rules_configured() -> bool {
+    ACTIVITY_RULES_ACTIVE.load(Ordering::Relaxed)
+}
+
 // 获取系统已启用的输入法列表
 fn get_system_ime_packages() -> HashSet<String> {
     let mut imes = HashSet::new();
@@ -153,7 +163,8 @@ pub fn raw_foreground_package_arc() -> Arc<str> {
 }
 
 /// 当前前台 Activity 查表键（`pkg/.MainActivity` 短形，零分配 Arc 克隆）；空 = 未知。
-/// 只有 FAS 路径会驱动窗口探针，故非 FAS 前台通常为空——调用方必须回退包名级判定。
+/// 由全局 [`ActivitySampler`](crate::monitor::window_visibility::ActivitySampler) 与 FAS 窗口探针
+/// 共同刷新（屏幕亮且有有效前台时采样，**不限 FAS**）；空 = 未知，调用方必须回退包名级判定。
 pub fn current_activity_arc() -> Arc<str> {
     FOREGROUND_STATE.lock().unwrap().activity.clone()
 }
@@ -211,7 +222,7 @@ fn set_current_package(
     };
     let generation = next_generation(&state.snapshot(), &candidate, force_bump);
     // activity 槽更新规则见 `next_activity`：换包清空（防新包继承旧包的 activity）、
-    // 空观测保留旧值（探针只在 FAS 路径跑，非 FAS 轮次传空是常态）
+    // 空观测保留旧值（全局采样按 3s 节流，空观测/叠加层抢焦点是常态）
     let package_changed = state.package.as_ref() != base;
     state.activity = next_activity(package_changed, &state.activity, activity);
     state.package = candidate.package;
@@ -265,7 +276,7 @@ mod identity_tests {
 
     #[test]
     fn same_package_keeps_activity_when_observation_is_empty() {
-        // 非 FAS 轮次探针不跑，空观测不得抹掉已生效的 activity 规则
+        // 采样节流/叠加层抢焦点时会出现空观测，空观测不得抹掉已生效的 activity 规则
         assert_eq!(
             next_activity(false, "com.game/.MainActivity", "").as_ref(),
             "com.game/.MainActivity"
@@ -321,6 +332,57 @@ mod identity_tests {
 }
 
 // [cgroup]
+
+#[cfg(test)]
+mod activity_tests {
+    use super::*;
+
+    #[test]
+    fn activity_for_package_rejects_foreign_and_malformed_keys() {
+        assert_eq!(
+            activity_for_package("com.game/.Main", "com.game").as_ref(),
+            "com.game/.Main"
+        );
+        // 子进程包名（com.game:push）与主包视为同一应用
+        assert_eq!(
+            activity_for_package("com.game/.Main", "com.game:push").as_ref(),
+            "com.game/.Main"
+        );
+        // 换包瞬间的旧包 activity / 系统叠加层 / 空值/畸形值一律丢弃
+        assert_eq!(
+            activity_for_package("com.other/.Main", "com.game").as_ref(),
+            ""
+        );
+        assert_eq!(
+            activity_for_package("com.android.systemui/.Panel", "com.game").as_ref(),
+            ""
+        );
+        assert_eq!(activity_for_package("", "com.game").as_ref(), "");
+        assert_eq!(activity_for_package("junk", "com.game").as_ref(), "");
+    }
+
+    #[test]
+    fn activity_observation_changed_ignores_empty_and_identity_rounds() {
+        // 同包内换页：触发重算
+        assert!(activity_observation_changed(
+            false,
+            "com.game/.A",
+            "com.game/.B"
+        ));
+        // 同值 / 空观测（节流、叠加层抢焦点）/ 换包轮次（交给 identity_changed）：不触发
+        assert!(!activity_observation_changed(
+            false,
+            "com.game/.A",
+            "com.game/.A"
+        ));
+        assert!(!activity_observation_changed(
+            true,
+            "com.game/.A",
+            "com.other/.B"
+        ));
+        assert!(!activity_observation_changed(false, "", "com.game/.A"));
+    }
+}
 
 /// 归一主包名（去掉 com.xx:push 子进程后缀），与 set_current_package 的归一保持同一口径
 fn base_package(pkg: &str) -> &str {
@@ -472,8 +534,8 @@ fn get_focused_app_from_cgroup(ignored_apps: &[String]) -> Result<(String, i32),
 /// 前台 activity 槽的下一个值（纯函数，便于回归测试）。两条规则：
 /// - **换包清空**：activity 属于「上一个前台包」，包变了旧值就失去意义，必须丢弃，
 ///   否则新包会继承旧包的 activity（游戏→微信 时微信可能被套上游戏的模式）。
-/// - **空值不覆盖**：探针只在 FAS 路径跑，非 FAS 轮次传空是常态；空值保留旧值，
-///   避免 FAS 退出瞬间 activity 规则整段失效。
+/// - **空值不覆盖**：全局采样是节流的，窗口叠加层抢焦点/采样失败等也会给出空值；
+///   空值保留旧值，避免规则在两次采样之间来回抖回包名级。
 fn next_activity(package_changed: bool, current: &str, observed: &str) -> Arc<str> {
     if package_changed {
         if observed.is_empty() {
@@ -485,6 +547,24 @@ fn next_activity(package_changed: bool, current: &str, observed: &str) -> Arc<st
         return Arc::from(current);
     }
     Arc::from(observed)
+}
+
+/// 只接受属于当前前台包的 Activity 键：`LAST_ACTIVITY` 是全局焦点窗口，换包瞬间可能仍是旧包
+/// （采样器尚未刷新），系统叠加层（systemui 等）也可能短暂抢焦点。不校验前缀会让新包命中旧包的
+/// activity 规则（`activity_lookup` 直接按整键查表）。包的比较用 `base_package`
+/// （`com.x:push` 与 `com.x` 视为同一应用）。
+fn activity_for_package(activity: &str, package: &str) -> Arc<str> {
+    let base = base_package(package);
+    match activity.split_once('/') {
+        Some((pkg, _)) if !pkg.is_empty() && pkg == base => Arc::from(activity),
+        _ => Arc::from(""),
+    }
+}
+
+/// 同包内 Activity 观测是否变化（纯函数，便于测试）：换包轮次由 identity_changed 处理，
+/// 空观测（采样节流/叠加层抢焦点）不触发重算，避免模式在两包之间抖动。
+fn activity_observation_changed(identity_changed: bool, observed: &str, last: &str) -> bool {
+    !identity_changed && !observed.is_empty() && observed != last
 }
 
 /// Activity 级规则查表（纯函数，便于回归测试）：返回命中的模式名。
@@ -556,7 +636,7 @@ fn determine_mode(config: &RulesConfig, current_package: &str, activity: &str) -
     // [activity] Activity 级规则（选择性优先级覆盖）：仅当总开关开启、activity 非空、且用户在
     // app_modes 里显式写了 `pkg/.Activity` 键时命中。未命中（或开关关闭/activity 未知）即落回
     // 下方包名级逻辑 —— 这就是「默认回退」，未配置 activity 的应用行为逐位不变。
-    // 注意 activity 只在 FAS 路径被窗口探针填充，非 FAS 前台恒为空 → 自动走包名级。
+    // 注意 activity 由全局采样器刷新（不限 FAS）；未开启 activity 规则或采样未命中时自动走包名级。
     let activity_mode = activity_lookup(
         &config.app_modes,
         current_package,
@@ -750,6 +830,7 @@ pub fn app_detection_loop(
     let mut last_package = String::new();
     let mut last_process_starttime: Option<u64> = None;
     let mut last_mode = String::new();
+    let mut last_activity: Arc<str> = Arc::from("");
     let mut last_screen_state = true;
 
     // 状态机变量：用于无阻塞防抖
@@ -782,6 +863,7 @@ pub fn app_detection_loop(
                 last_process_starttime = None;
                 pending_package.clear();
                 last_mode.clear();
+                last_activity = Arc::from("");
                 *LAST_DETERMINED_MODE.lock().unwrap() = String::new();
                 force_refresh_arc.store(true, Ordering::SeqCst);
             }
@@ -789,13 +871,21 @@ pub fn app_detection_loop(
 
         if !current_screen_state {
             set_raw_foreground_package("");
+            last_activity = Arc::from("");
             thread::sleep(Duration::from_secs(1));
             continue;
         }
 
         // 只克隆本轮需要的 ignored_apps，**不整份克隆 RulesConfig**：app_modes 是 HashMap，整份克隆每轮复制整张表，而它只在包名变化/强制刷新轮次才用得上
         // guard 不跨文件读持有——cgroup 扫描是文件 IO，拉长持锁会让 config_watcher 写入空等
-        let ignored_apps = config_arc.lock().unwrap().ignored_apps.clone();
+        let (ignored_apps, activity_rules) = {
+            let cfg = config_arc.lock().unwrap();
+            let activity_rules = cfg.dynamic_enabled
+                && cfg.activity_aware
+                && cfg.app_modes.keys().any(|key| key.contains('/'));
+            (cfg.ignored_apps.clone(), activity_rules)
+        };
+        ACTIVITY_RULES_ACTIVE.store(activity_rules, Ordering::Relaxed);
 
         let (detected_pkg, detected_pid) = match get_focused_app_from_cgroup(&ignored_apps) {
             Ok(focused) => focused,
@@ -866,28 +956,53 @@ pub fn app_detection_loop(
             || final_pid != prev_pid
             || final_starttime != last_process_starttime;
 
-        if identity_changed || force_refresh {
+        // Activity 采样结果只接受属于当前前台包的键：LAST_ACTIVITY 是全局焦点窗口，换包瞬间
+        // 可能仍是旧包（采样器尚未刷新），系统叠加层也可能短暂抢焦点。不校验前缀会让新包
+        // 命中旧包的 activity 规则（activity_lookup 直接按整键查表）。
+        let observed_activity = activity_for_package(
+            &crate::monitor::window_visibility::last_activity_key(),
+            &final_pkg,
+        );
+        // 同包内 Activity 变化也要重算模式：Activity 级规则用在页面切换（聊天→视频通话、
+        // 浏览→播放）。activity 不参与 identity/generation，故不能只靠 identity_changed。
+        let activity_changed =
+            activity_observation_changed(identity_changed, &observed_activity, &last_activity);
+
+        if identity_changed || force_refresh || activity_changed {
             if !final_pkg.is_empty() {
-                debug!(
-                    "{}",
-                    t_with_args(
-                        "app-detect-pkg-change",
-                        &fluent_args!(
-                            "pkg" => final_pkg.as_str(),
-                            "pid" => final_pid.to_string(),
-                            "temp" => format!("{:.1}", current_temp),
-                            "force" => force_refresh.to_string()
+                if activity_changed {
+                    debug!(
+                        "{}",
+                        t_with_args(
+                            "app-detect-activity-changed",
+                            &fluent_args!(
+                                "pkg" => final_pkg.as_str(),
+                                "activity" => observed_activity.to_string()
+                            )
                         )
-                    )
-                );
+                    );
+                }
+                if identity_changed || force_refresh {
+                    debug!(
+                        "{}",
+                        t_with_args(
+                            "app-detect-pkg-change",
+                            &fluent_args!(
+                                "pkg" => final_pkg.as_str(),
+                                "pid" => final_pid.to_string(),
+                                "temp" => format!("{:.1}", current_temp),
+                                "force" => force_refresh.to_string()
+                            )
+                        )
+                    );
+                }
                 // 同身份强制刷新也递增 generation：旧 mode 事件不会被后续快照接受
-                let activity = crate::monitor::window_visibility::last_activity_key();
                 let snapshot = set_current_package(
                     &final_pkg,
                     final_pid,
                     final_starttime,
                     force_refresh,
-                    &activity,
+                    &observed_activity,
                 );
                 // 前台 PID 变化即时广播（cpu_monitor/fps 共用）：仅 pid 真正变化且有效时发
                 if final_pid != prev_pid && final_pid > 0 {
@@ -907,7 +1022,7 @@ pub fn app_detection_loop(
                 // 也不缓存整份配置——稳态每轮不碰锁
                 let new_mode = {
                     let cfg = config_arc.lock().unwrap();
-                    determine_mode(&cfg, &final_pkg, &activity)
+                    determine_mode(&cfg, &final_pkg, &observed_activity)
                 };
 
                 // force_refresh 只驱动重算模式，模式未变不重发 ModeChange（避免 default->default 冗余）；同模式应用切换对 CLG 无影响，
@@ -946,6 +1061,7 @@ pub fn app_detection_loop(
             } else {
                 debug!("{}", t("app-detect-no-app"));
             }
+            last_activity = observed_activity;
         }
 
         thread::sleep(Duration::from_millis(1500));

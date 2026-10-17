@@ -48,6 +48,7 @@ app-detect-ime-fallback = [AppDetect] 自动检测输入法失败，使用后备
 app-detect-debounce-start = [AppDetect] 防抖开始: 检测到新应用 { $pkg } (pid={ $pid })
 app-detect-debounce-confirmed = [AppDetect] 防抖确认: 应用 { $pkg } (pid={ $pid }) 保持稳定
 app-detect-pkg-change = [AppDetect] 前台应用状态变化: { $pkg } (pid={ $pid }, temp={ $temp }°C, force={ $force })
+app-detect-activity-changed = [AppDetect] 前台 Activity 变化: { $pkg } { $activity }
 app-detect-no-app = [AppDetect] 未检测到有效前台应用 (可能为系统进程或未知包)
 app-detect-special-override = [AppDetect] 特调模式应用: { $pkg } -> { $mode }
 app-detect-special-rejected = [AppDetect] 非白名单应用 { $pkg } 映射到特调模式 { $mode } 已拒绝，回退全局模式
@@ -394,6 +395,9 @@ gpu-release-max-stuck = [GPU] { $nodes } 个节点恢复原 max 频率失败：�
 window-probe-query-failed = [WindowProbe] 查询失败 pkg={ $pkg } pid={ $pid }: { $error }
 window-probe-stopped = [WindowProbe] 探针线程已停止，可见性判定不再更新
 window-probe-worker-failed = [WindowProbe] 查询线程启动/运行失败：窗口可见性能力整条丢失，FAS 可见性判定将回退
+activity-sample-failed = [WindowProbe] Activity 采样失败 pkg={ $pkg }: { $error }
+activity-sampler-stopped = [WindowProbe] Activity 采样线程已停止，activity 列与 Activity 级规则不再更新
+activity-sampler-worker-failed = [WindowProbe] Activity 采样线程启动/运行失败：Activity 级规则与 activity 列将保持未知
 fas-verify-read-failed = [FAS] P{ $pid } 锁频校验读回失败：写入是否生效不可判定，校验链路断供
 fas-verify-read-restored = [FAS] P{ $pid } 锁频校验读回恢复，校验链路重建
 fas-boost-ceil-clamped = [FAS] { $act } 升频被上限钳制: 请求 { $req } -> P { $perf } (上限 { $ceil })

@@ -1,4 +1,4 @@
-//! window_visibility.rs: [api] [worker] [query] [parse] [tests]
+//! window_visibility.rs: [activity] [api] [worker] [query] [parse] [tests]
 
 use std::io::{self, Read};
 use std::process::{Command, Stdio};
@@ -9,13 +9,202 @@ use std::time::{Duration, Instant};
 use crate::i18n::t;
 
 /// 最近一次 dumpsys 解析出的焦点 Activity 查表键（空 = 未知）。
-/// 见 `WindowObservation::activity` 的说明：本探针只在 FAS 路径被请求，故该值在非 FAS
-/// 前台会保持为空，消费方必须回退包名级判定。
+/// 写入有两个来源：① FAS 可见性探针（`query_visibility`，窗口核验时）；
+/// ② 全局 `ActivitySampler`（屏幕亮且有有效前台时按节流采样，**不限于 FAS**，覆盖普通应用）。
+/// 消费方必须把空值当作「未知」并回退包名级判定。
 static LAST_ACTIVITY: LazyLock<Mutex<Arc<str>>> = LazyLock::new(|| Mutex::new(Arc::from("")));
 
-/// 读最近一次焦点 Activity 查表键（零分配，Arc 克隆）。未知/非 FAS 场景返回空串。
+/// 读最近一次焦点 Activity 查表键（零分配，Arc 克隆）。未知/未采到返回空串。
 pub fn last_activity_key() -> Arc<str> {
     LAST_ACTIVITY.lock().unwrap().clone()
+}
+
+// [activity]
+/// Activity 采样器：与 FAS 可见性探针解耦，只跑 `dumpsys -t 1 window` 取 `mCurrentFocus`。
+/// 供 Activity 级规则与 devimp `activity` 列使用；屏幕亮且存在有效前台时由调度 1s 块请求。
+/// **不限 FAS**：普通应用（微信/B 站等页面内多 Activity）同样采样——游戏通常只有一个
+/// Activity，Activity 级规则真正的用武之地是这类多页面应用。
+/// 换包后的第一次请求立即执行（1s 最小间隔），同包稳态按 [`ACTIVITY_SAMPLE_INTERVAL`] 节流；
+/// 重复请求合并为一次查询。屏幕熄灭/前台为空时调用方不请求，不产生 dumpsys 开销。
+pub struct ActivitySampler {
+    shared: Arc<(Mutex<ActivitySampleState>, Condvar)>,
+    worker: Option<JoinHandle<()>>,
+}
+
+#[derive(Default)]
+struct ActivitySampleState {
+    /// 待采样的前台包名（`request` 写入；None = 无请求）
+    pending: Option<String>,
+    /// 上次查询时刻（节流基准；失败也算一次，避免失败重试风暴）
+    last_query: Option<Instant>,
+    /// 上次查询的包名（失败也算；用于同包 3s / 换包 1s 的节流判断）
+    last_query_package: String,
+    stopped: bool,
+}
+
+/// 同包稳态下的 Activity 采样间隔。页面内切换（聊天/视频通话、浏览/播放）通常在秒级，
+/// 3s 采样足以让 activity 规则跟上；再密会明显增加 dumpsys 自耗。
+const ACTIVITY_SAMPLE_INTERVAL: Duration = Duration::from_secs(3);
+/// 换包后的最小采样间隔：应用切换时立即采一次，但不允许连续刷屏式查询。
+const ACTIVITY_SAMPLE_MIN_GAP: Duration = Duration::from_secs(1);
+
+/// 下一次允许查询的时刻（纯函数，便于测试）：首次立即；同包按 3s 节流；换包只要求 1s 最小间隔。
+fn allowed_query_at(last_query: Option<Instant>, same_package: bool, now: Instant) -> Instant {
+    match last_query {
+        None => now,
+        Some(last) if same_package => last + ACTIVITY_SAMPLE_INTERVAL,
+        Some(last) => last + ACTIVITY_SAMPLE_MIN_GAP,
+    }
+}
+
+impl ActivitySampler {
+    pub fn new() -> Self {
+        let shared = Arc::new((Mutex::new(ActivitySampleState::default()), Condvar::new()));
+        let worker_shared = shared.clone();
+        let worker = thread::Builder::new()
+            .name("activity-sampler".into())
+            .spawn(move || run_activity_worker(worker_shared))
+            .ok();
+        if worker.is_none() {
+            log::error!("{}", t("activity-sampler-worker-failed"));
+            shared.0.lock().unwrap_or_else(|e| e.into_inner()).stopped = true;
+        }
+        Self { shared, worker }
+    }
+
+    /// 请求采样当前前台：换包立即（≥1s 间隔），同包按 3s 节流；请求合并。
+    /// 采样线程已停时只留 debug 痕（与窗口探针 stopped 语义一致），不做无痕丢弃。
+    pub fn request(&self, foreground: &str) {
+        if foreground.is_empty() {
+            return;
+        }
+        let mut state = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
+        if state.stopped {
+            log::debug!("{}", t("activity-sampler-stopped"));
+            return;
+        }
+        state.pending = Some(foreground.to_string());
+        self.shared.1.notify_one();
+    }
+}
+
+impl Default for ActivitySampler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for ActivitySampler {
+    fn drop(&mut self) {
+        {
+            // 与 worker panic 路径共用同一把锁；毒化时取回内部值（Drop 中再 panic = abort）
+            let mut state = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
+            state.stopped = true;
+            state.pending = None;
+        }
+        self.shared.1.notify_all();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+fn run_activity_worker(shared: Arc<(Mutex<ActivitySampleState>, Condvar)>) {
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        activity_loop(shared.clone())
+    }))
+    .is_err();
+    let mut state = shared.0.lock().unwrap_or_else(|e| e.into_inner());
+    state.stopped = true;
+    state.pending = None;
+    drop(state);
+    shared.1.notify_all();
+    if panicked {
+        log::error!("{}", t("activity-sampler-worker-failed"));
+    }
+}
+
+fn activity_loop(shared: Arc<(Mutex<ActivitySampleState>, Condvar)>) {
+    loop {
+        let observed_package = {
+            let mut state = shared.0.lock().unwrap_or_else(|e| e.into_inner());
+            loop {
+                if state.stopped {
+                    return;
+                }
+                let Some(package) = state.pending.clone() else {
+                    state = match shared.1.wait(state) {
+                        Ok(guard) => guard,
+                        Err(error) => error.into_inner(),
+                    };
+                    continue;
+                };
+                let now = Instant::now();
+                let allowed_at =
+                    allowed_query_at(state.last_query, package == state.last_query_package, now);
+                if now >= allowed_at {
+                    state.pending = None;
+                    // 节流基准以「上次查询的包」为准（失败也算），否则换包后失败/空焦点会永久
+                    // 退化为 1s 重试并刷 warn
+                    state.last_query_package = package.clone();
+                    break package;
+                }
+                state = match shared
+                    .1
+                    .wait_timeout(state, allowed_at.saturating_duration_since(now))
+                {
+                    Ok((guard, _)) => guard,
+                    Err(error) => error.into_inner().0,
+                };
+            }
+        };
+        let result = query_focus_key();
+        // 先更新时间戳并放锁：失败告警与 LAST_ACTIVITY 写入都不在 ActivitySampleState 锁内做 IO
+        {
+            let mut state = shared.0.lock().unwrap_or_else(|e| e.into_inner());
+            if state.stopped {
+                return;
+            }
+            state.last_query = Some(Instant::now());
+        }
+        match result {
+            Ok(key) => {
+                let mut slot = LAST_ACTIVITY.lock().unwrap_or_else(|e| e.into_inner());
+                if *slot != key {
+                    *slot = key;
+                }
+            }
+            Err(error) => {
+                // 单次失败可自愈（同包 3s / 换包 1s 后重试），warn 便于真机排查
+                log::warn!(
+                    "{}",
+                    crate::i18n::t_with_args(
+                        "activity-sample-failed",
+                        &crate::fluent_args!(
+                            "pkg" => observed_package,
+                            "error" => error.to_string()
+                        )
+                    )
+                );
+            }
+        }
+    }
+}
+
+/// 轻量焦点查询：只跑 `dumpsys window`（不取 `window windows` 段），解析 `mCurrentFocus`。
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn query_focus_key() -> io::Result<Arc<str>> {
+    let snapshot = collect_one(&["-t", "1", "window"], &|| false)?;
+    let text = std::str::from_utf8(&snapshot)
+        .map_err(|_| io::Error::other("invalid window snapshot encoding"))?;
+    Ok(focused_activity_key(text))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn query_focus_key() -> io::Result<Arc<str>> {
+    Err(io::Error::other(
+        "window snapshot unsupported on this platform",
+    ))
 }
 
 // [api]
@@ -41,9 +230,8 @@ pub struct WindowObservation {
     pub visibility: WindowVisibility,
     pub observed_at: Instant,
     /// 当前焦点窗口的 Activity 名（`mCurrentFocus` 的 `pkg/Activity` 段，已归一为短形
-    /// `pkg/.MainActivity`；无焦点/解析失败为空）。**只在 FAS 路径被请求**（本探针的
-    /// request 调用点全在 `chiri::reconcile_fas_focus`），因此非 FAS 前台拿不到 activity，
-    /// 消费方必须把空值当作「未知」并回退包名级判定。
+    /// `pkg/.MainActivity`；无焦点/解析失败为空）。`LAST_ACTIVITY` 由全局 [`ActivitySampler`]
+    /// 与 FAS 可见性探针共同刷新，**不再限于 FAS**；消费方仍必须把空值当作「未知」并回退包名级判定。
     pub activity: Arc<str>,
 }
 
@@ -1215,5 +1403,22 @@ mod activity_tests {
         // 否则每次 Activity 切换都会让窗口观测失效
         assert!(matches_observation(&observation, &request(), now));
         assert_eq!(observation.activity.as_ref(), "com.example.game/.Main");
+    }
+
+    #[test]
+    fn activity_query_throttle_is_3s_same_package_1s_switched() {
+        let now = Instant::now();
+        // 首次请求立即允许
+        assert_eq!(allowed_query_at(None, true, now), now);
+        // 同包稳态：距上次查询 3s（失败重试也走这条，不会退化成 1s）
+        assert_eq!(
+            allowed_query_at(Some(now), true, now),
+            now + ACTIVITY_SAMPLE_INTERVAL
+        );
+        // 换包：只要求 1s 最小间隔
+        assert_eq!(
+            allowed_query_at(Some(now), false, now),
+            now + ACTIVITY_SAMPLE_MIN_GAP
+        );
     }
 }

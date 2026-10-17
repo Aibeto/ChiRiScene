@@ -48,6 +48,7 @@ app-detect-ime-fallback = [AppDetect] Failed to auto-detect IME, using fallback 
 app-detect-debounce-start = [AppDetect] Debounce started: new app { $pkg } (pid={ $pid })
 app-detect-debounce-confirmed = [AppDetect] Debounce confirmed: app { $pkg } (pid={ $pid }) is stable
 app-detect-pkg-change = [AppDetect] Foreground app state: { $pkg } (pid={ $pid }, temp={ $temp }°C, force={ $force })
+app-detect-activity-changed = [AppDetect] Foreground activity changed: { $pkg } { $activity }
 app-detect-no-app = [AppDetect] No valid foreground app detected (system process or unknown package)
 app-detect-special-override = [AppDetect] Special profile applied: { $pkg } -> { $mode }
 app-detect-special-rejected = [AppDetect] Non-whitelisted app { $pkg } mapped to special profile { $mode }, rejected, falling back to global mode
@@ -394,6 +395,9 @@ gpu-release-max-stuck = [GPU] { $nodes } nodes failed to restore original max fr
 window-probe-query-failed = [WindowProbe] query failed pkg={ $pkg } pid={ $pid }: { $error }
 window-probe-stopped = [WindowProbe] probe thread stopped, visibility decisions no longer update
 window-probe-worker-failed = [WindowProbe] query worker failed to start/run: window visibility capability lost, FAS falls back
+activity-sample-failed = [WindowProbe] activity sample failed pkg={ $pkg }: { $error }
+activity-sampler-stopped = [WindowProbe] activity sampler thread stopped, activity column and activity-level rules no longer update
+activity-sampler-worker-failed = [WindowProbe] activity sampler worker failed to start/run: activity-level rules and activity column stay unknown
 fas-verify-read-failed = [FAS] P{ $pid } verify read-back failed: write effectiveness unknown, verification chain is down
 fas-verify-read-restored = [FAS] P{ $pid } verify read-back restored, verification chain re-established
 fas-boost-ceil-clamped = [FAS] { $act } boost clamped by ceiling: requested { $req } -> P { $perf } (ceiling { $ceil })

@@ -165,10 +165,11 @@ python scripts\devimp-analyze.py <解压目录> [--since MMDD-HHMMSS] [--min-n 3
 **45 列（2026-10-18 起，+`activity`）**：上表 44 列之后**末尾追加第 44 列（0 基）`activity`**，既有 44 列索引不变、旧脚本按前 44 列仍可读（新列只增不改）。
 
 - 值 = 前台 Activity 查表键短形 `pkg/.MainActivity`（`activity_key` 归一：`.MainActivity` 与全限定同包名收成同一键；`$` 内部类不剥；外部包 component 归一后保留全串，但本列按当前前台包前缀校验，非当前包 component 一律写 `-`）；`-` = 未知/无值
-- 来源 = `monitor::window_visibility::last_activity_key()`（窗口探针最近一次焦点 Activity），调度循环每秒经 `logger::set_diag_activity` 同步到 main_ 全局，**所有行（tick/snap/event）自动填充**
-- **换包后旧包 Activity 不会落到新包行**（`set_diag_activity` 按当前前台包前缀校验，activity 键不属于当前包即写 `-`）；同包内 activity 切换保留最新探针值
-- **覆盖限制**：窗口探针只在 FAS 路径运行 ⇒ activity 实际只在 FAS 会话期间刷新；FAS 退出后同包内可能保留最后值（陈旧）
-- **读法/过滤**：`activity` 前缀（`package + "/"`）与 `package` 列不一致 = 陈旧样本；训练/统计至少过滤 `activity` 非 `-` 且前缀一致。非 FAS 前台通常为 `-`（activity 级规则自动回退包名级，行为不变）
+- 来源 = 全局 `ActivitySampler`（屏幕亮且有有效前台时同包 3s 节流、换包 1s 内立即采样，只跑 `dumpsys window` 取 `mCurrentFocus`）与 FAS 窗口探针共同刷新；调度循环每秒经 `logger::set_diag_activity` 同步到 main_ 全局，**所有行（tick/snap/event）自动填充**
+- **不限 FAS**：普通应用（微信/浏览器等页面内多 Activity）同样记录；游戏通常只有一个 Activity，Activity 级规则主要给多页面应用用。采样开销只在「配置了 Activity 级规则（`app_modes` 含 `pkg/.Activity` 键）且 `dynamic_enabled`，或开启 `meta.dev_record`」时产生
+- **换包后旧包 Activity 不会落到新包行**（`set_diag_activity` 按当前前台包前缀校验，activity 键不属于当前包即写 `-`）；同包内 activity 切换保留最新采样值
+- **读法/过滤**：`-` = 从未采到或焦点属其他包（换包瞬间/系统叠加层，落行前前缀复核丢弃）；屏幕灭、采样失败、同包空焦点会保留最后采样值（可能陈旧，仍按前缀校验）——训练/统计至少过滤 `activity` 非 `-` 且前缀一致；非 ChiRi 的 diag_writer 路径不采样，恒 `-`
+- **规则语义**：空观测不覆盖同包旧值；换包/强制刷新或采到新 activity 才重算模式，未命中回退包名级；DOWN 停摆期间采样继续（退出恢复依赖 last_determined_mode）
 
 ### 48 列（旧，仍会遇到）
 

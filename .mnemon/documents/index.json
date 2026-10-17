@@ -258,30 +258,32 @@
     },
     {
       "id": "5b07598a-186e-4685-889e-4f03b31184c4",
-      "title": "ChiRi devimp main_ 45 列 + activity 列与 aff_ 文件头精简（2026-10-18）",
-      "description": "devimp main_ CSV 新增第 45 列 activity（前台 Activity 查表键）并精简 aff_ 文件头为 schema + 元信息：契约、实现位置、分析脚本兼容、训练取数限制与验证状态。",
+      "title": "ChiRi devimp main_ 45 列 + activity 列（2026-10-18，含全局采样修正）",
+      "description": "devimp main_ 新增 activity 列（45 列）与 aff_ 文件头精简；2026-10-18 修正：Activity 采样全局化（不限 FAS）、普通应用同样记录并参与 Activity 级规则（同包 activity 变化重算模式）；含节流/开关/旧值保留语义与真机待验状态。",
       "status": "active",
       "filename": "chiri-devimp-main-45-activity-aff-2026-10-18-5b07598a.md",
       "relativePath": "documents/active/chiri-devimp-main-45-activity-aff-2026-10-18-5b07598a.md",
       "sourcePaths": [
         "src/logger.rs",
         "src/chiri/mod.rs",
-        "scripts/devimp-analyze.py",
-        "scripts/devimp/dvcommon.py",
-        "scripts/devimp/test_accounting.py",
+        "src/monitor/window_visibility.rs",
+        "src/monitor/app_detect.rs",
+        "src/monitor/config.rs",
+        "module/config/i18n/zh.ftl",
+        "module/config/i18n/en.ftl",
+        "module/rules.yaml",
         "agentsdocs/02-convention.md",
-        ".cursor/commands/devimp-log-analysis.md",
-        ".cursor/memory/2026-10-18.md"
+        ".cursor/commands/devimp-log-analysis.md"
       ],
       "sessionIds": [
         "session-d1125492-b5c3-4174-a286-22fea661883c"
       ],
       "createdAt": "2026-10-17T19:49:58.334Z",
-      "updatedAt": "2026-10-17T19:49:58.334Z",
-      "lastAccessedAt": "2026-10-17T19:49:58.334Z",
-      "revision": 1,
-      "contentHash": "f2bfc49a9ff6c5b9cb9525cb642cfbef8b104b2de5ff404dd005af4831a1538a",
-      "sizeBytes": 4920,
+      "updatedAt": "2026-10-17T21:19:09.960Z",
+      "lastAccessedAt": "2026-10-17T21:19:09.960Z",
+      "revision": 3,
+      "contentHash": "ed45e49162196d1341371a31c746665f6c47b72940abe94f7e9a9e6e71c9e7e3",
+      "sizeBytes": 7076,
       "memoryBodyIds": []
     }
   ]

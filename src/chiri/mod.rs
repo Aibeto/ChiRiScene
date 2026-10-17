@@ -2850,6 +2850,9 @@ pub fn start_scheduler_thread(
             // FAS 延迟退出期间记住的目标模式（fas → X 的 ModeChange 被延迟时记录），超时退出完成后按它重新接管（1s tick 巡检消费）
             let mut pending_mode_after_fas: Option<String> = None;
             let window_probe = crate::monitor::window_visibility::WindowVisibilityProbe::new();
+            // 全局 Activity 采样器：与 FAS 可见性探针解耦，普通应用（不限 FAS）也采样，
+            // 供 Activity 级规则与 devimp activity 列使用；是否请求由 1s 块按配置/诊断开关决定。
+            let activity_sampler = crate::monitor::window_visibility::ActivitySampler::new();
             let mut confirmed_window_focus = None;
             // 最近一次 SystemLoadUpdate 的逐核 util 快照（按核亲和选核输入）
             let mut last_core_utils: Vec<f32> = Vec::new();
@@ -3155,9 +3158,19 @@ pub fn start_scheduler_thread(
                     }
                     // 诊断日志按前台包名分组：变化即切换 main_ 文件（内部去重，空包名不切换）
                     crate::logger::set_diag_package(&fg_package);
-                    // activity 列：窗口探针最近一次焦点 Activity 查表键（探针只在 FAS 路径刷新，
-                    // 非 FAS 行可能是旧值；跨包脏值由 logger 落行前复核丢弃写 "-"）。
-                    // 诊断关闭时连读探针全局值都跳过（set_diag_activity 自身也会早退，这里再省一次取锁）
+                    // Activity 采样（全局，不限 FAS）：屏幕亮且有有效前台时请求；采样器内部
+                    // 换包立即、同包 3s 节流，重复请求合并。触发条件 = 配置了 Activity 级规则
+                    // 或开启 dev_record（训练数据用）——两者都关时不产生 dumpsys 自耗。
+                    if is_screen_on
+                        && (crate::monitor::app_detect::activity_rules_configured()
+                            || crate::logger::diag_active())
+                    {
+                        if let Some(snapshot) = crate::monitor::app_detect::foreground_snapshot() {
+                            activity_sampler.request(snapshot.package.as_ref());
+                        }
+                    }
+                    // activity 列：最近一次采样结果；跨包脏值由 logger 落行前复核丢弃写 "-"。
+                    // 诊断关闭时不再读全局值（set_diag_activity 自身也会早退，这里省一次取锁）
                     if crate::logger::diag_active() {
                         crate::logger::set_diag_activity(
                             &crate::monitor::window_visibility::last_activity_key(),

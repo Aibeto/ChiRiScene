@@ -107,8 +107,8 @@ pub struct RulesConfig {
     #[serde(default, deserialize_with = "deserialize_app_modes")]
     pub app_modes: HashMap<String, String>,
     /// Activity 级规则总开关（缺省 true）：开启后 `app_modes` 里形如 `pkg/.MainActivity` 的键
-    /// 会优先于同包名的键命中；未命中/关闭时完全回退包名级。因为 activity 只在 FAS 路径由窗口
-    /// 探针填充，非 FAS 前台恒为空，此时本开关不产生任何效果。
+    /// 会优先于同包名的键命中；未命中/关闭时完全回退包名级。activity 由全局采样器（`ActivitySampler`，
+    /// 屏幕亮且前台有效时按节流采样，**不限 FAS**）与 FAS 窗口探针共同刷新；未采到（空）时自动回退。
     #[serde(default = "crate::utils::default_true")]
     pub activity_aware: bool,
     #[serde(default)]
