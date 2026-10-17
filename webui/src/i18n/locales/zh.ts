@@ -164,6 +164,21 @@ export default {
   'config.screenoff.hint': '设置息屏判定值',
   'config.screenoff.saved': '息屏判定值已保存',
 
+  // 通知测试：固定 tag ChiRi-Test，标题/正文预填可改；显示脚本原始输出（只显示「已发送」会把真失败藏起来）
+  'config.notifyTest': '通知测试',
+  'config.notifyTest.hint': '标题与正文可改',
+  'config.notifyTest.title': '标题',
+  'config.notifyTest.body': '正文',
+  'config.notifyTest.tag': '固定 tag',
+  'config.notifyTest.tagHint': 'AOSP 里第三位置参数是 tag（同 tag 互相覆盖），该值固定不可改',
+  'config.notifyTest.send': '发送测试通知',
+  'config.notifyTest.sending': '发送中…',
+  'config.notifyTest.sent': '脚本报告投递成功，请查看通知栏',
+  'config.notifyTest.acceptedWarn': '脚本报告成功；若通知栏没有，请将下方的脚本输出内容提交给开发者',
+  'config.notifyTest.failed': '投递失败',
+  'config.notifyTest.empty': '标题与正文不能都为空',
+  'config.notifyTest.output': '脚本输出',
+
   'lab.notice.effects': '关闭实验室需要重启',
   'lab.notice.manual': '如遇特殊情况，可直接修改 rhine.chr 文件',
 

@@ -1,14 +1,16 @@
 <script lang="ts">
-  // AdvancedView.svelte: [bar] [fields]高级设置二级页：DOWN 停摆、PowerBase、息屏判定值与电池读数页同一套二级页逻辑：直写状态文件 / meta.yaml（不走草稿，
-  // 写后回读），与 daemon 热重载对齐
+  // AdvancedView.svelte: [bar] [fields] [notify-test]高级设置二级页：DOWN 停摆、PowerBase、息屏判定值与电池读数页同一套二级页逻辑：直写状态文件 / meta.yaml（不走草稿，
+  // 写后回读），与 daemon 热重载对齐。末组是通知测试（经 module 根目录 notify.sh 投递，tag 固定 ChiRi-Test）
   import NumberField from "@/components/NumberField.svelte";
   import Panel from "@/components/Panel.svelte";
   import StateBox from "@/components/StateBox.svelte";
+  import TextField from "@/components/TextField.svelte";
   import ToggleField from "@/components/ToggleField.svelte";
   import { onMount } from "svelte";
   import { t } from "@/i18n/index.svelte";
   import { go } from "@/router.svelte";
   import { app } from "@/state.svelte";
+  import { TEST_TAG } from "@/contract/notify";
 
   // 非 ChiRi 机型：daemon 不启动调度、恒为停摆（只写 current_mode.chr 投影，down.chr 在本机不生效），
   // 开关置灰并固定显示为已停摆，免得用户点了开关却没有任何调度行为变化
@@ -85,6 +87,56 @@
       {/if}
     </div>
   </Panel>
+
+  <!--
+    通知测试：daemon 的启动/FAS 通知走同一条 notify.sh，这里用固定 tag ChiRi-Test 复现。
+    tag 固定不可改：同一个 tag 会互相覆盖，若允许乱填会把启动通知顶掉。标题/正文预填可改。
+    结果区显示脚本原始输出——只报「已发送」会把真失败藏起来（本轮修的正是这个形态）
+  -->
+  <Panel signal="action" title={t("config.notifyTest")} desc={t("config.notifyTest.hint")}>
+    <div class="g-form-stack">
+      <TextField
+        label={t("config.notifyTest.title")}
+        value={app.notifyTitle}
+        maxlength={64}
+        disabled={app.notifyPending}
+        oninput={(next) => (app.notifyTitle = next)}
+      />
+      <TextField
+        label={t("config.notifyTest.body")}
+        value={app.notifyBody}
+        maxlength={200}
+        disabled={app.notifyPending}
+        oninput={(next) => (app.notifyBody = next)}
+      />
+      <!-- tag 是只读展示：AOSP 里它才是那个「同值互相覆盖」的键，用户需要知道这次用的是哪个 -->
+      <p class="u-note u-mono notify__tag">
+        {t("config.notifyTest.tag")} · <span class="u-note">{t("config.notifyTest.tagHint")}</span>
+        <span class="notify__tagval">{TEST_TAG}</span>
+      </p>
+      <button
+        type="button"
+        class="g-btn g-btn--primary g-btn--block"
+        disabled={app.notifyPending}
+        onclick={() => app.sendNotifyTest()}
+      >
+        {app.notifyPending ? t("config.notifyTest.sending") : t("config.notifyTest.send")}
+      </button>
+      {#if app.notifyState !== ''}
+        <div class="notify__result" data-state={app.notifyState}>
+          <p class="u-note" class:u-danger={app.notifyState === "fail"}>
+            {app.notifyState === "fail"
+              ? `${t("config.notifyTest.failed")}：${app.notifyError}`
+              : `${t("config.notifyTest.sent")}（${t("config.notifyTest.acceptedWarn")}）`}
+          </p>
+          {#if app.notifyOutput}
+            <p class="u-note notify__label">{t("config.notifyTest.output")}</p>
+            <pre class="u-mono notify__out">{app.notifyOutput}</pre>
+          {/if}
+        </div>
+      {/if}
+    </div>
+  </Panel>
 </div>
 
 <style>
@@ -109,5 +161,42 @@
     color: var(--text-primary);
     font-size: 0.9375rem;
     font-weight: 700;
+  }
+
+  .notify__tag {
+    margin: 0;
+  }
+
+  /* 实际 tag 值加重一点：它是这条通知的覆盖键，与上面的说明文字不是一回事 */
+  .notify__tagval {
+    color: var(--text-primary);
+    font-weight: 700;
+  }
+
+  .notify__result {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+
+  .notify__label {
+    margin: 0;
+    color: var(--text-secondary);
+  }
+
+  /* 原始输出可能很长（每条策略一行）：限高可滚，不把卡片撑破 */
+  .notify__out {
+    max-height: 12rem;
+    margin: 0;
+    padding: 0.5rem 0.6rem;
+    overflow: auto;
+    border: var(--hairline) solid var(--glass-border);
+    border-radius: 0.5rem;
+    background: rgb(0 0 0 / 18%);
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-all;
   }
 </style>

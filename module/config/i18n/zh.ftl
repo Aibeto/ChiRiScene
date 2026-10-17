@@ -341,13 +341,15 @@ corectl-scenemode-halt = [CoreCtl] scenemode 目标簇已由 core_ctl max_cpus �
 corectl-reserved-core-halted = [CoreCtl] 写 core_ctl 保留档后引导核 CPU0 掉线（该内核把保留档当停摆档），已回滚 max_cpus 并放弃 core_ctl 压制
 clampev-node-missing = [Diag] clamp-evidence 佐证节点不可用: { $key } ({ $path })
 
-# --- Notify（通用通知组件，src/notify.rs 三参直发）---
+# --- Notify（通用通知组件，src/notify.rs 三参交 scripts/notify.sh 投递）---
 # FAS 开环运行警告（经 ChiRi-FAS 渠道拦截器限流：前 120 条静默 + 1 小时同文去重）
 notify-fas-openloop-title = 警告：FAS 开环运行
 notify-fas-openloop-body = 在 { $pkg } 运行时 FAS 未正常工作，已进入开环运行
-notify-post-failed = [Notify] cmd notification 投递失败（channel={ $channel } title={ $title }）：本条无法送达，去重未记账以便下次重试
-# 启动完成通知（main.rs 启动尾部，渠道 ChiRi-Status，直发无拦截器；标题/正文为字面量不走 i18n）
-notify-startup-posted = [Notify] 已投递启动完成通知（渠道 ChiRi-Status）
+notify-post-failed = [Notify] cmd notification 投递失败（tag={ $tag } title={ $title }）：本条无法送达，去重未记账以便下次重试
+notify-post-ok = [Notify] 投递成功（tag={ $tag } title={ $title } strategy={ $strategy } verify={ $verify }）——verify=posted 才表示 AOSP 回查确认真落地；verify=unverified 说明老 ROM 不认 -v、无证据可判
+notify-script-missing = [Notify] 投递脚本缺失，通知发不出去：{ $path }
+# 启动完成通知（main.rs 启动尾部，tag ChiRi-Status，直发无拦截器；标题/正文为字面量不走 i18n）
+notify-startup-posted = [Notify] 已投递启动完成通知（tag ChiRi-Status）
 
 # --- Telemetry（遥测）---
 monitor-thread-start-telemetry = [Main] 启动遥测监控线程（PSI/GPU/电池）...

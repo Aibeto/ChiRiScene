@@ -341,13 +341,15 @@ corectl-scenemode-halt = [CoreCtl] scenemode target cluster converged by core_ct
 corectl-reserved-core-halted = [CoreCtl] boot core CPU0 went offline after the core_ctl keep value was written (kernel treats it as halt); max_cpus rolled back, core_ctl clamp abandoned
 clampev-node-missing = [Diag] clamp-evidence node unavailable: { $key } ({ $path })
 
-# --- Notify (generic notification component, src/notify.rs three-arg direct post) ---
+# --- Notify (generic notification component; src/notify.rs hands three args to scripts/notify.sh) ---
 # FAS open-loop warning (rate-limited by the ChiRi-FAS channel interceptor: first 120 silenced + 1h same-text dedup)
 notify-fas-openloop-title = Warning: FAS open-loop
 notify-fas-openloop-body = FAS is not working properly while { $pkg } is running and has entered open-loop mode
-notify-post-failed = [Notify] cmd notification post failed (channel={ $channel } title={ $title }): not delivered, dedup not recorded so it retries
-# Startup-complete notification (main.rs startup tail, channel ChiRi-Status, direct post without interceptor; title/body are literals, not i18n)
-notify-startup-posted = [Notify] startup-complete notification posted (channel ChiRi-Status)
+notify-post-failed = [Notify] cmd notification post failed (tag={ $tag } title={ $title }): not delivered, dedup not recorded so it retries
+notify-post-ok = [Notify] posted (tag={ $tag } title={ $title } strategy={ $strategy } verify={ $verify }) — only verify=posted means AOSP's own re-query confirmed it landed; verify=unverified means the ROM ignores -v and there is no evidence either way
+notify-script-missing = [Notify] notify script missing, notification cannot be posted: { $path }
+# Startup-complete notification (main.rs startup tail, tag ChiRi-Status, direct post without interceptor; title/body are literals, not i18n)
+notify-startup-posted = [Notify] startup-complete notification posted (tag ChiRi-Status)
 
 # --- Telemetry ---
 monitor-thread-start-telemetry = [Main] starting telemetry monitor thread (PSI/GPU/battery)...

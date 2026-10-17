@@ -223,7 +223,8 @@ fn build_webui(sh: &Shell) -> Result<()> {
 /// **只应在 `temp_dir` 副本上调用**：`module/` 是唯一真身，构建中断（含 SIGKILL/断电）
 /// 不得污染它。谓词与历史 CI 的 `perl -i -ne 'print if /^\s*#!/ || !/^\s*#/'` 等价；
 /// 排除 `META-INF/`（updater-script 的 `#MAGISK` 为必需标记）与 `scripts/`
-/// （对外稳定接口，守护进程与 WebUI 共用），二者只在顶层生效。
+/// （对外稳定接口：`notify.sh`/`pack.sh` 由 WebUI 直接执行，注释保留便于人工排障；
+///  daemon 自己执行的是二进制内嵌正文，与此处剥离与否无关），二者只在顶层生效。
 fn strip_comments(root: &Path) {
     const EXTS: [&str; 5] = ["sh", "block", "yaml", "yml", "ftl"];
     let mut stack = vec![root.to_path_buf()];

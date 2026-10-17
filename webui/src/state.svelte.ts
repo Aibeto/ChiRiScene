@@ -11,6 +11,11 @@ import { pollExport, startExport } from '@/contract/export'
 import { readLab, writeLabMode } from '@/contract/lab'
 import { readMeta, writeMetaFields, type MetaSnapshot, type WritableField } from '@/contract/meta'
 import {
+  sendTestNotification,
+  TEST_BODY_DEFAULT,
+  TEST_TITLE_DEFAULT
+} from '@/contract/notify'
+import {
   clearArchives,
   deviceKind,
   listDevimp,
@@ -854,6 +859,51 @@ class AppStore {
     } finally {
       this.screenOffPending = false
       this.metaWritePending = false
+    }
+  }
+
+  // [notifyTest]
+  /** 通知测试：标题/正文预填可改；tag 固定 ChiRi-Test（见 contract/notify.ts），不暴露为可变状态 */
+  notifyTitle = $state(TEST_TITLE_DEFAULT)
+  notifyBody = $state(TEST_BODY_DEFAULT)
+  notifyPending = $state(false)
+  /** 上次发送的脚本原始输出（逐行策略与结果）；空 = 还没发过 */
+  notifyOutput = $state('')
+  /** 上次结果：'' = 未发送 / 'ok' = 脚本报告成功 / 'fail' = 失败；界面按此上色并决定提示语 */
+  notifyState = $state<'' | 'ok' | 'fail'>('')
+  notifyError = $state('')
+
+  /**
+   * 发送测试通知：三参交给模块根目录的 notify.sh（原因见 contract/notify.ts 与脚本头）。
+   * 无论成败都把脚本输出留在界面上——只显示「已发送」会把真实失败藏起来，而这正是本轮要修的形态
+   */
+  async sendNotifyTest(): Promise<void> {
+    if (this.notifyPending) return
+    const title = this.notifyTitle.trim()
+    const body = this.notifyBody.trim()
+    if (!title && !body) {
+      this.notifyState = 'fail'
+      this.notifyError = t('config.notifyTest.empty')
+      this.notifyOutput = ''
+      return
+    }
+    this.notifyPending = true
+    this.notifyError = ''
+    try {
+      const result = await sendTestNotification(title, body)
+      if (result.kind === 'ok') {
+        this.notifyState = 'ok'
+        this.notifyOutput = result.value.output
+        toast(t('config.notifyTest.sent'))
+        return
+      }
+      this.notifyState = 'fail'
+      this.notifyError = result.kind === 'failed' ? result.error : t('state.unsupportedEnv')
+      // 失败时错误串本身就是脚本输出（契约层如此构造），同时留进输出区便于复制排查
+      this.notifyOutput = result.kind === 'failed' ? result.error : ''
+      toast(t('config.notifyTest.failed'))
+    } finally {
+      this.notifyPending = false
     }
   }
 

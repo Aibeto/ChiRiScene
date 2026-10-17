@@ -58,6 +58,8 @@ chmod 755 "$DAEMON_PATH"
 if [ -d "$SCRIPTS_DIR" ]; then
   chmod -R 755 "$SCRIPTS_DIR"
 fi
+# scripts/ 下两个脚本已由上面那条 -R 755 覆盖，无需单独补 chmod
+# （daemon 执行的是二进制内嵌正文；磁盘副本供 WebUI 直接用，权限由 -R 保证）
 
 # 调用禁用 boost 脚本（当前注释停用） if [ -f "$SCRIPTS_DIR/disable_boost.sh" ]; then echo "$(date):
 # Executing disable_boost.sh" >> "$LOG_FILE""$SCRIPTS_DIR/disable_boost.sh"else echo "$(date):

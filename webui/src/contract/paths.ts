@@ -48,8 +48,12 @@ export const REL = {
   watchdogPid: 'logs/watchdog.pid',
   devimpDir: 'devimp',
   logdDir: 'logd',
-  /** 外部打包脚本（对外暴露的稳定接口，守护进程归档与 WebUI 导出共用、不得修改） */
-  packSh: 'scripts/pack.sh'
+  /** 外部打包脚本（对外暴露的稳定接口，WebUI 导出执行它；daemon 走内嵌正文，
+     这份磁盘副本由 daemon 启动覆盖 + 运行期 inotify 监听还原，被改会被改回） */
+  packSh: 'scripts/pack.sh',
+  /** 通知投递脚本（对外暴露的稳定接口，WebUI 通知测试执行它；daemon 走内嵌正文，
+     这份磁盘副本由 daemon 启动覆盖 + 运行期 inotify 监听还原，被改会被改回） */
+  notifySh: 'scripts/notify.sh'
 } as const
 
 export type RelKey = keyof typeof REL

@@ -11,6 +11,7 @@ mod monitor;
 mod notify;
 mod rhine;
 mod scheduler;
+mod scripts;
 pub mod utils;
 mod webui_asset;
 use crate::i18n::{load_language, t, t_with_args};
@@ -246,6 +247,32 @@ fn main() -> Result<()> {
         }
     }
 
+    // [scripts_restore] 模块脚本启动覆盖 + 运行期篡改监听：`scripts/notify.sh` 与 `scripts/pack.sh`
+    // 是 WebUI 唯一的执行入口（WebView 取不到二进制内嵌内容）。daemon 自己走内嵌正文（`scripts::run`），
+    // 但 WebUI 会在磁盘上执行它们，故这份副本必须可信。口径与上方 WebUI 资产还原一致：
+    // ① 启动**无条件覆盖**一次；② 之后常驻 inotify 监听，被改/被删即用内嵌内容还原。
+    // nofix: true 一并跳过（与其它覆盖类操作同口径——用户明确要求「别动我的文件」）
+    if nofix {
+        // 已在上面打过 main-nofix-skip，这里不重复
+    } else {
+        let restored = scripts::restore_module_scripts(&root);
+        if restored == 0 {
+            log::warn!(
+                "[Scripts] 启动覆盖未能写入任何脚本（{} 个），WebUI 侧可能执行到旧副本",
+                scripts::MODULE_REL.len()
+            );
+        }
+        // 监听线程独立于监控/调度线程：它只做防护，崩了不影响调度，故刻意不 join
+        let stop = Arc::new(AtomicBool::new(false));
+        let watch_root = root.clone();
+        std::thread::Builder::new()
+            .name("scripts-watch".to_string())
+            .spawn(move || {
+                scripts::watch_module_scripts(&watch_root, &stop);
+            })
+            .ok();
+    }
+
     // [power_avg] 启动清空 PowerAVG.chr：它是「本次运行」的输出记录（不读回），上次运行的值在本次取样前是过期数据、WebUI 会当有效读数展示；置空后回到 — 直到首个放电采样写回
     logger::power_avg_reset();
 
@@ -460,11 +487,14 @@ fn main() -> Result<()> {
     info!("{}", t("monitor-module-started"));
 
     // [startup_notify] 启动完成通知：调度线程与监控线程都已起来才算「本次启动真正完成」——放更早
-    // （如 scheduler_start 之前）会让「起一半」与「起完」在通知栏上同形。标题/正文/渠道按用户
+    // （如 scheduler_start 之前）会让「起一半」与「起完」在通知栏上同形。标题/正文/tag 按用户
     // 2026-10-17 指定，均为字面量（`ChiRi已启动` / `ChiRi-Status`），不走 i18n、不经 FAS 拦截器
-    // （拦截器只认 `ChiRi-FAS`，本渠道直发）。此处是主线程启动路径、非调度热循环，同步投递一次
-    notify::post_notification("ChiRi已启动", "ChiRi-Status", "ChiRi已启动");
-    info!("{}", t("notify-startup-posted"));
+    // （拦截器只认 `ChiRi-FAS`，本 tag 直发）。此处是主线程启动路径、非调度热循环，同步投递一次。
+    // 只在成功时打 `notify-startup-posted`：投递失败已由 notify 组件按 `notify-post-failed` 留痕，
+    // 这里再无条件打一条「已投递」就把失败报成了成功（静默失效的典型形态）
+    if notify::post_notification("ChiRi已启动", "ChiRi-Status", "ChiRi已启动") {
+        info!("{}", t("notify-startup-posted"));
+    }
 
     // [suspend] 8. 挂起：join 监控线程
     monitor_thread.join().unwrap();

@@ -506,6 +506,9 @@ if [ "$HOT_UPDATE_AVAILABLE" = "true" ]; then
         chmod 755 "$MODDIR/core/bin/chiri" 2>/dev/null
         # 外部打包脚本（对外暴露的稳定接口，daemon 与 WebUI 共用）
         chmod 755 "$MODDIR/scripts/pack.sh" 2>/dev/null
+        # 通知投递脚本（WebUI 通知测试直接执行它；daemon 走二进制内嵌正文，不依赖本文件。
+        # 非 755 会让 WebUI 侧静默发不出通知）
+        chmod 755 "$MODDIR/scripts/notify.sh" 2>/dev/null
         
         # 3.【已取消】重启调度服务：安装器环境里 setsid/nohup 拉起的 service.sh 生命周期不可控（管理器退出后可能被收割）、失败也无法可靠提示，
         # 统一改为要求用户手动执行 Action 启动（见下方文案）

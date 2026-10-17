@@ -168,6 +168,22 @@ export default {
   'config.screenoff.hint': 'Set the screen-off detection value',
   'config.screenoff.saved': 'Screen-off value saved',
 
+  // Notification test: fixed tag ChiRi-Test, prefilled editable title/body; shows raw script output
+  // (printing only "sent" would hide a real failure)
+  'config.notifyTest': 'Notification test',
+  'config.notifyTest.hint': 'title and body are editable',
+  'config.notifyTest.title': 'Title',
+  'config.notifyTest.body': 'Body',
+  'config.notifyTest.tag': 'Fixed tag',
+  'config.notifyTest.tagHint': 'In AOSP the third positional arg is the tag (same tag overwrites); pinned here',
+  'config.notifyTest.send': 'Send test notification',
+  'config.notifyTest.sending': 'Sending…',
+  'config.notifyTest.sent': 'Script reports success — check the notification shade',
+  'config.notifyTest.acceptedWarn': 'Script reports success; if nothing appears, this path is not visible here — please send the output below back',
+  'config.notifyTest.failed': 'Post failed',
+  'config.notifyTest.empty': 'Title and body cannot both be empty',
+  'config.notifyTest.output': 'Script output',
+
   'lab.notice.effects': 'Turning the lab off requires a reboot',
   'lab.notice.manual': 'In special cases you can edit rhine.chr directly',
   'lab.mode.vector': 'Vector Breakthrough',

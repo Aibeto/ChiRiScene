@@ -2954,15 +2954,13 @@ mod tests {
 
 /// 调用外部打包脚本 `scripts/pack.sh`（对外暴露的稳定接口，构建流程不得修改）把 staging 目录打成**无压缩 tar**（优先模块自带 core/bin/tar，回退系统 tar；
 /// zstd 压缩由调用方完成）成功判据：退出码 0 且目标文件存在；失败 → false，调用方保留 staging 并留痕
-fn pack_dir_tar(root: &Path, dir: &Path, out_tar: &Path) -> bool {
-    let script = root.join("scripts/pack.sh");
-    let ok = std::process::Command::new("/system/bin/sh")
-        .arg(&script)
-        .arg("archive")
-        .arg(dir)
-        .arg(out_tar)
-        .status()
-        .map(|s| s.success())
+fn pack_dir_tar(_root: &Path, dir: &Path, out_tar: &Path) -> bool {
+    // [embed] 脚本从二进制内嵌正文释放后执行（磁盘上的 scripts/pack.sh 改了不生效，防篡改）；
+    // `_root` 保留在签名里让调用点语义不变，但已不再用于拼脚本路径
+    let dir_s = dir.to_string_lossy().into_owned();
+    let out_s = out_tar.to_string_lossy().into_owned();
+    let ok = crate::scripts::run(crate::scripts::Script::Pack, &["archive", &dir_s, &out_s])
+        .map(|o| o.status.success())
         .unwrap_or(false);
     ok && out_tar.exists()
 }
