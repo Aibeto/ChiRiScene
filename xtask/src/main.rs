@@ -200,9 +200,13 @@ fn build_core(sh: &Shell) -> Result<()> {
     println!("正在编译 Rust Core...");
     // push_env 会在当前作用域内设置环境变量，离开作用域自动恢复
     let _env = sh.push_env("RUSTFLAGS", "-C default-linker-libraries");
+    // CI 钉住 nightly 后 `+nightly` 会触发 rustup 自动安装最新版；用环境变量让 CI
+    // 指定与 lint 相同的固定工具链，本地未设置时仍是 `nightly`。
+    let toolchain =
+        std::env::var("CHIRI_RUSTUP_TOOLCHAIN").unwrap_or_else(|_| "nightly".to_string());
     cmd!(
         sh,
-        "cargo +nightly ndk --platform 26 -t arm64-v8a build -Z build-std -r"
+        "cargo +{toolchain} ndk --platform 26 -t arm64-v8a build -Z build-std -r"
     )
     .run()?;
     Ok(())

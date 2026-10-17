@@ -16,7 +16,9 @@
 
 - **暂存（git add）前必须先查格式并格式化（2026-10-16 用户定，长期口径）**：`cargo fmt --all` 后再 `cargo fmt --all --check` 确认干净，才允许暂存。CI 的 `Lint (fmt)` 是**秒级前置门禁**（跑在重下载/编译之前），格式漂移会直接红掉整套构建。独立文件（`scripts/tests/*.rs`）不在 workspace 内、`cargo fmt --all` **覆盖不到**，改到它们要单独 `rustfmt --edition 2024 <file>`。
   - **例外：`scripts/tests/clg_replay.rs` 不要 rustfmt**——它是 `scripts/devimp/replay_clg.py` 的生成物，且 `clg_tuning_regression.rs` 用 `include_str!("clg_replay.rs")` 对它做**子串字面量断言**（`assert_eq!(saturated_freq, hw_max` 等）。rustfmt 会把这些断言拆成多行，断言随即失效（2026-10-16 实测踩到：`saturation_selfcheck_must_not_be_weakened` 由 pass 转 FAILED）。要改它应改生成器 `replay_clg.py`。
-  - 判断顺序：格式问题先用 `cargo fmt --all --check` 定位（秒级、无需 NDK）；只有它干净后才值得怀疑编译/clippy。CI 的 clippy 步未加 `-D warnings`，存量警告**不会**让 CI 失败，别把警告当失败原因。
+  - 判断顺序：格式问题先用 `cargo fmt --all --check` 定位（秒级、无需 NDK）；只有它干净后才值得怀疑编译/clippy。CI 的 clippy 步未加 `-D warnings`，存量**警告**不会让 CI 失败；但 **deny-by-default** 的 lint（如 `clippy::panicking_overflow_checks`）会直接报 error 让该步红掉（2026-10-18 实测：测试里的 `assert!(!(until + 1 < until))` 触发该 lint），别只看「没加 `-D warnings`」就断定 clippy 不会失败。
+
+- **CI 工具链钉版本（2026-10-18 用户定）**：`build.yml` 的 Setup Rust Toolchain 由浮动 `@nightly` 改为显式 `toolchain: nightly-2026-10-12`（1.101.0-nightly，commit `080cc2714`，与本机验证版本一致）。浮动 nightly 会让 rustfmt/clippy 规则随日期漂移，出现「本地绿、CI 红」；遇到 lint 结论不一致先对齐 pin，再判断代码问题。**xtask 的 `cargo +<spec>` 也吃同一个 pin**：`build_core` 读 `CHIRI_RUSTUP_TOOLCHAIN`（缺省 `nightly`），`Run xtask build` 步骤把它设为同一日期——否则 `+nightly` 缺失会触发 rustup 自动安装最新 nightly，pin 形同虚设。升级口径 = 同步改两处（action `toolchain` + 该 env）→ 本机同版本跑 `cargo fmt --all --check` + `cargo check --workspace --all-targets --target aarch64-linux-android` + `cargo clippy --workspace --all-targets --target aarch64-linux-android --no-deps` → 再提交。`Lint (fmt)` 与 `Lint (check + clippy)` 两步全部保留（fmt 仅 1s；check 是 CI 里唯一编译测试目标的步骤，别删）。
 
 ## [lessons] 经验教训
 

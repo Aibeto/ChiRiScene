@@ -84,15 +84,19 @@ jobs:
       #    clippy/rustfmt 供下方 lint 步骤使用（lint 已并入本 job：代码含 bionic-only
       #    符号（libc::__system_property_get）且依赖 zstd-sys 需 NDK 的 android clang，
       #    独立 host lint job 无法编译，复用本 job 环境最省）
+      #    工具链钉版本（2026-10-18 用户定）：浮动 nightly 会让 rustfmt/clippy 规则随
+      #    构建漂移、本地与 CI 对不上。升级 = 改 toolchain 日期 → 本机用同版本跑
+      #    fmt + check + clippy → 再提交（当前 1.101.0-nightly，commit 080cc2714）。
       - name: Setup Rust Toolchain
-        uses: dtolnay/rust-toolchain@nightly
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: nightly-2026-10-12
           targets: aarch64-linux-android
           components: rust-src, clippy, rustfmt # build-std 需要 rust-src (含 bpfel-unknown-none)
 
       # 5. 缓存 Rust 依赖与编译产物（含 -Z build-std 的 core 与 eBPF 产物）。
       #    纯加速步骤，不改构建语义：key 含 rustc 版本与 Cargo.lock，
-      #    nightly 更新或依赖变更时自动冷启一次。
+      #    换工具链 pin 或依赖变更时自动冷启一次。
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
 
@@ -193,8 +197,12 @@ jobs:
       #    语义不变：删整行 #，保留 shebang 与行内 #，跳过 META-INF/ 与 scripts/。
 
       # 11. 运行 xtask 构建（仅组装目录，不预打包 zip；GitHub 下载产物时会自动压缩）
+      #     CHIRI_RUSTUP_TOOLCHAIN 必须与 Setup Rust Toolchain 的 toolchain 同步：
+      #     xtask 的 `cargo +<spec>` 走 rustup 解析，缺失该 spec 会自动装最新 nightly。
       - name: Run xtask build
         run: cargo xtask build --no-pack
+        env:
+          CHIRI_RUSTUP_TOOLCHAIN: nightly-2026-10-12
 
       # 12. 动态获取 xtask 生成的模块目录（按 module.prop 命名）
       - name: Resolve Artifact Directory

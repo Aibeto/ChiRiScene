@@ -3104,9 +3104,9 @@ mod tests {
         // 冷却中
         assert!(5_000 < until);
         assert!(until - 1 < until);
-        // 到点：不再小于截止 → 重新判定
+        // 到点及之后：不再小于截止 → 重新判定（到点后 1ms 仍属过期）
         assert!(!(until < until));
-        assert!(!(until + 1 < until));
+        assert!(!(until.saturating_add(1) < until));
     }
 
     /// 读不到模式（文件缺失/空内容）时**不放行**：无法确认就不能在可能的 FAS 对局里退出调度
