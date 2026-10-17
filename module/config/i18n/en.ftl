@@ -295,6 +295,7 @@ fast-watchdog-release = [Fast] load source timeout ({ $secs }s), releasing fast 
 log-level-updated = Log level updated to: { $level }
 logger-log-restart-for-archive = [Logger] { $dir } reached { $mb }MB, restarting scheduler to archive logs
 logger-log-restart-suppressed = [Logger] { $dir } reached { $mb }MB but no watchdog detected (pidfile mismatch and parent is not a detached shell); auto-restart-for-archive skipped. Normal for direct debug runs; on-device, check logs/watchdog.pid
+logger-log-restart-fas-deferred = [Logger] { $dir } reached { $mb }MB but the current mode is { $mode } (FAS or undeterminable); log-overrun restart skipped with no notification because only non-FAS mode may handle it. Re-evaluated in { $min } minutes
 logger-append-failed = [Logger] Log write failed (continuously { $n } times): handle rebuild or disk write error, discarded handle to be rebuilt on the next log; persistent failure will keep this round's log at the last successfully written line
 
 # --- Rhine (Lab) ---
@@ -350,6 +351,13 @@ notify-post-ok = [Notify] posted (tag={ $tag } title={ $title } strategy={ $stra
 notify-script-missing = [Notify] notify script missing, notification cannot be posted: { $path }
 # Startup-complete notification (main.rs startup tail, tag ChiRi-Status, direct post without interceptor; title/body are literals, not i18n)
 notify-startup-posted = [Notify] startup-complete notification posted (tag ChiRi-Status)
+# Remote push (remote_push.rs: fetch remindPush.json every 2h between 08:00 and 24:00, notify only on a versionCode hit, tag ChiRi-Remote)
+remote-push-started = [Remote] remote-push thread started (fetches every 2 hours between 08:00 and 24:00)
+remote-push-primary-failed = [Remote] primary source fetch failed: { $error }; trying the fallback (no retry)
+remote-push-fallback-failed = [Remote] fallback source fetch failed: { $error }; giving up for this slot (no retry)
+remote-push-notified = [Remote] matched versionCode { $code }, reminder notification sent: { $title }
+remote-push-no-match = [Remote] no match for versionCode { $code } (silent)
+remote-push-thread-failed = [Remote] failed to start the remote-push thread: { $error }
 
 # --- Telemetry ---
 monitor-thread-start-telemetry = [Main] starting telemetry monitor thread (PSI/GPU/battery)...

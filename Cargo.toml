@@ -49,6 +49,14 @@ fluent = "0.17.0"
 fluent-bundle = "0.16.0"
 intl-memoizer = "0.5.3"
 
+# --- 远程提醒（remindPush.json 拉取）---
+# ureq 3 默认 = [rustls, gzip]：rustls 走 ring（C/asm，与 zstd-sys 同口径需 cc，
+# CI 的 lint 步骤已注入 NDK CC_/AR_/CFLAGS_），根证书用 webpki-roots 内嵌（不依赖系统 CA 路径，
+# Android 上系统 CA 目录对 daemon 不一定可读）。刻意关掉默认 gzip 省一个 flate2 依赖：
+# 目标接口返回的是未压缩 JSON，真遇到 Content-Encoding: gzip 也只需重新评估
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+serde_json = "1"
+
 # --- 日志归档压缩（内置库，进程内压缩，不依赖设备任何压缩二进制；2026-10-12 由 tar.lz4/gzip 迁移到 tar.zst）---
 # zstd 走 vendored C（zstd-sys + cc，本仓第一个 C 依赖）；级别口径：启动归档 2／导出 CLI 19（接近极限压缩率），
 # 压缩统一 6 线程（zstdmt feature 开 multithread API）

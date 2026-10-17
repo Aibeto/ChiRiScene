@@ -11,7 +11,7 @@ r"""dvcommon.py —— devimp 日志分析脚本的共享工具（纯标准库�
 - 每个脚本自己把完整结果写进 UTF-8 文件，stdout 只打几行摘要 + 输出路径。
   原因：PowerShell 重定向会把 python stdout 按控制台代码页重编码，中文必乱码
   （2026-09-25 实测：重定向后产出 mojibake）。因此**禁止**依赖 shell 重定向取结果。
-- schema 判定与列索引与 `scripts/devimp-analyze.py` 一致（C48/C44/C40 直接抄自该文件）。
+- schema 判定与列索引与 `scripts/devimp-analyze.py` 一致（C48/C45/C44/C40 直接抄自该文件）。
 - 行过滤一律用 `^\d{2}:\d{2}:\d{2}\.\d{3},`（ts 无日期），不要按日期前缀判断。
 """
 
@@ -31,17 +31,22 @@ C48 = ("ts,type,mode,screen_on,pid,package,tid,comm,cluster,core,from_core,to_co
        "wakeups,migrations,freq_trans,batt_temp,cpu_temp,clg_active,cpu_cur_khz,cpu_max_khz,cpu_min_khz,"
        "cpu_governor,gpu_cur_khz,gpu_max_khz,gpu_min_khz,gpu_governor").split(",")
 C44 = [c for c in C48 if c not in ("from_core", "to_core", "util_pct", "pinned")]
+# 45 列新版 = 44 列 + 末尾 activity（前台 Activity 查表键，如 com.x/.MainActivity，未知为 `-`）
+C45 = C44 + ["activity"]
 # 40 列旧版（Canary92 之前）= 48 列去掉尾部 8 列（cpu_cur_khz…gpu_governor）
 C40 = C48[:40]
 
 
 def detect_schema(header):
     """首行表头 → (cols, tag)。判定口径同 devimp-analyze.py：
-    无 cpu_cur_khz = 40 列旧；有 cpu_cur_khz 且含 from_core = 48 列；否则 44 列新。"""
+    无 cpu_cur_khz = 40 列旧；含 from_core = 48 列；
+    否则含 activity = 45 列（44 列 + 末尾 activity）；否则 44 列新。"""
     if "cpu_cur_khz" not in header:
         return C40, "40列旧(Canary92前)"
     if "from_core" in header:
         return C48, "48列(Canary92期)"
+    if "activity" in header:
+        return C45, "45列(+activity)"
     return C44, "44列新(拆分版)"
 
 
@@ -295,7 +300,7 @@ def pct(v, q):
 def parse_policies(s):
     """`policy0:787200;policy3:1785600;policy7:595200` → {'policy0': 787200, ...}。
 
-    44/48 列的 cpu_cur_khz / cpu_max_khz / cpu_min_khz 与 thermal 相关列都是这个串格式。
+    44/45/48 列的 cpu_cur_khz / cpu_max_khz / cpu_min_khz 与 thermal 相关列都是这个串格式。
     """
     out = {}
     if not s or s == "-":

@@ -31,7 +31,10 @@ const WATCH_RETRY_BACKOFF: Duration = Duration::from_secs(2);
 
 // [state]
 /// 解析 `down.chr`：写了保留字 `down`（忽略大小写、允许成对引号）= 停摆；空/注释/其它 = 正常；缺失就地补建模板
-fn read_down(root: &Path) -> bool {
+/// 只读判定「down.chr 是否要求停摆」。`pub(crate)` 是给 `main.rs` 的启动通知用的：
+/// 那时调度线程可能还没跑到 `on_startup`（`is_down()` 全局标志尚未置位），
+/// 只能直接读磁盘，否则「以 DOWN 模式启动」会被判成普通启动
+pub(crate) fn read_down(root: &Path) -> bool {
     let path = root.join(DOWN_CHR);
     let text = match fs::read_to_string(&path) {
         Ok(text) => text,

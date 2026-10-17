@@ -24,7 +24,7 @@
       ],
       "createdAt": "2026-10-11T06:17:42.798Z",
       "updatedAt": "2026-10-11T06:17:42.798Z",
-      "lastAccessedAt": "2026-10-12T20:50:23.938Z",
+      "lastAccessedAt": "2026-10-17T19:49:36.923Z",
       "revision": 1,
       "contentHash": "fed27c85ae4666f5939c4d9c1a53a8ce14b16a8f40741a23f88fa07b62283309",
       "sizeBytes": 8229,
@@ -51,7 +51,7 @@
       ],
       "createdAt": "2026-10-11T07:34:23.575Z",
       "updatedAt": "2026-10-11T07:34:23.575Z",
-      "lastAccessedAt": "2026-10-14T06:21:54.448Z",
+      "lastAccessedAt": "2026-10-17T19:49:36.923Z",
       "revision": 1,
       "contentHash": "b264b49ef87ae91a4b39665f8ca7471a0c84087be8bd4b6a2e80c1f32182fa89",
       "sizeBytes": 6331,
@@ -226,7 +226,7 @@
       ],
       "createdAt": "2026-10-14T06:23:48.212Z",
       "updatedAt": "2026-10-14T06:23:48.212Z",
-      "lastAccessedAt": "2026-10-14T06:41:02.986Z",
+      "lastAccessedAt": "2026-10-17T19:49:36.923Z",
       "revision": 1,
       "contentHash": "8cc4fc6f64ba880571b98e7e9d06d8859da10a526fedee4bbf81bfdbeb262435",
       "sizeBytes": 4284,
@@ -250,10 +250,38 @@
       ],
       "createdAt": "2026-10-14T06:42:08.147Z",
       "updatedAt": "2026-10-14T06:42:08.147Z",
-      "lastAccessedAt": "2026-10-14T06:42:08.147Z",
+      "lastAccessedAt": "2026-10-17T19:49:36.923Z",
       "revision": 1,
       "contentHash": "222012e0703129141b833b9cfb158881d24ba4cd3ad6c5d738ba8f12d3b64e3e",
       "sizeBytes": 4534,
+      "memoryBodyIds": []
+    },
+    {
+      "id": "5b07598a-186e-4685-889e-4f03b31184c4",
+      "title": "ChiRi devimp main_ 45 列 + activity 列与 aff_ 文件头精简（2026-10-18）",
+      "description": "devimp main_ CSV 新增第 45 列 activity（前台 Activity 查表键）并精简 aff_ 文件头为 schema + 元信息：契约、实现位置、分析脚本兼容、训练取数限制与验证状态。",
+      "status": "active",
+      "filename": "chiri-devimp-main-45-activity-aff-2026-10-18-5b07598a.md",
+      "relativePath": "documents/active/chiri-devimp-main-45-activity-aff-2026-10-18-5b07598a.md",
+      "sourcePaths": [
+        "src/logger.rs",
+        "src/chiri/mod.rs",
+        "scripts/devimp-analyze.py",
+        "scripts/devimp/dvcommon.py",
+        "scripts/devimp/test_accounting.py",
+        "agentsdocs/02-convention.md",
+        ".cursor/commands/devimp-log-analysis.md",
+        ".cursor/memory/2026-10-18.md"
+      ],
+      "sessionIds": [
+        "session-d1125492-b5c3-4174-a286-22fea661883c"
+      ],
+      "createdAt": "2026-10-17T19:49:58.334Z",
+      "updatedAt": "2026-10-17T19:49:58.334Z",
+      "lastAccessedAt": "2026-10-17T19:49:58.334Z",
+      "revision": 1,
+      "contentHash": "f2bfc49a9ff6c5b9cb9525cb642cfbef8b104b2de5ff404dd005af4831a1538a",
+      "sizeBytes": 4920,
       "memoryBodyIds": []
     }
   ]

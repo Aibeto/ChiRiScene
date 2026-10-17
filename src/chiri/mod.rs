@@ -3155,6 +3155,14 @@ pub fn start_scheduler_thread(
                     }
                     // 诊断日志按前台包名分组：变化即切换 main_ 文件（内部去重，空包名不切换）
                     crate::logger::set_diag_package(&fg_package);
+                    // activity 列：窗口探针最近一次焦点 Activity 查表键（探针只在 FAS 路径刷新，
+                    // 非 FAS 行可能是旧值；跨包脏值由 logger 落行前复核丢弃写 "-"）。
+                    // 诊断关闭时连读探针全局值都跳过（set_diag_activity 自身也会早退，这里再省一次取锁）
+                    if crate::logger::diag_active() {
+                        crate::logger::set_diag_activity(
+                            &crate::monitor::window_visibility::last_activity_key(),
+                        );
+                    }
                     // 充放电状态：1s 一次读 status 节点（电流符号厂商方向不一，不可靠）
                     let charge_state = read_battery_charge_state();
                     // fps 列：仅 FAS 激活时取活跃实例窗口均值，其余为 None → 写 "-"

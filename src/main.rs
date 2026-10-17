@@ -9,6 +9,7 @@ pub mod i18n;
 mod logger;
 mod monitor;
 mod notify;
+mod remote_push;
 mod rhine;
 mod scheduler;
 mod scripts;
@@ -273,6 +274,11 @@ fn main() -> Result<()> {
             .ok();
     }
 
+    // [remote_push] 远程提醒线程：每天 08~24 点每 2 小时拉一次 remindPush.json，命中本机
+    // versionCode 就发一条 `ChiRi-Remote` 通知。独立线程、不 join、失败只留 info（不重试），
+    // 属增值功能，任何异常都不得影响调度与监控
+    remote_push::spawn();
+
     // [power_avg] 启动清空 PowerAVG.chr：它是「本次运行」的输出记录（不读回），上次运行的值在本次取样前是过期数据、WebUI 会当有效读数展示；置空后回到 — 直到首个放电采样写回
     logger::power_avg_reset();
 
@@ -492,7 +498,17 @@ fn main() -> Result<()> {
     // （拦截器只认 `ChiRi-FAS`，本 tag 直发）。此处是主线程启动路径、非调度热循环，同步投递一次。
     // 只在成功时打 `notify-startup-posted`：投递失败已由 notify 组件按 `notify-post-failed` 留痕，
     // 这里再无条件打一条「已投递」就把失败报成了成功（静默失效的典型形态）
-    if notify::post_notification("ChiRi已启动", "ChiRi-Status", "ChiRi已启动") {
+    // [down-notify] 以 DOWN 模式启动时正文换一条，告诉用户「调度起来了但没接管，需要别人上」。
+    // 标题仍是 `ChiRi已启动`（用户只要求改正文）。**不能只信 `down::is_down()`**：那个全局标志
+    // 由调度线程里的 `down::on_startup` 置位，而本行在监控线程 spawn 后立刻执行，存在竞态——
+    // 只信它会把「以 DOWN 启动」误判成普通启动。故补一次磁盘读取兜底
+    let down_at_start = down::is_down() || down::read_down(&root);
+    let body = if down_at_start {
+        "ChiRi调度已启动，当前以DOWN模式运行，需要其他调度接管"
+    } else {
+        "ChiRi已启动"
+    };
+    if notify::post_notification("ChiRi已启动", "ChiRi-Status", body) {
         info!("{}", t("notify-startup-posted"));
     }
 

@@ -58,14 +58,16 @@ zstd/lz4 落盘失败一律回落保留 `.tar`）。所以外层包里的内层�
 | **模块版本**  | devimp 文件头三行：`# module=ChiRi Canary <ver> (versionCode N)`；`daemon.log` 的 `[Main] 模块版本:` 行（A06 起有）。**同一 tar 内出现多值 = 混版本，必须报警**                                                                               |
 | **机型/系统** | 同处文件头：`# soc=… board=… model=…` 与 `# android= kernel=`。**机型或系统不同 → 功耗绝对值不可比**（实例：logd_0922-042407 = Canary92 / PHB110 / A16；logd_0922-130643 = Canary88 / MEIZU 21 Note / A15，同目录同天但不可比）               |
 | 设备族        | devimp 文件名的包名：`miui.*`/`quicksearchbox` = 小米系；`coloros.*`/`heytap.*`/`salt.music` = OPlus 系                                                                                                                                       |
-| schema        | devimp 首行表头：无 `cpu_cur_khz` = **40 列旧**（Canary92 前）；含 `cpu_cur_khz` 含 `from_core` = **48 列**（Canary92 期）；含 `cpu_cur_khz` 不含 `from_core` = **44 列新**（拆分版）；**44 列表头后还有一行 `# ts-column=local format_now`** |
+| schema        | devimp 首行表头：无 `cpu_cur_khz` = **40 列旧**（Canary92 前）；含 `cpu_cur_khz` 含 `from_core` = **48 列**（Canary92 期）；含 `cpu_cur_khz`、不含 `from_core`、无 `activity` = **44 列**（拆分版；表头后还有一行 `# ts-column=local format_now`）；含 `cpu_cur_khz`、不含 `from_core`、**末尾含 `activity`** = **45 列新**（2026-10-18 起，列见「二、列索引速查」的 45 列段） |
 | 版本行为特征  | `daemon.log` 启动段：`已导出 N 个 FAS 白名单条目`、`PowerBase`/`meta.yaml fields invalid` 等                                                                                                                                                  |
+
+**main* schema 演化链：40 → 48 → 44（2026-09-22 拆分版）→ 45（2026-10-18 起 +`activity`）**；判定按上表从上到下先命中：先看有无 `cpu_cur_khz`，再看有无 `from_core`，最后看末尾是否含 `activity`。
 
 ### 3. 选组（包内常混入多段旧日志）
 
 按文件名 `_MMDD-HHMMSS` 排序取**最新一簇**；`status.csv` 尾行时间戳佐证。
 daemon 可能中途重启过（启动序列日志为界）→ 只取重启后的连续段。
-**44 列拆分版里「一簇」= 同一次导出的 main*\* + aff*\* 全套**；一个包里可能有 5~6 簇、
+**44/45 列拆分版里「一簇」= 同一次导出的 main*\* + aff*\* 全套**；一个包里可能有 5~6 簇、
 每簇覆盖一个前台包（本次 35 分钟包里 = kernelsu/launcher/bili/QQ/王者/skland/mt 共 7 包）。
 
 ### 4. 跑聚合脚本
@@ -88,7 +90,7 @@ python scripts\devimp-analyze.py <解压目录> [--since MMDD-HHMMSS] [--min-n 3
 **脚本输出必须配合语境读**（v2 修正）：
 
 - `fas` 行的 `little/big/prime` 恒为 `-`：FAS 不由 CLG/tuned 写 tick，**没有 tick 数据 ≠ 上限为 0**
-- 44 列包没有 `tgtop` 行 → 「tgtop 线程占比」段恒空；线程 top 要去 aff 的 `@S` 帧看
+- 44/45 列包没有 `tgtop` 行 → 「tgtop 线程占比」段恒空；线程 top 要去 aff 的 `@S` 帧看
 - `mig` 列是 **2s 增量原始值**（脚本未除 2），换算每秒要 ÷2
 
 ### 5. 判定与对比
@@ -145,7 +147,7 @@ python scripts\devimp-analyze.py <解压目录> [--since MMDD-HHMMSS] [--min-n 3
 
 ## 二、列索引速查
 
-### 44 列（2026-09-23 起重写版）
+### 44/45 列（2026-09-23 起重写版；45 列 2026-10-18 起 +`activity`）
 
 | 列    | 名字                                            | 列    | 名字                                                      |
 | ----- | ----------------------------------------------- | ----- | --------------------------------------------------------- |
@@ -160,16 +162,24 @@ python scripts\devimp-analyze.py <解压目录> [--since MMDD-HHMMSS] [--min-n 3
 - 36-38 列是多 policy 串：`policy0:787200;policy3:1785600;policy7:595200`（0=little,3=big,7=prime）
 - `snap` 行的 `wakeups/migrations/freq_trans` 才有值，`tick` 行是 `-`
 
+**45 列（2026-10-18 起，+`activity`）**：上表 44 列之后**末尾追加第 44 列（0 基）`activity`**，既有 44 列索引不变、旧脚本按前 44 列仍可读（新列只增不改）。
+
+- 值 = 前台 Activity 查表键短形 `pkg/.MainActivity`（`activity_key` 归一：`.MainActivity` 与全限定同包名收成同一键；`$` 内部类不剥；外部包 component 归一后保留全串，但本列按当前前台包前缀校验，非当前包 component 一律写 `-`）；`-` = 未知/无值
+- 来源 = `monitor::window_visibility::last_activity_key()`（窗口探针最近一次焦点 Activity），调度循环每秒经 `logger::set_diag_activity` 同步到 main_ 全局，**所有行（tick/snap/event）自动填充**
+- **换包后旧包 Activity 不会落到新包行**（`set_diag_activity` 按当前前台包前缀校验，activity 键不属于当前包即写 `-`）；同包内 activity 切换保留最新探针值
+- **覆盖限制**：窗口探针只在 FAS 路径运行 ⇒ activity 实际只在 FAS 会话期间刷新；FAS 退出后同包内可能保留最后值（陈旧）
+- **读法/过滤**：`activity` 前缀（`package + "/"`）与 `package` 列不一致 = 陈旧样本；训练/统计至少过滤 `activity` 非 `-` 且前缀一致。非 FAS 前台通常为 `-`（activity 级规则自动回退包名级，行为不变）
+
 ### 48 列（旧，仍会遇到）
 
 列 10-12 = `from_core,to_core,util_pct`，13 = `max_util`，18/19 = cur/max_freq，25 = `pinned`，
-`thermal_cap_pct` 在 25/列为 21（44 列）——**其余列在 44 列版统一左移 3，末 8 列左移 4**。
+`thermal_cap_pct` 在 25/列为 21（44/45 列）——**其余列在拆分版统一左移 3，末 8 列左移 4**。
 
 ### 行与文件
 
 - 行类型：`tick`（决策轨迹，按签名变化写）/ `snap`（1s 环境）/ `tgtop`（30s，列 7=comm、12=占用率、13=累计 ms）/ `event`
-- **44 列版起**：`place`/`aff`/`core` 三类行迁出到同目录独立 aff 文件（`AFF_HEADER` 1 列）；main 文件里没有它们。
-  实测 44 列包的主文件**只有 `tick`/`snap`/`event`，没有 `tgtop`**
+- **44 列版起**：`place`/`aff`/`core` 三类行迁出到同目录独立 aff 文件（`AFF_HEADER` 1 列）；main 文件里没有它们（45 列同此拆分）。
+  实测 44 列包的主文件**只有 `tick`/`snap`/`event`，没有 `tgtop`**（45 列沿用该拆分、行类型不变）
 - **FAS 模式段没有 tick 行**（FAS 接管期间 CLG/tuned 都不写 tick），该段只有 `snap` + `event`
 - `event` 行：`mode_change` / `thermal_change`（带 `batt=… cpu=… cap=… free=…`）/`activate`/
   `overload_hold`（FAS 亲和候选，带 `tid=… home=… cand=… score_…`）

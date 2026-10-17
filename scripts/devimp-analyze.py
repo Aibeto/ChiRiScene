@@ -4,7 +4,8 @@
 用法:
     python scripts/devimp-analyze.py <解压目录> [--since MMDD-HHMMSS] [--min-n 30]
 
-- 自动识别 48/44/40 列 schema（40 列旧 = 无尾部 8 列；48 列含 from_core；44 列含尾部 8 列无 from_core）
+- 自动识别 48/45/44/40 列 schema（40 列旧 = 无尾部 8 列；48 列含 from_core；
+  45 列 = 44 列 + 末尾 activity；44 列含尾部 8 列无 from_core）
 - 定版：读文件头 `# module=` / `# soc=` / `# android=`，混版本/混机型自动报警
 - 充放电方向自动判定：分别统计 batt_i>0 / <0 两侧的功率中位数，取落在合理放电区间
   （0.05~30 W）的一侧；两测都合理或都异常时显式提示（该机型方向需人工确认）
@@ -29,6 +30,8 @@ C48 = ("ts,type,mode,screen_on,pid,package,tid,comm,cluster,core,from_core,to_co
        "wakeups,migrations,freq_trans,batt_temp,cpu_temp,clg_active,cpu_cur_khz,cpu_max_khz,cpu_min_khz,"
        "cpu_governor,gpu_cur_khz,gpu_max_khz,gpu_min_khz,gpu_governor").split(",")
 C44 = [c for c in C48 if c not in ("from_core", "to_core", "util_pct", "pinned")]
+# 45 列新版 = 44 列 + 末尾 activity（前台 Activity 查表键，如 com.x/.MainActivity，未知为 `-`）
+C45 = C44 + ["activity"]
 # 40 列旧版（Canary92 之前）= 48 列去掉尾部 8 列（cpu_cur_khz…gpu_governor）
 C40 = C48[:40]
 
@@ -81,12 +84,15 @@ def main():
     print(f"== 版本指纹 {ver or '(文件头无 metadata，旧版)'}"
           + ("   [!] 混版本/混机型" if any(len(v) > 1 for v in metas.values()) else ""))
 
-    # schema：首行表头判定（44 列版末 8 列为 cpu_cur_khz…；48 列含 from_core）
+    # schema：首行表头判定（无 cpu_cur_khz = 40 列旧；含 from_core = 48 列；
+    # 含 activity = 45 列；否则 44 列新）
     header = open(files[0], encoding="utf-8", errors="replace").readline()
     if "cpu_cur_khz" not in header:
         cols, tag = C40, "40列旧(Canary92前)"
     elif "from_core" in header:
         cols, tag = C48, "48列(Canary92期)"
+    elif "activity" in header:
+        cols, tag = C45, "45列(+activity)"
     else:
         cols, tag = C44, "44列新(拆分版)"
     I = {n: i for i, n in enumerate(cols)}

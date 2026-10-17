@@ -318,6 +318,13 @@ class AccountingTests(unittest.TestCase):
         with self.assertRaises(KeyboardInterrupt):
             dvrun.run_stage("stage", interrupted)
 
+    def test_schema_detects_activity_column(self):
+        cases = ((dc.C40, "40列旧(Canary92前)"), (dc.C44, "44列新(拆分版)"),
+                 (dc.C45, "45列(+activity)"), (dc.C48, "48列(Canary92期)"))
+        for cols, tag in cases:
+            self.assertEqual(dc.detect_schema(",".join(cols)), (cols, tag))
+        self.assertEqual(dc.C45, dc.C44 + ["activity"])
+
 
 class ExistingArchiveChecks(unittest.TestCase):
     @unittest.skipUnless(os.environ.get("DEVIMP_VERIFY_EXISTING"), "optional read-only archive verification")

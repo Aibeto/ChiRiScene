@@ -199,6 +199,48 @@ static LOGS_BYTES_WRITTEN: AtomicU64 = AtomicU64::new(0);
 static DEVIMP_BYTES_WRITTEN: AtomicU64 = AtomicU64::new(0);
 /// 已进入重启流程：日志落盘走同一写路径，置位后不再记账/重入
 static LOG_RESTARTING: AtomicBool = AtomicBool::new(false);
+/// FAS 模式下暂缓超限处理的冷却时长：**到点后重新判定**，而不是等下一次攒满 128MB
+const LOG_RESTART_FAS_COOLDOWN: Duration = Duration::from_secs(600);
+/// 本进程启动时刻（冷却截止时刻以它换算成相对毫秒，不依赖系统时钟跳变）
+static PROC_START: OnceLock<Instant> = OnceLock::new();
+/// 冷却截止时刻（相对 `PROC_START` 的毫秒）。到点前直接返回：**不读 pidfile、不读模式文件**，
+/// 把热路径代价压到一次原子读 + 一次 `elapsed`（clock_gettime 走 vDSO，非 syscall）
+static LOG_RESTART_COOLDOWN_UNTIL_MS: AtomicU64 = AtomicU64::new(0);
+
+/// 进程启动基准（首次使用时初始化）
+fn proc_start() -> Instant {
+    *PROC_START.get_or_init(Instant::now)
+}
+
+/// 由「现在」算出下一次冷却截止（相对毫秒）
+fn cooldown_deadline_from(now_ms: u64) -> u64 {
+    now_ms.saturating_add(LOG_RESTART_FAS_COOLDOWN.as_millis() as u64)
+}
+
+/// 读取当前模式（`current_mode.chr` 是调度线程对外投影的唯一权威来源）。
+/// 读不到时返 `None`——**不能默认成「非 FAS」**：FAS 模式下退出调度会打断正在玩的游戏，
+/// 无法确认模式时按「不算非 FAS」处理更安全（宁可暂缓一次归档，不可误杀 FAS 会话）
+fn current_mode_for_log_gate() -> Option<String> {
+    let path = common::get_module_root().join("current_mode.chr");
+    let raw = fs::read_to_string(path).ok()?;
+    let mode = raw.trim();
+    if mode.is_empty() {
+        return None;
+    }
+    Some(mode.to_string())
+}
+
+/// 日志超限处理是否放行：**只有明确读到「非 FAS」模式才放行**。
+/// `None`（读不到/空文件）也**不放行**——无法确认模式时宁可暂缓一次归档，
+/// 也不要在 FAS 对局中打断调度，那正是本门控要防的
+fn log_overrun_allowed(mode: Option<&str>) -> bool {
+    match mode {
+        // 自己再 trim 一次：调用方虽已 trim，但谓词不该依赖调用方记不记得，
+        // `"fas "` 这类漏网会让门控形同不存在
+        Some(m) => !common::is_fas_mode(m.trim()),
+        None => false,
+    }
+}
 
 /// 记账并判定门限：`counter` 为本目录累计写入量，`dir` 为目录名（日志展示）。达到门限即退出进程，由看门狗 3s 后拉起走启动归档无看门狗（`watchdog_pid()` 为 None）
 /// 不退出——退出后无人拉起、调度永久停止；此时计数清零并打 warn，等下一门限再判退出前打点也走本写路径，以`LOG_RESTARTING` 防重入；**调用方不得持有 appender 锁**（经 `log::info!
@@ -218,6 +260,15 @@ fn note_write(counter: &AtomicU64, dir: &str, bytes: u64) {
     if total < LOG_RESTART_THRESHOLD_BYTES {
         return;
     }
+    // [fas-gate] 只有**非 FAS 模式**才允许走日志超限处理：FAS 模式要求调度全程在线，
+    // 为一包日志打断对局不值得。FAS（或读不到模式）时进入 **10 分钟冷却**，到点重新判定——
+    // 不再清零计数：清零等于要再攒满 128MB 才重试，FAS 退出后可能很久才轮到。
+    // 本判定**必须排在 `watchdog_pid()` 之前**：门限已达到后本函数每次写日志都会进来，
+    // 若先读 pidfile，冷却的 10 分钟内每次写日志都在读文件；冷却判定只需一次原子读 + 一次 elapsed
+    let now_ms = proc_start().elapsed().as_millis() as u64;
+    if now_ms < LOG_RESTART_COOLDOWN_UNTIL_MS.load(Ordering::Relaxed) {
+        return;
+    }
     if watchdog_pid().is_none() {
         // 抑制必须可见：静默清零零痕迹，无从排查「达到门限但永不重启」
         log::warn!(
@@ -233,7 +284,33 @@ fn note_write(counter: &AtomicU64, dir: &str, bytes: u64) {
         counter.store(0, Ordering::Relaxed);
         return;
     }
+    let mode = current_mode_for_log_gate();
+    if !log_overrun_allowed(mode.as_deref()) {
+        // 每个冷却周期打一条（最多 6 条/小时），既能看出「在重试」也不会刷屏
+        LOG_RESTART_COOLDOWN_UNTIL_MS.store(cooldown_deadline_from(now_ms), Ordering::Relaxed);
+        log::warn!(
+            "{}",
+            t_with_args(
+                "logger-log-restart-fas-deferred",
+                &fluent_args!(
+                    "mode" => mode.as_deref().unwrap_or("unknown").to_string(),
+                    "dir" => dir,
+                    "mb" => (total / (1024 * 1024)).to_string(),
+                    "min" => (LOG_RESTART_FAS_COOLDOWN.as_secs() / 60).to_string()
+                )
+            )
+        );
+        return;
+    }
+
     LOG_RESTARTING.store(true, Ordering::Relaxed);
+    // 先通知后退出：进程马上要 exit，放后面就发不出去了。标题/正文为**字面量**（用户指定），
+    // 不走 i18n；tag 用 `ChiRi-Status`（无拦截器，直发）
+    crate::notify::post_notification(
+        "ChiRi日志事件",
+        "ChiRi-Status",
+        "日志大小即将达到阈值，即将开始压缩，调度将短暂退出",
+    );
     log::info!(
         "{}",
         t_with_args(
@@ -754,10 +831,11 @@ fn local_hms(_epoch: i64) -> Option<(u32, u32, u32)> {
 // 份（main_/aff_ 合并计数，按 mtime 排序，活跃文件不清；旧 devimp_*.log 不迁移）；
 // - 总开关 DIAG_ACTIVE 由 scheduler_ipc 按 Config.meta.dev_record 同步（WebUI
 // 开关 + 热重载），各写入点统一过 diag_active() 闸门，关闭时零 IO 零分配
-// main_ CSV 宽表 + `type` 列（44 列，main_ 只承载决策/状态/事件三类行，
-// 线程相关行已迁至 aff_ 帧流）：
+// main_ CSV 宽表 + `type` 列（45 列，main_ 只承载决策/状态/事件三类行，
+// 线程相关行已迁至 aff_ 帧流；末列 activity = 前台 Activity 查表键，供按 Activity
+// 离线聚合训练/校验 activity 级规则）：
 // - tick（每决策 tick × 每核心组，**决策签名变化才写 + 2s 心跳**）：调频决策
-// 轨迹，package 列自动填充前台包名
+// 轨迹，package/activity 列自动填充前台包名与 Activity
 // - snap（1s）：环境上下文（PSI/GPU/电池/温度/热压制），关联决策与功耗
 // - event：decision(事件名)/reason —— 模式/屏幕/热/配置/触摸等状态变化
 
@@ -770,6 +848,12 @@ static DIAG_MODE: Mutex<String> = Mutex::new(String::new());
 
 /// 当前前台包名（set_diag_package 每秒同步，原始未清洗值），诊断各行 package 列自动填充；行主体有更精确包名时（event）由调用方覆盖。空 = 尚未检测到前台应用，package 列保持 "-"
 static DIAG_FG_PKG: Mutex<String> = Mutex::new(String::new());
+
+/// 当前前台 Activity 查表键（set_diag_activity 每秒同步窗口探针最近值，`pkg/.MainActivity` 短形）；
+/// 诊断各行 activity 列自动填充，空 = 未知（列保持 "-"）。探针只在 FAS 路径运行 ⇒ **非 FAS 不刷新，
+/// 同包内保留最后一次探针值（可能陈旧）**；跨包脏值（换包后的旧键、外部包 component）在入口丢弃；
+/// 非 ChiRi 的 diag_writer 路径从不调用 set_diag_activity，恒空
+static DIAG_ACTIVITY: Mutex<String> = Mutex::new(String::new());
 
 /// 设置开发记录总开关
 pub fn set_diag_active(on: bool) {
@@ -834,6 +918,37 @@ pub fn set_diag_package(pkg: &str) {
     }
 }
 
+/// Activity 列取值（纯函数，便于单测）：只接受「属于当前前台包」的查表键（`pkg/…` 前缀），
+/// 其余（未知空串、换包后的陈旧值、外部包 component、仅前缀相同但不同段）一律返回空串写 "-"。
+/// 窗口探针只在 FAS 路径刷新，FAS 退出后同包旧值可能保留；这层校验保证旧键绝不挂到别的包的行上
+fn activity_cell<'a>(pkg: &str, activity: &'a str) -> &'a str {
+    if pkg.is_empty() || activity.is_empty() {
+        return "";
+    }
+    match activity.strip_prefix(pkg) {
+        Some(rest) if rest.starts_with('/') => activity,
+        _ => "",
+    }
+}
+
+/// 同步前台 Activity 查表键（scheduler_ipc 每秒调用，紧跟在 set_diag_package 之后）：
+/// 所有行 activity 列自动填充，空 = 未知。只影响诊断列——写前按 [`activity_cell`] 校验归属，
+/// 换包后的旧 Activity 与外部包 component 都不会落到当前包的行上；关闭诊断时零 IO 零分配
+pub fn set_diag_activity(activity: &str) {
+    if !diag_active() {
+        return;
+    }
+    // 两把锁不嵌套：先取前台包名，释放后再写 activity 槽（锁序见 MainWriter 定义处）
+    let pkg = DIAG_FG_PKG.lock().map(|g| g.clone()).unwrap_or_default();
+    let cell = activity_cell(pkg.as_str(), activity.trim());
+    if let Ok(mut slot) = DIAG_ACTIVITY.lock() {
+        if slot.as_str() != cell {
+            slot.clear();
+            slot.push_str(cell);
+        }
+    }
+}
+
 /// frozen（待春归）标记：由 `set_diag_mode`（低频）维护，供 `diag_active()` 高频读取。单独存一份原子量，是为了让那条闸门不抢 `DIAG_MODE` 的锁（见函数内注释）
 static DIAG_FROZEN: AtomicBool = AtomicBool::new(false);
 
@@ -879,15 +994,15 @@ fn main_tick_state_clear() {
         .clear();
 }
 
-/// CSV 表头（列 schema，**44 列**，行类型无关——tick/snap/event 只是 type 列取值，各写既有列子集、其余留 "-"，禁止按行类型增删列）；
-/// 列序由 main_tick /main_snap / main_event 的写入保证对齐
+/// CSV 表头（列 schema，**45 列**，行类型无关——tick/snap/event 只是 type 列取值，各写既有列子集、其余留 "-"，禁止按行类型增删列）；
+/// 列序由 main_tick /main_snap / main_event 的写入保证对齐；末列 `activity`（2026-10-18 追加）为前台 Activity 查表键
 // [devrow]
 /// 列 36-43：CPU 各 policy 与 GPU 各节点的**实际**频率/上下限/调速器（追加在末尾，不改动既有列索引）多 policy（节点）用 `;` 分隔，每项 `policy<id>:
 /// <值>`（GPU 为 `<设备名>:<值>`），读不到写 `-`；只在 snap 行填充，其余行类型留 "-"区别于 cur_freq_khz / max_freq_khz：
 /// 那两列是 TunedGovernor/CLG 的**决策值**，这几列是**内核当前实际值**
-const MAIN_HEADER: &str = "ts,type,mode,screen_on,pid,package,tid,comm,cluster,core,max_util,over_cores,under_cores,cur_perf,tgt_perf,cur_freq_khz,max_freq_khz,decision,deb_up,deb_down,reason,thermal_cap_pct,touch,psi_cpu,psi_io,psi_mem,gpu_busy,batt_v,batt_i,batt_p,wakeups,migrations,freq_trans,batt_temp,cpu_temp,clg_active,cpu_cur_khz,cpu_max_khz,cpu_min_khz,cpu_governor,gpu_cur_khz,gpu_max_khz,gpu_min_khz,gpu_governor";
+const MAIN_HEADER: &str = "ts,type,mode,screen_on,pid,package,tid,comm,cluster,core,max_util,over_cores,under_cores,cur_perf,tgt_perf,cur_freq_khz,max_freq_khz,decision,deb_up,deb_down,reason,thermal_cap_pct,touch,psi_cpu,psi_io,psi_mem,gpu_busy,batt_v,batt_i,batt_p,wakeups,migrations,freq_trans,batt_temp,cpu_temp,clg_active,cpu_cur_khz,cpu_max_khz,cpu_min_khz,cpu_governor,gpu_cur_khz,gpu_max_khz,gpu_min_khz,gpu_governor,activity";
 
-// 列索引常量（MainRow.set 用，调用方按列语义取用；48→44 列重排，保持其余列相对顺序不变）
+// 列索引常量（MainRow.set 用，调用方按列语义取用；48→44 列重排后只在末尾追加 activity（45 列），保持其余列相对顺序不变）
 const DM_TS: usize = 0;
 const DM_TYPE: usize = 1;
 const DM_MODE: usize = 2;
@@ -938,12 +1053,15 @@ const DM_GPUCUR: usize = 40;
 const DM_GPUMAX: usize = 41;
 const DM_GPUMIN: usize = 42;
 const DM_GPUGOV: usize = 43;
+/// 44：前台 Activity 查表键（`pkg/.MainActivity` 短形，`-` = 未知）。2026-10-18 追加在末尾，不改既有列索引
+const DM_ACTIVITY: usize = 44;
 
-/// 一行诊断记录（固定 44 列，未用列填 "-"），由各 main_* 函数填充
-struct MainRow([String; 44]);
+/// 一行诊断记录（固定 45 列，未用列填 "-"），由各 main_* 函数填充
+struct MainRow([String; 45]);
 
 impl MainRow {
-    /// 新建一行：ts/type/mode/package 已填（mode/package 读全局同步值，无前台包名时 package 留 "-"），其余置 "-"
+    /// 新建一行：ts/type/mode/package/activity 已填（mode/package/activity 读全局同步值，
+    /// 无前台包名时 package 留 "-"、activity 未知留 "-"），其余置 "-"
     fn new(kind: &str) -> Self {
         let mut row = MainRow(std::array::from_fn(|_| NA.to_string()));
         row.0[DM_TS] = format_now();
@@ -956,6 +1074,13 @@ impl MainRow {
                 row.0[DM_PKG] = g.clone();
             }
         }
+        if let Ok(a) = DIAG_ACTIVITY.lock() {
+            // package 与 activity 分属两把锁：换包同步的窄窗口内可能读到旧包 activity，
+            // 落行前按最终 package 列复核归属，保证「旧包 Activity 不落到新包行」是硬保证（非仅入口过滤）
+            if !activity_cell(row.0[DM_PKG].as_str(), a.as_str()).is_empty() {
+                row.0[DM_ACTIVITY] = a.clone();
+            }
+        }
         row
     }
 
@@ -964,10 +1089,15 @@ impl MainRow {
         self
     }
 
-    /// 覆盖 package 列：仅当调用方携带有效包名（非空且非 "-"）时覆盖自动填充值；空/"-" 视为未提供，保留前台包名（如 event 行与具体包名无关）
+    /// 覆盖 package 列：仅当调用方携带有效包名（非空且非 "-"）时覆盖自动填充值；空/"-" 视为未提供，保留前台包名（如 event 行与具体包名无关）。
+    /// package 被覆盖后 activity 按新包重新校验：全局 activity 属前台包，与覆盖包不一致时该列回落 "-"（不跨包）
     fn set_pkg(&mut self, pkg: &str) -> &mut Self {
         if !pkg.is_empty() && pkg != NA {
             self.0[DM_PKG] = pkg.to_string();
+            let keep = !activity_cell(pkg, self.0[DM_ACTIVITY].as_str()).is_empty();
+            if !keep {
+                self.0[DM_ACTIVITY] = NA.to_string();
+            }
         }
         self
     }
@@ -976,9 +1106,10 @@ impl MainRow {
 /// 常驻写入器：append 句柄 + 当前文件名 + 当前包名段 + 巡检计数
 /// `cur_name` 为 None 时，下次写入按 `pkg_seg` + 当前时间戳确定新文件名
 /// （包名切换与 128MB 触顶续写都走这条路径）
-/// 锁序约定（防死锁，诊断子系统五把锁：`DIAG_MODE`/`DIAG_FG_PKG`/
+/// 锁序约定（防死锁，诊断子系统六把锁：`DIAG_MODE`/`DIAG_FG_PKG`/`DIAG_ACTIVITY`/
 /// `MAIN_TICK_STATE`/`MAIN_WRITER`/`AFF_WRITER`）：
-/// 1. 各锁均为短临界区，**不嵌套持有**（获取下一个锁前必须释放上一个）；
+/// 1. 各锁均为短临界区，**不嵌套持有**（获取下一个锁前必须释放上一个；`MainRow::new` 与
+/// `set_diag_activity` 的顺序取锁同此口径）；
 /// 2. WRITER 临界区内只允许文件 IO 与 writer 自身状态修改，不获取任何其他锁
 /// ——它是写路径汇合点（scheduler_ipc / CLG Worker / 亲和线程都写入），嵌套最易成环；
 /// 3. 两个写入器互不同时持有，也不与其他任何锁同时持有（两文件独立写入，无跨文件原子性需求）
@@ -1671,22 +1802,14 @@ pub fn main_event(kind: &str, pkg: &str, reason: &str) {
 }
 
 // [aff_writer]
-/// aff_ 帧格式说明（文件头 schema，`#` 注释行解析跳过；正文按行首字符定界，帧格式详见下方 AFF_HEADER 字符串：@A 单行动作帧、@S 快照帧按帧头计数定界）
+/// aff_ 帧格式说明（文件头只写可解析的 schema，`#` 行解析跳过；正文按行首字符定界：@A 单行动作帧、
+/// @S 快照帧按帧头 ntop+nfg 计数定界）。`t` 行槽级差分 / 刷新帧 `full=1` / 真值 `NaN` 哨兵等语义
+/// 见 agentsdocs/02-convention.md「开发诊断日志」条与 `scripts/devimp/dvaff.py`，文件头不重复承载
 const AFF_HEADER: &str = "# aff_ 线程数据文件（帧式文本，2026-09-28 字段级差分版）\n\
 # @A ts=<MMDD-HHmmss> act=<pin|restore|move_group|cpuset_cpus|uclamp|corectl|bind_release|self_pin|self_unpin|elf32|fdp> pid=<i32> tid=<i32> pkg=<str> comm=<str> dst=<str> value=<str> result=<ok|e{errno}> reason=<str>\n\
 # @S ts=<MMDD-HHmmss> ntop=<进程行数> nfg=<线程行数>[ full=1]\n\
 # p <rank> <pid> <pkg|comm> u=<整数util%> mask=<允许核hex> home=<核|-1>\n\
-# t <pid> <tid>[ comm][ u=][ core=][ home=][ pin=][ uclamp=]\n\
-# t 行槽序固定 comm/u/core/home/pin/uclamp，pid/tid 是行标识恒写：与上次落盘值相同的槽写 -，\n\
-#   尾部连续未变的槽整段省略 —— 只承载「本次变化的那部分」，缺省槽 = 沿用上次值（勿把 - 当字段值）。\n\
-#   槽真值本身就是 - 时改写 NaN（只有 comm 取得到 -；数值槽是整数），读者还原为 -。\n\
-# t 行级差分：任一槽变化才落行，**整行全未变则不落该行**（缺失 tid = 与上次落盘值完全相同）。\n\
-# 刷新帧：@S 帧头带 full=1（首帧与每 30 帧一次）——所有存活候选 tid 全量落行，\n\
-#   下游据此重建存活集合（连续两次刷新帧都不出现的 tid 视为已退出，粒度 = 刷新间隔）。\n\
-#   长尾行的 u 是自上次落盘（最多 30s）窗口的平均 util%，其余行仍是 1s 窗口值。\n\
-# 帧边界：@A 单行自帧；@S 按帧头 ntop+nfg 计数定界，末尾截断帧直接丢弃。\n\
-# 行首字符 \\x01 保留给将来的二进制帧（本版不实现）。全字段空白/控制字符净化为 _。\n\
-# t 行 pid=0 表示归属未知（后台候选建档线程）；uclamp 槽本版恒不变（预留字段），故除刷新帧外不出现。";
+# t <pid> <tid>[ comm][ u=][ core=][ home=][ pin=][ uclamp=]";
 
 struct AffWriter {
     file: Option<fs::File>,
@@ -2949,6 +3072,100 @@ mod tests {
         let (drain_full, _) = aff_build_block(&rows, true, "1007-120000");
         assert_eq!(sync_full, drain_full);
         assert!(drain_full.starts_with("@S ts=1007-120000 ntop=1 nfg=1 full=1\n"));
+    }
+    /// [fas-gate] 只有**明确读到非 FAS 模式**才允许处理日志超限：
+    /// FAS 模式要求调度全程在线，为一包日志打断对局不值得
+    #[test]
+    fn log_overrun_only_allowed_outside_fas_mode() {
+        assert!(log_overrun_allowed(Some("default")), "非 FAS 模式应放行");
+        assert!(log_overrun_allowed(Some("performance")));
+        assert!(log_overrun_allowed(Some("down")), "停摆不是 FAS，放行");
+        assert!(!log_overrun_allowed(Some("fas")), "FAS 模式必须拦下");
+    }
+
+    /// FAS 暂缓走 10 分钟冷却，且到点后**必须重新判定**（不是等再攒满 128MB）
+    #[test]
+    fn fas_cooldown_is_ten_minutes_and_rechecks_from_now() {
+        assert_eq!(
+            LOG_RESTART_FAS_COOLDOWN.as_secs(),
+            600,
+            "用户口径：10 分钟冷却"
+        );
+        assert_eq!(cooldown_deadline_from(0), 600_000);
+        assert_eq!(cooldown_deadline_from(1_000), 601_000);
+        // 饱和加法：极端大值不得 panic（debug 下 `+` 溢出会 abort）
+        assert_eq!(cooldown_deadline_from(u64::MAX), u64::MAX);
+    }
+
+    /// 冷却判定：截止前一律不放行、到点即放行（等于「10 分钟后再重试」）
+    #[test]
+    fn cooldown_expires_exactly_at_deadline() {
+        let until = cooldown_deadline_from(5_000);
+        // 冷却中
+        assert!(5_000 < until);
+        assert!(until - 1 < until);
+        // 到点：不再小于截止 → 重新判定
+        assert!(!(until < until));
+        assert!(!(until + 1 < until));
+    }
+
+    /// 读不到模式（文件缺失/空内容）时**不放行**：无法确认就不能在可能的 FAS 对局里退出调度
+    #[test]
+    fn log_overrun_blocked_when_mode_unknown() {
+        assert!(!log_overrun_allowed(None));
+        // 空白包裹的 fas 也必须拦下：谓词自带 trim，不依赖调用方
+        assert!(!log_overrun_allowed(Some("fas ")));
+        assert!(!log_overrun_allowed(Some("  fas  ")));
+    }
+
+    /// main_ CSV 45 列：表头、行数组与索引常量同源（activity 只追加在末尾，既有 44 列索引不变）
+    #[test]
+    fn main_header_has_45_columns_with_activity_last() {
+        let cols: Vec<&str> = MAIN_HEADER.split(',').collect();
+        assert_eq!(cols.len(), 45, "main_ 表头必须 45 列");
+        assert_eq!(cols[DM_ACTIVITY], "activity");
+        assert_eq!(DM_ACTIVITY, cols.len() - 1, "activity 必须是末列");
+        // 行数组长度必须与表头列数一致，否则 CSV 行会错位
+        let row = MainRow::new("snap");
+        assert_eq!(row.0.len(), cols.len());
+    }
+
+    /// activity 列只接受属于当前前台包的查表键；换包陈旧值、外部包 component 一律写 "-"
+    #[test]
+    fn activity_cell_keeps_only_same_package_keys() {
+        // 同包短形与内部类原样保留（短形已归一，`$` 不剥）
+        assert_eq!(
+            activity_cell("com.game", "com.game/.MainActivity"),
+            "com.game/.MainActivity"
+        );
+        assert_eq!(
+            activity_cell("com.game", "com.game/.Main$Sub"),
+            "com.game/.Main$Sub"
+        );
+        // 换包后的旧 Activity、外部包 component、仅前缀相同但不同段 → 未知
+        assert_eq!(activity_cell("com.game", "com.other/.MainActivity"), "");
+        assert_eq!(activity_cell("com.game", "com.gamer/.Main"), "");
+        // 空值 / 空前台包名 / 缺 `/` 的裸类名 → 未知（列写 "-"）
+        assert_eq!(activity_cell("com.game", ""), "");
+        assert_eq!(activity_cell("", "com.game/.Main"), "");
+        assert_eq!(activity_cell("com.game", "com.game"), "");
+    }
+
+    /// package 列被调用方覆盖后 activity 按新包复核：同包保留、跨包回落 "-"
+    #[test]
+    fn set_pkg_revalidates_activity() {
+        // 跨包覆盖：activity 不得跟着走
+        let mut row = MainRow(std::array::from_fn(|_| NA.to_string()));
+        row.set(DM_PKG, "com.game");
+        row.set(DM_ACTIVITY, "com.game/.Main");
+        row.set_pkg("com.other");
+        assert_eq!(row.0[DM_ACTIVITY], NA);
+        // 同包覆盖：保留
+        let mut row = MainRow(std::array::from_fn(|_| NA.to_string()));
+        row.set(DM_PKG, "com.other");
+        row.set(DM_ACTIVITY, "com.game/.Main");
+        row.set_pkg("com.game");
+        assert_eq!(row.0[DM_ACTIVITY], "com.game/.Main");
     }
 }
 

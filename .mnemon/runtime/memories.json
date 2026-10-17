@@ -65,16 +65,23 @@
       "importance": "critical"
     },
     {
-      "content": "ChiRi 包1 fps 失效根因定案（2026-10-16 用户裁决）：= ChirunoNeko 自编内核问题（假设 B 实锤，假设 A「符号不在逐帧路径」撤销）。决定性证据=同机对照：同台小米 2210132C/同 A17，stock 5.15.194（devimpbin/1006-123730）fps 非空率 25.9~45.3%，ChirunoNeko 5.15.220（devimpbin/1016-151808）8 会话 0~0.08%，唯一实质变量=内核。修法方向（未实施）：内核侧 uprobe/BPF config 对 stock diff、帧静默 WARN+frame_src=silent 落标、FAS 开环档位死锁权衡。",
-      "created_at": "2026-10-16T14:25:23.066Z",
-      "updated_at": "2026-10-16T14:38:40.785Z",
+      "content": "ChiRi 通知投递最终口径（2026-10-18）：daemon 跑 `include_str!` 内嵌的 `scripts/notify.sh`（`src/scripts.rs`：每次释放到临时目录、chmod 0700、跑完删，磁盘副本改了不生效）；磁盘 `module/scripts/*.sh` 只给 WebUI 用，由 daemon 启动无条件覆盖 + inotify 监听 `scripts/` **目录**还原（必须挂目录，原子 mv 会让文件级 watch 永久失效）。投递必须 `su 2000 /system/bin/cmd …`（argv 直传，真机实测通过）：uid 0 走 `ROOT_PKG=\"root\"` → `fixNotification` 的 `NameNotFoundException` → 通知在 enqueue 阶段被丢弃；MagiskSU optstring 无 `l`，`su -lp 2000` 仍留在 root。`cmd` 退出码 0 毫无意义（`onCommand` 丢掉 `doNotify` 返回值），只认 `-v` 回查的 `posted:` 或 `warning: couldn't find notification after enqueueing`。",
+      "created_at": "2026-10-17T19:48:45.644Z",
+      "updated_at": "2026-10-17T19:48:45.644Z",
       "target": "memory",
-      "importance": "normal"
+      "importance": "critical"
     },
     {
-      "content": "ChiRi fps 探针验证环境坑（2026-10-16 一加/高通 5.15 实测，复验时必读）：①adb shell su -c 必须三层引号 adb shell \"su -c '...'\"，否则 su 未提权（id=2000）且报错被 2>/dev/null 吞；②高通 5.15 内核 uprobe 事件目录扁平化在 events/qb/（无 events/uprobes/ 前缀）；③per-event count 文件被裁（只有 enable/filter/format/hist/id/trigger），count 读 0 不可信，计数用 hist trigger（echo 'hist:keys=common_pid' > trigger 后读 hist 的 hitcount 列）；④手动验证读数通道坏 ≠ ChiRi 病症（两层「卡」勿混淆）。",
-      "created_at": "2026-10-16T14:38:49.617Z",
-      "updated_at": "2026-10-16T14:38:49.617Z",
+      "content": "ChiRi 2026-10-18 用户口径三条：① 启动完成通知 tag `ChiRi-Status`，标题字面量 `ChiRi已启动`，正文按**启动时是否 DOWN** 分叉（DOWN → `ChiRi调度已启动，当前以DOWN模式运行，需要其他调度接管`）；判定必须 `down::is_down() || down::read_down(&root)`——全局 `DOWN_ACTIVE` 由**调度线程**的 `down::on_startup` 置位，而通知在监控线程 spawn 后立刻执行，**只信全局标志会漏判**。② 日志超限（128MB）发 `ChiRi日志事件` / `日志大小即将达到阈值，即将开始压缩，调度将短暂退出`，但**仅非 FAS 模式放行**；FAS 或读不到模式 → 打一条 warn + **10 分钟冷却后重判**（冷却判定**必须排在 `watchdog_pid()` 之前**，否则冷却期内每次写日志都在读 pidfile），**FAS 下连通知都不发**，通知须在 `exit(0)` 之前。③ 远程提醒 `src/remote_push.rs`：每日本地 08/10/12/14/16/18/20/22 点拉 `remindPush.json`（GitHub raw → gitee raw，**失败不重试**只留 info）；与**内嵌** `module.prop` 的 versionCode **恒等比较**（不读磁盘防篡改、不去前导零），未命中静默，命中发 tag `ChiRi-Remote`。",
+      "created_at": "2026-10-17T19:49:00.844Z",
+      "updated_at": "2026-10-17T19:49:00.844Z",
+      "target": "memory",
+      "importance": "critical"
+    },
+    {
+      "content": "ChiRi devimp main_ 45 列 + activity（2026-10-18 契约，项目档案有完整版）：main_ CSV 末尾追加第 45 列 `activity` = 前台 Activity 查表键短形 `pkg/.MainActivity`（来源 `window_visibility::last_activity_key()`，调度 1s 块经 `logger::set_diag_activity` 同步，tick/snap/event 全行自动填充；按当前前台包前缀校验，换包旧值/外部包 component 写 `-`）。窗口探针只在 FAS 路径运行 ⇒ 非 FAS 通常 `-`、FAS 退出后同包可能陈旧；训练样本须过滤 `activity != \"-\"` 且前缀 == `package + \"/\"`。`aff_` 文件头自 2026-10-18 起只写标题 + 4 行可解析 schema（@A/@S/p/t）+ 元信息，差分/刷新帧/NaN 说明不再写入（语义在 agentsdocs/02 与 `dvaff.py`）。",
+      "created_at": "2026-10-17T19:50:06.403Z",
+      "updated_at": "2026-10-17T19:50:06.403Z",
       "target": "memory",
       "importance": "normal"
     }

@@ -384,6 +384,72 @@
       "trustScore": 1,
       "createdAt": "2026-10-16T14:25:23.029Z",
       "updatedAt": "2026-10-16T14:25:23.029Z"
+    },
+    {
+      "id": "holo-a66aa6fa-e585-437b-9f55-e7182e96edb6",
+      "content": "ChiRi 包1 fps 失效根因定案（2026-10-16 用户裁决）：= ChirunoNeko 自编内核问题（假设 B 实锤，假设 A「符号不在逐帧路径」撤销）。决定性证据=同机对照：同台小米 2210132C/同 A17，stock 5.15.194（devimpbin/1006-123730）fps 非空率 25.9~45.3%，ChirunoNeko 5.15.220（devimpbin/1016-151808）8 会话 0~0.08%，唯一实质变量=内核。修法方向（未实施）：内核侧 uprobe/BPF config 对 stock diff、帧静默 WARN+frame_src=silent 落标、FAS 开环档位死锁权衡。",
+      "category": "context",
+      "tags": [],
+      "entities": [
+        "ChiRi",
+        "ChirunoNeko",
+        "A17",
+        "BPF",
+        "WARN",
+        "FAS"
+      ],
+      "trustScore": 1,
+      "createdAt": "2026-10-17T19:48:45.470Z",
+      "updatedAt": "2026-10-17T19:48:45.470Z"
+    },
+    {
+      "id": "holo-29d4ee80-0dbf-428e-9489-41035e3e8092",
+      "content": "ChiRi fps 探针验证环境坑（2026-10-16 一加/高通 5.15 实测，复验时必读）：①adb shell su -c 必须三层引号 adb shell \"su -c '...'\"，否则 su 未提权（id=2000）且报错被 2>/dev/null 吞；②高通 5.15 内核 uprobe 事件目录扁平化在 events/qb/（无 events/uprobes/ 前缀）；③per-event count 文件被裁（只有 enable/filter/format/hist/id/trigger），count 读 0 不可信，计数用 hist trigger（echo 'hist:keys=common_pid' > trigger 后读 hist 的 hitcount 列）；④手动验证读数通道坏 ≠ ChiRi 病症（两层「卡」勿混淆）。",
+      "category": "context",
+      "tags": [],
+      "entities": [
+        "su -c",
+        "hist:keys=common_pid",
+        "ChiRi"
+      ],
+      "trustScore": 1,
+      "createdAt": "2026-10-17T19:48:45.479Z",
+      "updatedAt": "2026-10-17T19:48:45.479Z"
+    },
+    {
+      "id": "holo-bbcb5877-8155-48e8-8c1b-5bf55db832c8",
+      "content": "ChiRi 更新日志撰写规范（2026-10-17 用户定，含用户两次改稿纠正）：① 范围=指定起始提交（不含）到 HEAD，事实以提交 diff + 本环境 memory/YYYY-MM-DD.md 为准；② 四段结构：一、混合前台焦点算法；二、《明日方舟：终末地》等用户点名重点；三、其他改进；四、WebUI 与通知（两条带过）；③ 禁函数名/变量名/内部术语；④ 公文体，无 em dash、无粗体小标题、无「不仅…而且」排比，过 humanizer-zh；⑤ ≤1500 字；⑥ 未真机复测的效果文末一句标注；⑦ 交付用 ```markdown 代码块，不落盘除非用户要求；⑧ 用户风格=极简条目式：每条一行、≤30 字、以「优化/新增/重构/修正」起句、不带数值与原理、不写玩家感受；⑨ 数值变化写旧→新（如 15→3 秒），原理与实测数据整篇至多留一处；⑩【纠正】只写用户能感知的变化——从未启用的死模块被删除/重构不写（例：常驻状态通知本是死模块，其移除不是用户可见变化，我误当遗漏被否）；⑪【纠正】重点段同样不许展开，用户明确「不需要知道这么详细」，无需补现象解释或遗留影响说明。",
+      "category": "context",
+      "tags": [],
+      "entities": [
+        "ChiRi",
+        "HEAD",
+        "YYYY-MM-DD",
+        "WebUI"
+      ],
+      "trustScore": 1,
+      "createdAt": "2026-10-17T19:48:45.482Z",
+      "updatedAt": "2026-10-17T19:48:45.482Z"
+    },
+    {
+      "id": "holo-d6db8a2f-81db-46ff-8a86-fdea7f6eef39",
+      "content": "ChiRi devimp main_ 45 列 + `activity` 列（2026-10-18 契约）：main_ CSV 44→45 列，末尾追加 `activity`（既有列索引不变，旧脚本按前 44 列仍可读；分析脚本识别链 40→48→45→44）。值 = 前台 Activity 查表键短形 `pkg/.MainActivity`（来源 `window_visibility::last_activity_key()`，调度 1s 块经 `logger::set_diag_activity` 同步，tick/snap/event 全行自动填充）；按当前前台包前缀校验，换包旧值/外部包 component 写 `-`。窗口探针只在 FAS 路径运行 ⇒ 非 FAS 通常为 `-`、FAS 退出后同包可能保留陈旧值；训练样本须过滤 `activity != \"-\"` 且前缀 == `package + \"/\"`，要采非 FAS 的 Activity 数据需另扩探针请求点（未做）。aff_ 文件头自 2026-10-18 起只写标题 + 4 行可解析 schema（@A/@S/p/t）+ 元信息，差分/刷新帧/NaN 语义不再写进文件头（以 agentsdocs/02 与 `dvaff.py` 为准）。验证：host `cargo test --bin chiri` 223 passed / 3 failed（既有 fas_manager 失败）；Android target 因本机无 NDK 未编译。",
+      "category": "context",
+      "tags": [],
+      "entities": [
+        "` 且前缀 == `package +",
+        "ChiRi",
+        "CSV",
+        "Activity",
+        "MainActivity",
+        "FAS",
+        "NaN",
+        "Android",
+        "NDK"
+      ],
+      "trustScore": 1,
+      "createdAt": "2026-10-17T19:48:45.484Z",
+      "updatedAt": "2026-10-17T19:48:45.484Z"
     }
   ]
 }

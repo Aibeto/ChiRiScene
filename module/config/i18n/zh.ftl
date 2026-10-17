@@ -295,6 +295,7 @@ fast-watchdog-release = [Fast] 负载源超时 ({ $secs }s)，释放极速锁频
 log-level-updated = 日志级别已更新为: { $level }
 logger-log-restart-for-archive = [Logger] { $dir } 已达到 { $mb }MB，立即重启调度以打包日志
 logger-log-restart-suppressed = [Logger] { $dir } 已达到 { $mb }MB，但未检测到看门狗（pidfile 不匹配且父进程非脱管 shell），跳过自动重启归档；调试直跑属正常，线上请检查 logs/watchdog.pid
+logger-log-restart-fas-deferred = [Logger] { $dir } 已达到 { $mb }MB，但当前模式为 { $mode }（FAS 或无法确认），按「只有非 FAS 模式才允许处理日志超限」跳过本次重启归档，也不发通知；{ $min } 分钟后重新判定
 logger-append-failed = [Logger] 日志写入失败（连续 { $n } 次）：句柄重建或写盘出错，已丢弃句柄待下一条重建；持续失败会让本轮日志停在最后成功的一行
 
 # --- Rhine（实验室）---
@@ -350,6 +351,13 @@ notify-post-ok = [Notify] 投递成功（tag={ $tag } title={ $title } strategy=
 notify-script-missing = [Notify] 投递脚本缺失，通知发不出去：{ $path }
 # 启动完成通知（main.rs 启动尾部，tag ChiRi-Status，直发无拦截器；标题/正文为字面量不走 i18n）
 notify-startup-posted = [Notify] 已投递启动完成通知（tag ChiRi-Status）
+# 远程提醒（remote_push.rs：每日 08~24 点每 2 小时拉 remindPush.json，命中 versionCode 才发，tag ChiRi-Remote）
+remote-push-started = [Remote] 远程提醒线程已启动（每日 08~24 点每 2 小时拉取一次）
+remote-push-primary-failed = [Remote] 主源拉取失败：{ $error }；改试备用源（不重试）
+remote-push-fallback-failed = [Remote] 备用源拉取失败：{ $error }；本次放弃，等下一个时段（不重试）
+remote-push-notified = [Remote] 命中 versionCode { $code }，已发送提醒通知：{ $title }
+remote-push-no-match = [Remote] 未命中 versionCode { $code }（静默）
+remote-push-thread-failed = [Remote] 提醒线程启动失败：{ $error }
 
 # --- Telemetry（遥测）---
 monitor-thread-start-telemetry = [Main] 启动遥测监控线程（PSI/GPU/电池）...
