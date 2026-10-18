@@ -286,7 +286,12 @@ if [ -z "$ACCEPTED" ]; then
   exit 1
 fi
 
-# 收下后报告验证结论：posted 最可信；unknown 说明老 ROM 不认 -v，再用 list 补一次
+# 收下后先打「哪条策略被接受」——Rust 侧 `strategy_of()` 找的就是这一行的 `OK ` 前缀。
+# 缺了它日志里就会出现 `strategy=-`（曾经如此）：明明投递成功却看不出走的是哪条路，
+# 等于把最有诊断价值的一位丢了
+echo "OK S$ACCEPTED"
+
+# 再报告验证结论：posted 最可信；unknown 说明老 ROM 不认 -v，再用 list 补一次
 case "$VERDICT" in
   posted) echo "VERIFY posted" ;;
   *)

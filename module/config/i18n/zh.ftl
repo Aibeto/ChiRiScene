@@ -294,9 +294,11 @@ fast-watchdog-release = [Fast] 负载源超时 ({ $secs }s)，释放极速锁频
 
 # --- Logger ---
 log-level-updated = 日志级别已更新为: { $level }
-logger-log-restart-for-archive = [Logger] { $dir } 已达到 { $mb }MB，立即重启调度以打包日志
-logger-log-restart-suppressed = [Logger] { $dir } 已达到 { $mb }MB，但未检测到看门狗（pidfile 不匹配且父进程非脱管 shell），跳过自动重启归档；调试直跑属正常，线上请检查 logs/watchdog.pid
-logger-log-restart-fas-deferred = [Logger] { $dir } 已达到 { $mb }MB，但当前模式为 { $mode }（FAS 或无法确认），按「只有非 FAS 模式才允许处理日志超限」跳过本次重启归档，也不发通知；{ $min } 分钟后重新判定
+logger-log-restart-for-archive = [Logger] { $dir } 已达到 { $mb }MB，立即重启调度以打包日志（超限通知 notify={ $notify }）
+logger-log-restart-suppressed = [Logger] { $dir } 已达到 { $mb }MB，但未检测到看门狗（pidfile 不匹配且父进程非脱管 shell），跳过自动重启归档；超限通知 notify={ $notify }、人工接管告警 alert={ $alert }；调试直跑属正常，线上请检查 logs/watchdog.pid
+logger-log-watchdog-alert-posted = [Logger] 未检测到看门狗，已发送人工接管告警（tag ChiRi-Watchdog）
+logger-log-restart-fas-deferred = [Logger] { $dir } 已达到 { $mb }MB，但当前模式为 { $mode }，按「只有非 FAS 模式才允许处理日志超限」跳过本次重启归档，也不发通知；{ $min } 分钟后重新判定
+logger-log-restart-mode-unknown = [Logger] 读不到 current_mode.chr，无法确认是否 FAS；按非 FAS 放行继续（读不到属异常态，此时优先保证用户收到超限通知）
 logger-append-failed = [Logger] 日志写入失败（连续 { $n } 次）：句柄重建或写盘出错，已丢弃句柄待下一条重建；持续失败会让本轮日志停在最后成功的一行
 
 # --- Rhine（实验室）---

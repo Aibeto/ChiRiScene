@@ -38,17 +38,17 @@ scene: git_message
 
 ### 主要作用域（必填，可使用未列出的作用域）
 
-| 作用域      | 说明                                        |
-| ----------- | ------------------------------------------- |
-| `chiri`     | ChiRi 调度模块（src/chiri/）                |
+| 作用域      | 说明                                         |
+| ----------- | -------------------------------------------- |
+| `chiri`     | ChiRi 调度模块（src/chiri/）                 |
 | `scheduler` | FAS 调度引擎与 policy 工具（src/scheduler/） |
-| `monitor`   | 监控层（src/monitor/）                      |
-| `ebpf`      | eBPF 探针（yumi-ebpf/）                     |
-| `config`    | 配置相关（module/config/）                  |
-| `webui`     | WebUI 界面（webui/）                        |
-| `xtask`     | 构建脚本（xtask/）                          |
-| `module`    | Magisk/KernelSU 模块载体（module/）         |
-| `ci`        | CI 配置（.github/workflows/）               |
+| `monitor`   | 监控层（src/monitor/）                       |
+| `ebpf`      | eBPF 探针（yumi-ebpf/）                      |
+| `config`    | 配置相关（module/config/）                   |
+| `webui`     | WebUI 界面（webui/）                         |
+| `xtask`     | 构建脚本（xtask/）                           |
+| `module`    | Magisk/KernelSU 模块载体（module/）          |
+| `ci`        | CI 配置（.github/workflows/）                |
 
 ### 子作用域（可选，可使用未列出的作用域）
 
@@ -92,3 +92,4 @@ scene: git_message
 
 - 使用 /humanizer-zh skill 检查文本是否符合中文规范
 - 不要提到版本号变更
+- 不要包含验证信息，除非有重大错误或者主动要求

@@ -3,7 +3,7 @@
 
 use crate::common;
 use crate::fluent_args;
-use crate::i18n::t_with_args;
+use crate::i18n::{t, t_with_args};
 use anyhow::{Result, anyhow};
 use log::{LevelFilter, Log, Metadata, Record};
 use std::collections::HashMap;
@@ -206,6 +206,9 @@ static PROC_START: OnceLock<Instant> = OnceLock::new();
 /// 冷却截止时刻（相对 `PROC_START` 的毫秒）。到点前直接返回：**不读 pidfile、不读模式文件**，
 /// 把热路径代价压到一次原子读 + 一次 `elapsed`（clock_gettime 走 vDSO，非 syscall）
 static LOG_RESTART_COOLDOWN_UNTIL_MS: AtomicU64 = AtomicU64::new(0);
+/// 正在投递超限通知。门限达到后每次写日志都会进本函数，而脚本整条 su 链最坏要十几秒——
+/// 不挡住，多线程会并发投递同一事件（同一 tag 互相覆盖，用户照样只看到一条，但白白多跑几趟 su）
+static LOG_OVER_NOTIFYING: AtomicBool = AtomicBool::new(false);
 
 /// 进程启动基准（首次使用时初始化）
 fn proc_start() -> Instant {
@@ -238,7 +241,11 @@ fn log_overrun_allowed(mode: Option<&str>) -> bool {
         // 自己再 trim 一次：调用方虽已 trim，但谓词不该依赖调用方记不记得，
         // `"fas "` 这类漏网会让门控形同不存在
         Some(m) => !common::is_fas_mode(m.trim()),
-        None => false,
+        // [unknown-mode] 读不到模式（文件缺失/空）**按非 FAS 放行**（2026-10-18 用户口径）。
+        // 原实现把「无法确认」当成「确认是 FAS」永久推迟：那个文件一读不到，日志超限通知就再也发不出来，
+        // 只留一条每 10 分钟重复的 warn。调度线程正常写它，读不到属异常态，此时**优先保证用户被通知**；
+        // 真正的 FAS 模式一定有该文件（调度线程 5s 自愈重写），故不会被误放行
+        None => true,
     }
 }
 
@@ -261,27 +268,12 @@ fn note_write(counter: &AtomicU64, dir: &str, bytes: u64) {
         return;
     }
     // [fas-gate] 只有**非 FAS 模式**才允许走日志超限处理：FAS 模式要求调度全程在线，
-    // 为一包日志打断对局不值得。FAS（或读不到模式）时进入 **10 分钟冷却**，到点重新判定——
-    // 不再清零计数：清零等于要再攒满 128MB 才重试，FAS 退出后可能很久才轮到。
+    // 为一包日志打断对局不值得。FAS 时进入 **10 分钟冷却**，到点重新判定——不清零计数：
+    // 清零等于要再攒满 128MB 才重试，FAS 退出后可能很久才轮到。
     // 本判定**必须排在 `watchdog_pid()` 之前**：门限已达到后本函数每次写日志都会进来，
-    // 若先读 pidfile，冷却的 10 分钟内每次写日志都在读文件；冷却判定只需一次原子读 + 一次 elapsed
+    // 若先读 pidfile，冷却的 10 分钟里每次写日志都在读文件；冷却判定只需一次原子读 + 一次 elapsed
     let now_ms = proc_start().elapsed().as_millis() as u64;
     if now_ms < LOG_RESTART_COOLDOWN_UNTIL_MS.load(Ordering::Relaxed) {
-        return;
-    }
-    if watchdog_pid().is_none() {
-        // 抑制必须可见：静默清零零痕迹，无从排查「达到门限但永不重启」
-        log::warn!(
-            "{}",
-            t_with_args(
-                "logger-log-restart-suppressed",
-                &fluent_args!(
-                    "dir" => dir,
-                    "mb" => (total / (1024 * 1024)).to_string()
-                )
-            )
-        );
-        counter.store(0, Ordering::Relaxed);
         return;
     }
     let mode = current_mode_for_log_gate();
@@ -302,22 +294,78 @@ fn note_write(counter: &AtomicU64, dir: &str, bytes: u64) {
         );
         return;
     }
+    // 读不到模式却放行了：必须留痕，否则「本该 FAS 保护却退出了」永远查不出来
+    if mode.is_none() {
+        log::warn!("{}", t("logger-log-restart-mode-unknown"));
+    }
 
-    LOG_RESTARTING.store(true, Ordering::Relaxed);
+    // [watchdog-check] 先判看门狗：它决定「退出后是否有人拉起」，也决定要不要**额外**发一条
+    // 人工接管告警。检测放通知之前——用户口径「发送这条即将短暂退出前再加一个 watchdog 检测」
+    let has_watchdog = watchdog_pid().is_some();
+
+    // [notify] 通知**排在 watchdog 分支之外**：日志满了这件事必须告知用户，与「能不能自愈重启」
+    // 无关——没有看门狗时用户更需要知道（他得手动处理）。用 LOG_OVER_NOTIFYING 串行化：
+    // 别的线程正在投递就直接返回，让它把结论走完
+    if LOG_OVER_NOTIFYING.swap(true, Ordering::Relaxed) {
+        return;
+    }
     // 先通知后退出：进程马上要 exit，放后面就发不出去了。标题/正文为**字面量**（用户指定），
-    // 不走 i18n；tag 用 `ChiRi-Status`（无拦截器，直发）
-    crate::notify::post_notification(
+    // 不走 i18n；tag 用 `ChiRi-Logs`（无拦截器，直发）。
+    // [tag-separate] **不能与启动通知共用 `ChiRi-Status`**：AOSP 侧同 tag 是覆盖关系，
+    // 而本通知发出后进程立刻 exit、看门狗 3s 后拉起新进程会再发一条 `ChiRi-Status` 的启动通知，
+    // 于是这条日志事件会在几秒内被顶掉——日志里 `verify=posted` 明明成功、用户却看不到，
+    // 正是 2026-10-18 真机出现的形态。独立 tag 后两者互不覆盖
+    let notified = crate::notify::post_notification(
         "ChiRi日志事件",
-        "ChiRi-Status",
+        "ChiRi-Logs",
         "日志大小即将达到阈值，即将开始压缩，调度将短暂退出",
     );
+    // [watchdog-alert] 看门狗不在时**再补一条**（用户 2026-10-18 指定）：此时退出后无人拉起，
+    // 调度会永久停止，必须明确要求人工接管。独立 tag `ChiRi-Watchdog`，与上面那条互不覆盖
+    let watchdog_alerted = if has_watchdog {
+        false
+    } else {
+        let ok = crate::notify::post_notification(
+            "ChiRi daemon",
+            "ChiRi-Watchdog",
+            "Watchdog 代理启动失败，调度无法自动重启，请求人工接管",
+        );
+        if ok {
+            log::warn!("{}", t("logger-log-watchdog-alert-posted"));
+        }
+        ok
+    };
+    LOG_OVER_NOTIFYING.store(false, Ordering::Relaxed);
+
+    if !has_watchdog {
+        // 抑制必须可见：静默清零零痕迹，无从排查「达到门限但永不重启」。
+        // 两条通知都已在这之前发出（日志满 + 需人工接管），本行如实标注各自的投递结果
+        log::warn!(
+            "{}",
+            t_with_args(
+                "logger-log-restart-suppressed",
+                &fluent_args!(
+                    "dir" => dir,
+                    "mb" => (total / (1024 * 1024)).to_string(),
+                    "notify" => if notified { "ok" } else { "failed" },
+                    "alert" => if watchdog_alerted { "ok" } else { "skipped-or-failed" }
+                )
+            )
+        );
+        counter.store(0, Ordering::Relaxed);
+        return;
+    }
+
+    LOG_RESTARTING.store(true, Ordering::Relaxed);
+    // 把通知结果写进这一行：只看「立即重启调度以打包日志」而不看上一行，会把「没通知成功」误当成功
     log::info!(
         "{}",
         t_with_args(
             "logger-log-restart-for-archive",
             &fluent_args!(
                 "dir" => dir,
-                "mb" => (total / (1024 * 1024)).to_string()
+                "mb" => (total / (1024 * 1024)).to_string(),
+                "notify" => if notified { "ok" } else { "failed" }
             )
         )
     );
@@ -3110,13 +3158,18 @@ mod tests {
         assert!(!(until.saturating_add(1) < until));
     }
 
-    /// 读不到模式（文件缺失/空内容）时**不放行**：无法确认就不能在可能的 FAS 对局里退出调度
+    /// 读不到模式（文件缺失/空内容）时**放行**（2026-10-18 用户口径）：那个文件一读不到，
+    /// 原实现会永久推迟、通知再也发不出去；真正的 FAS 一定有该文件（调度线程 5s 自愈重写），
+    /// 故「读不到」属异常态，此时优先保证用户被通知
     #[test]
-    fn log_overrun_blocked_when_mode_unknown() {
-        assert!(!log_overrun_allowed(None));
-        // 空白包裹的 fas 也必须拦下：谓词自带 trim，不依赖调用方
+    fn log_overrun_allows_unknown_mode_but_still_blocks_fas() {
+        assert!(log_overrun_allowed(None), "读不到模式应放行");
+        // 空白包裹的 fas 必须拦下：谓词自带 trim，不依赖调用方
         assert!(!log_overrun_allowed(Some("fas ")));
         assert!(!log_overrun_allowed(Some("  fas  ")));
+        assert!(!log_overrun_allowed(Some("fas")));
+        // 空字符串同样走「放行」：文件在但内容为空 = 读不到
+        assert!(log_overrun_allowed(Some("")));
     }
 
     /// main_ CSV 45 列：表头、行数组与索引常量同源（activity 只追加在末尾，既有 44 列索引不变）

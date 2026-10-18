@@ -294,9 +294,11 @@ fast-watchdog-release = [Fast] load source timeout ({ $secs }s), releasing fast 
 
 # --- Logger ---
 log-level-updated = Log level updated to: { $level }
-logger-log-restart-for-archive = [Logger] { $dir } reached { $mb }MB, restarting scheduler to archive logs
-logger-log-restart-suppressed = [Logger] { $dir } reached { $mb }MB but no watchdog detected (pidfile mismatch and parent is not a detached shell); auto-restart-for-archive skipped. Normal for direct debug runs; on-device, check logs/watchdog.pid
-logger-log-restart-fas-deferred = [Logger] { $dir } reached { $mb }MB but the current mode is { $mode } (FAS or undeterminable); log-overrun restart skipped with no notification because only non-FAS mode may handle it. Re-evaluated in { $min } minutes
+logger-log-restart-for-archive = [Logger] { $dir } reached { $mb }MB, restarting scheduler to archive logs (overrun notification notify={ $notify })
+logger-log-restart-suppressed = [Logger] { $dir } reached { $mb }MB but no watchdog detected (pidfile mismatch and parent is not a detached shell); auto-restart-for-archive skipped. Overrun notification notify={ $notify }, manual-takeover alert alert={ $alert }. Normal for direct debug runs; on-device, check logs/watchdog.pid
+logger-log-watchdog-alert-posted = [Logger] no watchdog detected; manual-takeover alert posted (tag ChiRi-Watchdog)
+logger-log-restart-fas-deferred = [Logger] { $dir } reached { $mb }MB but the current mode is { $mode }; log-overrun restart skipped with no notification because only non-FAS mode may handle it. Re-evaluated in { $min } minutes
+logger-log-restart-mode-unknown = [Logger] cannot read current_mode.chr, so FAS cannot be confirmed; proceeding as non-FAS (an unreadable file is abnormal, and here the overrun notification takes priority)
 logger-append-failed = [Logger] Log write failed (continuously { $n } times): handle rebuild or disk write error, discarded handle to be rebuilt on the next log; persistent failure will keep this round's log at the last successfully written line
 
 # --- Rhine (Lab) ---
