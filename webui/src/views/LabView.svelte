@@ -1,5 +1,5 @@
 <script lang="ts">
-  // LabView.svelte: [bar] [notice] [modes] [state]实验室二级页只摆事实：rhine.chr 内容与设备当前模式分两处显示、不做因果推断，
+  // LabView.svelte: [bar] [notice] [modes] [state] 实验室二级页只摆事实：rhine.chr 内容与设备当前模式分两处显示、不做因果推断
   // 套用是否真的生效要看 daemon.log
   import { onMount } from 'svelte'
   import ConfirmSheet from '@/components/ConfirmSheet.svelte'
@@ -206,11 +206,8 @@
     gap: var(--space-3);
   }
 
-  /* 单个模式卡：嵌在玻璃面板里，干玻璃（无 backdrop-filter，避免嵌套模糊）。
-     注意：旧版基线在此用了 border-left 3px 单侧信号条，玻璃拟态风格明令禁止
-     单侧粗边框装饰（border-left/right accent stripe）——已改为四边等宽描边，
-     「启用中」的语义由右下角 g-tag--danger「已启用」文字标签 + 整圈危险色描边共同承担，
-     不靠颜色单独传递状态。 */
+  /* 单个模式卡：嵌在玻璃面板里，干玻璃（无 backdrop-filter，避免嵌套模糊）
+     「启用中」由右下角 g-tag--danger「已启用」文字标签 + 整圈危险色描边共同承担，不靠颜色单独传递状态 */
   .mode {
     display: grid;
     gap: 0.35rem;
@@ -228,7 +225,7 @@
     box-shadow: var(--glass-shadow-inset), inset 0 0 0 1px color-mix(in srgb, var(--sig-danger) 22%, transparent);
   }
 
-  /* 保留字：整体退后（背景透明化），文字保持原亮度（不再叠 opacity，避免低于 --text-muted 对比线） */
+  /* 保留字：整体退后（背景透明化），文字保持原亮度（不叠 opacity，避免低于 --text-muted 对比线） */
   .mode[data-reserved='yes'] {
     background: transparent;
     box-shadow: none;

@@ -1,15 +1,5 @@
 //! power_base.rs: [types] [batt] [init] [tick] [touch] [release]
-//! PowerBase（Stardust 家族）：以**放电功耗**为指标的调频器，用来替换 CLG
-//! 与 CLG 的根本区别：CLG 只看「利用率够不够」，PowerBase 看「功耗超没超目标」（feature 的 target_power_w）——
-//! 功耗低于目标：升频放宽（up_headroom_below）；达到/超过：守住不再升频，除非满占用核心占比达
-//! overload_cores_pct 且持续 overload_hold_ms；降频恒激进（down_scale 直接砍目标，与当前功耗无关）
-//! 档位体系（`tier_standard/tier_touch/tier_max`，真机能效前沿表的桶号）：频率上界钉在桶落点上，
-//! 标准档工作、触摸事件沿阶梯瞬时放开（标准 → 触摸一级 → 触摸二级，已在顶档忽略本次调频），
-//! 窗口（touch_break_ms）内允许突破 target_power_w，过期回落标准档
-//! **不独占 owner**：本模块是 `CpuLoadGovernor` 的备用后端（与 PF 同款的可选后端），由它的接管入口
-//! 在 Worker 与本模块之间二选一（见 cpu_load_governor.rs [backend]）；本模块对外不暴露接管的开关，
-//! release/init 只在 CLG 内部被调。FAS / 场景特调 / DOWN 停摆 / 实验室的启停判据一律不受影响
-//! 结构照 CLG 口径（快照/释放、5s 防篡改重写兜底收敛），**只压上限**：min 一次性锁硬件最低、下限交回默认调速器（选型见 common.rs [governor]），max 按功耗规则动态算每 policy 目标频率
+//! PowerBase（Stardust 家族）：以放电功耗为指标的调频器，替换 CLG——CLG 只看利用率够不够，PowerBase 看功耗超没超目标（target_power_w）；档位体系钉频率上界、触摸沿阶梯瞬时放开，只压上限，min 一次性锁硬件最低
 
 use crate::chiri::config::PowerBaseConfig;
 use crate::utils::FastWriter;
@@ -28,9 +18,7 @@ const PERF_DEADBAND: f32 = 0.05;
 const MAX_DOWN_STEP: f32 = 0.25;
 /// 档位阶梯级数：标准 → 触摸一级 → 触摸二级（绝对上限）
 const TIER_STEPS: usize = 3;
-/// 电池充放电状态缓存 TTL（2s）：负载 tick 是 160ms 级，逐 tick 真读 sysfs 无必要。
-/// 只在 PowerBase 侧缓存（`read_battery_charge_state` 本身与 status.csv / PowerAVG 取样门不动）；
-/// 延迟边界见 `PowerBase::battery_state`
+/// 电池充放电状态缓存 TTL（2s）：负载 tick 是 160ms 级，逐 tick 真读 sysfs 无必要；只在 PowerBase 侧缓存
 const BATT_STATUS_TTL: Duration = Duration::from_secs(2);
 
 // [types]
@@ -48,7 +36,7 @@ struct BasePolicy {
     hw_min: u32,
     /// 可用频率表（升序），目标频率就近取档；最高档 = 表尾（档位未启用时的上界）
     freqs: Vec<u32>,
-    /// 档位落点 [标准, 触摸一级, 触摸二级]，已 floor 对齐到本簇频率表；
+    /// 档位落点 [标准, 触摸一级, 触摸二级]，已 floor 对齐到本簇频率表
     /// 未启用 / 无前沿表 / 桶越界 / 该桶该簇无目标 → 全 = hw_max（与不启用行为一致）
     tier_ceils: [u32; TIER_STEPS],
     /// 当前生效的频率上界（= tier_ceils[当前档位]）
@@ -59,14 +47,14 @@ struct BasePolicy {
 }
 
 impl BasePolicy {
-    /// 性能比 → 频率档位：`[hw_min, ceil]` 内线性映射，再取 ≤ 目标的最大档（floor 对齐）；
+    /// 性能比 → 频率档位：`[hw_min, ceil]` 内线性映射，再取 ≤ 目标的最大档（floor 对齐）
     /// perf 是功耗预算内允许的上限，落点不得高于它；目标落两档之间时内核本就把 max 向下 clamp
     fn freq_for(&self, perf: f32) -> u32 {
         perf_to_freq(self.hw_min, self.ceil, &self.freqs, perf)
     }
 }
 
-/// 性能比 → 频率档位（纯函数，便于单测）：`[hw_min, ceil]` 线性映射后取频率表内 ≤ 目标的最大档；
+/// 性能比 → 频率档位（纯函数，便于单测）：`[hw_min, ceil]` 线性映射后取频率表内 ≤ 目标的最大档
 /// ceil 低于 hw_min（配置错）按 hw_min 处理，表内无 ≤ 目标档时同样落 hw_min
 fn perf_to_freq(hw_min: u32, ceil: u32, freqs: &[u32], perf: f32) -> u32 {
     let ceil = ceil.max(hw_min);
@@ -138,17 +126,8 @@ impl PowerBase {
     }
 
     // [batt]
-    /// 取电池充放电状态（带 TTL 缓存）：TTL 内（`now - 缓存时刻 < BATT_STATUS_TTL`）直接复用缓存值；
-    /// 过期或未命中则**重新真读**并写缓存。只为省掉逐 tick 对 `/sys/class/power_supply/battery/status`
-    /// 的真读，判定语义与 `super::read_battery_charge_state()` 完全一致（返回归一化短词，`"-"` = 未知）。
-    ///
-    /// **只缓存成功读到的有效值**：读回 `"-"`（节点缺失或未知值）**不写缓存**，按原语义当「非放电」处理，
-    /// 下次调用立即重试。因此未知值告警的去重（`BATT_STATUS_UNKNOWN_WARNED`）仍由**实际读取**触发——
-    /// 真读没有被缓存吞掉，`"-"` 的告警语义自动保持。
-    ///
-    /// **行为边界**：缓存的充放电感知延迟**不是墙钟 2s**。在持续调用（每 tick，间隔远小于 TTL）条件下，
-    /// 一次状态切换最迟在「TTL + 下一次调用等待」内被感知（TTL 到期后的首次调用才真读）；若调用间隔本身
-    /// 大于 TTL，则每次调用都会真读，延迟回落到调用粒度。故只承诺「不超过 TTL 加下一调用等待」。
+    /// 取电池充放电状态（带 TTL 缓存）：TTL 内复用缓存值，过期或未命中则重新真读并写缓存；只缓存成功读到的有效值，读回 `"-"` 不写缓存、按「非放电」处理
+    /// 感知延迟不是墙钟 2s：持续调用时一次切换最迟在「TTL + 下一次调用等待」内被感知
     fn battery_state(&mut self, now: Instant, read: impl FnOnce() -> String) -> &str {
         let expired = match &self.batt_status {
             Some((_, at)) => now.saturating_duration_since(*at) >= BATT_STATUS_TTL,
@@ -170,14 +149,10 @@ impl PowerBase {
     }
 
     // [init]
-    /// 接管全部 cpufreq policy：读可用频率、快照原状态、写默认调速器（选型见 common.rs [governor]），
-    /// 并把上限**立刻设到标准档**（内部 perf 同步为 1.0）；min 一次性压到硬件最低后不再动，与 CLG
-    /// 同口径（只压上限，下限交回默认调速器）。
-    /// 必须接管即写一次：否则 perf 与硬件实际状态不一致，首个降频 tick 无所适从。
-    /// 起手取标准档（档位体系未启用时 = 硬件最高，与旧行为一致）：接管瞬间多有负载，先给足日常余量防掉帧，
-    /// 紧随 tick 按功耗规则迅速压下；特需档只在触摸事件里瞬时放开
+    /// 接管全部 cpufreq policy：读可用频率、快照原状态、写默认调速器，并把上限立刻设到标准档（perf 同步为 1.0）；min 一次性压到硬件最低后不再动
+    /// 必须接管即写一次，否则 perf 与硬件实际状态不一致；起手取标准档（档位体系未启用时 = 硬件最高），紧随 tick 按功耗规则迅速压下
     pub fn init(&mut self, cfg: &PowerBaseConfig) {
-        // release 同时清空电池状态缓存：进入 PowerBase 时必然重读（见 [batt] battery_state）
+        // release 同时清空电池状态缓存：进入 PowerBase 时必然重读
         self.release();
         self.cfg = cfg.clone();
         self.cfg.normalize();
@@ -217,9 +192,7 @@ impl PowerBase {
                 match crate::common::soc_freq_fallback_for_policy(pid) {
                     Some(f) => freqs = f,
                     None => {
-                        // 频率表读不到且 soc.yaml [freq_khz] 兜底也取不到：该集群整段跳过接管（无痕迹）——
-                        // 能力丢失且不可自愈（节点/配置都不在），按契约记 error，避免「接管成功」与
-                        // 「只有部分集群被接管」在日志上完全同形
+                        // 频率表读不到且 soc.yaml [freq_khz] 兜底也取不到：该集群整段跳过接管，能力丢失且不可自愈，按契约记 error，避免「接管成功」与「只有部分集群被接管」在日志上同形
                         error!(
                             "{}",
                             t_with_args(
@@ -282,9 +255,8 @@ impl PowerBase {
                 ranges.prime.clone().collect()
             };
 
-            // 档位落点 [标准, 触摸一级, 触摸二级]：取真机能效前沿表的逐桶落点（frontier_aligned 已
-            // floor 对齐到本簇频率表，索引 = 桶号）。配置三桶号全非 0 且取到落点才算启用；任一缺失
-            // （非 PF SoC / 段缺失 / 桶越界 / 该桶该簇无目标）→ 全 hw_max，行为与不启用档位体系一致
+            // 档位落点 [标准, 触摸一级, 触摸二级]：取真机能效前沿表的逐桶落点（frontier_aligned 已 floor 对齐到本簇频率表，索引 = 桶号）
+            // 配置三桶号全非 0 且取到落点才算启用；任一缺失（非 PF SoC / 段缺失 / 桶越界 / 该桶该簇无目标）→ 全 hw_max
             let mut tier_ceils = [hw_max; TIER_STEPS];
             let cfg_tiers = (
                 self.cfg.tier_standard,
@@ -309,13 +281,8 @@ impl PowerBase {
                 }
             }
 
-            // 起手把 min 压到硬件最低、max 写到标准档上界，写完才把 perf 记为 1.0；失败保持 0.0，下一 tick 按目标重试。
-            // min 一次性压到硬件最低并保持（CLG 口径：只压上限，下限交回默认调速器），此后只写 max——
-            // 写序必须是「先 min 后 max」：接管前系统 min 可能高于标准档，先压 max 会被内核以 min>max 拒
-            // min 初写失败与 max 侧对称留痕：FastWriter 构造期打开失败的节点 do_write 恒 false **零内部日志**，
-            // 且 min 压不下去时后续每次 max 写入都被内核以 min>max 拒（do_write 里 EINVAL 只落 debug）——
-            // 该簇下界停在系统原值、调频上限整条失效，INFO 级完全不可见。5s 防篡改重写有自愈重试 → warn（key
-            // 见报告建议 powerbase-init-min-failed，ftl 由 Lead 车道补齐）
+            // 起手把 min 压到硬件最低、max 写到标准档上界，写完才把 perf 记为 1.0；失败保持 0.0，下一 tick 按目标重试；写序必须先 min 后 max，否则被内核以 min>max 拒
+            // min 初写失败留痕：FastWriter 构造期打开失败的节点 do_write 恒 false 且零内部日志，min 压不下去时该簇下界停在系统原值、调频上限整条失效；5s 防篡改重写有自愈重试 → warn（key powerbase-init-min-failed）
             if !min_writer.write_value_force(hw_min) {
                 warn!(
                     "{}",
@@ -330,8 +297,7 @@ impl PowerBase {
             if max_writer.write_value_force(start_ceil) {
                 perf = 1.0;
             } else {
-                // 起手写失败原本静默（perf 保持 0.0）：下一 tick 会把该簇从「内存 perf」一路砍向 hw_min，
-                // 与硬件实际频率分叉且无痕迹。可自愈（tick / 5s 防篡改重写会按目标重试）→ warn
+                // 起手写失败原本静默（perf 保持 0.0）：下一 tick 会把该簇从内存 perf 一路砍向 hw_min，与硬件实际频率分叉；可自愈（tick / 5s 防篡改重写会按目标重试）→ warn
                 warn!(
                     "{}",
                     t_with_args(
@@ -353,15 +319,13 @@ impl PowerBase {
             });
         }
 
-        // TODO: 真机验证——档位启用后触摸是唯一的放开通道，非触摸期频率硬顶在标准档（8550 是 #13）；
-        // 触摸链路不可达（evdev 无权限/无设备）时无降级通道，确认要不要补「长期无触摸事件」抬 tier_touch
+        // TODO: 真机验证——档位启用后触摸是唯一的放开通道，非触摸期频率硬顶在标准档（8550 是 #13）；触摸链路不可达（evdev 无权限/无设备）时无降级通道，确认要不要补「长期无触摸事件」抬 tier_touch
         self.tier_enabled = tier_any;
         if !tier_any {
-            // 档位体系整体回退（配置三桶号任一为 0 / 非 PF SoC 无前沿表 / 桶越界 / 该桶该簇无目标）：
-            // 三档上界全 = hw_max，此时触摸只剩「功耗豁免窗口」、不再抬频。行为与「档位体系未启用」完全同形，
-            // 排障时无从分辨是配置没开还是前沿表缺失 → 补一条 debug 留痕（init 低频，无需门控）
+            // 档位体系整体回退（配置三桶号任一为 0 / 非 PF SoC 无前沿表 / 桶越界 / 该桶该簇无目标）：三档上界全 = hw_max，触摸只剩功耗豁免窗口、不再抬频
+            // 与「档位体系未启用」完全同形，故补一条 debug 留痕（init 低频，无需门控）
             debug!(
-                "[PowerBase] tier system inactive (frontier table/bucket unavailable); all tiers = hw_max, touch only extends the power exemption window"
+                "[PowerBase] tier system inactive (frontier table/bucket missing), all tiers = hw_max"
             );
         }
         self.tier_idx = 0;
@@ -374,17 +338,14 @@ impl PowerBase {
     }
 
     // [tick]
-    /// 每个负载 tick 调用一次。`core_utils`：各 CPU 利用率（0..1）。
-    /// 功耗读数是**自己取**的：仅放电时有效，否则视为「无读数」——此时不做功耗限制
-    /// 充放电状态走 `battery_state` 的 2s TTL 缓存（延迟边界见其文档），其余判定与分支顺序不变
-    /// 返回距下次防篡改重写的剩余时间（非激活返回 None）
+    /// 每个负载 tick 调用一次，`core_utils` 为各 CPU 利用率（0..1）；功耗读数自己取，仅放电时有效，否则视为无读数、不做功耗限制
+    /// 充放电状态走 `battery_state` 的 2s TTL 缓存；返回距下次防篡改重写的剩余时间（非激活返回 None）
     pub fn on_load_update(&mut self, core_utils: &[f32]) -> Option<Duration> {
         if !self.active {
             return None;
         }
         let now = Instant::now();
-        // 放电判定**不能看电流正负**（厂商节点方向不一，部分设备充放皆正），与 PowerAVG 同口径读 status；
-        // 非放电 = 无读数（充电功率压频无意义）。真读经 TTL 缓存，`"-"` 不入缓存、下次立即重试
+        // 放电判定不能看电流正负（厂商节点方向不一，部分设备充放皆正），与 PowerAVG 同口径读 status，非放电 = 无读数；真读经 TTL 缓存，`"-"` 不入缓存、下次立即重试
         let is_discharging =
             self.battery_state(now, super::read_battery_charge_state) == "discharging";
         let power_w = if is_discharging {
@@ -435,9 +396,8 @@ impl PowerBase {
                 target = target.min(p.perf);
             }
 
-            // 触摸窗口内锁在当前档落点（与 CLG 的触摸地板同义）：负载决策不得把刚抬起的档位压回去；
-            // 窗口过期由上面的回落分支解除。只锁本次确实抬过档的簇——未命中档位体系的簇三档上界同为
-            // hw_max，锁 1.0 会把它顶到硬件最高频，且窗口过期时 apply_tier_ceil 整条跳过、perf 收不回
+            // 触摸窗口内锁在当前档落点（与 CLG 的触摸地板同义）：负载决策不得把刚抬起的档位压回去，窗口过期由上面的回落分支解除
+            // 只锁本次确实抬过档的簇——未命中档位体系的簇三档上界同为 hw_max，锁 1.0 会把它顶到硬件最高频，且窗口过期时 apply_tier_ceil 整条跳过、perf 收不回
             if self.touch_until.is_some()
                 && tier_idx > 0
                 && p.tier_ceils[tier_idx] != p.tier_ceils[0]
@@ -470,33 +430,24 @@ impl PowerBase {
         self.last_write = now;
         for p in &mut self.policies {
             let want = p.freq_for(p.perf);
-            // 兜底重写本身失败原本被 `let _ =` 吞掉：节点不可写时状态与硬件会持续分叉（5s 一轮的重写
-            // 是唯一的收敛通道，它一直失败就永远收敛不了）。可自愈（下一轮重试）→ debug；
-            // 本分支每 REWRITE_INTERVAL 每 policy 必走一次，按高频路径口径用 log_enabled! 门控省分配。
-            // **写入次数不变**：只在失败且 debug 开启时打点，不额外重写
+            // 兜底重写失败原本被 `let _ =` 吞掉：节点不可写时状态与硬件持续分叉，5s 一轮的重写是唯一收敛通道；可自愈（下一轮重试）→ debug
+            // 本分支每 REWRITE_INTERVAL 每 policy 必走一次，按高频路径口径用 log_enabled! 门控省分配，只在失败且 debug 开启时打点
             let max_ok = p.max_writer.write_value_force(want);
             if !max_ok && log::log_enabled!(log::Level::Debug) {
-                debug!(
-                    "[PowerBase] anti-tamper max rewrite failed; frequency cap may stay diverged from hardware until a later rewrite succeeds"
-                );
+                debug!("[PowerBase] anti-tamper max rewrite failed, cap may stay diverged");
             }
             // min 补写：只在这里兜底重写（接管/负载决策都不碰它），防节点被外部改写后失去下界
             let min_ok = p.min_writer.write_value_force(p.hw_min);
             if !min_ok && log::log_enabled!(log::Level::Debug) {
-                debug!(
-                    "[PowerBase] anti-tamper min rewrite failed; frequency floor may stay diverged from hardware until a later rewrite succeeds"
-                );
+                debug!("[PowerBase] anti-tamper min rewrite failed, floor may stay diverged");
             }
         }
         Some(REWRITE_INTERVAL)
     }
 
     // [touch]
-    /// 触摸事件（事件驱动，与 CLG 共用 touch_detect → sync_channel 链路）：
-    /// ① 刷新触摸窗口（连续触摸不掉窗，窗口内允许突破 `target_power_w`）；
-    /// ② 档位沿阶梯抬一级——标准 → 触摸一级 → 触摸二级，**已在最高档忽略本次调频**（只续窗）。
-    /// 升档立即把各 policy 锁到新档落点（瞬时升频，不等 tick）；窗口过期由 tick 回落到标准档。
-    /// 返回升到的桶号（None = 未升档，仅日志用）
+    /// 触摸事件（事件驱动，与 CLG 共用 touch_detect → sync_channel 链路）：刷新触摸窗口，窗口内允许突破 `target_power_w`；档位沿阶梯抬一级，已在最高档只续窗
+    /// 升档立即把各 policy 锁到新档落点，窗口过期由 tick 回落标准档；返回升到的桶号（None = 未升档，仅日志用）
     pub fn on_touch(&mut self) -> Option<usize> {
         if !self.active {
             return None;
@@ -524,21 +475,14 @@ impl PowerBase {
         }
     }
 
-    /// 档位切换落地：把各 policy 的上界切到当前档落点并**立即重写 max**（不等 tick 死区——
-    /// 死区只挡「目标与当前差太小」，档位切换本身就是一次确定的上界变化）。
-    /// `lock = true`（触摸升档）：perf 抬到 1.0，上限即落到新档顶；
-    /// `lock = false`（窗口过期回落）：不锁 perf，频率交给后续 tick 按负载收敛。
-    /// **上界未变的簇整条跳过**（不碰 perf 也不写频）——抬了 perf 却不写会让状态与硬件分叉，
-    /// 而窗口内的 target 锁定把死区补写也挡掉，只能等窗口过期或 5s 重写，等于「触摸后先升再降」。
-    /// 写失败不回滚上界：下个 tick / 5s 防篡改重写会按新上界收敛
+    /// 档位切换落地：把各 policy 的上界切到当前档落点并立即重写 max（不等 tick 死区）；`lock = true` 触摸升档时 perf 抬到 1.0，`lock = false` 窗口过期回落时不锁 perf
+    /// 上界未变的簇整条跳过（不碰 perf 也不写频），写失败不回滚上界，下个 tick / 5s 防篡改重写会按新上界收敛
     fn apply_tier_ceil(&mut self, lock: bool) {
         let idx = (self.tier_idx as usize).min(TIER_STEPS - 1);
         for p in &mut self.policies {
             let new_ceil = p.tier_ceils[idx];
             if new_ceil == p.ceil {
-                // 上界没变（未命中档位体系的簇 tier_ceils 恒 hw_max）：**连 perf 都不碰**——
-                // 抬了 perf 却不写频会让状态与硬件分叉，而窗口内的锁定把死区补写也挡掉，
-                // 只能等窗口过期或 5s 重写收敛，等于「触摸后反而先升再降」
+                // 上界没变（未命中档位体系的簇 tier_ceils 恒 hw_max）：连 perf 都不碰，抬了 perf 却不写频会让状态与硬件分叉，只能等窗口过期或 5s 重写收敛
                 continue;
             }
             if lock {
@@ -660,15 +604,15 @@ mod tests {
 
     #[test]
     fn tier_ladder_stops_at_top() {
-        // 触摸升档阶梯：0→1→2；已在最高档返回 None（「已经在#25 的则忽略本次调频」）
+        // 触摸升档阶梯：0→1→2；已在最高档返回 None（忽略本次调频）
         assert_eq!(next_tier(0), Some(1));
         assert_eq!(next_tier(1), Some(2));
         assert_eq!(next_tier(2), None);
     }
 
     // [batt]
-    /// 电池状态 TTL 缓存的读写用「读」注入解耦真实 sysfs：`battery_state` 的 `read` 形参就是本文件内的注入点，
-    /// 生产路径仍传入 `super::read_battery_charge_state`，行为不变（见 [batt] 文档）。下面用 `Cell` 计真读次数。
+    /// 电池状态 TTL 缓存的读写用「读」注入解耦真实 sysfs：`battery_state` 的 `read` 形参就是注入点，生产路径仍传入 `super::read_battery_charge_state`
+    /// 下面用 `Cell` 计真读次数
 
     /// TTL 内（< 2s）命中缓存：不重读 sysfs，即便底层状态已翻转也返回旧值
     #[test]

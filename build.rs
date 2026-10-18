@@ -23,13 +23,13 @@ fn bpf_linker_on_path() -> bool {
         .unwrap_or(false)
 }
 
-/// 确保 bpf-linker 可用：已存在则跳过，否则安装并严格校验 exit code（防 install 静默失败拖到链接阶段才暴露）
+/// 确保 bpf-linker 可用：已存在则跳过，否则安装并严格校验 exit code（防 install 静默失败拖到链接阶段）
 fn ensure_bpf_linker(tools_dir: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let tools_bin = tools_dir.join("bin");
     let linker = tools_bin.join(bpf_linker_name());
-    // 1) PATH 中已有 bpf-linker（如 CI 已用 cargo-binstall 安装预编译版）直接复用
+    // 1) PATH 中已有 bpf-linker（如 CI 预装的预编译版）直接复用
     if bpf_linker_on_path() {
-        println!("cargo:warning=✅ bpf-linker 已存在于 PATH，跳过安装");
+        println!("cargo:warning=✅ bpf-linker 已在 PATH，跳过安装");
         return Ok(linker);
     }
     // 2) 之前的构建已安装过
@@ -38,7 +38,7 @@ fn ensure_bpf_linker(tools_dir: &Path) -> Result<PathBuf, Box<dyn std::error::Er
         return Ok(linker);
     }
 
-    // 3) Windows 本机：bpf-linker 源码编译依赖 os::unix API 无法构建；完整产物由云端 CI 生成，本地跳过安装
+    // 3) Windows 本机：bpf-linker 源码编译依赖 os::unix API 无法构建，本地跳过安装（产物由 CI 生成）
     if cfg!(windows) {
         return Err(
             "Windows 本机无现成 bpf-linker（源码编译依赖 os::unix，无法在 Windows 构建），跳过安装"
@@ -46,7 +46,7 @@ fn ensure_bpf_linker(tools_dir: &Path) -> Result<PathBuf, Box<dyn std::error::Er
         );
     }
 
-    println!("cargo:warning=⏳ 正在安装 bpf-linker (可能需要数分钟)...");
+    println!("cargo:warning=⏳ 正在安装 bpf-linker（可能需数分钟）...");
     let install = Command::new("cargo")
         .args([
             "install",
@@ -67,7 +67,7 @@ fn ensure_bpf_linker(tools_dir: &Path) -> Result<PathBuf, Box<dyn std::error::Er
                 out.status,
                 String::from_utf8_lossy(&out.stderr)
             );
-            return Err("bpf-linker 安装失败，请检查上方 stderr（常见原因：缺少系统 LLVM，需安装 llvm/clang）".into());
+            return Err("bpf-linker 安装失败，常见原因：缺少系统 LLVM，需安装 llvm/clang".into());
         }
         Err(e) => return Err(format!("无法执行 cargo install bpf-linker: {e}").into()),
         _ => {}
@@ -81,7 +81,7 @@ fn ensure_bpf_linker(tools_dir: &Path) -> Result<PathBuf, Box<dyn std::error::Er
 
 // [ebpf-build]
 
-/// 写 eBPF 占位产物使 include_bytes! 可解析（内容无效、纯类型检查用；CI/发布不走此路径），返回 OUT_DIR 下的 ebpf_target 目录
+/// 写 eBPF 占位产物使 include_bytes! 可解析（内容无效，仅类型检查用），返回 OUT_DIR 下的 ebpf_target 目录
 fn write_ebpf_stub() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let out_dir = PathBuf::from(env::var("OUT_DIR")?);
     for profile in ["debug", "release"] {
@@ -95,14 +95,14 @@ fn write_ebpf_stub() -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(out_dir.join("ebpf_target"))
 }
 
-/// 构建 yumi-ebpf BPF 程序，参照 frame-analyzer 的 build_ebpf()
+/// 构建 yumi-ebpf BPF 程序
 fn build_ebpf() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    // 必须声明 rerun-if-env-changed：本脚本已打印多条 rerun-if-changed，cargo 只按路径判定重跑，
-    // 取消该变量后占位产物会残留（运行期 Ebpf::load 失败 → fps 探针没有帧源）
+    // 必须声明 rerun-if-env-changed：cargo 只按已打印的 rerun-if-changed 路径判定重跑
+    // 取消该变量后占位产物会残留（运行期 Ebpf::load 失败，fps 探针没有帧源）
     println!("cargo:rerun-if-env-changed=YUMI_SKIP_EBPF");
-    // YUMI_SKIP_EBPF：跳过 eBPF 编译，仅写占位产物供 include_bytes! 解析（CI/发布不设置该变量，行为不变）
+    // YUMI_SKIP_EBPF：跳过 eBPF 编译，仅写占位产物供 include_bytes! 解析（CI/发布不设置该变量）
     if std::env::var_os("YUMI_SKIP_EBPF").is_some() {
-        println!("cargo:warning=YUMI_SKIP_EBPF=1: skipping eBPF build (check-only stub)");
+        println!("cargo:warning=YUMI_SKIP_EBPF=1: 跳过 eBPF 编译，写占位产物");
         return write_ebpf_stub();
     }
 
@@ -118,11 +118,11 @@ fn build_ebpf() -> Result<PathBuf, Box<dyn std::error::Error>> {
     );
     println!("cargo:rerun-if-changed={}", ebpf_dir.join("src").display());
 
-    // 1. 安装 bpf-linker（严格校验）；Windows 本机无 bpf-linker 时回退占位产物，保证本地 rust-analyzer / cargo check 不阻塞（CI 不受影响）
+    // 1. 安装 bpf-linker（严格校验）；Windows 本机无 bpf-linker 时回退占位产物，保证本地 rust-analyzer / cargo check 不阻塞
     let linker_bin = match ensure_bpf_linker(&tools_dir) {
         Ok(l) => l,
         Err(e) if cfg!(windows) => {
-            println!("cargo:warning=⚠ 跳过 eBPF 编译（写入占位产物，仅本地静态检查）: {e}");
+            println!("cargo:warning=⚠ 跳过 eBPF 编译，写占位产物（仅本地静态检查）: {e}");
             return write_ebpf_stub();
         }
         Err(e) => return Err(e),
@@ -149,7 +149,7 @@ fn build_ebpf() -> Result<PathBuf, Box<dyn std::error::Error>> {
         .current_dir(&ebpf_dir)
         .env_remove("RUSTUP_TOOLCHAIN")
         .env("PATH", add_path(linker_bin.parent().unwrap())?)
-        // 新版 bpf-linker 内嵌 LLVM 已移除 -Oz/-Os，仅支持 -O0~O3：workspace release 的opt-level="z" 会导致链接失败，eBPF 目标局部覆盖为 -O2
+        // 新版 bpf-linker 内嵌 LLVM 只支持 -O0~O3：workspace release 的 opt-level="z" 会导致链接失败，eBPF 目标局部覆盖为 -O2
         .env("CARGO_PROFILE_RELEASE_OPT_LEVEL", "2")
         .status()?;
 
@@ -174,14 +174,14 @@ fn build_ebpf() -> Result<PathBuf, Box<dyn std::error::Error>> {
 
 fn add_path(add: &std::path::Path) -> Result<String, std::env::VarError> {
     let path = env::var("PATH")?;
-    // 用平台分隔符（Windows `;` / Unix `:`）把 linker 目录拼到最前：手写 ':' 会在 Windows 上把 PATH 拼坏
+    // 用平台分隔符（Windows `;` / Unix `:`）把 linker 目录拼到最前，手写 ':' 会在 Windows 上把 PATH 拼坏
     let joined = env::join_paths(std::iter::once(add.to_path_buf()).chain(env::split_paths(&path)))
         .expect("PATH 拼接失败：路径中含非法字符");
     Ok(joined.to_string_lossy().into_owned())
 }
 
 fn main() {
-    // module/config 目录整体 include_dir! 嵌入：目录内新增/删除 yaml 需触发本包重编译（已有文件改动由 rustc 依赖跟踪覆盖）
+    // module/config 整体 include_dir! 嵌入：目录内新增/删除 yaml 需触发本包重编译
     println!("cargo:rerun-if-changed=module/config");
     assert_required_configs();
     match build_ebpf() {
@@ -198,7 +198,7 @@ fn main() {
 
 // [webui-embed]
 
-/// 生成 OUT_DIR/webui_assets.rs：webui/dist 全量资产清单，daemon 启动时把内嵌副本还原到模块 webroot/（防篡改，见 src/webui_asset.rs）；
+/// 生成 OUT_DIR/webui_assets.rs：webui/dist 全量资产清单，daemon 启动时把内嵌副本还原到模块 webroot/（防篡改，见 src/webui_asset.rs）
 /// dist 缺失时 EMBEDDED=false 自动降级，xtask 先 webui 后 core
 fn write_webui_assets() {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
@@ -232,13 +232,8 @@ fn write_webui_assets() {
     fs::write(&out, code).expect("写入 webui_assets.rs 失败");
 }
 
-/// 递归收集目录下全部文件（rel 用 `/` 分隔，与 webroot 下的相对路径一致）
-///
-/// **`backend.chr` 必须排除**：它是「用户自定义背景」文件——与 index.html 同目录存在时由 WebUI
-/// 用作页面背景（见 webui/src/App.svelte [custom-bg]）。若它随 dist 被 include_bytes! 嵌进二进制，
-/// `restore_webroot` 会在**每次 daemon 启动**发现磁盘上的用户图与内嵌版内容不一致，从而按「内容不一致
-/// 即覆盖」的防篡改口径把用户图**反复改写回内嵌副本**（或被删掉），用户的背景永远无法生效。
-/// 它不属于出厂资产，只能由用户放在设备上；xtask 组装也不对它做任何增删。
+/// 递归收集目录下全部文件，rel 用 `/` 分隔，与 webroot 下的相对路径一致
+/// backend.chr 必须排除：它是用户自定义背景文件，被 include_bytes! 内嵌后 restore_webroot 会反复覆盖用户图
 fn collect_webui_dist(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) {
     let Ok(rd) = fs::read_dir(dir) else { return };
     for entry in rd.flatten() {
@@ -247,7 +242,7 @@ fn collect_webui_dist(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>)
             collect_webui_dist(root, &path, out);
         } else if let Ok(rel) = path.strip_prefix(root) {
             let rel_str = rel.to_string_lossy().replace('\\', "/");
-            // 只排除根目录下的 backend.chr（与 index.html 同级的那个），不误伤 assets/ 下的同名文件
+            // 只排除根目录下的 backend.chr（与 index.html 同级），不误伤 assets/ 下的同名文件
             if rel_str == "backend.chr" {
                 continue;
             }
@@ -256,13 +251,13 @@ fn collect_webui_dist(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>)
     }
 }
 
-/// 必需配置文件缺失直接 panic（include_dir 嵌入内容是运行时唯一来源，不允许静默回退默认值）；并校验处理器子目录 meta.yaml/feature.yaml/soc.yaml 三件套齐全
+/// 必需配置文件缺失直接 panic（include_dir 嵌入内容是运行时唯一来源），并校验处理器子目录 meta.yaml/feature.yaml/soc.yaml 三件套齐全
 fn assert_required_configs() {
     let cfg_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("module/config");
     let required = [
         "meta.yaml",
         "feature.yaml",
-        // 顶层无 soc.yaml（每 SoC 一份，见下方 handler 目录检查），故不列入必需项
+        // 顶层无 soc.yaml（每 SoC 一份），故不列入必需项
         // "soc.yaml",
         "normal/tuned_profiles.yaml",
         "normal/scenemode.yaml",

@@ -1,6 +1,6 @@
 <script lang="ts">
-  // AdvancedView.svelte: [bar] [fields] [notify-test]高级设置二级页：DOWN 停摆、PowerBase、息屏判定值与电池读数页同一套二级页逻辑：直写状态文件 / meta.yaml（不走草稿，
-  // 写后回读），与 daemon 热重载对齐。末组是通知测试（经 module 根目录 notify.sh 投递，tag 固定 ChiRi-Test）
+  // AdvancedView.svelte: [bar] [fields] [notify-test] 高级设置二级页：DOWN 停摆、PowerBase、息屏判定值，与电池读数页同一套二级页逻辑
+  // 直写状态文件 / meta.yaml（不走草稿，写后回读），与 daemon 热重载对齐；末组是通知测试（经 module 根目录 notify.sh 投递，tag 固定 ChiRi-Test）
   import NumberField from "@/components/NumberField.svelte";
   import Panel from "@/components/Panel.svelte";
   import StateBox from "@/components/StateBox.svelte";
@@ -12,10 +12,8 @@
   import { app } from "@/state.svelte";
   import { TEST_TAG } from "@/contract/notify";
 
-  // 非 ChiRi 机型：daemon 不启动调度、恒为停摆（只写 current_mode.chr 投影，down.chr 在本机不生效），
-  // 开关置灰并固定显示为已停摆，免得用户点了开关却没有任何调度行为变化
-  // 只认「读到生效配置且不含 /」的确定态（'unsupported'）：'unknown'（尚未加载 / 读失败）不能算非 ChiRi，
-  // 否则 ChiRi 机型在静态项加载完成前、或 active_config.chr 读不到时会被误锁
+  // 非 ChiRi 机型：daemon 不启动调度、恒为停摆（只写 current_mode.chr 投影，down.chr 在本机不生效），开关置灰并固定显示为已停摆
+  // 只认「读到生效配置且不含 /」的确定态 unsupported：unknown（尚未加载 / 读失败）不能算非 ChiRi，否则 ChiRi 机型会被误锁
   const downFixed = $derived(app.deviceKind === "unsupported");
 
   onMount(() => {
@@ -72,7 +70,7 @@
         checked={app.powerbaseEnabled}
         onchange={(next) => app.setPowerbase(next)}
       />
-      <!-- 息屏判定值：debug.tracing.screen_state 等于该值视为息屏（默认 1，安装时按实测校正）；失焦/回车提交，直写 screen_off_value -->
+      <!-- 息屏判定值：debug.tracing.screen_state 等于该值视为息屏（默认 1，安装时校正）；失焦/回车提交，直写 screen_off_value -->
       <NumberField
         label={t("config.screenoff")}
         hint={t("config.screenoff.hint")}
@@ -88,11 +86,8 @@
     </div>
   </Panel>
 
-  <!--
-    通知测试：daemon 的启动/FAS 通知走同一条 notify.sh，这里用固定 tag ChiRi-Test 复现。
-    tag 固定不可改：同一个 tag 会互相覆盖，若允许乱填会把启动通知顶掉。标题/正文预填可改。
-    结果区显示脚本原始输出——只报「已发送」会把真失败藏起来（本轮修的正是这个形态）
-  -->
+  <!-- 通知测试：daemon 的启动/FAS 通知走同一条 notify.sh，这里用固定 tag ChiRi-Test 复现
+       tag 固定不可改（同 tag 互相覆盖，乱填会顶掉启动通知）；结果区显示脚本原始输出，只报「已发送」会把真失败藏起来 -->
   <Panel signal="action" title={t("config.notifyTest")} desc={t("config.notifyTest.hint")}>
     <div class="g-form-stack">
       <TextField

@@ -1,12 +1,11 @@
-//! webui_asset.rs - 内嵌 WebUI 资产的启动还原: [restore]构建期 build.rs 把 webui/dist 全量嵌进二进制（清单见 OUT_DIR/webui_assets.rs）；
-//! daemon 启动时将内嵌副本与模块 webroot/ 逐文件比对，只覆盖「缺失或不一致」的文件（被篡改部分每次开机回到出厂内容）meta.yaml 的 `nofix: true` 跳过整个操作（判定与日志在 main
-//! rs）
+//! webui_asset.rs: [restore]
+//! 启动还原内嵌 WebUI 资产：与 webroot/ 逐文件比对，只覆盖缺失或不一致的文件，meta.yaml `nofix: true` 时跳过
 use std::fs;
 use std::path::Path;
 
 include!(concat!(env!("OUT_DIR"), "/webui_assets.rs"));
 
-/// 把内嵌资产还原到 `root/webroot/`，返回覆盖（含新建）的文件数；内容一致跳过（避免无谓擦写），单文件失败跳过不中断整体
+/// 把内嵌资产还原到 `root/webroot/`，返回覆盖（含新建）的文件数；内容一致跳过，单文件失败不中断整体
 pub fn restore_webroot(root: &Path) -> usize {
     if !EMBEDDED {
         return 0;
@@ -25,14 +24,13 @@ pub fn restore_webroot(root: &Path) -> usize {
         if crate::common::write_file_no_panic(&path, bytes) {
             restored += 1;
         } else {
-            // [log] 单文件还原失败原本静默跳过——界面被篡改却没还原成功时，
-            // 日志里只有一行「还原 N 个文件」，看不出哪几个没还原。启动路径，低频。
+            // [log] 单文件还原失败原本静默跳过，日志看不出是哪几个没还原（启动路径，低频）
             failed.push(rel);
         }
     }
     if !failed.is_empty() {
         log::warn!(
-            "[WebUI] {} 个资产文件还原失败（界面可能不完整）: {}",
+            "[WebUI] {} 个资产文件还原失败: {}",
             failed.len(),
             failed.join(", ")
         );

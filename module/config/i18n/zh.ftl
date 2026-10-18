@@ -1,81 +1,81 @@
 # zh.ftl: [main-monitor] [app-detect] [screen-detect] [monitors] [scheduler] [scheduler-config-watcher] [sysfs] [clg] [tuned] [touch] [fas] [fas-whitelist] [scheduler-settings] [fast-lock] [logger] [affinity] [corectl] [telemetry] [notify] [config-reload] [governor] [gpu]
 # --- Main & Monitor ---
-chiri-module-starting = chiri-module 统一启动中...
+chiri-module-starting = chiri-module 统一启动中
 scheduler-module-started = 调度器模块已启动
 scheduler-module-start-failed = 启动调度器模块失败: { $error }
 monitor-module-crashed = 监控模块崩溃: { $error }
 monitor-module-started = 监控模块已启动
-monitor-starting = 正在启动 chiri-monitor 模块...
+monitor-starting = 启动 chiri-monitor 模块
 monitor-screen-watcher-failed = [Main] 屏幕状态监控线程崩溃: { $error }
 monitor-config-watcher-failed = [Main] 配置监控线程崩溃: { $error }
 monitor-fps-crashed = [Main] FPS 监控崩溃: { $error }
 monitor-fps-tokio-failed = [Main] 无法为 FPS 监控创建 Tokio 运行时
 monitor-cpu-crashed = [Main] CPU 负载监控崩溃: { $error }
 monitor-cpu-tokio-failed = [Main] 无法为 CPU 监控创建 Tokio 运行时
-monitor-rlimit-memlock-failed = [Main] 提升 RLIMIT_MEMLOCK 失败，eBPF Map 可能无法加载。
+monitor-rlimit-memlock-failed = [Main] 提升 RLIMIT_MEMLOCK 失败，eBPF Map 可能加载失败
 main-chdir = [Main] 切换工作目录到: { $dir }
 main-module-root = [Main] 模块根目录: { $path }
 main-config-loaded = [Main] 已读取配置: { $path } (loglevel={ $loglevel }, language={ $language })
 main-module-version = [Main] 模块版本: { $name } { $version } (versionCode { $code }) | SoC { $soc } | kernel { $kernel }
-main-chiri-scheduler-selected = [Main] 检测到特定处理器，已启用 Chiri 专用调度器
-main-no-chiri-scheduler = [Main] 本处理器不在 Chiri 支持列表内，调度不接管 CPU（仅监控/WebUI/日志）
-main-diag-thread-started = [Main] 非 ChiRi 机型：已启动独立诊断线程（devimp 随 meta.dev_record 独立开关，不受停摆门控）
+main-chiri-scheduler-selected = [Main] 支持机型，已启用 Chiri 专用调度器
+main-no-chiri-scheduler = [Main] 非支持机型，不接管 CPU
+main-diag-thread-started = [Main] 非 ChiRi 机型：已启动独立诊断线程
 main-diag-thread-failed = [Main] 启动独立诊断线程失败: { $error }
-main-diag-thread-panic = [诊断] 独立诊断线程（diag_writer）panic 退出，devimp 产出已停止（须重启模块恢复）
+main-diag-thread-panic = [诊断] diag_writer panic 退出，devimp 产出停止
 main-special-tuned-exported = [Main] 已导出 { $count } 个内部特调白名单条目到 special_tuned.yaml
 main-log-archive-submitted = [Main] 上一轮日志已归档，后台打包至 logd/{ $zip }
 main-devimp-archive-submitted = [Main] 上一轮 devimp 诊断日志已归档，后台打包至 logd/{ $zip }
 main-nofix-skip = [Main] meta.yaml 记为 nofix=true：跳过 webui 资产还原与 meta.yaml 快照自愈
 main-webui-restored = [Main] WebUI 资产已按内嵌副本还原 { $count } 个文件
-main-webui-not-embedded = [Main] 二进制未内嵌 WebUI 资产（构建时缺少 webui/dist），跳过还原
-main-log-short-session-discarded = [Main] 上一轮会话存活不足 30 秒，已直接丢弃其日志（未打包）
-monitor-thread-start-screen = [Main] 启动屏幕状态监控线程...
-monitor-thread-start-config-watch = [Main] 启动配置监控线程...
-monitor-thread-start-fps = [Main] 启动 eBPF FPS 监控线程...
-monitor-thread-start-cpu = [Main] 启动 eBPF CPU 负载监控线程...
-monitor-thread-start-app-detect = [Main] 启动应用检测主循环...
+main-webui-not-embedded = [Main] 二进制未内嵌 WebUI 资产，跳过还原
+main-log-short-session-discarded = [Main] 上一轮会话存活不足 30 秒，日志已丢弃
+monitor-thread-start-screen = [Main] 启动屏幕状态监控线程
+monitor-thread-start-config-watch = [Main] 启动配置监控线程
+monitor-thread-start-fps = [Main] 启动 eBPF FPS 监控线程
+monitor-thread-start-cpu = [Main] 启动 eBPF CPU 负载监控线程
+monitor-thread-start-app-detect = [Main] 启动应用检测主循环
 
 # --- AppDetect ---
 app-detect-config-watch = [AppDetect] 开始监控配置文件: { $path }
-app-detect-change-detected = [AppDetect] 检测到变更，正在防抖 (100ms)...
-app-detect-reloading = [AppDetect] 防抖结束。正在重载配置...
+app-detect-change-detected = [AppDetect] 检测到变更，防抖 100ms
+app-detect-reloading = [AppDetect] 防抖结束，重载配置
 app-detect-reload-success = [AppDetect] 配置重载成功
 app-detect-loop-started = [AppDetect] 应用检测循环已启动 (3000ms 轮询)
 app-detect-screen-changed = [AppDetect] 屏幕状态变更: { $old } -> { $new }
 app-detect-mode-change-pkg = [AppDetect] 模式变更: { $old } -> { $new } ({ $pkg })
 app-detect-ime-auto = [AppDetect] 自动检测到输入法: { $pkg }
-app-detect-ime-fallback = [AppDetect] 自动检测输入法失败，使用后备列表。
+app-detect-ime-fallback = [AppDetect] 自动检测输入法失败，使用后备列表
 app-detect-debounce-start = [AppDetect] 防抖开始: 检测到新应用 { $pkg } (pid={ $pid })
 app-detect-debounce-confirmed = [AppDetect] 防抖确认: 应用 { $pkg } (pid={ $pid }) 保持稳定
 app-detect-pkg-change = [AppDetect] 前台应用状态变化: { $pkg } (pid={ $pid }, temp={ $temp }°C, force={ $force })
 app-detect-activity-changed = [AppDetect] 前台 Activity 变化: { $pkg } { $activity }
-app-detect-no-app = [AppDetect] 未检测到有效前台应用 (可能为系统进程或未知包)
+app-detect-no-app = [AppDetect] 未检测到有效前台应用
 app-detect-special-override = [AppDetect] 特调模式应用: { $pkg } -> { $mode }
 app-detect-special-rejected = [AppDetect] 非白名单应用 { $pkg } 映射到特调模式 { $mode } 已拒绝，回退全局模式
-app-detect-special-unavailable = [AppDetect] 特调配置不可用（tuned_profiles.yaml 缺失/损坏），{ $pkg } 映射的 { $mode } 不生效，回退全局模式
+app-detect-special-unavailable = [AppDetect] 特调配置不可用，{ $pkg } 映射的 { $mode } 不生效，回退全局模式
 app-detect-special-fallback = [AppDetect] 特调白名单命中: { $pkg } 使用优先回退模式 { $mode }
 app-detect-special-global-rejected = [AppDetect] 全局模式 { $mode } 为特调模式，不适用于非白名单应用 { $pkg }，回退 default
 
 # --- ScreenDetect ---
 screen-state-change-detected = [Screen] 通过 '{ $source }' 检测到状态变更
 screen-state-changed-value = [Screen] 屏幕状态已变更: { $state }
-screen-netlink-started = [Screen] 已启动 netlink-sys 套接字监听器
+screen-netlink-started = [Screen] netlink 套接字监听已启动
 screen-state-detect-detail = [Screen] 状态判定: { $old } -> { $new } (来源: { $source })
 screen-uevent-received = [Screen] 收到 uevent: subsystem={ $subsystem } devpath={ $devpath }
 screen-uevent-power-action = [Screen] 电源动作: { $action }
 screen-uevent-backlight = [Screen] 背光事件: { $dev } -> state={ $state }
 screen-uevent-backlight-unreadable = [Screen] 背光状态不可读: { $dev }
 screen-detect-source-found = [Screen] 屏幕状态检测源就绪: { $kind } @ { $path }
-screen-detect-no-source = [Screen] 未找到可用屏幕状态检测源（/sys/class/backlight、/sys/class/leds 背光节点、/sys/class/graphics/fb*/blank、/sys/class/lcd/*/lcd_power、/sys/class/drm 内屏 connector 的 enabled/dpms 均不可用），屏幕状态无法自动校正，仅能依赖 uevent 事件
-screen-off-vetoed = [Screen] 息屏票不足: 节点 { $node } 报亮屏（来源: { $source }），本次不确认息屏
-screen-off-unconfirmed = [Screen] 没有可读的屏幕状态节点（来源: { $source }），本次不确认息屏
+screen-detect-no-source = [Screen] 未找到可用的屏幕状态检测源，仅依赖 uevent
+screen-off-vetoed = [Screen] 息屏票不足: 节点 { $node } 报亮屏 (来源: { $source })，本次不确认息屏
+screen-off-unconfirmed = [Screen] 没有可读的屏幕状态节点 (来源: { $source })，本次不确认息屏
 screen-uevent-leds = [Screen] leds 背光事件: { $dev } -> state={ $state }
 screen-uevent-leds-unreadable = [Screen] leds 背光状态不可读: { $dev }
 scheduler-screen-on = [Scheduler] 亮屏触发事件
 scheduler-screen-off = [Scheduler] 息屏触发事件
 
 # --- Monitors ---
-cpu-monitor-started = [CPU Monitor] eBPF 系统负载监控已启动 (修复长任务盲区)。
+cpu-monitor-started = [CPU Monitor] eBPF 系统负载监控已启动
 cpu-monitor-online-cpus-failed = [CPU Monitor] 获取在线 CPU 失败: { $error }
 cpu-monitor-online-cpus = [CPU Monitor] 检测到在线 CPU 核心 ID: { $cpus }
 cpu-monitor-fg-pid-updated = [CPU Monitor] 前台 PID 已更新 { $old } -> { $new }
@@ -83,35 +83,35 @@ cpu-monitor-baseline = [CPU Monitor] 基线初始化 | 在线核心={ $cpus } �
 cpu-monitor-fg-baseline-reset = [CPU Monitor] 前台 PID 变化，重置利用率基线: { $old } -> { $new }
 cpu-monitor-util-fallback = [CPU Monitor] TGID map 无数据，降级到线程级计算 (pid={ $pid }, raw_tgid={ $raw })
 cpu-monitor-tick-log = [CPU Monitor] 核心=[{ $cores }] 前台pid={ $pid } 前台最大利用率={ $util }% 跟踪线程数={ $threads } 耗时={ $delta }ms
-cpu-monitor-channel-closed = [CPU Monitor] 通道已关闭，退出循环。
-fps-monitor-init = [FPS Monitor] 正在初始化 eBPF FPS 监控...
+cpu-monitor-channel-closed = [CPU Monitor] 通道已关闭，退出循环
+fps-monitor-init = [FPS Monitor] 初始化 eBPF FPS 监控
 fps-monitor-attached = [FPS Monitor] 已挂载 uprobe 到 PID: { $pid }
 fps-monitor-attach-failed-initial = [FPS Monitor] 初始挂载失败: { $error }
-fps-monitor-frame-silent = [FPS Monitor] 帧源静默: PID { $pid } 探针在挂但 { $secs }s 无帧事件，uprobe 疑似未命中逐帧路径或内核传递失效（FAS 将开环运行）
+fps-monitor-frame-silent = [FPS Monitor] 帧源静默: PID { $pid } 探针已挂但 { $secs }s 无帧事件，FAS 转开环
 fps-monitor-frame-resumed = [FPS Monitor] 帧源恢复: PID { $pid } 重新收到帧事件
 fps-monitor-pid-switch-failed = [FPS Monitor] PID 切换失败: { $error }
-fps-monitor-started = [FPS Monitor] eBPF FPS 监控启动成功（per-PID uprobe 模式）
-fps-monitor-passive = [FPS Monitor] FAS 未激活，探针待机（不挂载 uprobe，零开销）
-fps-monitor-detached = [FPS Monitor] FAS 已去激活，探针摘除（回到零开销待机）
-fps-monitor-symbol-short-miss = [FPS Monitor] 短签名符号 attach 失败，尝试长签名符号...
+fps-monitor-started = [FPS Monitor] eBPF FPS 监控启动成功 (per-PID uprobe)
+fps-monitor-passive = [FPS Monitor] FAS 未激活，探针待机
+fps-monitor-detached = [FPS Monitor] FAS 已去激活，探针摘除
+fps-monitor-symbol-short-miss = [FPS Monitor] 短签名符号 attach 失败，尝试长签名符号
 fps-monitor-attach-symbol = [FPS Monitor] 使用符号 attach: { $lib } (pid={ $pid })
 fps-monitor-attach-symbol-name = [FPS Monitor] 命中符号: { $symbol }
 fps-monitor-symbol-scan = [FPS Monitor] libgui 符号扫描：命中 { $count } 个 queueBuffer 变体
-fps-monitor-frame-source-missing = [FPS Monitor] 帧源不可用：{ $lib } 内无 Surface::queueBuffer 符号，FAS 档位控制停摆（退避 { $secs }s 后重试）
+fps-monitor-frame-source-missing = [FPS Monitor] 帧源不可用：{ $lib } 内无 Surface::queueBuffer 符号，FAS 档位控制停摆，{ $secs }s 后重试
 fps-monitor-frame-summary = [FPS Monitor] 帧摘要 | pid={ $pid } 窗口={ $window } 最新={ $latest_ms }ms 平均={ $avg_ms }ms
-fps-monitor-frames-dropped = [FPS Monitor] 事件通道拥塞，已丢弃 { $count } 个帧样本（调度层消费不及时）
+fps-monitor-frames-dropped = [FPS Monitor] 事件通道拥塞，已丢弃 { $count } 个帧样本
 fps-monitor-attach-stats = [FPS Monitor] attach 累计失败 { $count } 次，最后原因: { $error }
 
 # --- Scheduler ---
 scheduler-ipc-started = [Scheduler] IPC 通道监听器已启动
 scheduler-mode-change-request = [Scheduler] 模式变更请求: { $old } -> { $new } (包名: { $pkg }, 温度: { $temp })
-scheduler-channel-closed = [Scheduler] 通道已关闭！线程退出
-scheduler-ipc-panic = [Scheduler] IPC 线程发生 panic，正在释放 CPU 控制权。
-scheduler-ipc-restart = [Scheduler] 已清理到安全态并重启调度循环（第 { $count } 次）。
-scheduler-ipc-restart-giveup = [Scheduler] 连续 { $count } 次 panic，放弃重启调度循环。
-scheduler-doze-enable = [Scheduler] 息屏: 计时器启动。
-scheduler-doze-special-keep = [Scheduler] 息屏: 特调模式保持接管，不切换 CLG。
-scheduler-doze-restore = [Scheduler] 亮屏: 恢复之前的性能限制。
+scheduler-channel-closed = [Scheduler] 通道已关闭，线程退出
+scheduler-ipc-panic = [Scheduler] IPC 线程 panic，正在释放 CPU 控制权
+scheduler-ipc-restart = [Scheduler] 已清理到安全态并重启调度循环，第 { $count } 次
+scheduler-ipc-restart-giveup = [Scheduler] 连续 { $count } 次 panic，放弃重启调度循环
+scheduler-doze-enable = [Scheduler] 息屏: 计时器启动
+scheduler-doze-special-keep = [Scheduler] 息屏: 特调模式保持接管，不切换 CLG
+scheduler-doze-restore = [Scheduler] 亮屏: 恢复之前的性能限制
 scheduler-clg-init = [Scheduler] CPU 负载调频器: 在启动时初始化 (模式={ $mode })
 scheduler-event-screen = [Scheduler] 收到屏幕状态事件: on={ $on } (此前 last={ $last })
 scheduler-event-mode-change = [Scheduler] 收到模式切换事件: 包={ $pkg } { $old } -> { $new } (温度={ $temp })
@@ -121,10 +121,10 @@ scheduler-event-config-reload = [Scheduler] 收到配置重载事件: 当前模�
 scheduler-special-mode-active = [Scheduler] 特调模式激活: { $pkg } -> { $mode }
 scheduler-tuned-cooldown = [Scheduler] 特调接管失败，进入 { $secs } 秒冷却，期间由 CLG 接管调度
 scheduler-scene-mode-enter = [Scheduler] 息屏已超过阈值，切换到 scenemode 省电模式
-scheduler-scene-mode-exit-fas = [Scheduler] FAS 重新激活，提前退出 scenemode（恢复全部在线核）
-scheduler-scene-mode-exit-switch = [Scheduler] scenemode_enabled 已关闭，退出 scenemode 并恢复息屏低功耗配置
+scheduler-scene-mode-exit-fas = [Scheduler] FAS 重新激活，提前退出 scenemode
+scheduler-scene-mode-exit-switch = [Scheduler] scenemode_enabled 已关闭，退出 scenemode
 scheduler-fas-switch-off = [Scheduler] fas_enabled 已关闭，注销全部 FAS 实例并恢复调度接管
-scheduler-scene-mode-saturation = [Scheduler] scenemode 持续顶满性能上限（little util { $util }%），退回 reduce 并进入 300s 冷却
+scheduler-scene-mode-saturation = [Scheduler] scenemode 持续顶满性能上限 (little util { $util }%)，退回 reduce 并进入 300s 冷却
 
 # --- Scheduler: DOWN（停摆） ---
 scheduler-down-enter = [Scheduler] DOWN 停摆已启用：CLG/特调/FAS/fast_lock/线程摆放/core_ctl 全部释放，只保留采集与日志
@@ -133,14 +133,14 @@ down-enabled = [Down] down.chr 写着 down，调度进入停摆
 down-disabled = [Down] down.chr 已清空，调度恢复正常
 down-watch-error = [Down] down.chr 监听失败: { $error }
 down-boot-halted = [Down] 本次启动即处于停摆：所有接管都不启用，采集与日志照常
-down-heartbeat = [Down] 停摆生效中（已 { $mins } 分钟）：调度保持全部释放，采集与日志照常（清空 down.chr 即恢复）
-down-unsupported-soc = [Down] 本机不在 ChiRi 支持列表：调度不接管 CPU，已按停摆对齐对外状态（仅写 current_mode.chr）
+down-heartbeat = [Down] 停摆生效中 (已 { $mins } 分钟)：调度保持全部释放，采集与日志照常
+down-unsupported-soc = [Down] 本机不在 ChiRi 支持列表，已按停摆对齐对外状态
 
 # --- Scheduler: Config Watcher ---
-config-reloading = [Config] 检测到配置文件变更，正在重载...
+config-reloading = [Config] 检测到配置文件变更，重载中
 config-reloaded-success = [Config] 配置重载成功
 config-reload-fail = [Config] 配置重载失败: { $error }
-config-special-parse-failed = [Config] 特调配置文件解析失败: { $path } ({ $error }) — 特调不可用，白名单应用回退 CLG
+config-special-parse-failed = [Config] 特调配置解析失败: { $path } ({ $error })，白名单应用回退 CLG
 config-special-merged = [Config] 已合并特调配置文件: { $path }
 
 # --- Governor (performance 接管，FAS/contingency) ---
@@ -149,36 +149,45 @@ governor-switched = [Governor] P{ $pid } 调速器 { $from } -> performance
 governor-restored = [Governor] P{ $pid } 调速器 performance -> { $to }
 governor-switch-failed = [Governor] policy { $pid } 切换调速器失败
 governor-restore-failed = [Governor] policy { $pid } 恢复调速器 { $governor } 失败
-governor-residue-cleanup = [Governor] 检测到残留 performance 调速器（上次可能异常退出），已恢复 schedutil
-governor-residue-down = [Governor] 停摆期检测到 policy{ $pid } 仍是 performance：不代为清理（要记录系统原状）；若确认是上次异常退出的残留，请先关闭停摆再重启一次调度
+governor-residue-cleanup = [Governor] 检测到残留 performance 调速器，已恢复 schedutil
+governor-residue-down = [Governor] 停摆期 policy{ $pid } 仍为 performance，不代为清理
+governor-activate-noop = [Governor] 一个 policy 都未接管 (共 { $total } 个)，performance 语义未生效
 
 # --- GPU 频率锁（contingency） ---
-gpu-locked = [GPU] 已锁最高频 { $khz } kHz（{ $nodes } 个节点）
+gpu-locked = [GPU] 已锁最高频 { $khz } kHz ({ $nodes } 个节点)
 gpu-released = [GPU] 已恢复原频率上限
 gpu-detect-miss = [GPU] 未找到可用的 GPU 频率节点，contingency 的 GPU 锁频跳过
+gpu-lock-partial = [GPU] 锁频只成功 { $ok }/{ $total } 个节点
+gpu-probe-rejected = [GPU] devfreq 目录被拒绝收录: { $path } ({ $reason })
+gpu-snapshot-unavailable = [GPU] 接管前快照不可用，释放时可能无法恢复原 governor/频率
+gpu-lock-failed = [GPU] { $nodes } 个节点全部锁频失败，contingency 的 GPU 锁频能力丢失
+gpu-release-max-stuck = [GPU] { $nodes } 个节点恢复原 max 频率失败，卡在最高频
 
 # --- SysFS 通用 ---
 sysfs-write-failed = [SysFS] 写入 { $path } 失败: { $error }
-config-scenemode-merged = [Config] 已合并息屏场景配置文件: { $path }
-config-scenemode-parse-failed = [Config] 息屏场景配置解析失败（{ $path }）: { $error }，保持当前生效的 scenemode
-battery-status-unknown = [Battery] status 节点取值不认识（原文: { $raw }），按未知处理；功耗均值只在 discharging 时取样，请检查该节点是否为标准取值（Charging / Discharging / Full / Not charging）
-power-avg-skip = [PowerAVG] 本轮取样未计入（原因: { $reason }），PowerAVG.chr 保持原值；取样条件＝电池放电，平均模式还要求亮屏
-telemetry-raw-snapshot = [Telemetry] 首次读数快照（用于核对单位）：私有节点电压原始值={ $v }、电流原始值={ $i }，当前校准 电压÷{ $vd }、电流÷{ $cd } → V={ $v }/{ $vd }、A={ $i }/{ $cd }
-config-watch-error = [Config] 监控配置目录失败: { $error }
-config-apply-tweaks-failed = [Config] 应用重载的系统微调失败: { $error }
-
-# --- SysFS (共享 FastWriter) ---
 sysfs-open-failed = [SysFS] 打开 { $path } 失败: { $error }
 sysfs-umount2-failed = [SysFS] umount2({ $path }) 失败: { $error }
 sysfs-write-freq-failed = [SysFS] 写入频率 { $freq } 失败: { $error }
+config-scenemode-merged = [Config] 已合并息屏场景配置文件: { $path }
+config-scenemode-parse-failed = [Config] 息屏场景配置解析失败 ({ $path }): { $error }，保持当前生效的 scenemode
+battery-status-unknown = [Battery] status 节点取值不认识: { $raw }，按未知处理
+power-avg-skip = [PowerAVG] 本轮取样未计入 (原因: { $reason })，PowerAVG.chr 保持原值
+telemetry-raw-snapshot = [Telemetry] 首次读数快照：电压原始值={ $v }、电流原始值={ $i }，校准 电压÷{ $vd }、电流÷{ $cd } → V={ $v }/{ $vd }、A={ $i }/{ $cd }
+config-watch-error = [Config] 监控配置目录失败: { $error }
+config-apply-tweaks-failed = [Config] 应用重载的系统微调失败: { $error }
+config-feature-parse-failed = [Config] feature.yaml 解析失败: { $error }
+config-meta-fallback = [Config] meta 配置回退内嵌默认: { $path }
 
 # --- CLG ---
 clg-init = [CLG] P{ $pid } 初始化 | 核心={ $cpus } | 频率={ $fmin }-{ $fmax } MHz | P={ $perf } -> { $freq } kHz
 clg-activated = [CLG] CPU 负载调频器已激活，共接管 { $count } 个集群
-powerbase-activated = [PowerBase] 功耗基准调频器已接管（CLG 已释放）
+powerbase-activated = [PowerBase] 功耗基准调频器已接管 (CLG 已释放)
 powerbase-deactivated = [PowerBase] 功耗基准调频器已释放
 powerbase-writer-invalid = [PowerBase] P{ $pid } 频率写入器不可用，跳过该集群
-powerbase-touch-tier = [PowerBase] 触摸升档至前沿 #{ $tier } 桶上限（窗口过期回落标准档）
+powerbase-touch-tier = [PowerBase] 触摸升档至前沿 #{ $tier } 桶上限
+powerbase-takeover-skipped = [PowerBase] P{ $pid } 频率表与 soc.yaml 兜底均不可用，该集群跳过接管
+powerbase-init-write-failed = [PowerBase] P{ $pid } 接管初写上限失败，该簇 perf 停在 0
+powerbase-init-min-failed = [PowerBase] P{ $pid } 接管初写下限失败，min 压不下去
 clg-no-clusters = [CLG] CPU 负载调频器: 未找到有效集群，保持未激活状态
 clg-deactivated = [CLG] CPU 负载调频器已停用
 clg-config-reloaded = [CLG] 配置已热重载 | 升频={ $up } 降频={ $down } 地板={ $floor } 天花板={ $ceil }
@@ -187,47 +196,47 @@ clg-restore = [CLG] P{ $pid } 已恢复 | governor={ $governor } min={ $min } kH
 clg-tick-log = [CLG] P{ $pid } 利用率={ $util }% perf={ $perf } 频率={ $freq }kHz boost={ $boost }kHz decay={ $decay }
 clg-pf-tick-log = [CLG-PF] P{ $pid } 利用率={ $util }% perf={ $perf } 频率={ $freq }kHz decay={ $decay } pf={ $pf_khz }kHz
 clg-pf-enabled = [CLG-PF] 帕累托前沿查表已启用 | 指纹={ $fp } 桶数={ $buckets }
-clg-pf-fallback = [CLG-PF] 前沿表不可用（{ $reason }），回退比例路径（只此一次）
+clg-pf-fallback = [CLG-PF] 前沿表不可用 ({ $reason })，回退比例路径 (只此一次)
 clg-writer-invalid = [CLG] P{ $pid } sysfs 写入器无效 (max_valid: { $max_valid }, min_valid: { $min_valid })，已跳过
 clg-freq-set = [CLG] P{ $pid } 频率调整: { $old_khz }MHz -> { $new_khz }MHz
 clg-freq-write-failed-cached = [CLG] P{ $pid } 频率写入失败，保持缓存值 { $cached_khz }MHz (目标 { $target_khz }MHz)
-clg-watchdog-release = [CLG] 看门狗: 已 { $secs } 秒未收到负载事件，eBPF 负载源疑似失效，已释放 CPU 控制权恢复系统默认调频
+clg-watchdog-release = [CLG] 看门狗: { $secs } 秒无负载事件，eBPF 负载源疑似失效，已释放 CPU 控制权
 clg-touch-boost = [CLG] 触摸升频窗口开启：大核性能下限={ $floor } 保持 { $ms }ms
-clg-thermal-cap = [CLG] 热保护压制: 电池={ $batt }°C / CPU={ $cpu }°C，性能上限压至 { $cap }%（≥{ $free } 豁免）
+clg-thermal-cap = [CLG] 热保护压制: 电池={ $batt }°C / CPU={ $cpu }°C，性能上限压至 { $cap }% (≥{ $free } 豁免)
 clg-thermal-no-sensor = [CLG] 热保护: 未找到 CPU 温度传感器，CPU 参考停用
-thermal-config-clamped = [Thermal] 热配置越界已钳制: { $key } 由 { $value } 修正为 { $fixed }
 clg-thermal-no-battery = [CLG] 热保护: 未找到电池温度节点，仅按 CPU 温度压制
-battery-temp-scale = [Thermal] 电池温度刻度预识别: { $unit }（换算除数 { $divisor }），CLG 热保护与 FAS 温度护栏共用
-battery-temp-scale-unknown = [Thermal] 电池温度刻度预识别未得出结论（节点缺失或读数未就绪），本次退化为仅 CPU 温度
-clg-min-write-failed = [CLG] P{ $pid } 写入 scaling_min_freq={ $khz }MHz 失败，空闲频率地板可能偏高
+clg-min-write-failed = [CLG] P{ $pid } 写入 scaling_min_freq={ $khz }MHz 失败
+thermal-config-clamped = [Thermal] 热配置越界已钳制: { $key } 由 { $value } 修正为 { $fixed }
+battery-temp-scale = [Thermal] 电池温度刻度预识别: { $unit } (换算除数 { $divisor })
+battery-temp-scale-unknown = [Thermal] 电池温度刻度预识别未得出结论，本次退化为仅 CPU 温度
 
 # --- 特调（按模式参数组接管：akmode / playback / daily …） ---
-tuned-init = [Tuned] { $mode } 特调接管（无档位负载直拉）
-tuned-activated = [Tuned] { $mode } 特调已激活（schedutil + 动态 max，升频即时/降频防抖）
+tuned-init = [Tuned] { $mode } 特调接管 (无档位负载直拉)
+tuned-activated = [Tuned] { $mode } 特调已激活 (schedutil + 动态 max，升频即时/降频防抖)
 tuned-no-clusters = [Tuned] { $mode } 特调: 未找到有效集群，保持未激活状态
 tuned-cluster-skipped = [Tuned] { $mode } P{ $pid } 跳过接管 (原因: { $reason })
 tuned-deactivated = [Tuned] { $mode } 特调已停用
 tuned-config-reloaded = [Tuned] { $mode } 特调参数组已热重载
 tuned-tick-log = [Tuned] { $mode } { $state }
-tuned-watchdog-release = [Tuned] 看门狗: 已 { $secs } 秒未收到负载事件，eBPF 负载源疑似失效，已释放特调控制权并恢复原 governor/min/max
-tuned-profile-missing = [Tuned] 白名单模式 { $mode } 没有对应参数组，接管时会回退 akmode 段（游戏参数），请检查 tuned_profiles.yaml
+tuned-watchdog-release = [Tuned] 看门狗: { $secs } 秒无负载事件，eBPF 负载源疑似失效，已释放特调控制权
+tuned-profile-missing = [Tuned] 白名单模式 { $mode } 没有对应参数组，接管时回退 akmode 段
 
 # --- Touch（触摸升频） ---
-touch-detect-started = [Touch] 触摸检测线程已启动（读取 /dev/input 输入设备）
+touch-detect-started = [Touch] 触摸检测线程已启动 (读取 /dev/input)
 touch-detect-no-devices = [Touch] 未找到可读的输入设备，3 秒后重试
 touch-detect-poll-error = [Touch] poll 输入设备失败，重新枚举设备: { $error }
-touch-detect-input-unreadable = [Touch] /dev/input 不可读（权限/路径异常），触摸检测无法枚举设备，触摸升频失效
-touch-detect-device-open-failed = [Touch] { $count } 个输入设备打开失败，这些设备上的触摸不会被检测到: { $list }
-touch-detect-device-error = [Touch] 输入设备 { $index } 上报异常事件（revents={ $revents }），重新枚举
+touch-detect-input-unreadable = [Touch] /dev/input 不可读，触摸检测无法枚举设备
+touch-detect-device-open-failed = [Touch] { $count } 个输入设备打开失败: { $list }
+touch-detect-device-error = [Touch] 输入设备 { $index } 上报异常事件 (revents={ $revents })，重新枚举
 touch-detect-read-failed = [Touch] 输入设备 { $index } 读取失败或已断开，重新枚举
-touch-detect-thread-exit = [Touch] 触摸检测线程已退出（含 panic）：触摸升频永久失效，需重启守护进程恢复
+touch-detect-thread-exit = [Touch] 触摸检测线程已退出，触摸升频失效
 touch-detect-down = [Touch] 检测到触摸按下 (type={ $type } code={ $code })
 touch-event-received = [Touch] 收到触摸事件，触发大核升频并立即写频
-touch-boost-disable-node = [TouchBoost] 已写 { $path } = 0（屏蔽系统触摸升频）
-touch-boost-disable-applied = [TouchBoost] 已屏蔽 Android 自带触摸升频（cpu_boost），改由 ChiRi 触摸升频接管
-sched-tuning-applied = [Sched] 内核调度器参数已应用（{ $count } 项）
+touch-boost-disable-node = [TouchBoost] 已写 { $path } = 0
+touch-boost-disable-applied = [TouchBoost] 已屏蔽 Android 自带触摸升频 (cpu_boost)
+sched-tuning-applied = [Sched] 内核调度器参数已应用 ({ $count } 项)
 sched-tuning-key-rejected = [Sched] 内核调度器参数被白名单拒绝: { $key }
-system-tweaks-restore = [Tweaks] DOWN 停摆：一次性系统调整已还原（{ $count } 个节点）
+system-tweaks-restore = [Tweaks] DOWN 停摆：一次性系统调整已还原 ({ $count } 个节点)
 system-tweaks-skipped-down = [Tweaks] DOWN 停摆期间跳过一次性系统调整下发
 
 # --- FAS ---
@@ -247,21 +256,33 @@ fas-floor-rescue = [FAS] 触底救援 | 卡在地板 { $frames }帧 P={ $old }, 
 fas-tick-log = [FAS] { $target }fps 平均:{ $avg } | { $ms }ms ema:{ $ema } | 误差:{ $err_ema }/{ $err_inst } | { $act } | P:{ $perf } 前台利用率:{ $util }{ $cd }{ $damp }{ $temp }{ $offset }
 fas-set-game = [FAS] 设置游戏 | 包名={ $pkg } | 档位={ $gears } | 目标={ $target }fps
 fas-no-profile = [FAS] 未找到 '{ $pkg }' 的专属配置，使用全局档位 { $gears }
-fas-loop-open = [FAS] 帧反馈静默，进入开环（仅负载控制），档位不再调整: { $pkg }
+fas-loop-open = [FAS] 帧反馈静默，进入开环 (仅负载控制)，档位不再调整: { $pkg }
 fas-loop-close = [FAS] 帧反馈恢复，回到闭环: { $pkg }
 fas-pid-reloaded = [FAS] PID 系数热重载: Kp={ $kp } Ki={ $ki } Kd={ $kd }
 fas-rules-reloaded = [FAS] 规则已热重载 (冗余={ $margin }, 地板={ $floor }, 天花板={ $ceil }, 配置数={ $profiles })
-fas-policy-writer-invalid = [FAS] P{ $pid } 策略写入器无效 (max_valid: { $max_valid }, min_valid: { $min_valid })，已跳过。
-fas-qos-clamp-enter = [FAS] P{ $pid } 锁频被 QoS 钳制（写 { $wrote }kHz，读回 { $read }kHz，dcvsh_limit={ $dcvsh }）
-fas-qos-clamp-exit = [FAS] P{ $pid } QoS 钳制解除（持续 { $held }s，max 恢复 { $freq }kHz）
-fas-qos-clamp-long = [FAS] P{ $pid } QoS 钳制已持续 { $held }s（写 { $wrote }kHz，读回 { $read }kHz），热控疑似长期钳死锁频
-fas-freq-tamper = [FAS] P{ $pid } 锁频被异常改写（写 { $wrote }kHz，读回 { $read }kHz）-> 重新收敛
+fas-policy-writer-invalid = [FAS] P{ $pid } 策略写入器无效 (max_valid: { $max_valid }, min_valid: { $min_valid })，已跳过
+fas-qos-clamp-enter = [FAS] P{ $pid } 锁频被 QoS 钳制 (写 { $wrote }kHz，读回 { $read }kHz，dcvsh_limit={ $dcvsh })
+fas-qos-clamp-exit = [FAS] P{ $pid } QoS 钳制解除 (持续 { $held }s，max 恢复 { $freq }kHz)
+fas-qos-clamp-long = [FAS] P{ $pid } QoS 钳制已持续 { $held }s (写 { $wrote }kHz，读回 { $read }kHz)
+fas-freq-tamper = [FAS] P{ $pid } 锁频被异常改写 (写 { $wrote }kHz，读回 { $read }kHz)，重新收敛
 fas-native-gear-skip-samples = [FAS] 原生档识别跳过: 窗口样本不足 { $count }/{ $need } 帧，平均帧:{ $avg }
 fas-native-gear-no-match = [FAS] 原生档识别未命中: 平均帧:{ $avg } 标准差:{ $stddev } 无档位落在 ±8fps 内 (当前目标 { $target }fps)
 fas-native-gear-skip-jitter = [FAS] 原生档识别跳过: 抖动超限 标准差:{ $stddev } ≥ { $limit }，平均帧:{ $avg }
-fas-native-gear-detected = [FAS] 原生档识别生效: 平均帧:{ $avg } 标准差:{ $stddev }，目标档 { $from } -> { $to }fps (绕过确认计数)
+fas-native-gear-detected = [FAS] 原生档识别生效: 平均帧:{ $avg } 标准差:{ $stddev }，目标档 { $from } -> { $to }fps
 fas-downgrade-deferred-dwell = [FAS] 降档被驻留期暂缓: 剩余 { $dwell } 帧，平均帧:{ $avg } 已低于降档门槛 { $threshold } (目标 { $target }fps)
-fas-extreme-jank-fasttrack = [FAS] 极端卡顿快车道: 平均帧:{ $avg } 远低于目标 { $target }fps (标准差:{ $stddev })，绕过加速直接推进降档
+fas-extreme-jank-fasttrack = [FAS] 极端卡顿快车道: 平均帧:{ $avg } 远低于目标 { $target }fps (标准差:{ $stddev })
+fas-no-policies = [FAS] 未发现任何 cpufreq policy，FAS 接管失败
+fas-governor-write-failed = [FAS] P{ $pid } 写入 performance governor 失败: { $error }
+fas-freq-table-unavailable = [FAS] P{ $pid } 频率表不可用且无 soc.yaml 兜底 ({ $path })，该 policy 已跳过
+fas-policy-none-taken = [FAS] 所有 policy 均被跳过，未接管任何集群
+fas-freq-hold-skip = [FAS] P{ $pid } 频率保持期剩余 { $frames } 帧，跳过本次写入
+fas-freq-hysteresis-skip = [FAS] P{ $pid } 频差 { $diff } ≤ 迟滞 { $hysteresis }，跳过本次写入
+fas-verify-read-failed = [FAS] P{ $pid } 锁频校验读回失败
+fas-verify-read-restored = [FAS] P{ $pid } 锁频校验读回恢复，校验链路重建
+fas-boost-ceil-clamped = [FAS] { $act } 升频被上限钳制: 请求 { $req } -> P { $perf } (上限 { $ceil })
+fas-boost-max-inc-clamped = [FAS] { $act } 升频受单次步长限制: 请求 { $req } -> P { $perf } (最大增量 { $max_inc })
+fas-boost-damped-cap-clamped = [FAS] { $act } 升频被阻尼上限钳制: 请求 { $req } -> P { $cap }
+fas-frame-dropped = [FAS] 帧样本被丢弃: { $ms }ms ({ $reason })
 
 # --- FAS（白名单/调度集成）---
 main-fas-whitelist-exported = [Main] 已导出 { $count } 个 FAS 白名单条目到 fas_whitelist.yaml
@@ -269,11 +290,13 @@ app-detect-fas-fallback = [AppDetect] 前台应用命中 FAS 白名单，进入 
 app-detect-pkg-normalized = [AppDetect] 前台名含子进程后缀，已归一到主包名: { $pkg } -> { $base }
 rule-key-normalized = [Rules] 规则键含子进程后缀，已按主包名处理: { $key } -> { $base }
 rule-key-conflict = [Rules] 规则键归一后与已有主包名规则冲突，保留后者: { $key } -> { $base }
+rule-app-modes-empty = [AppDetect] rules 的 app_modes 为空或 null，按空表处理
+rule-global-mode-defaulted = [AppDetect] rules 未给 global_mode，回退默认模式: { $mode }
 app-detect-fas-rejected = [AppDetect] 非白名单应用 { $pkg } 映射到 FAS 模式 { $mode } 已拒绝，回退全局模式
 app-detect-fas-global-rejected = [AppDetect] 全局模式 { $mode } 为 FAS 模式，不适用于非白名单应用 { $pkg }，回退 default
 scheduler-fas-activate = [Scheduler] FAS 实例激活: { $pkg } (pid={ $pid })
 scheduler-fas-switch = [Scheduler] FAS 实例热切换: { $old } -> { $new }
-scheduler-fas-deactivate = [Scheduler] FAS 实例去激活（频率已恢复）: { $pkg }
+scheduler-fas-deactivate = [Scheduler] FAS 实例去激活，频率已恢复: { $pkg }
 scheduler-fas-delayed-exit = [Scheduler] FAS 延迟退出到期，已恢复原调速器并按 { $mode } 重新接管
 scheduler-fas-init-failed = [Scheduler] FAS 实例初始化失败，已回退 CLG: { $pkg }
 scheduler-fas-cooldown = [Scheduler] FAS 初始化失败已冷却，{ $secs } 秒内由 CLG 接管
@@ -286,24 +309,27 @@ main-config-watch-thread-create = 主配置监控线程已创建
 # --- Fast Lock ---
 fast-activated = [Fast] 极速模式已激活，所有核心锁定最高频
 fast-deactivated = [Fast] 极速模式已解除，系统频率恢复
-fast-init = [Fast] policy { $pid } 锁频 { $khz } kHz（target）
-fast-rewrite = [Fast] policy { $pid } 重写 { $khz } kHz（target）
+fast-init = [Fast] policy { $pid } 锁频 { $khz } kHz (target)
+fast-rewrite = [Fast] policy { $pid } 重写 { $khz } kHz (target)
 fast-writer-invalid = [Fast] policy { $pid } 写入器无效 (max_valid: { $max_valid }, min_valid: { $min_valid })，已跳过
 fast-restore = [Fast] policy { $pid } 恢复 governor={ $governor } min={ $min } max={ $max }
 fast-watchdog-release = [Fast] 负载源超时 ({ $secs }s)，释放极速锁频
+fast-freq-table-unavailable = [Fast] P{ $pid } 频率表不可用且无 soc.yaml 兜底，该簇不锁频: { $path }
 
 # --- Logger ---
 log-level-updated = 日志级别已更新为: { $level }
-logger-log-restart-for-archive = [Logger] { $dir } 已达到 { $mb }MB，立即重启调度以打包日志（超限通知 notify={ $notify }）
-logger-log-restart-suppressed = [Logger] { $dir } 已达到 { $mb }MB，但未检测到看门狗（pidfile 不匹配且父进程非脱管 shell），跳过自动重启归档；超限通知 notify={ $notify }、人工接管告警 alert={ $alert }；调试直跑属正常，线上请检查 logs/watchdog.pid
-logger-log-watchdog-alert-posted = [Logger] 未检测到看门狗，已发送人工接管告警（tag ChiRi-Watchdog）
-logger-log-restart-fas-deferred = [Logger] { $dir } 已达到 { $mb }MB，但当前模式为 { $mode }，按「只有非 FAS 模式才允许处理日志超限」跳过本次重启归档，也不发通知；{ $min } 分钟后重新判定
-logger-log-restart-mode-unknown = [Logger] 读不到 current_mode.chr，无法确认是否 FAS；按非 FAS 放行继续（读不到属异常态，此时优先保证用户收到超限通知）
-logger-append-failed = [Logger] 日志写入失败（连续 { $n } 次）：句柄重建或写盘出错，已丢弃句柄待下一条重建；持续失败会让本轮日志停在最后成功的一行
+logger-log-restart-for-archive = [Logger] { $dir } 已达到 { $mb }MB，立即重启调度以打包日志 (超限通知 notify={ $notify })
+logger-log-restart-suppressed = [Logger] { $dir } 已达到 { $mb }MB，未检测到看门狗，跳过自动重启归档，超限通知 notify={ $notify } 告警 alert={ $alert }
+logger-log-watchdog-alert-posted = [Logger] 未检测到看门狗，已发送人工接管告警 (tag ChiRi-Watchdog)
+logger-log-restart-fas-deferred = [Logger] { $dir } 已达到 { $mb }MB，当前模式 { $mode } 为 FAS，跳过重启归档与通知，{ $min } 分钟后重新判定
+logger-log-restart-mode-unknown = [Logger] 读不到 current_mode.chr，按非 FAS 放行
+logger-append-failed = [Logger] 日志写入失败 (连续 { $n } 次)，句柄已丢弃待下条重建
+logger-status-write-failed = [Logger] status.csv 连续第 { $n } 次写入失败，该秒行丢失
 
-# --- Rhine（实验室）---
-rhine-state-created = [Rhine] rhine.chr 不存在，已补建默认内容（未启用）
-rhine-state-invalid = [Rhine] rhine.chr 内容非法（{ $value }），已重置为默认内容（未启用）
+# --- Rhine（实验室） ---
+rhine-state-created = [Rhine] rhine.chr 不存在，已补建默认内容 (未启用)
+rhine-state-invalid = [Rhine] rhine.chr 内容非法 ({ $value })，已重置为默认内容 (未启用)
+rhine-state-write-failed = [Rhine] rhine.chr 状态写回失败，状态文件与内存状态不一致
 rhine-mode-enabled = [Rhine] 实验室已启用: { $mode }
 rhine-mode-disabled = [Rhine] 实验室已关闭，改动已按快照还原
 rhine-restored = [Rhine] 已按 rhine-back.chr 还原 { $origin } 的改动
@@ -311,118 +337,87 @@ rhine-restore-invalid = [Rhine] rhine-back.chr 内容非法，已用内置默认
 rhine-restore-meta-failed = [Rhine] 还原 meta.yaml 失败，已保留 rhine-back.chr 待下次重试
 rhine-apply-failed = [Rhine] 实验室启用失败: { $mode } ({ $error })
 rhine-watch-error = [Rhine] rhine.chr 监听失败: { $error }
-rhine-lock-unavailable = [Rhine] /tmp 与 /dev 均不可写，本次不建立实验室锁定标记（实验室仍可正常开关）
+rhine-lock-unavailable = [Rhine] /tmp 与 /dev 均不可写，本次不建立实验室锁定标记
 rhine-lock-refused = [Rhine] 实验室已锁定：关闭需要重启设备，本次关闭请求已忽略
 rhine-lock-lost = [Rhine] 锁定标记存在但无法确定锁定的模式，已清除锁定
-rhine-force-off = [Rhine] rhine.chr 写了 off：已强制关闭实验室并还原原值（无视「关闭需重启」的风险，未重启设备——建议尽快重启复核）
-rhine-lock-note-no-backup = rhine-back.chr 缺失（上次启用时的原始状态已不可知），已用内置默认值补一份快照
+rhine-force-off = [Rhine] rhine.chr 写了 off，已强制关闭实验室并还原原值
+rhine-lock-note-no-backup = rhine-back.chr 缺失，已用内置默认值补一份快照
 
 # --- Affinity（CPU 亲和与线程迁移）---
 affinity-boost-applied = [Affinity] boost 布局已应用: top-app/foreground → { $big }，后台分组 → { $little }
-affinity-normal-restore = [Affinity] 已恢复正常亲和布局（后台保持压小核）
-affinity-promoted = [Affinity] 后台线程 { $tid } 已提升到大核（util { $util }%）
-affinity-fdp-promoted = [Affinity] FDP：后台线程 { $tid } 迁至 { $dst }（净收益 { $net_mw } mW）
-affinity-demoted = [Affinity] 后台线程 { $tid } 已降回小核组（util { $util }%）
-affinity-write-fail-summary = [Affinity] 亲和写失败汇总（本 25 tick）mask={ $mask } cpuset={ $cpuset } uclamp={ $uclamp }
-affinity-uclamp-unavailable = [Affinity] top_app_uclamp_max_pct 不可用已自动纠正（内核 { $version }，原因: { $reason }；uclamp 需内核 >= 5.3 且节点可写）
+affinity-normal-restore = [Affinity] 已恢复正常亲和布局
+affinity-promoted = [Affinity] 后台线程 { $tid } 已提升到大核 (util { $util }%)
+affinity-fdp-promoted = [Affinity] FDP：后台线程 { $tid } 迁至 { $dst } (净收益 { $net_mw } mW)
+affinity-demoted = [Affinity] 后台线程 { $tid } 已降回小核组 (util { $util }%)
+affinity-write-fail-summary = [Affinity] 亲和写失败汇总 (本 25 tick) mask={ $mask } cpuset={ $cpuset } uclamp={ $uclamp }
+affinity-uclamp-unavailable = [Affinity] top_app_uclamp_max_pct 不可用已自动纠正 (内核 { $version }，原因: { $reason })
 affinity-released = [Affinity] 已释放接管，恢复系统原始亲和配置
+affinity-self-root-failed = [Affinity] 守护进程自身移回原 cpuset 组失败 (errno={ $errno })
 
 # --- CoreCtl（core_ctl 核心在线接管）---
 corectl-boost-on = [CoreCtl] boost: { $count } 个 cluster 的 min_cpus 已抬到全组常在线
 corectl-boost-off = [CoreCtl] 已恢复 core_ctl min_cpus 快照
-corectl-scenemode-on = [CoreCtl] scenemode 离线核：已下线 { $count } 个小核（big/prime 常驻低频，编号最大的大核独占给调度服务）
+corectl-scenemode-on = [CoreCtl] scenemode 离线核：已下线 { $count } 个小核
 corectl-scenemode-off = [CoreCtl] 已恢复 { $count } 个被下线的核心
 corectl-restore-pending = [CoreCtl] { $count } 个核心恢复上线失败，将每 2 秒重试
 corectl-self-pinned = [CoreCtl] 调度服务已钉到专用大核 cpu{ $core }
 corectl-unavailable = [CoreCtl] 未发现可用的 core_ctl 节点，接管跳过
 corectl-write-failed = [CoreCtl] core_ctl 写入失败: { $path }
-corectl-node-missing = [CoreCtl] core_ctl 节点缺失/不可读: { $path }（该簇降级逐核 offline 兜底）
-corectl-enable-off = [CoreCtl] core_ctl enable=0（core_ctl 不执行压制、写入不生效）: { $path }，跳过无效写直接降级逐核 offline
-corectl-enable-off-boost = [CoreCtl] core_ctl enable=0（core_ctl 不执行压制、整簇本就常在线）: { $path }，boost 保核跳过该簇
-corectl-vendor-override = [CoreCtl] core_ctl 节点被厂商改写（写后读回与目标值不符）: { $path }，不与厂商拉锯，退出按快照恢复
-corectl-verify-failed = [CoreCtl] core_ctl 节点读回失败（写已发出，按已生效记账）: { $path }
+corectl-node-missing = [CoreCtl] core_ctl 节点缺失/不可读: { $path }，该簇降级逐核 offline
+corectl-enable-off = [CoreCtl] core_ctl enable=0，写入不生效: { $path }，降级逐核 offline
+corectl-enable-off-boost = [CoreCtl] core_ctl enable=0，整簇本就常在线: { $path }，boost 保核跳过该簇
+corectl-vendor-override = [CoreCtl] core_ctl 节点被厂商改写 (写后读回与目标值不符): { $path }
+corectl-verify-failed = [CoreCtl] core_ctl 节点读回失败，按已生效记账: { $path }
 corectl-scenemode-halt = [CoreCtl] scenemode 目标簇已由 core_ctl max_cpus 收敛到保留核数
-corectl-reserved-core-halted = [CoreCtl] 写 core_ctl 保留档后引导核 CPU0 掉线（该内核把保留档当停摆档），已回滚 max_cpus 并放弃 core_ctl 压制
+corectl-reserved-core-halted = [CoreCtl] 写 core_ctl 保留档后引导核 CPU0 掉线，已回滚 max_cpus
 clampev-node-missing = [Diag] clamp-evidence 佐证节点不可用: { $key } ({ $path })
 
-# --- Notify（通用通知组件，src/notify.rs 三参交 scripts/notify.sh 投递）---
-# FAS 开环运行警告（经 ChiRi-FAS 渠道拦截器限流：前 120 条静默 + 1 小时同文去重）
+# --- Notify（通用通知组件，src/notify.rs 三参交 scripts/notify.sh 投递） ---
+# FAS 开环警告，ChiRi-FAS 渠道拦截器限流：前 120 条静默 + 1 小时同文去重
 notify-fas-openloop-title = 警告：FAS 开环运行
 notify-fas-openloop-body = 在 { $pkg } 运行时 FAS 未正常工作，已进入开环运行
-notify-post-failed = [Notify] cmd notification 投递失败（tag={ $tag } title={ $title }）：本条无法送达，去重未记账以便下次重试
-notify-post-ok = [Notify] 投递成功（tag={ $tag } title={ $title } strategy={ $strategy } verify={ $verify }）——verify=posted 才表示 AOSP 回查确认真落地；verify=unverified 说明老 ROM 不认 -v、无证据可判
-notify-script-missing = [Notify] 投递脚本缺失，通知发不出去：{ $path }
-# 启动完成通知（main.rs 启动尾部，tag ChiRi-Status，直发无拦截器；标题/正文为字面量不走 i18n）
-notify-startup-posted = [Notify] 已投递启动完成通知（tag ChiRi-Status）
-# 远程提醒（remote_push.rs：每日 08~24 点每 2 小时拉 remindPush.json，命中 versionCode 才发，tag ChiRi-Remote）
-remote-push-started = [Remote] 远程提醒线程已启动（每日 08~24 点每 2 小时拉取一次）
-remote-push-primary-failed = [Remote] 主源拉取失败：{ $error }；改试备用源（不重试）
-remote-push-fallback-failed = [Remote] 备用源拉取失败：{ $error }；本次放弃，等下一个时段（不重试）
-remote-push-notified = [Remote] 命中 versionCode { $code }，已发送提醒通知：{ $title }
-remote-push-no-match = [Remote] 未命中 versionCode { $code }（静默）
-remote-push-thread-failed = [Remote] 提醒线程启动失败：{ $error }
+notify-post-failed = [Notify] cmd notification 投递失败 (tag={ $tag } title={ $title })
+notify-post-ok = [Notify] 投递成功 (tag={ $tag } title={ $title } strategy={ $strategy } verify={ $verify })
+notify-script-missing = [Notify] 投递脚本缺失，通知发不出去: { $path }
+# 启动完成通知，main.rs 启动尾部直发，tag ChiRi-Status，标题/正文为字面量不走 i18n
+notify-startup-posted = [Notify] 已投递启动完成通知 (tag ChiRi-Status)
+# 远程提醒，remote_push.rs：每日 08~24 点每 2 小时拉 remindPush.json，命中 versionCode 才发
+remote-push-started = [Remote] 远程提醒线程已启动 (每日 08~24 点每 2 小时拉取一次)
+remote-push-primary-failed = [Remote] 主源拉取失败: { $error }，改试备用源
+remote-push-fallback-failed = [Remote] 备用源拉取失败: { $error }，本次放弃
+remote-push-notified = [Remote] 命中 versionCode { $code }，已发送提醒通知: { $title }
+remote-push-no-match = [Remote] 未命中 versionCode { $code }
+remote-push-thread-failed = [Remote] 提醒线程启动失败: { $error }
 
-# --- Telemetry（遥测）---
-monitor-thread-start-telemetry = [Main] 启动遥测监控线程（PSI/GPU/电池）...
-telemetry-oplus-bcc = [Telemetry] 已启用 OPlus 私有节点 bcc_parms，电流/电压读取走 BCC 实时数据（规避标准 power_supply 节点约 10s 的缓存）
-telemetry-oplus-bcc-missing = [Telemetry] meta 开启了 OPlus 私有节点（oplus_chg），但 bcc_parms 节点不存在，本次运行回退标准 power_supply 节点
-telemetry-bcc-unusable = [Telemetry] bcc_parms 下标 6/8（电压/电流）缺失或非整数，BCC 实时功耗不可用，已回退标准 power_supply 节点（约 10s 缓存；其电流单位可能与 µA 假设不一致，功耗列量纲请自行核对）
-telemetry-battery-unavailable = [Telemetry] 电池电流/电压候选节点全部读不到（OPlus BCC 与标准 power_supply 节点都失败），功耗/电压列将写 -（每进入失效态只报一次）
-telemetry-gpu-unavailable = [Telemetry] GPU 利用率候选节点全部不存在（非 Adreno/GED 机型），GPU 列将写 -（只报一次）
+# --- Telemetry（遥测） ---
+monitor-thread-start-telemetry = [Main] 启动遥测监控线程 (PSI/GPU/电池)
+telemetry-oplus-bcc = [Telemetry] 已启用 OPlus 私有节点 bcc_parms，电流/电压走 BCC 实时数据
+telemetry-oplus-bcc-missing = [Telemetry] meta 开启了 oplus_chg，但 bcc_parms 节点不存在，回退标准 power_supply 节点
+telemetry-bcc-unusable = [Telemetry] bcc_parms 下标 6/8 缺失或非整数，BCC 实时功耗不可用，已回退标准 power_supply 节点
+telemetry-battery-unavailable = [Telemetry] 电池电流/电压候选节点全部读不到，功耗/电压列写 -
+telemetry-gpu-unavailable = [Telemetry] GPU 利用率候选节点全部不存在，GPU 列写 -
 telemetry-probe-attached = [CPU Monitor] eBPF 扩展探针已挂载: { $name }
-telemetry-probe-failed = [CPU Monitor] eBPF 扩展探针 { $name } 挂载失败（内核可能无该 tracepoint）: { $error }
-telemetry-map-missing = [CPU Monitor] eBPF 产物中缺少映射 { $name }（产物与守护进程版本偏差），对应计数保持为 0
+telemetry-probe-failed = [CPU Monitor] eBPF 扩展探针 { $name } 挂载失败: { $error }
+telemetry-map-missing = [CPU Monitor] eBPF 产物中缺少映射 { $name }，对应计数保持为 0
 telemetry-summary = [Telemetry] PSI cpu={ $cpu }% io={ $io }% mem={ $mem }% | GPU={ $gpu }% | 唤醒={ $wakeups } 迁移={ $migrations } 调频={ $freq } | 电池 { $power }W
 
 # --- Config 热重载联动 ---
 scheduler-config-dirty-reload = [Scheduler] feature.yaml 热重载已同步到调度器 (mode={ $mode })
 
-# --- 静默失效补点（2026-10-17 日志级别重排） ---
+# --- 静默失效补点 ---
 app-detect-activity-override = [AppDetect] 前台 Activity 覆盖包名映射: { $pkg } <- { $activity }
-config-feature-parse-failed = [Config] feature.yaml 解析失败: { $error }
-config-meta-fallback = [Config] meta 配置回退内嵌默认（外部文件不可用）: { $path }
-down-chr-created = [Down] down.chr 缺失，已补建模板（非停摆）
+down-chr-created = [Down] down.chr 缺失，已补建模板 (非停摆)
 down-chr-read-failed = [Down] down.chr 读取失败，按不停摆处理: { $error }
-down-chr-recreate-failed = [Down] down.chr 补建失败：文件持续缺失，只能靠监听感知，重启后可能停在停摆
-rhine-state-write-failed = [Rhine] rhine.chr 状态写回失败：状态文件与内存状态不一致，界面可能显示旧态
-rule-app-modes-empty = [AppDetect] rules 的 app_modes 为空或 null，按空表处理
-rule-global-mode-defaulted = [AppDetect] rules 未给 global_mode，回退默认模式: { $mode }
-logger-status-write-failed = [Logger] status.csv 连续第 { $n } 次写入失败：该秒行丢失，分析口径出现空洞
-affinity-self-root-failed = [Affinity] 守护进程自身移回原 cpuset 组失败 (errno={ $errno })：自身线程可能留在被接管的组内
-gpu-lock-partial = [GPU] 锁频只成功 { $ok }/{ $total } 个节点：其余节点未被接管，与全锁成功在读数上同形
-gpu-probe-rejected = [GPU] devfreq 目录被拒绝收录: { $path } ({ $reason })
-gpu-snapshot-unavailable = [GPU] 接管前快照不可用：释放时可能无法恢复原 governor/频率
-gpu-lock-failed = [GPU] { $nodes } 个节点全部锁频失败：contingency 的 GPU 锁频能力丢失（lock 无重试）
-gpu-release-max-stuck = [GPU] { $nodes } 个节点恢复原 max 频率失败：卡在最高频且不会再重试
+down-chr-recreate-failed = [Down] down.chr 补建失败，文件持续缺失
 window-probe-query-failed = [WindowProbe] 查询失败 pkg={ $pkg } pid={ $pid }: { $error }
 window-probe-stopped = [WindowProbe] 探针线程已停止，可见性判定不再更新
-window-probe-worker-failed = [WindowProbe] 查询线程启动/运行失败：窗口可见性能力整条丢失，FAS 可见性判定将回退
+window-probe-worker-failed = [WindowProbe] 查询线程启动/运行失败，窗口可见性能力丢失
 activity-sample-failed = [WindowProbe] Activity 采样失败 pkg={ $pkg }: { $error }
-activity-sampler-stopped = [WindowProbe] Activity 采样线程已停止，activity 列与 Activity 级规则不再更新
-activity-sampler-worker-failed = [WindowProbe] Activity 采样线程启动/运行失败：Activity 级规则与 activity 列将保持未知
-fas-verify-read-failed = [FAS] P{ $pid } 锁频校验读回失败：写入是否生效不可判定，校验链路断供
-fas-verify-read-restored = [FAS] P{ $pid } 锁频校验读回恢复，校验链路重建
-fas-boost-ceil-clamped = [FAS] { $act } 升频被上限钳制: 请求 { $req } -> P { $perf } (上限 { $ceil })
-fas-boost-max-inc-clamped = [FAS] { $act } 升频受单次步长限制: 请求 { $req } -> P { $perf } (最大增量 { $max_inc })
-fas-boost-damped-cap-clamped = [FAS] { $act } 升频被阻尼上限钳制: 请求 { $req } -> P { $cap }
-fas-frame-dropped = [FAS] 帧样本被丢弃: { $ms }ms ({ $reason })
-fast-freq-table-unavailable = [Fast] P{ $pid } 频率表不可用且无 soc.yaml 兜底，该簇不锁频: { $path }
-governor-activate-noop = [Governor] 一个 policy 都未接管（共 { $total } 个）：performance 语义整条未生效
-
-powerbase-takeover-skipped = [PowerBase] P{ $pid } 频率表与 soc.yaml 兜底均不可用，该集群跳过接管（能力丢失）
-powerbase-init-write-failed = [PowerBase] P{ $pid } 接管初写上限失败：该簇 perf 停在 0，频率会一路砍向硬件最低
-powerbase-init-min-failed = [PowerBase] P{ $pid } 接管初写下限失败：min 压不下去，后续 max 写入会被内核以 min>max 拒绝，该簇调频整条失效
-
-cpu-monitor-percpu-read-failed = [CPU Monitor] eBPF 逐核计数读取失败（核离线/查找失败），本轮计数按 0 计
+activity-sampler-stopped = [WindowProbe] Activity 采样线程已停止，activity 列不再更新
+activity-sampler-worker-failed = [WindowProbe] Activity 采样线程启动/运行失败，activity 列保持未知
+cpu-monitor-percpu-read-failed = [CPU Monitor] eBPF 逐核计数读取失败，本轮计数按 0 计
 cpu-monitor-tids-read-failed = [CPU Monitor] 读取 pid { $pid } 的线程列表失败: { $error }
 cpu-monitor-core-state-read-failed = [CPU Monitor] 核心在线状态读取失败，该核按离线处理: { $error }
 cpu-monitor-snap-handle-missing = [CPU Monitor] eBPF 进程快照句柄未注册/映射缺失，@S 帧进程段为空
 cpu-monitor-snap-map-open-failed = [CPU Monitor] eBPF 进程快照映射打开失败，@S 帧进程段为空
 screen-uevent-recv-failed = [Screen] uevent 接收失败，1s 后重试: { $error }
-
-fas-no-policies = [FAS] 未发现任何 cpufreq policy，FAS 接管失败，档位与保护停摆，请检查内核/环境
-fas-governor-write-failed = [FAS] P{ $pid } 写入 performance governor 失败: { $error }，可能受系统调频干扰
-fas-freq-table-unavailable = [FAS] P{ $pid } 频率表不可用且无 soc.yaml 兜底 ({ $path })，该 policy 已跳过
-fas-policy-none-taken = [FAS] 所有 policy 均被跳过，实际未接管任何集群，FAS 档位控制停摆
-fas-freq-hold-skip = [FAS] P{ $pid } 频率保持期剩余 { $frames } 帧，跳过本次写入
-fas-freq-hysteresis-skip = [FAS] P{ $pid } 频差 { $diff } ≤ 迟滞 { $hysteresis }，跳过本次写入

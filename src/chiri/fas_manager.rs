@@ -1,12 +1,5 @@
-//! FAS（帧感知调度）管理器 —— 单实例（原「一个进程绑一个 FAS 实例」的多实例架构已废弃）
-//! 区块索引: [types] [activate] [deactivate] [delayed_exit] [events]
-//! 白名单前台判断 + 延迟进出：进白名单前台 → activate（governor 切 performance + 接管频率）；
-//! 失去前台不立即退出：request_delayed_exit 进入延迟期（时长来自应用配置 deactivate_delay_secs，夹 1..=600s），
-//! 期间仍持有接管（mode 保持 fas、按负载控制）；切回白名单 activate 即取消延迟续期；
-//! 超时由 tick()（1s 周期）真正退出：恢复频率 + governor 快照，返回 true 让调用方按延迟期记住的目标模式重新接管
-//! governor（performance）归 GovernorGuard 管、频率归 FasController 管：GovernorGuard 必须**先于**引擎 load_policies 快照——
-//! 引擎自身也会快照 governor 再写 performance，本层若在其后快照会拿到 performance，退出时「引擎 reset_all_freqs 先写 performance、
-//! 本层 release 后写快照」的终值就成了 performance（残留）；perfmgr_enable 由引擎写成 0，本层按同款快照/恢复兜住
+//! fas_manager.rs: [types] [activate] [deactivate] [delayed_exit] [events] [perfmgr]
+//! FAS（帧感知调度）管理器，单实例：进白名单前台 activate（governor 切 performance + 接管频率），失去前台先进延迟期（deactivate_delay_secs，夹 1..=600s），超时由 tick()（1s 周期）退出并恢复频率与 governor 快照
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -32,8 +25,8 @@ const FAS_TEMP_REFRESH: Duration = Duration::from_secs(3);
 // TODO: 实机复核接管期写入与退出恢复（退出后该节点应回到接管前的值）
 const MIGRATION_COST_PATH: &str = "/proc/sys/kernel/sched_migration_cost_ns";
 
-/// 接管期间被 FAS 引擎 `load_policies` 无条件写成 0 的厂商 perfmgr 使能节点（与 `scheduler/fas/policy_mgmt.rs` 的写点同源）。
-/// 引擎侧只写不恢复，故接管前必须快照原值、退出时写回，否则厂商默认被永久改写
+/// 接管期间被 FAS 引擎 `load_policies` 无条件写成 0 的厂商 perfmgr 使能节点（与 `scheduler/fas/policy_mgmt.rs` 的写点同源）
+/// 引擎侧只写不恢复，故接管前必须快照原值、退出时写回
 const PERFMGR_ENABLE_PATHS: [&str; 2] = [
     "/sys/module/perfmgr/parameters/perfmgr_enable",
     "/sys/module/mtk_fpsgo/parameters/perfmgr_enable",
@@ -65,25 +58,24 @@ pub struct FasManager {
     was_open_loop: bool,
     last_temp: f64,
     last_temp_read: Instant,
-    /// FAS 温度源节点路径。原始读数刻度因内核而异，每次刷新经 `utils::battery_temp_divisor()` 取全局预识别结论（与 CLG 热保护同源），避免两处口径漂移）；
+    /// FAS 温度源节点路径，原始读数刻度因内核而异，每次刷新经 `utils::battery_temp_divisor()` 取全局预识别结论（与 CLG 热保护同源）
     /// None = 无温度源（引擎侧护栏失效，不影响其余功能）
     temp_path: Option<PathBuf>,
-    /// FAS 前台激活信号（monitor 层 fps_monitor 等待消费）：activate 置位、deactivate 清零——fps_monitor 据此推迟/摘除 eBPF uprobe（反偷跑门控），
-    /// 置位瞬间唤醒待机线程（见 `crate::monitor::FasSignal`）
+    /// FAS 前台激活信号（monitor 层 fps_monitor 等待消费）：activate 置位、deactivate 清零，fps_monitor 据此推迟/摘除 eBPF uprobe（反偷跑门控）
+    /// 置位瞬间唤醒待机线程 `crate::monitor::FasSignal`
     fas_signal: Arc<FasSignal>,
     generation: u64,
 }
 
 impl FasManager {
-    /// temp_path：FAS 专用温度源节点看电池不看处理器——电池温度是热安全边界（阈值按 ℃ 配置），处理器长期 95℃ 属正常工作区，不作降频依据；None = 内部限温关闭fas_signal 由 main
-    /// rs 创建、monitor 与 chiri 两层共享
+    /// temp_path：FAS 专用温度源看电池不看处理器——电池温度是热安全边界（阈值按 ℃ 配置），处理器长期 95℃ 属正常工作区，不作降频依据；None = 内部限温关闭
+    /// fas_signal 由 main.rs 创建、monitor 与 chiri 两层共享
     pub fn new(temp_path: Option<PathBuf>, fas_signal: Arc<FasSignal>) -> Self {
         Self {
             instance: None,
             exit_deadline: None,
-            // 契约缺省值直接取 `fas_types` 的缺省规则（`d_fas_exit_delay()` 是模块私有 fn，本文件不可见，
-            // 改取同源的 `FasRulesConfig::default().deactivate_delay_secs`），避免与契约数字 3s 漂移；
-            // 正常路径 activate(:109) 仍按应用配置覆写
+            // 契约缺省值取 `FasRulesConfig::default().deactivate_delay_secs`（`d_fas_exit_delay()` 本文件不可见），避免与契约数字 3s 漂移
+            // 正常路径 activate 仍按应用配置覆写
             exit_delay: Duration::from_secs(u64::from(
                 crate::fas_types::FasRulesConfig::default()
                     .deactivate_delay_secs
@@ -99,9 +91,8 @@ impl FasManager {
         }
     }
 
-    /// C1：激活返回 false = 白名单/配置不可用或无可用 policy；同包同 PID 仅续期，PID 替换重建帧会话。
-    /// 另一白名单包 → fas→fas 热切换（打点 scheduler-fas-switch）；首次 → FasController::new + load_policies
-    /// 激活同时接管 governor（performance）；延迟退出请求在此被取消（无缝续期）
+    /// C1：激活返回 false = 白名单/配置不可用或无可用 policy；同包同 PID 仅续期，PID 替换重建帧会话
+    /// 另一白名单包 → fas→fas 热切换（打点 scheduler-fas-switch）；首次 → FasController::new + load_policies，激活同时接管 governor（performance）
     // [activate]
     pub fn activate(&mut self, pkg: &str, pid: i32) -> bool {
         if pid <= 0 {
@@ -126,8 +117,8 @@ impl FasManager {
         }
 
         if let Some(inst) = self.instance.as_mut() {
-            // 同包同 PID 仍需核对进程身份：PID 复用（starttime 变化）要当新会话，不能沿用旧帧控制状态；
-            // 同 identity 续期仅取消 deadline，不重置窗口/齿轮，也不重复 set_game 打点。
+            // 同包同 PID 仍需核对进程身份：PID 复用（starttime 变化）要当新会话，不能沿用旧帧控制状态
+            // 同 identity 续期仅取消 deadline，不重置窗口/齿轮，也不重复 set_game 打点
             let same_identity = inst.frame_source.pid == pid as u32
                 && inst
                     .identity
@@ -154,15 +145,14 @@ impl FasManager {
 
         // [perfmgr] 快照必须在 load_policies 之前：引擎会把两个 perfmgr_enable 无条件写成 0，先读原值才能退出写回
         let perfmgr_restore = snapshot_perfmgr_enable();
-        // [governor] 快照也必须先于 load_policies：引擎自身会「先快照 governor 再写 performance」，本层若在其后快照，
-        // 拿到的就是引擎写的 performance 而非系统原值；退出时序为「引擎 reset_all_freqs 先写回它的快照（=performance）、
-        // 本层 release 后写回本层快照」，终值由后写者决定——必须让持有真值的本层收尾，否则残留 performance
+        // [governor] 快照必须先于 load_policies：引擎自身会「先快照 governor 再写 performance」，本层若在其后快照拿到的是引擎写的 performance 而非系统原值
+        // 退出时序为「引擎 reset_all_freqs 先写回它的快照（=performance）、本层 release 后写回本层快照」，终值由后写者决定，必须让持有真值的本层收尾
         self.governor.activate();
 
         let mut controller = FasController::new();
         controller.load_policies(rules);
         if controller.policies.is_empty() {
-            // 早退：不建实例、退出路径不会再来恢复，而 load_policies 已写 perfmgr=0、并把各 policy 的 governor 改成
+            // 早退：不建实例、退出路径不会再来恢复，而 load_policies 已写 perfmgr=0、并把各 policy 的 governor 改过
             // performance；必须就地原路撤回，否则残留泄漏（这是 activate 唯一「已写但无实例」的路径）
             restore_perfmgr_enable(&perfmgr_restore);
             self.governor.release();
@@ -218,15 +208,14 @@ impl FasManager {
     }
 
     /// C2：立即去激活（reset_all_freqs + clear_game + governor 按快照恢复），并清零 fas_signal（fps_monitor 摘除 uprobe 回到零开销待机）
-    /// 无活跃实例 no-op；延迟退出请求一并取消打点 info scheduler-fas-deactivate（pkg）+ main_event("fas", pkg, "deactivate")
+    /// 无活跃实例 no-op；延迟退出请求一并取消，打点 info scheduler-fas-deactivate（pkg）+ main_event("fas", pkg, "deactivate")
     // [deactivate]
     pub fn deactivate_active(&mut self) {
         let Some(mut inst) = self.instance.take() else {
             return;
         };
         self.exit_deadline = None;
-        // 会话拆除即复位开环沿状态：否则上一会话在开环态收尾后，下一会话「开局即开环」
-        // （warmup_remaining>0 使 uses_load_control() 恒为 true）时 false→true 沿永不触发，
+        // 会话拆除即复位开环沿状态：否则上一会话在开环态收尾后，下一会话「开局即开环」（warmup_remaining>0 使 uses_load_control() 恒为 true）时 false→true 沿永不触发
         // 通知与 [fas] warn 一并静默（对齐 controller.rs 的 load_only_warned = false）
         self.was_open_loop = false;
         self.fas_signal.set_frame_source(None);
@@ -272,20 +261,16 @@ impl FasManager {
         self.instance.as_ref().map(|instance| instance.frame_source)
     }
 
-    /// 帧率**当前是否可取**：FAS 实例存在、帧反馈启用、已过预热、且最近一帧未过期。
-    /// 用于「能取到窗口帧率时不因叠加窗口（输入法/小窗/帧率悬浮窗）降级为仅调频」
-    /// —— 叠加窗口时 `WindowVisibility` 会变 `VisibleUnfocused`，但帧源仍在正常产出，
-    /// 此时降 `LoadOnly` 会关掉帧驱动、被用户感知为「FAS 异常退出」。
-    /// 语义边界：本判据**只用于阻止降级**，不改变「有叠加窗口时退出 FAS 是预期行为」——
-    /// `Hidden`/`Unknown` 仍走 `Grace`，该退出路径不经过这里。
+    /// 帧率当前是否可取：FAS 实例存在、帧反馈启用、已过预热、且最近一帧未过期；用于「能取到窗口帧率时不因叠加窗口（输入法/小窗/帧率悬浮窗）降级为仅调频」
+    /// 叠加窗口时 `WindowVisibility` 变 `VisibleUnfocused` 但帧源仍在产出，降 `LoadOnly` 会关掉帧驱动；本判据只阻止降级，`Hidden`/`Unknown` 仍走 `Grace`
     pub fn frame_feedback_active(&self) -> bool {
         self.instance
             .as_ref()
             .is_some_and(|instance| instance.controller.frame_feedback_active())
     }
 
-    /// 当前 owner 是否就是该 pid/starttime 进程：供主线同 session 门控（快事件只喂同一会话）。
-    /// fail-closed：pid 不同或任一侧 starttime 未知都判 false，绝不把无法取证的事件算作同一会话。
+    /// 当前 owner 是否就是该 pid/starttime 进程，供主线同 session 门控（快事件只喂同一会话）
+    /// fail-closed：pid 不同或任一侧 starttime 未知都判 false
     pub fn owner_matches_process(&self, pid: i32, process_starttime: Option<u64>) -> bool {
         self.instance.as_ref().is_some_and(|instance| {
             instance.frame_source.pid == pid as u32
@@ -293,8 +278,8 @@ impl FasManager {
         })
     }
 
-    /// owner 进程是否仍存活：pidfd 零 poll 优先；回退路径读一次 /proc（仅供主线低频 reconcile，
-    /// 不要放进每帧路径）。无实例 = 无 owner，返回 false，调用方走退出。
+    /// owner 进程是否仍存活：pidfd 零 poll 优先，回退路径读一次 /proc（仅供主线低频 reconcile，不要放进每帧路径）
+    /// 无实例 = 无 owner，返回 false，调用方走退出
     pub fn owner_is_alive(&self) -> bool {
         self.instance.as_ref().is_some_and(|instance| {
             let Ok(pid) = i32::try_from(instance.frame_source.pid) else {
@@ -331,7 +316,7 @@ impl FasManager {
     }
 
     // [delayed_exit]
-    /// 失去白名单前台：进入延迟退出期（FAS 仍持有接管，mode 保持 fas）；期间 activate（切回白名单）会取消延迟。未活跃时无操作
+    /// 失去白名单前台：进入延迟退出期（FAS 仍持有接管，mode 保持 fas），期间切回白名单 activate 会取消延迟；未活跃时无操作
     pub fn request_delayed_exit(&mut self) {
         if self.instance.is_some() && self.exit_deadline.is_none() {
             self.exit_deadline = Some(Instant::now() + self.exit_delay);
@@ -342,7 +327,7 @@ impl FasManager {
         self.exit_deadline = None;
     }
 
-    /// 同包回到前台：取消延迟退出。延迟期内切回**同一个**白名单应用不走 activate（PackageSwitch 同包去重 / 1s 巡检同包 no-op），必须由调用方显式续期，
+    /// 同包回到前台：取消延迟退出；延迟期内切回同一个白名单应用不走 activate（PackageSwitch 同包去重 / 1s 巡检同包 no-op），必须由调用方显式续期，否则到期会把正在前台的游戏拆掉重建（局内卡顿）
     /// 否则到期会把正在前台的游戏拆掉重建（局内卡顿）
     pub fn renew_if_same_pkg(&mut self, pkg: &str) {
         if self.exit_deadline.is_some() && self.instance.as_ref().is_some_and(|i| i.package == pkg)
@@ -351,7 +336,7 @@ impl FasManager {
         }
     }
 
-    /// 1s 周期调用：延迟退出到期则完成退出（恢复频率 + governor 快照）。返回 true = 刚完成退出，调用方需按延迟期记住的目标模式重新接管
+    /// 1s 周期调用：延迟退出到期则完成退出（恢复频率 + governor 快照），返回 true = 刚完成退出，调用方需按延迟期记住的目标模式重新接管
     pub fn tick(&mut self) -> bool {
         match self.exit_deadline {
             Some(deadline) if Instant::now() >= deadline => {
@@ -396,8 +381,7 @@ impl FasManager {
             }
             inst.controller.update_core_utils(core_utils);
             inst.controller.update_load_control();
-            // 开环翻转沿检测：false→true（进入开环）发警告通知（拦截器在 notify 侧限流，发送侧不节流）；
-            // true→false（恢复闭环）只记 INFO。uses_load_control 为 pub(crate)（原 pub(super)，fas_manager 不可见，本次提权）
+            // 开环翻转沿检测：false→true（进入开环）发警告通知（拦截器在 notify 侧限流）；true→false（恢复闭环）只记 INFO
             let open_loop = inst.controller.uses_load_control();
             if open_loop && !self.was_open_loop {
                 let title = crate::i18n::t("notify-fas-openloop-title");
@@ -417,7 +401,7 @@ impl FasManager {
         }
     }
 
-    /// 当前活跃实例的帧率（fps）：FAS 未启动或窗口尚无样本时返回 None——调用方据此在 status.csv 的 fps 列写 "-"。只读快照，不推进引擎状态
+    /// 当前活跃实例的帧率（fps）：FAS 未启动或窗口尚无样本时返回 None，调用方据此在 status.csv 的 fps 列写 "-"；只读快照，不推进引擎状态
     pub fn current_fps(&self) -> Option<f32> {
         self.instance.as_ref()?.controller.current_fps()
     }
@@ -446,8 +430,8 @@ impl FasManager {
 }
 
 // [perfmgr]
-/// 探测并快照厂商 perfmgr 使能节点原值（存在且可读才记，缺失机型跳过）：FAS 引擎 `load_policies` 会把这两个节点
-/// 无条件写成 0（关闭厂商 perfmgr 的频率干预），本层不先快照则退出后无从恢复，厂商默认被永久改写
+/// 探测并快照厂商 perfmgr 使能节点原值（存在且可读才记，缺失机型跳过）：FAS 引擎 `load_policies` 会把这两个节点无条件写成 0
+/// 本层不先快照则退出后无从恢复，厂商默认被永久改写
 fn snapshot_perfmgr_enable() -> Vec<(String, String)> {
     let mut snap = Vec::new();
     for path in PERFMGR_ENABLE_PATHS {
@@ -458,7 +442,7 @@ fn snapshot_perfmgr_enable() -> Vec<(String, String)> {
     snap
 }
 
-/// 按快照逐条写回 perfmgr 使能节点。用 `try_write_file`：失败只记日志不 panic——收尾路径不能因单点失败中断
+/// 按快照逐条写回 perfmgr 使能节点；用 `try_write_file`，失败只记日志不 panic，收尾路径不能因单点失败中断
 fn restore_perfmgr_enable(snap: &[(String, String)]) {
     for (path, val) in snap {
         let _ = crate::utils::try_write_file(path, val);

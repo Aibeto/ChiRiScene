@@ -49,13 +49,10 @@ pub(super) fn check_group_cpuset(
     if group != after_group.strip_suffix('\n').unwrap_or(&after_group) {
         return CpusetCheck::GroupChanged;
     }
-    // Reject the whole malformed list: dropping bad tokens would fabricate an empty set.
+    // 整表拒绝：丢弃坏 token 会伪造出空集
     if mask.trim().is_empty() {
-        // Linux cpuset v1: an empty cpus entry inherits the nearest ancestor mask.
-        // We only know the child entry here, so the effective set is unknown and
-        // the caller must keep its original best-effort write fallback.
-        // Also documents the cpuset-tree-missing case: when /dev/cpuset is absent
-        // (read failed above), we already returned Unknown — the guard is a no-op.
+        // Linux cpuset v1 的空 cpus 继承最近祖先掩码，此处只知子项故有效集未知，调用方保留原 best-effort 写入回退
+        // /dev/cpuset 缺失时上面的读已返回 Unknown，本守卫不生效
         return CpusetCheck::Unknown;
     }
     let mut intersects = false;

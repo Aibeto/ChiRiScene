@@ -1,8 +1,5 @@
 #!/system/bin/sh
-# customize.sh: [busybox] [i18n] [welcome] [hot-update-check] [volume-key] [battery-detect] [config-keep]
-# [mode-select] [hot-update-flow] [full-install]
-
-# ChiRi Scheduler 安装脚本
+# customize.sh: [busybox] [i18n] [welcome] [hot-update-check] [volume-key] [battery-detect] [config-keep] [mode-select] [hot-update-flow] [full-install] ChiRi Scheduler 安装脚本
 
 # [busybox] $MODPATH 为 Magisk 传入的模块安装路径
 
@@ -113,13 +110,13 @@ if [ -f "$ZIP_HOT_UPDATE_FLAG" ] && [ "$(cat "$ZIP_HOT_UPDATE_FLAG")" = "1" ] &&
     HOT_UPDATE_AVAILABLE=true
 fi
 
-# [volume-key] 音量键检测（兼容 Magisk/KernelSU 环境）：安装模式选择与「是否保留配置」两处共用；返回 0=音量上 1=音量下 2=错误（多次按下事件）
-# 单次按键可能被多个输入设备重复上报，同轮内同键多次 DOWN 去重为一次按下
+# [volume-key] 音量键检测，安装模式选择与「是否保留配置」两处共用，返回 0=音量上 1=音量下 2=错误
+# 单次按键可能被多个输入设备重复上报，同轮内同键多次 DOWN 去重
 detect_volume_key() {
     ui_print "等待音量键按下..."
     ui_print "Waiting for volume key press..."
 
-    # 临时文件写入模块暂存目录（/tmp 可能不可写）
+    # 临时文件写入模块暂存目录，/tmp 可能不可写
     local tmp_file="$MODPATH/.getevent_output"
     rm -f "$tmp_file"
 
@@ -132,7 +129,7 @@ detect_volume_key() {
     local last_up=0
     local last_down=0
 
-    # 每 0.1s 轮询：先等第一次按下，之后 1s 确认窗口
+    # 每 0.1s 轮询，先等第一次按下，之后 1s 确认窗口
     while [ $round -lt 120 ]; do
         local up=$(grep -c "KEY_VOLUMEUP.*DOWN" "$tmp_file" 2>/dev/null || echo 0)
         local down=$(grep -c "KEY_VOLUMEDOWN.*DOWN" "$tmp_file" 2>/dev/null || echo 0)
@@ -148,7 +145,7 @@ detect_volume_key() {
                 last_down=$down
             fi
         else
-            # 确认窗口：1s 内无第二次按下即返回结果
+            # 1s 内无第二次按下即返回结果
             if [ $((round - first_round)) -ge 10 ]; then
                 kill $getevent_pid 2>/dev/null
                 rm -f "$tmp_file"
@@ -181,7 +178,7 @@ detect_volume_key() {
         round=$((round + 1))
     done
 
-    # 超时：清理收尾（已有按下则按其返回，否则用默认选项）
+    # 超时收尾，已有按下则按其返回，否则用默认选项
     kill $getevent_pid 2>/dev/null
     rm -f "$tmp_file"
     if [ -n "$first_key" ]; then
@@ -197,18 +194,13 @@ detect_volume_key() {
 }
 
 # [battery-detect] 按机型把电池读数开关与校准倍数写进当前机型的 meta.yaml
-# （$MODPATH=modules_update 暂存份，完整安装由安装器落地、热更新由下方 cp -r 覆盖到 live，两条路拿到的都是这份，只改一次）：
-# 定位：优先 active_config.chr（daemon 写的生效配置相对路径，如 8550/meta.yaml），否则用 rosoc.model 数字部分拼机型目录；
-# 都拿不到则打印说明跳过，不猜别的机型
-
-# OPlus 私有节点 bcc_parms 可读 → oplus_chg 改 true；第 12 个字段（0 基下标 11）
-# 为正 → oplus_dual_cell 改 true；
-# 校准倍数统一入口 apply_divisor_from_raw（标准节点取 voltage_now，私有节点取下标 6 的电芯0电压）只在「不保留配置」时调用
-# （保留时那份 meta.yaml 是用户文件，安装器不碰；这些项随时可在 WebUI 电池读数页改）定义必须早于调用点（普通安装与热更新两条路都会用到）
+# 定位优先 active_config.chr（生效配置相对路径，如 8550/meta.yaml），否则用 rosoc.model 数字部分拼机型目录
+# OPlus 私有节点 bcc_parms 可读则开 oplus_chg，第 12 字段为正则开 oplus_dual_cell
+# 校准倍数走 apply_divisor_from_raw，只在「不保留配置」时调用，定义必须早于调用点
 OPLUS_BCC="/sys/class/oplus_chg/battery/bcc_parms"
 STD_VOLT="/sys/class/power_supply/battery/voltage_now"
 
-# 定位当前机型的 meta.yaml，结果放进全局 META_FILE（定位不到就留空）
+# 定位当前机型的 meta.yaml，结果放进全局 META_FILE，定位不到留空
 META_FILE=""
 SED_CMD=""
 locate_meta_file() {
@@ -229,8 +221,8 @@ locate_meta_file() {
     fi
 }
 
-# 校准倍数统一入口：电压原始值 n 位 → 除数 = 1 后跟 n-1 个 0（4382→1000、4382000→1000000，均为 4.382V），电流套用同值；首位必须为 3/4（电池 3~4.5V），
-# 否则不猜、留模板缺省值让用户在 WebUI 改返回 1 = 没写
+# 校准倍数统一入口：电压原始值 n 位 → 除数 = 1 后跟 n-1 个 0（4382→1000、4382000→1000000 均为 4.382V），电流套用同值
+# 首位必须为 3/4（电池 3~4.5V），否则不猜、留模板缺省值，返回 1 = 没写
 apply_divisor_from_raw() {
     local meta="$1"
     local raw
@@ -257,7 +249,7 @@ apply_divisor_from_raw() {
     return 0
 }
 
-# 私有节点可用 → 开 oplus_chg / oplus_dual_cell；返回 1 = 没有私有节点」，调用方接着走标准节点校准
+# 私有节点可用则开 oplus_chg / oplus_dual_cell，返回 1 = 没有私有节点，调用方接着走标准节点校准
 apply_oplus_switches() {
     local meta="$1"
     local bcc=""
@@ -273,13 +265,13 @@ apply_oplus_switches() {
         $SED_CMD -i "s/^oplus_chg: false/oplus_chg: true/" "$meta"
         ui_print "$MSG_OPLUS_ON"
     fi
-    # 先数逗号定字段数：cut 在字段不足时会把整行原样透传，不先数就会拿错值——下面两处都要用
+    # 先数逗号定字段数，cut 在字段不足时会把整行原样透传，不先数会拿错值
     local commas=$(printf '%s' "$bcc" | tr -cd ',')
-    # 校准倍数走同一入口，原始值取私有节点电芯0电压（下标 6 = 第 7 项，故需 ≥6 个逗号）；推算不出就不写：daemon 此时也用不了该节点、会回退标准节点，与模板缺省 1000000 口径正好对上
+    # 校准倍数走同一入口，原始值取私有节点电芯0电压（下标 6 = 第 7 项，需 ≥6 个逗号），推算不出就不写
     if [ ${#commas} -ge 6 ]; then
         apply_divisor_from_raw "$meta" "$(printf '%s' "$bcc" | cut -d ',' -f 7)"
     fi
-    # 双电芯 = 第 12 个字段（0 基下标 11）存在且为正数，与 daemon read_oplus_bcc 同口径
+    # 双电芯 = 第 12 字段（0 基下标 11）存在且为正数，与 daemon read_oplus_bcc 同口径
     local f12=""
     if [ ${#commas} -ge 11 ]; then
         f12=$(printf '%s' "$bcc" | cut -d ',' -f 12 | tr -d ' \t\r\n')
@@ -296,7 +288,7 @@ apply_oplus_switches() {
     return 0
 }
 
-# 没有私有节点 → 走标准 power_supply 节点：取 voltage_now 交给统一入口推算
+# 没有私有节点则走标准 power_supply 节点，取 voltage_now 交给统一入口推算
 apply_standard_divisor() {
     local meta="$1"
     ui_print "$MSG_VOLT_CHECK"
@@ -308,7 +300,7 @@ apply_standard_divisor() {
 }
 
 apply_battery_defaults() {
-    # 无论命中与否都打印：只在成功时打会让人分不清「没检测」和「检测了但没命中」
+    # 无论命中与否都打印，只在成功时打会分不清「没检测」和「检测了但没命中」
     ui_print "$MSG_OPLUS_CHECK"
 
     locate_meta_file
@@ -331,7 +323,7 @@ apply_battery_defaults() {
         apply_standard_divisor "$META_FILE"
     fi
 
-    # [screen-detect] 实测 debug.tracing.screen_state=1 与模板默认「1 为息屏」相反：翻转写入 0；读到 0 或缺失不动
+    # [screen-detect] debug.tracing.screen_state=1 与模板默认「1 为息屏」相反，翻转写入 0，读到 0 或缺失不动
     local prop_val=$(getprop debug.tracing.screen_state 2>/dev/null | tr -d ' \t\r\n')
     if [ "$prop_val" = "1" ] && grep -q "^screen_off_value: 1" "$META_FILE"; then
         $SED_CMD -i "s/^screen_off_value: 1/screen_off_value: 0/" "$META_FILE"
@@ -339,10 +331,9 @@ apply_battery_defaults() {
     fi
 }
 
-# [config-keep] 「是否保留现有配置」：音量上键/超时 = 保留（删掉暂存目录的 config/，完整安装落地与热更新 cp -r 都不会覆盖已有配置）；音量下键 = 不保留（不做任何事，
-# 由包内模板覆盖，并走 [battery-detect]）保留不等于放任旧文件：daemon 启动与每次热重载前会调 common::sync_meta_snapshot()
-# 自愈——缺键按内嵌默认补齐（meta 字段全可选），格式非法才整份覆盖（meta 的 nofix 开关跳过该自愈）config/ 里 i18n/*.ftl、normal/*.yaml 是随包副本，运行期不读，
-# 保留时停在旧版本
+# [config-keep] 是否保留现有配置：音量上键/超时 = 保留（删掉暂存目录的 config/），音量下键 = 不保留（由包内模板覆盖并走 [battery-detect]）
+# 保留不等于放任旧文件，daemon 启动与每次热重载前会调 common::sync_meta_snapshot() 自愈，缺键按内嵌默认补齐，格式非法才整份覆盖
+# config/ 里 i18n/*.ftl、normal/*.yaml 是随包副本，运行期不读，保留时沿用包内旧文件
 ask_keep_config() {
     ui_print "$MSG_KEEP_CONFIG_ASK"
     ui_print "$MSG_KEEP_CONFIG_UP"
@@ -362,13 +353,13 @@ ask_keep_config() {
     else
         ui_print "$MSG_KEEP_CONFIG_NO"
         CONFIG_KEPT=false
-        # 覆盖安装：按机型把电池读数开关与校准倍数写好（两条安装路径都经过这里）
+        # 覆盖安装：按机型把电池读数开关与校准倍数写好，两条安装路径都经过这里
         apply_battery_defaults
     fi
     ui_print " "
 }
 
-# [mode-select] 安装模式选择（音量键交互）
+# [mode-select] 安装模式选择，音量键交互
 if [ "$HOT_UPDATE_AVAILABLE" = "true" ]; then
     ui_print "$MSG_SELECT_MODE"
     ui_print "$MSG_VOLUME_UP"
@@ -381,11 +372,11 @@ if [ "$HOT_UPDATE_AVAILABLE" = "true" ]; then
     
     if [ $choice_result -eq 2 ]; then
         ui_print "$MSG_INSTALL_CANCELLED"
-        # 用 abort 而非 exit：exit 跳过安装器收尾清理，暂存残留会让模块被标记「待重启更新」、屏蔽 Action/WebUI
+        # 用 abort 而非 exit，exit 跳过安装器收尾清理，暂存残留会让模块被标记待重启更新
         abort "$MSG_INSTALL_CANCELLED"
     fi
 
-    # 模式已选定：再问是否保留已有配置（完整安装与热更新共用这一问）
+    # 模式已选定，再问是否保留已有配置，完整安装与热更新共用这一问
     ask_keep_config
     
 # [hot-update-flow]
@@ -397,14 +388,12 @@ if [ "$HOT_UPDATE_AVAILABLE" = "true" ]; then
         ui_print "$MSG_HOT_UPDATE_START"
         
         MODDIR="/data/adb/modules/chiri"
-        # 必须 export：安装器环境可能已把 MODDIR 导出为 staging 目录（modules_update），service
-        # sh 的 [ -z "$MODDIR" ] 会继承错位路径——看门狗从 staging 拉起 daemon、日志/pidfile/锁全写 staging，KSU 清理后调度静默死亡；
-        # export 后子进程强制拿到 live 目录
+        # 必须 export，安装器环境可能已把 MODDIR 导出为 staging 目录，service.sh 会继承错位路径
+        # 看门狗从 staging 拉起 daemon，日志/pidfile/锁全写 staging，KSU 清理后调度静默死亡
         export MODDIR
         
-        # 1. 停止守护进程和主进程
-        # 必须先杀旧看门狗：否则它每 3s 把旧二进制 daemon 拉回，复活落在复制窗口会让 cp 覆盖运行中 chiri 报 ETXTBSY 且被 2>/dev/null 吞掉，
-        # 模块残留旧版本、须重启（KSU 应用 modules_update）才被覆盖固化
+        # 1. 停止守护进程和主进程，必须先杀旧看门狗
+        # 否则它每 3s 把旧二进制 daemon 拉回，复活落在复制窗口会让 cp 覆盖运行中 chiri 报 ETXTBSY
         ui_print "$MSG_STOPPING_DAEMON"
         PID_FILE="$MODDIR/logs/watchdog.pid"
         if [ -f "$PID_FILE" ]; then
@@ -430,7 +419,7 @@ if [ "$HOT_UPDATE_AVAILABLE" = "true" ]; then
         fi
         sleep 1
 
-        # 轮询确认 daemon 真正退出（最多 ~5s）：D 状态进程对 SIGKILL 也要等 IO 返回，未死透时 cp 会 ETXTBSY
+        # 轮询确认 daemon 真正退出（最多 ~5s），D 状态进程对 SIGKILL 也要等 IO 返回，未死透时 cp 会 ETXTBSY
         CHIRI_ALIVE=true
         n=0
         while [ $n -lt 5 ]; do
@@ -451,7 +440,7 @@ if [ "$HOT_UPDATE_AVAILABLE" = "true" ]; then
 
         # 2. 复制模块文件到目标目录
         ui_print "$MSG_COPYING_FILES"
-        # 备份用户可改配置：config/meta.yaml（抬头字段）与模块根的 rules.yaml；feature.yaml 等仅存于二进制，无需备份
+        # 备份用户可改配置 config/meta.yaml 与模块根的 rules.yaml，feature.yaml 等仅存于二进制无需备份
         if [ -f "$MODDIR/config/meta.yaml" ]; then
             cp "$MODDIR/config/meta.yaml" "$MODDIR/config/meta.yaml.bak"
         fi
@@ -461,14 +450,14 @@ if [ "$HOT_UPDATE_AVAILABLE" = "true" ]; then
 
         cp -r "$MODPATH"/* "$MODDIR/" 2>/dev/null
 
-        # 二进制单独复制并校验：daemon 未完全退出或内核仍持文本页时 cp 会 ETXTBSY 失败，静默失败即残留旧版；失败时恢复配置备份、保留旧版文件并提示用户手动执行 Action 启动注意：
-        # 热更新路径必须以 abort 报错结束（成功与失败皆然）——正常结束会保留 modules_update 暂存，模块被归为「待重启更新」、Action/WebUI 禁用直到重启
+        # 二进制单独复制并校验，daemon 未完全退出或内核仍持文本页时 cp 会 ETXTBSY 失败，静默失败即残留旧文件
+        # 热更新路径必须以 abort 报错结束，正常结束会保留 modules_update 暂存，模块被归为待重启更新
         UPDATE_OK=true
         if [ "$CHIRI_ALIVE" = "true" ] || ! cp "$MODPATH/core/bin/chiri" "$MODDIR/core/bin/chiri" 2>/dev/null; then
             UPDATE_OK=false
         fi
-        # 关键文件存在性抽查：cp -r 把错误吞进 /dev/null，ENOSPC/IO 错误会留半新半旧模块且无感知；service.sh/module
-        # prop/allowHotUpdate/rules.yaml 任一缺失即判失败，走与二进制相同的回滚分支
+        # 关键文件存在性抽查，cp -r 把错误吞进 /dev/null，ENOSPC/IO 错误会留半新半旧模块
+        # service.sh/module.prop/allowHotUpdate/rules.yaml 任一缺失即判失败，走与二进制相同的回滚分支
         for key_file in service.sh module.prop allowHotUpdate rules.yaml; do
            [ -f "$MODDIR/$key_file" ] || UPDATE_OK=false
         done
@@ -486,9 +475,8 @@ if [ "$HOT_UPDATE_AVAILABLE" = "true" ]; then
             ui_print "Run Action manually to start the old scheduler."
         fi
 
-        # 恢复用户配置：只在「保留配置」这条路盖回覆盖（CONFIG_KEPT=false）时不还原——盖回会顶掉新包 meta.yaml、白写本轮电池校准，
-        # 且 ChiRi 机型生效配置是 config/<soc>/meta.yaml 不在备份链，仅回退机型（生效配置即根上 config/meta.yaml）会被旧文件顶回、行为不一致；
-        # 备份仍留给复制失败回滚
+        # 恢复用户配置，只在 CONFIG_KEPT=false 时不还原，盖回会顶掉新包 meta.yaml 白写本轮电池校准
+        # ChiRi 机型生效配置是 config/<soc>/meta.yaml 不在备份链，备份仍留给复制失败回滚
         if [ "$CONFIG_KEPT" != "false" ]; then
             if [ -f "$MODDIR/config/meta.yaml.bak" ]; then
                 mv "$MODDIR/config/meta.yaml.bak" "$MODDIR/config/meta.yaml"
@@ -500,29 +488,24 @@ if [ "$HOT_UPDATE_AVAILABLE" = "true" ]; then
             rm -f "$MODDIR/config/meta.yaml.bak" "$MODDIR/rules.yaml.bak"
         fi
 
-        # 设置权限（二进制在 core/bin/chiri，模块根下并无 chiri 文件）
+        # 设置权限，二进制在 core/bin/chiri
         chmod 755 "$MODDIR/service.sh" 2>/dev/null
         chmod 755 "$MODDIR/action.sh" 2>/dev/null
         chmod 755 "$MODDIR/core/bin/chiri" 2>/dev/null
-        # 外部打包脚本（对外暴露的稳定接口，daemon 与 WebUI 共用）
+        # 外部打包脚本，daemon 与 WebUI 共用的稳定接口
         chmod 755 "$MODDIR/scripts/pack.sh" 2>/dev/null
-        # 通知投递脚本（WebUI 通知测试直接执行它；daemon 走二进制内嵌正文，不依赖本文件。
-        # 非 755 会让 WebUI 侧静默发不出通知）
+        # 通知投递脚本，WebUI 通知测试直接执行它，daemon 走二进制内嵌正文，非 755 会让 WebUI 侧静默发不出通知
         chmod 755 "$MODDIR/scripts/notify.sh" 2>/dev/null
         
-        # 3.【已取消】重启调度服务：安装器环境里 setsid/nohup 拉起的 service.sh 生命周期不可控（管理器退出后可能被收割）、失败也无法可靠提示，
-        # 统一改为要求用户手动执行 Action 启动（见下方文案）
+        # 3.【已取消】重启调度服务，安装器环境里 setsid/nohup 拉起的 service.sh 生命周期不可控，改为要求用户手动执行 Action 启动
         ui_print " "
         ui_print "$MSG_HOT_UPDATE_ABORT"
 
-        # 5. 清理安装暂存 + 走官方失败路径结束安装热更新已把文件直接热替换到 live 目录，若让安装"成功"，
-        # 管理器会按 modules_update/<id> 暂存的存在显示「需要重启更新」并屏蔽 Action/WebUI——必须以失败收场
-        # 不能用 exit（含 exit 1）：exit 跳过安装器收尾清理，暂存残留磁盘上、之后每次热更新都无法解除，Action/WebUI 一直被屏蔽
-        # 正确做法（官方 abort 语义）：
-        # 1) 先删两处「待重启」标记：modules_update/chiri（本次暂存内容已热替换进 live，无保留价值，含此前残留旧暂存）
-        # 与模块目录内 update 标记文件（上次完整安装遗留的另一判定依据）；清掉后 Action/WebUI 立即恢复、无需重启；
-        # 2) abort 打印消息 + 执行收尾清理 + 安装器报失败，后续「完整安装」代码不会执行
-        # 顺序约束：必须位于所有 $MODPATH 读取之后；脚本自身由安装器从暂存 source 执行，unlink 不影响已打开 fd
+        # 5. 清理安装暂存并以官方失败路径结束安装
+        # 热更新已把文件热替换到 live，若让安装成功，管理器会按 modules_update 暂存显示需要重启更新并屏蔽 Action/WebUI
+        # 不能用 exit，exit 跳过安装器收尾清理，暂存残留后每次热更新都无法解除
+        # 先删两处待重启标记 modules_update/chiri 与模块目录内 update 文件，再 abort 打印消息并执行收尾清理
+        # 顺序约束：必须位于所有 $MODPATH 读取之后，脚本自身由安装器从暂存 source 执行，unlink 不影响已打开 fd
         rm -rf /data/adb/modules_update/chiri
         rm -f /data/adb/modules/chiri/update
         abort "$MSG_HOT_UPDATE_ABORT"
@@ -530,10 +513,9 @@ if [ "$HOT_UPDATE_AVAILABLE" = "true" ]; then
 else
     ui_print "$MSG_HOT_UPDATE_UNAVAILABLE"
     ui_print " "
-    # 没有模式选择，但「是否保留现有配置」照问（首次安装时没有旧配置，保留也无害）
+    # 没有模式选择但「是否保留现有配置」照问，首次安装时没有旧配置，保留也无害
     ask_keep_config
 fi
 
-# [full-install] 完整安装流程（原逻辑）：模块文件由 Magisk 从暂存目录复制过来；唯一例外是 [battery-detect]——覆盖安装时会按机型修 staged 的 meta.yaml
-
-# 完整安装收尾：电池读数开关与校准倍数已在 [config-keep] 写好（放那儿是为了热更新路径也走得到——热更新以 abort 结束不会回到文件末尾）
+# [full-install] 完整安装流程，模块文件由 Magisk 从暂存目录复制过来，唯一例外是 [battery-detect] 覆盖安装时会按机型修 staged 的 meta.yaml
+# 完整安装收尾：电池读数开关与校准倍数已在 [config-keep] 写好，热更新以 abort 结束不会回到文件末尾

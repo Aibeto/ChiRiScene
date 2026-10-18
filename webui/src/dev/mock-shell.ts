@@ -1,7 +1,5 @@
-// mock-shell.ts: [scenario] [fs] [seed] [exec] [install]
-// 无 KernelSU 环境（浏览器 dev / 自动化走查）下的设备替身：用构建期嵌入的仓库配置 + 生成的假日志
-// 构成内存文件系统，并按契约层实际发出的命令形态回放URL 参数切换设备形态，便于走查空态/错误态：
-// ?soc=chiri（ChiRi 专属，影响白名单与 status.csv） ?state=normal|empty|error（正常/从未启动/读取失败） ?daemon=running|stopped（存活探测） ?pf=0（CLG 未启用帕累托前沿落点，家族名显示 CLG）
+// mock-shell.ts: [scenario] [fs] [seed] [exec] [install] 无 KernelSU 环境（浏览器 dev / 自动化走查）下的设备替身：用构建期嵌入的仓库配置 + 生成的假日志构成内存文件系统，按契约层实际发出的命令形态回放
+// URL 参数切换设备形态：?soc=chiri ?state=normal|empty|error ?daemon=running|stopped ?pf=0
 import embedded from 'virtual:chiri-config'
 import { load as loadYaml } from 'js-yaml'
 import { setShell, type ExecResult, type ShellRunner } from '@/kernel/shell'
@@ -140,9 +138,8 @@ function fakeStatusCsv(): string {
   return rows.join('\n') + '\n'
 }
 
-/** aff_ 线程流样例：3 行 @A 动作帧（含失败观测 e3）+ 两帧 @S 快照（帧头 ntop/nfg 计数与随后 p/t 行数严格一致；
- * 首帧是刷新帧 `full=1`、t 行六槽全量，次帧是槽级差分——只 `u` 变了，其余槽写 `-`。本样例只供 dev 模式播种
- * 文件名给日志页展示，WebUI 不解析帧内容），帧格式见 agentsdocs/02-convention.md。 */
+/** aff_ 线程流样例：3 行 @A 动作帧（含失败观测 e3）+ 两帧 @S 快照（帧头 ntop/nfg 计数与随后 p/t 行数严格一致；首帧是刷新帧 full=1、t 行六槽全量，次帧是槽级差分——只 u 变了，其余槽写 -）
+ *  只供 dev 模式播种文件名给日志页展示，WebUI 不解析帧内容 */
 function fakeAffLog(): string {
   return [
     '# ts-column=local format_now',
@@ -188,7 +185,7 @@ function fasWhitelistExport(): string {
   }
 }
 
-/** 心跳内容按**读取时刻**生成（见 handle 的 TAIL 分支）：daemonRunning 取当前 MM:SS，stopped 取 8 分钟前（远超 20s 容差）；静态播种会在预览打开 20s 后自然过期 */
+/** 心跳内容按**读取时刻**生成：daemonRunning 取当前 MM:SS，stopped 取 8 分钟前（远超 20s 容差）；静态播种会在预览打开 20s 后自然过期 */
 function liveTimeText(): string {
   const beat = new Date(Date.now() - (daemonRunning ? 0 : 8 * 60_000))
   const pad = (n: number) => String(n).padStart(2, '0')
@@ -221,7 +218,7 @@ function seed(): void {
   put('current_mode.chr', 'default')
   // daemon 启动写一次（1 = 启用帕累托前沿落点，仅 8550）：非 ChiRi 与 ?pf=0 都写 0
   put('pf.chr', isChiri && pfEnabled ? '1' : '0')
-  // 心跳只为「文件存在」播种，内容在读取时动态生成（见 liveTimeText）
+  // 心跳只为「文件存在」播种，内容在读取时动态生成
   put('LiveTime.chr', '')
   // 看门狗 pid 只在 daemon 运行时存在：?daemon=stopped 不播种（stopScheduler 会删它，否则存活态与 pid 文件互相矛盾）
   if (daemonRunning) put('logs/watchdog.pid', '12345\n')
@@ -264,8 +261,7 @@ const TAIL_CMD = /^tail -c (\d+) (.+)$/
 const LS_CMD = /^ls -1 (.+)$/
 const WRITE_CMD = /^printf '%s' (\S+) \| base64 -d > (.+) && mv -f (.+) (.+) \|\| \{ rm -f (.+); exit 1; \}$/
 const KILL_CMD = /killall -9 chiri/
-// 导出历史日志：启动与轮询探测 mock。启动命令形态必须与 contract/export.ts 发出的一致（`nohup sh <pack.sh> export ...`），
-// 正则写成 `nohup sh -c` 会 mismatch → 预览里点「导出历史日志」直接报「启动导出失败」，进度条根本不会出现
+// 导出历史日志：启动与轮询探测 mock；启动命令形态必须与 contract/export.ts 发出的一致（nohup sh <pack.sh> export ...），正则写成 nohup sh -c 会 mismatch → 预览里点「导出历史日志」直接报「启动导出失败」
 const EXPORT_START_CMD = /^nohup sh .*pack\.sh'? export /
 const EXPORT_POLL_CMD = /\/sdcard\/Download\/logd_\d{4}-\d{6}\.tar/
 /** 轮询次数：前几轮先回进度态，最后才回完成——一上来就回完成会让进度条一闪而过，预览里看不到进度形态 */

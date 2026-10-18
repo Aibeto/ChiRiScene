@@ -41,40 +41,35 @@ pub fn try_write_file<P: AsRef<Path>, C: AsRef<[u8]>>(path: P, content: C) -> Re
             .downcast_ref::<std::io::Error>()
             .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound);
         if not_found {
-            log::debug!("write skipped (node missing): {}", path.as_ref().display());
+            log::debug!("跳过写入（节点缺失）: {}", path.as_ref().display());
         } else {
-            log::warn!("Failed to write to {}: {}.", path.as_ref().display(), e);
+            log::warn!("写入 {} 失败: {}", path.as_ref().display(), e);
         }
     }
     Ok(())
 }
 
 // [nodes]
-/// sysfs 结点写入的**统一入口**：先 `enable_perm`（已存在则 0644→0664）再写，**不**在收尾改权限。
-/// 与 `write_to_file` 的唯一区别就是收尾那一步——它会 chmod 0444，而 sysfs 结点的权限是**进程间共享**的：
-/// 写一次就等于把「别人」挡在外面（本进程裸写、内核/厂商服务的恢复写都会被 EACCES）。
-/// 实例（2026-09-28 定位）：FAS 引擎用 `write_to_file` 写 `scaling_governor` 后，GovernorGuard 对同一
-/// 节点的裸 `fs::write` 全部失败（跨全部已收 daemon.log 成功行 0 次）——**凡 sysfs 结点一律走本函数**。
-/// 返回写入结果（不吞错）：调用方据此决定是否记快照/重试
+/// sysfs 结点写入的统一入口：先 enable_perm（0644→0664）再写，不在收尾改权限
+/// 与 write_to_file 的唯一区别是不 chmod 0444，sysfs 权限进程间共享，改只读会让本进程裸写全部 EACCES
 pub fn write_sysfs<P: AsRef<Path>, C: AsRef<[u8]>>(path: P, content: C) -> Result<()> {
     let path = path.as_ref();
     let _ = enable_perm(path);
-    // 本函数是 sysfs 写入统一入口，部分调用方以 `let _ =` 吞掉返回值（FAS governor 切换等）——
-    // 这里留一条 debug 兜底，免得「写失败但调用方不判成败」变成零痕迹（高频路径才走 FastWriter，本入口非每 tick）
+    // 本函数是 sysfs 写入统一入口，部分调用方以 `let _ =` 吞掉返回值，这里留一条 debug 兜底免得零痕迹
     fs::write(path, content).map_err(|e| {
         if log::log_enabled!(log::Level::Debug) {
-            log::debug!("write sysfs {} failed: {}", path.display(), e);
+            log::debug!("写 sysfs {} 失败: {}", path.display(), e);
         }
         anyhow::Error::from(e)
     })
 }
 
-/// 多节点写入的失效告警去重表：`what` 进入「全部节点不可用」态记一条，任一节点写成功即移除（重新武装），防 1~2s 热路径刷屏
+/// 多节点写入的失效告警去重表：`what` 进入全部节点不可用态记一条，任一节点写成功即移除，防热路径刷屏
 static NODE_FAIL_WARNED: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
 
-/// 多节点写入：同一功能写到多个候选节点（不同机型可用节点不同——cgroup 组、cpufreq policy、`/sys/block` 设备等）日志口径：单节点失败 → debug（机型无该节点是常态）；
-/// 全部节点失败 →warn，每个 `what` 仅进入失效态时一条（写成功即复位，见 [`NODE_FAIL_WARNED`]）；非「节点缺失」类错误（权限/IO）就地 warn返回成功写入的节点路径（空 = 全部失败）
-/// 刻意不做存在性预判：写入失败才是「节点不可用」的权威证据路径/值按 `AsRef<str>` 接收，String/&str 元组皆可直传
+/// 多节点写入：同一功能写到多个候选节点（不同机型可用节点不同），返回成功写入的节点路径（空 = 全部失败）
+/// 日志口径：单节点失败 debug（机型无该节点是常态），全部失败 warn 且每个 `what` 仅一次；非节点缺失类错误就地 warn
+/// 刻意不做存在性预判：写入失败才是节点不可用的权威证据；路径/值按 `AsRef<str>` 接收
 pub fn write_nodes<P: AsRef<str>, V: AsRef<str>>(
     items: &[(P, V)],
     what: &'static str,
@@ -86,13 +81,12 @@ pub fn write_nodes<P: AsRef<str>, V: AsRef<str>>(
 }
 
 // [node_write_report]
-/// 单节点写入结局：`Ok` 写成功；`Err(Some(n))` 失败并带真实 errno（`n`）；`Err(None)` 失败但 errno 不可得。
-/// 供调用方按类打点：**节点缺失（ENOENT/ENOTDIR，机型无该节点）是常态，与真失败必须分开记账**——
-/// 只回「成功节点列表」时两者都只能记 `e0`，离线会把常态缺失误算成失败率。
+/// 单节点写入结局：`Ok` 成功；`Err(Some(n))` 失败并带真实 errno；`Err(None)` 失败但 errno 不可得
+/// 供调用方按类打点：节点缺失（ENOENT/ENOTDIR）是常态，与真失败必须分开记账，否则离线会把常态缺失算成失败率
 pub type NodeWriteOutcome = Result<(), Option<i32>>;
 
-/// 与 [`write_nodes`] 同口径（同样的 debug/warn 告警），但返回**每节点**结局（含真实 errno）。
-/// 只需成功节点列表时用 [`write_nodes`]；需要区分「节点缺失 / 真失败」打点时用本函数。
+/// 与 [`write_nodes`] 同口径（同样的 debug/warn 告警），但返回每节点结局（含真实 errno）
+/// 只需成功节点列表时用 [`write_nodes`]，需要区分节点缺失与真失败时用本函数
 pub fn write_nodes_verbose<P: AsRef<str>, V: AsRef<str>>(
     items: &[(P, V)],
     what: &'static str,
@@ -105,9 +99,9 @@ pub fn write_nodes_verbose<P: AsRef<str>, V: AsRef<str>>(
             Ok(()) => outcomes.push((path.to_string(), Ok(()))),
             Err(e) => {
                 if is_node_missing(&e) {
-                    log::debug!("[{what}] node missing, skipped: {path}");
+                    log::debug!("[{what}] 节点缺失，跳过: {path}");
                 } else {
-                    log::warn!("[{what}] write failed: {path} — {e}");
+                    log::warn!("[{what}] 写入失败: {path} — {e}");
                 }
                 last_err = Some(e.to_string());
                 let errno = e
@@ -126,7 +120,7 @@ pub fn write_nodes_verbose<P: AsRef<str>, V: AsRef<str>>(
     outcomes
 }
 
-/// 节点/目录不存在（ENOENT / ENOTDIR）：属「这台机型没有该节点」，按 debug 记
+/// 节点/目录不存在（ENOENT / ENOTDIR）：这台机型没有该节点，按 debug 记
 fn is_node_missing(e: &anyhow::Error) -> bool {
     e.downcast_ref::<std::io::Error>().is_some_and(|io| {
         io.kind() == std::io::ErrorKind::NotFound || io.raw_os_error() == Some(20)
@@ -140,7 +134,7 @@ fn warn_all_nodes_failed(what: &'static str, count: usize, first: &str, last_err
     }
     warned.push(what);
     log::warn!(
-        "[{what}] all {count} node(s) unavailable (first: {first}, last error: {})",
+        "[{what}] {count} 个节点全部不可用（首个: {first}，最后错误: {}）",
         last_err.unwrap_or("unknown")
     );
 }
@@ -159,8 +153,7 @@ pub fn enable_perm<P: AsRef<Path>>(path: P) -> Result<()> {
 }
 
 /// 目录内单个文件的变更监听（配置热重载用）两条硬约束：
-/// 1. 跨重载复用同一 inotify 实例：每轮 init→drop 间隙无 watch 在册，其间事件被内核丢弃
-/// （WebUI 保存是 tmp 写入 + mv 覆盖，真 MOVED_TO 恰落间隙即丢——表现为日志显示重载成功但级别仍旧值）；
+/// 1. 跨重载复用同一 inotify 实例：init→drop 间隙无 watch 在册，其间事件被内核丢弃
 /// 2. 按文件名过滤：目录级 watch 会收到目录内所有文件事件，不过滤会在 tmp 落盘时提前重载
 pub struct DirWatcher {
     inotify: Inotify,
@@ -171,13 +164,13 @@ pub struct DirWatcher {
 const WATCH_SETTLE: Duration = Duration::from_millis(100);
 
 impl DirWatcher {
-    /// 监听 `dir` 目录（不递归）。目录不存在/无权限时返回 Err，由调用方退避重试
+    /// 监听 `dir` 目录（不递归）；目录不存在/无权限时返回 Err，由调用方退避重试
     pub fn new(dir: &Path) -> Result<Self> {
-        // CLOSE_WRITE 覆盖直接写入；MOVED_TO 覆盖原子替换（WebUI 用临时文件 + mv 保存，只有 MOVED_TO 能感知）
+        // CLOSE_WRITE 覆盖直接写入；MOVED_TO 覆盖原子替换（WebUI 用临时文件 + mv 保存）
         Self::new_with_mask(dir, WatchMask::CLOSE_WRITE | WatchMask::MOVED_TO)
     }
 
-    /// 自定义事件掩码仅当「删掉文件也算状态变更」时才需要更多事件：配置/实验室链路文件被删会自愈补建（仍走 CLOSE_WRITE），多给掩码反而会因误删触发重载
+    /// 自定义事件掩码：仅当删掉文件也算状态变更时才需要更多事件，多给掩码会因误删触发重载
     pub fn new_with_mask(dir: &Path, mask: WatchMask) -> Result<Self> {
         let inotify = Inotify::init()?;
         inotify.watches().add(dir, mask)?;
@@ -187,7 +180,7 @@ impl DirWatcher {
         })
     }
 
-    /// 阻塞等待 `file_name` 发生变更；目录内其它文件的事件一律忽略并继续等待
+    /// 阻塞等待 `file_name` 发生变更，目录内其它文件的事件一律忽略
     pub fn wait_change(&mut self, file_name: &str) -> Result<()> {
         let target = std::ffi::OsStr::new(file_name);
         loop {
@@ -201,7 +194,7 @@ impl DirWatcher {
                 break;
             }
         }
-        // 静默窗口 + 清空积压：连续写入合并为一次重载（fd 非阻塞，无事件时 WouldBlock 结束循环）
+        // 静默窗口 + 清空积压：连续写入合并为一次重载（fd 非阻塞，WouldBlock 结束循环）
         thread::sleep(WATCH_SETTLE);
         while let Ok(events) = self.inotify.read_events(&mut self.buffer) {
             if events.peekable().peek().is_none() {
@@ -220,7 +213,7 @@ pub fn read_f64_from_file(path: &str) -> Result<f64> {
     Ok(val)
 }
 
-// 辅助函数：读取文件内容为 String
+// 读取文件内容为 String
 pub fn read_file_content(path: &str) -> Result<String> {
     let mut content = String::new();
     File::open(path)?.read_to_string(&mut content)?;
@@ -228,9 +221,8 @@ pub fn read_file_content(path: &str) -> Result<String> {
 }
 
 // [temp_probe]
-/// CPU 温度 zone type 内置默认名单（高通 soc_max/cpuss + MTK mtktscpu/cpu-1-/cpu-0-0-usr）feature.yaml `Thermal
-/// cpu_temp_zone_types` 可覆盖（缺省一律用内置名单）soc_max = virtual-sensor 聚合温区（多传感器取 max，可能含非 CPU 传感器，作 cpu_temp 偏保守）；
-/// cpuss = cluster 级 tsens 单传感器，soc_max 缺失时按子串回退命中唯一来源：chiri/config.rs 的 ThermalGuardConfig serde default 直接引用
+/// CPU 温度 zone type 内置默认名单（高通 soc_max/cpuss + MTK mtktscpu/cpu-1-/cpu-0-0-usr），feature.yaml Thermal.cpu_temp_zone_types 可覆盖
+/// soc_max 是 virtual-sensor 聚合温区（多传感器取 max），cpuss 是 cluster 级 tsens，chiri/config.rs 的 ThermalGuardConfig serde default 直接引用
 pub(crate) fn default_cpu_temp_zone_types() -> Vec<String> {
     ["soc_max", "cpuss", "mtktscpu", "cpu-1-", "cpu-0-0-usr"]
         .iter()
@@ -238,10 +230,11 @@ pub(crate) fn default_cpu_temp_zone_types() -> Vec<String> {
         .collect()
 }
 
-/// 运行时生效的 zone 名单（Config::load 从 Thermal 配置同步；加载前/失败用内置默认）名单来自编译期嵌入的 feature.yaml，进程内恒定，set 仅首次生效、热重载重复调用无副作用
+/// 运行时生效的 zone 名单（Config::load 从 Thermal 配置同步，加载前/失败用内置默认）
+/// 名单来自编译期嵌入的 feature.yaml，进程内恒定，set 仅首次生效、热重载重复调用无副作用
 static CPU_TEMP_ZONE_TYPES: OnceLock<Vec<String>> = OnceLock::new();
 
-/// utils 无法直接访问 chiri Config，走「加载时 set + 静态缓存」范式；OnceLock 首胜即上面的进程内恒定语义若未来名单改为磁盘可调，须换 RwLock/Mutex 存量真可重设
+/// utils 无法直接访问 chiri Config，走「加载时 set + 静态缓存」范式，若名单要支持磁盘热调须换 RwLock/Mutex
 pub fn set_cpu_temp_zone_types(types: Vec<String>) {
     let _ = CPU_TEMP_ZONE_TYPES.set(types);
 }
@@ -259,12 +252,12 @@ pub fn find_cpu_temp_path() -> Result<String> {
     let thermal_dir = Path::new(thermal_path);
 
     if !thermal_dir.exists() {
-        // 热保护探温整体失效（调用方据此把 CPU 参考停用、只留电池温度），属能力丢失
-        log::warn!("thermal dir {} missing: cpu temp unavailable", thermal_path);
+        // 热保护探温整体失效（调用方据此停用 CPU 参考、只留电池温度），属能力丢失
+        log::warn!("thermal 目录 {} 缺失，CPU 温度不可用", thermal_path);
         return Err(anyhow::anyhow!("Thermal directory not found"));
     }
 
-    // [名单序] 外层遍历名单项、内层 zones，首个命中项胜出，保证 soc_max 优先于 cpuss 回退（zones 少，双循环无性能顾虑）
+    // [名单序] 外层遍历名单项、内层 zones，首个命中项胜出，保证 soc_max 优先于 cpuss 回退
     for item in cpu_temp_zone_types() {
         for entry in fs::read_dir(thermal_dir)? {
             let entry = entry?;
@@ -292,8 +285,8 @@ pub fn find_cpu_temp_path() -> Result<String> {
     Err(anyhow::anyhow!("Valid CPU thermal zone not found"))
 }
 
-/// 电池温度节点路径原始刻度因内核/厂商而异不可硬编码换算，读取前先经 `battery_temp_scale()` 预识别
-/// None = 节点不存在（依赖它的功能自动失效，不影响其余功能）
+/// 电池温度节点路径；原始刻度因内核/厂商而异不可硬编码换算，读取前先经 `battery_temp_scale()` 预识别
+/// None = 节点不存在（依赖它的功能自动失效）
 pub fn find_battery_temp_path() -> Option<&'static str> {
     const BATT_TEMP: &str = "/sys/class/power_supply/battery/temp";
     std::path::Path::new(BATT_TEMP)
@@ -301,8 +294,8 @@ pub fn find_battery_temp_path() -> Option<&'static str> {
         .then_some(BATT_TEMP)
 }
 
-// 电池温度刻度预识别 `/sys/class/power_supply/battery/temp` 的单位因内核/厂商而异（0.1°C / 毫摄氏度 / 直读 °C 三种），硬编码除数会有 10×/100× 偏差，
-// 故运行时预识别一次并缓存，热保护与温度护栏共用同一结论，避免口径漂移
+// 电池温度刻度预识别：`/sys/class/power_supply/battery/temp` 的单位因内核/厂商而异（0.1°C / 毫摄氏度 / 直读 °C）
+// 硬编码除数会有 10×/100× 偏差，故运行时预识别一次并缓存，热保护与温度护栏共用同一结论
 
 // [batt_temp]
 /// 电池温度节点的原始刻度
@@ -336,12 +329,12 @@ impl BatteryTempScale {
     }
 }
 
-/// 合理电池温度窗口（°C）：在多种单位解释里挑唯一合理者下界 5（取 0 会令 tenths 解释失去区分度）、上界 80（容纳偶发高温，离谱值由热保护 TempFilter 物理范围门兜底）；
-/// 窗口下 tenths 与 milli 解释不互相碰撞
+/// 合理电池温度窗口（°C）：在多种单位解释里挑唯一合理者
+/// 下界 5（取 0 会令 tenths 解释失去区分度）、上界 80（离谱值由热保护 TempFilter 物理范围门兜底）
 const BATT_TEMP_PLAUSIBLE_MIN_C: f64 = 5.0;
 const BATT_TEMP_PLAUSIBLE_MAX_C: f64 = 80.0;
 
-/// 预识别结果缓存：仅在探测得出确定结论时写入，未就绪/读数异常留空待下次重试（避免固化开机早期占位值）
+/// 预识别结果缓存：仅在探测得出确定结论时写入，未就绪/读数异常留空待下次重试
 static BATTERY_TEMP_SCALE: OnceLock<BatteryTempScale> = OnceLock::new();
 
 /// 读一次电池温度原始值（不换算）
@@ -353,8 +346,8 @@ pub fn read_battery_temp_raw() -> Option<f64> {
         .ok()
 }
 
-/// 预识别刻度：读一次原始值，按「唯一落进合理窗口」定档，多个解释同时合理时按内核标准优先（tenths > milli > Celsius）；读数 0/节点缺失返回 None，
-/// 均不合理时回退 tenths（离谱值由 TempFilter 兜底）
+/// 预识别刻度：读一次原始值，按「唯一落进合理窗口」定档，多个解释同时合理时按内核标准优先（tenths > milli > Celsius）
+/// 读数 0/节点缺失返回 None，均不合理时回退 tenths（离谱值由 TempFilter 兜底）
 pub fn detect_battery_temp_scale() -> Option<BatteryTempScale> {
     let raw = read_battery_temp_raw()?;
     if raw == 0.0 {
@@ -447,7 +440,7 @@ impl SysPathExist {
 }
 
 // [fast_writer]
-// FastWriter — 带去重 + unmount 的 sysfs 写入器
+// FastWriter：带去重 + unmount 的 sysfs 写入器
 
 pub struct FastWriter {
     file: Option<File>,
@@ -467,7 +460,8 @@ impl FastWriter {
             path: path_ref.to_path_buf(),
             unmounted: false,
         };
-        // 惰性卸载：仅当直接打开失败（挂载写保护/权限封装等异常态）时 umount 重开，避免对正常节点无条件detach（可能拆掉合法挂载）。写被拒（EACCES/EROFS）时也会走一次卸载重试（见 do_write）
+        // 惰性卸载：仅当直接打开失败（挂载写保护/权限封装）时 umount 重开，避免对正常节点无条件 detach
+        // 写被拒（EACCES/EROFS）时也会走一次卸载重试（见 do_write）
         if w.file.is_none() {
             w.unmount_and_reopen();
         }
@@ -479,8 +473,7 @@ impl FastWriter {
             .write(true)
             .open(path)
             .map_err(|e| {
-                // [level] 降级 warn：节点缺失（机型没有该频点节点、测试用 /nonexistent）在稳态就会出现，
-                // 且调用方一律经 `is_valid()` 跳过该 policy/节点、其余功能照常——非「不可自愈、需人介入」
+                // [level] 降级 warn：节点缺失（机型没有该频点节点）在稳态就会出现，调用方经 `is_valid()` 跳过该 policy
                 log::warn!(
                     "{}",
                     t_with_args(
@@ -495,7 +488,7 @@ impl FastWriter {
     fn unmount_and_reopen(&mut self) {
         Self::try_unmount(&self.path);
         self.unmounted = true;
-        // 卸载后强制重新打开：旧 fd 可能仍指向被卸载的挂载背衬，需换到真实节点
+        // 卸载后强制重新打开：旧 fd 可能仍指向被卸载的挂载背衬
         self.file = Self::open_file(&self.path);
     }
 
@@ -545,11 +538,11 @@ impl FastWriter {
             Ok(()) => true,
             Err(e) => {
                 match e.raw_os_error() {
-                    // EINVAL(22): 内核拒绝该频率（热限频/范围收窄）；EBUSY(16): 节点短暂被占用均为预期内瞬态错误：降级 debug 且不缓存，下次 tick 自动重试
+                    // EINVAL(22) 内核拒绝该频率（热限频/范围收窄）；EBUSY(16) 节点短暂被占用：降级 debug 且不缓存，下次 tick 重试
                     Some(libc::EINVAL) | Some(libc::EBUSY) => {
-                        log::debug!("write freq {} to {:?} skipped: {}", value, self.path, e);
+                        log::debug!("写入频率 {} 到 {:?} 跳过: {}", value, self.path, e);
                     }
-                    // EACCES/EROFS: 多为挂载写保护/权限封装（异常态），卸载后重试一次
+                    // EACCES/EROFS 多为挂载写保护/权限封装（异常态），卸载后重试一次
                     Some(libc::EACCES) | Some(libc::EROFS) if !self.unmounted => {
                         log::warn!(
                             "{}",
@@ -598,9 +591,9 @@ impl FastWriter {
 }
 
 // [fast_reader]
-// FastReader — keep-open + 可复用 buf 的稳定节点读取器（镜像 FastWriter 做法）
+// FastReader：keep-open + 可复用 buf 的稳定节点读取器（镜像 FastWriter 做法）
 
-/// 最近一次读取的三态：需区分「节点缺失」与「读失败」时查 [`FastReader::state`]；「正常空值」以 Some("") 表达（对应 fs::read_to_string 的 Ok("")）
+/// 最近一次读取的三态：需区分节点缺失与读失败时查 [`FastReader::state`]；正常空值以 Some("") 表达
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ReadState {
     /// 读取成功（内容可能为空串）
@@ -611,9 +604,9 @@ pub enum ReadState {
     Failed,
 }
 
-/// 稳定 sysfs/procfs 节点的 keep-open 读取器：fd 常驻 + seek(0) 重读入可复用 buf，消除每 tick 分配与 open-close只收常驻节点；
-/// per-pid `/proc/<pid>/*` 随进程退出失效，保持每次 open读取三态与`fs::read_to_string` 链对齐（None = 读失败/缺失、Some("") = 正常空值）；
-/// 读错误/EOF 重开重试一次
+/// 稳定 sysfs/procfs 节点的 keep-open 读取器：fd 常驻 + seek(0) 重读入可复用 buf，消除每 tick 分配与 open-close
+/// 只收常驻节点；per-pid `/proc/<pid>/*` 随进程退出失效，保持每次 open
+/// 读取三态与 `fs::read_to_string` 链对齐（None = 读失败/缺失、Some("") = 正常空值），读错误/EOF 重开重试一次
 pub struct FastReader {
     file: Option<File>,
     /// 读入复用 buf：每次 seek(0) 后从头覆盖写入，跨调用不重新分配
@@ -640,7 +633,6 @@ impl FastReader {
     }
 
     /// 最近一次读取的三态结果（read_raw/read_u32 返回 None 时区分缺失与失败）
-    // 接口面：本轮落点未全部需要三态区分，保留查询能力
     #[allow(dead_code)]
     pub fn state(&self) -> ReadState {
         self.state
@@ -660,7 +652,7 @@ impl FastReader {
         }
     }
 
-    /// errno → 三态（口径同 utils 节点缺失判定：ENOTDIR(20) 与 ENOENT 同计缺失）
+    /// errno → 三态（口径同节点缺失判定：ENOTDIR(20) 与 ENOENT 同计缺失）
     fn err_state(e: &std::io::Error) -> ReadState {
         if e.kind() == std::io::ErrorKind::NotFound || e.raw_os_error() == Some(20) {
             ReadState::Missing
@@ -681,8 +673,8 @@ impl FastReader {
         Ok(())
     }
 
-    /// 原文读取（内容比较型调用点用，不归一化）：`Some(&str)` = 读到内容（空为 `Some("")`）、`None` = 读失败/缺失，与 `fs::read_to_string(..).ok()
-    /// ` 同口径（非法 UTF-8 计失败）；借用内部 buf，下次 read_* 即失效
+    /// 原文读取（内容比较型调用点用，不归一化）：`Some(&str)` = 读到内容、`None` = 读失败/缺失，与 `fs::read_to_string(..).ok()` 同口径
+    /// 非法 UTF-8 计失败；借用内部 buf，下次 read_* 即失效
     pub fn read_raw(&mut self) -> Option<&str> {
         // 构造期未就绪的节点在这里惰性补打开
         if self.file.is_none() && !self.reopen() {
@@ -690,7 +682,7 @@ impl FastReader {
         }
         let mut res = self.read_into_buf();
         if res.is_err() {
-            // 读错误/EOF 异常：丢弃 fd 重开重试一次（umount/热插拔/节点重建后旧 fd 会持续报错）
+            // 读错误/EOF：丢弃 fd 重开重试一次（umount/热插拔/节点重建后旧 fd 会持续报错）
             self.file = None;
             if !self.reopen() {
                 return None;
@@ -703,11 +695,11 @@ impl FastReader {
                     self.state = ReadState::Ok;
                     Some(s)
                 }
-                // 非法 UTF-8：节点内容不是文本（多为 sysfs 导出异常），丢 fd 下次重开重试
+                // 非法 UTF-8：节点内容不是文本，丢 fd 下次重开重试
                 Err(e) => {
                     if log::log_enabled!(log::Level::Debug) {
                         log::debug!(
-                            "read {} invalid utf-8, reopen next call: {}",
+                            "读 {} 非法 UTF-8，下次调用重开: {}", // 丢 fd 重开
                             self.path.display(),
                             e
                         );
@@ -717,11 +709,11 @@ impl FastReader {
                     None
                 }
             },
-            // 重开重试后仍失败：此处是唯一出口，不打点即「读失败」全静默（Missing 是机型常态，不打点）
+            // 重开重试后仍失败：此处是唯一出口，不打点则读失败全静默（Missing 是机型常态，不打点）
             Err(e) => {
                 let state = Self::err_state(&e);
                 if state == ReadState::Failed && log::log_enabled!(log::Level::Debug) {
-                    log::debug!("read {} failed after reopen: {}", self.path.display(), e);
+                    log::debug!("重开后读 {} 仍失败: {}", self.path.display(), e);
                 }
                 self.state = state;
                 self.file = None;
@@ -730,9 +722,8 @@ impl FastReader {
         }
     }
 
-    /// 读 u32（trim + parse，不经 String 分配）：`None` = 读失败/节点缺失/内容非 u32，与`read_to_string(..)?.trim().parse().ok()
-    /// ` 等价（parse 失败时 `state()` 仍为 Ok，可与读失败区分）
-    // 接口面：本轮落点无整型读，后续 tick 读侧接入时启用
+    /// 读 u32（trim + parse，不经 String 分配）：`None` = 读失败/节点缺失/内容非 u32，与 `read_to_string(..)?.trim().parse().ok()` 等价
+    /// parse 失败时 `state()` 仍为 Ok，可与读失败区分
     #[allow(dead_code)]
     pub fn read_u32(&mut self) -> Option<u32> {
         self.read_raw().and_then(|s| s.trim().parse().ok())
@@ -746,13 +737,13 @@ pub fn default_true() -> bool {
     true
 }
 
-/// Serde 默认值辅助函数：耗电读数满量程（W）。meta.yaml 的 power_max_w 缺省/非法时用此值（WebUI 仪表盘据此换算进度）
+/// Serde 默认值辅助函数：耗电读数满量程（W），meta.yaml 的 power_max_w 缺省/非法时用此值
 pub fn default_power_max_w() -> f32 {
     12.0
 }
 
-/// 电池读数单位校准默认值（标准 Android ABI：µV / µA）：节点原始值 ÷ 该值 = V / A，读取层不做换算，batt_power_w 按安培 × 伏特得瓦OPlus 私有节点（bcc_parms）
-/// 报 mV / mA 需填 1000，安装脚本检测到时自动写入
+/// 电池读数单位校准默认值（标准 Android ABI：µV / µA）：节点原始值 ÷ 该值 = V / A
+/// OPlus 私有节点（bcc_parms）报 mV / mA 需填 1000，安装脚本检测到时自动写入
 pub const DEFAULT_UNIT_DIVISOR: f32 = 1_000_000.0;
 
 /// Serde 默认值辅助函数：单位校准除数（meta.yaml 的 `unit_divisor` 缺省即 [`DEFAULT_UNIT_DIVISOR`]）
@@ -767,7 +758,7 @@ pub fn read_i32_from_file(path: &str) -> Result<i32> {
     Ok(content.trim().parse()?)
 }
 
-/// 获取与 BPF ktime_get_ns() 绝对对齐的单调时钟时间 (纳秒)
+/// 获取与 BPF ktime_get_ns() 绝对对齐的单调时钟时间（纳秒）
 pub fn get_ktime_ns() -> u64 {
     let mut ts = libc::timespec {
         tv_sec: 0,
@@ -790,7 +781,7 @@ where
             file.read_to_string(&mut s)?;
             serde_yaml::from_str(&s).or_else(|e| {
                 log::warn!(
-                    "[Config] Parse error {}: {}. Default.",
+                    "[Config] 解析失败 {}: {}，用默认值", // 回落 Default
                     path_ref.display(),
                     e
                 );
@@ -798,7 +789,7 @@ where
             })
         }
         Err(_) => {
-            log::warn!("[Config] Not found: {}. Default.", path_ref.display());
+            log::warn!("[Config] 文件不存在 {}，用默认值", path_ref.display());
             Ok(T::default())
         }
     }

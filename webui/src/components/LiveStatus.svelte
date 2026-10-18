@@ -1,5 +1,5 @@
 <script lang="ts">
-  // LiveStatus.svelte: [status]守护进程存活芯片（.g-status 玻璃胶囊 + 脉冲信号点）；三态用文字 + 数据属性双重表达（不只靠颜色）
+  // LiveStatus.svelte: [status] 守护进程存活芯片（.g-status 玻璃胶囊 + 脉冲信号点）；三态用文字 + 数据属性双重表达（不只靠颜色）
   let {
     state,
     label,

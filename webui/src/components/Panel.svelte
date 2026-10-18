@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Panel.svelte: [layout] [signal]面板容器：玻璃卡片（.g-card，三层玻璃结构见 app.css [glass]/[primitives]）
+  // Panel.svelte: [layout] [signal] 面板容器：玻璃卡片（.g-card，三层玻璃结构 [glass]/[primitives]）
   import type { Snippet } from 'svelte'
 
   let {
@@ -19,7 +19,7 @@
 </script>
 
 <section class="panel g-glass g-card" data-signal={signal || undefined}>
-  <!-- 2026-10-16 用户要求：无点击元素去掉扫光闪光（.g-sheen 已从 .g-card 宿主选择器移除），原 sheen span 已删 -->
+  <!-- 无点击元素不铺扫光闪光（.g-sheen 已从 .g-card 宿主选择器移除） -->
   {#if title || actions}
     <header class="g-card__header">
       <div class="g-card__titles">

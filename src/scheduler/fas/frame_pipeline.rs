@@ -120,7 +120,7 @@ impl FasController {
     // Phase 4.5: EMA 更新
 
     fn update_ema(&mut self, actual_ms: f32, avg_fps: f32) {
-        // [动态 PID] EMA baseline 用偏移后的 target fps，保证 EMA 与 PID 看到的 budget 一致
+        // [动态 PID] EMA baseline 用偏移后的 target fps，与 PID 看到的 budget 一致
         let eff_target = self.effective_target_fps();
         let budget_ms = 1000.0 / eff_target.max(1.0);
         let norm = self.cached_norm;
@@ -180,7 +180,7 @@ impl FasController {
             && self.init_time.elapsed().as_millis() > self.cfg.cold_boot_ms as u128
         {
             let fps_dampen = (60.0 / self.current_target_fps.max(30.0)).powf(0.40);
-            // 衰减步长额外乘以 0.6，降低高刷下的衰减激进度
+            // 衰减步长额外乘 0.6，降低高刷衰减激进度
             let decay_scale = if self.current_target_fps > 90.0 {
                 0.6
             } else {
@@ -233,7 +233,7 @@ impl FasController {
     // [thermal]
     // Phase 2.5: 温度护栏（temp_threshold=0 禁用）
 
-    /// 护栏锁存状态机：≥temp_threshold 进入、<temp_threshold-3℃ 退出（迟滞防阈值边缘振荡；温度源 3s 刷新，见 FasManager::refresh_temperature）
+    /// 护栏锁存状态机：≥temp_threshold 进入、<temp_threshold-3℃ 退出，迟滞防阈值边缘振荡；温度源 3s 刷新
     pub(super) fn update_thermal_hold(&mut self) {
         if self.temp_threshold <= 0.0 || self.current_temperature <= 0.0 {
             self.thermal_hold = false;
@@ -262,7 +262,7 @@ impl FasController {
 
     pub fn update_frame(&mut self, frame_delta_ns: u64) {
         if !self.frame_feedback_enabled || frame_delta_ns == 0 || self.policies.is_empty() {
-            // [静默失效排查] 入口即丢弃：稳态不会出现，DEBUG 下区分「未启用 / 时间戳为 0 / 无策略」三种断供入口
+            // [静默失效排查] 入口即丢弃：稳态不会出现，DEBUG 下区分「未启用 / 时间戳为 0 / 无策略」
             if log::log_enabled!(log::Level::Debug) {
                 let reason = if !self.frame_feedback_enabled {
                     "帧反馈未启用"
@@ -290,8 +290,8 @@ impl FasController {
         let max_ns = (self.cfg.fixed_max_frame_ms * 1_000_000.0) as u64;
 
         if frame_delta_ns < self.min_frame_ns() {
-            // [静默失效排查] 短于半帧（>2× 最高档位）视为噪声/重复帧：帧源侧已按 1ms 下限过滤，
-            // 此处丢弃说明帧源与档位口径不符（如档位抬高后旧样本仍涌入）
+            // [静默失效排查] 短于半帧（>2× 最高档位）视为噪声/重复帧：帧源侧已按 1ms 下限过滤
+            // 此处丢弃说明帧源与档位口径不符
             if log::log_enabled!(log::Level::Debug) {
                 debug!(
                     "{}",
@@ -315,7 +315,7 @@ impl FasController {
         }
         if self.warmup_remaining > 0 {
             if frame_delta_ns > max_ns || actual_ms > self.cfg.app_switch_gap_ms {
-                // [静默失效排查] 预热期的超长帧：整帧丢弃并回到 12 帧预热，产品侧表现为「预热迟迟不结束」
+                // [静默失效排查] 预热期超长帧：整帧丢弃并回到 12 帧预热，表现为「预热迟迟不结束」
                 if log::log_enabled!(log::Level::Debug) {
                     let reason = if frame_delta_ns > max_ns {
                         "预热期超长帧（>fixed_max_frame_ms）"
@@ -338,7 +338,7 @@ impl FasController {
             self.last_frame_at = Some(std::time::Instant::now());
             self.fps_window
                 .push(1_000_000_000.0 / frame_delta_ns as f32);
-            // 阈值到达的这一帧仍按负载控制，下一有效帧才进入 PID。
+            // 阈值到达的这一帧仍按负载控制，下一有效帧才进入 PID
             self.update_load_control();
             self.warmup_remaining -= 1;
             return;
@@ -362,7 +362,7 @@ impl FasController {
             return;
         }
         if frame_delta_ns > max_ns {
-            // [静默失效排查] 超长帧既不入窗口也不进 PID：卡顿期整帧被吞，PID/EMA 完全看不到这次长帧
+            // [静默失效排查] 超长帧既不入窗口也不进 PID：卡顿期整帧被吞，PID/EMA 看不到这次长帧
             if log::log_enabled!(log::Level::Debug) {
                 debug!(
                     "{}",
@@ -378,7 +378,7 @@ impl FasController {
             return;
         }
 
-        // Phase 2.5: 温度护栏状态机（锁存阈值见 update_thermal_hold）
+        // Phase 2.5: 温度护栏状态机
         self.update_thermal_hold();
 
         let current_fps = 1_000_000_000.0 / frame_delta_ns as f32;
@@ -428,9 +428,7 @@ impl FasController {
         self.apply_steady_decay(avg_fps);
         self.update_stability_forgiveness(avg_fps);
 
-        // 心跳日志。log_enabled! 与模运算同条件：DEBUG 未开时 format!/t_with_args 全部落在
-        // 门控内（agentsdocs/02-convention.md「高频路径 format! 须在门控内」；本文件其余
-        // [静默失效排查] 打点 :266/:295/:319/:366 同款）
+        // 心跳日志：log_enabled! 与模运算同条件，DEBUG 未开时 format!/t_with_args 全落在门控内，本文件其余 [静默失效排查] 打点同款
         self.log_counter = self.log_counter.wrapping_add(1);
         if self.log_counter % 30 == 0 && log::log_enabled!(log::Level::Debug) {
             let eff_target = self.effective_target_fps();
@@ -459,7 +457,7 @@ impl FasController {
             );
         }
 
-        // Phase 7: 温度护栏终值钳制——放最后以覆盖 PID/jank 全部增量：热限频期间 PID 看到帧时间变长会持续抬频，不钳制会与内核 thermal 形成正反馈（越热越抬频 → 越抬频越热）
+        // Phase 7: 温度护栏终值钳制，放最后覆盖 PID/jank 全部增量：热限频期 PID 见帧时间变长会持续抬频，不钳制会与内核 thermal 正反馈
         if let Some(cap) = self.thermal_perf_cap() {
             self.perf_index = self.perf_index.min(cap);
         }

@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # clean-cache.sh: [meta] [menu] [targets] [guard] [run]
-# ChiRi 缓存清理: Arch 本地配合 build-arch.sh 使用
-# 只动仓内白名单路径,永不向外;devimpbin/ 永不触碰
+# ChiRi 缓存清理, Arch 本地配合 build-arch.sh 使用,只动仓内白名单路径,devimpbin/ 永不触碰
 set -euo pipefail
 
 # [meta]
@@ -28,9 +27,8 @@ ask() {
 
 du_h() { [[ -e "$1" ]] && du -sh "$1" 2>/dev/null | awk '{print $1}' || echo "-"; }
 
-# [targets] 清单项格式 "路径|说明";
-#   全量 = 构建缓存 + 工具链/依赖缓存;构建缓存 = 只清 .cache 与 target
-#   注意: devimpbin/ 明确不入清单(用户缓存根,勿清)
+# [targets] 清单项格式 "路径|说明",全量 = 构建缓存 + 工具链/依赖缓存,构建缓存 = 只清 .cache 与 target
+#   devimpbin/ 明确不入清单(用户缓存根,勿清)
 TARGETS_BUILD=(
     ".cache|构建临时文件与预构建(bpf-linker/cargo-ndk/NDK r29)"
     "target|cargo 编译产物(含 -Z build-std 与 eBPF 中间)"
@@ -54,8 +52,7 @@ show_plan() {  # $1=含/不含 output; 其余=清单行
     c_ylw "devimpbin/ 不在清单内,永不触碰"
 }
 
-# [guard] build-arch.sh 崩溃时原 module/ 会寄存在 trash/module.orig.*,
-#         清 .cache 等于销毁唯一原件: 命中则拒绝清理并要求先手工恢复
+# [guard] build-arch.sh 崩溃时原 module/ 寄存在 trash/module.orig.*,清 .cache 等于销毁唯一原件,命中则拒绝清理
 guard_module_backup() {
     local b
     for b in ".cache/build-arch/trash/"module.orig.*; do

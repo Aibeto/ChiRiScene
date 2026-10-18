@@ -1,5 +1,5 @@
-// live-time.ts: [parse]LiveTime.chr：守护进程每 15s 写本地时间 MM:SS（src/logger.rs::write_live_time），与本机时间比差判调度存活：
-// 差值 > LIVE_TIME_TOLERANCE_SECONDS 即已关闭（文件缺失同判）
+// live-time.ts: [parse]
+// LiveTime.chr：守护进程每 15s 写本地时间 MM:SS（src/logger.rs::write_live_time），与本机时间比差判调度存活：差值 > LIVE_TIME_TOLERANCE_SECONDS 即已关闭（文件缺失同判）
 
 /** 文件名（与守护进程 logger.rs::LIVE_TIME_CHR 对齐） */
 export const LIVE_TIME_FILE = 'LiveTime.chr'

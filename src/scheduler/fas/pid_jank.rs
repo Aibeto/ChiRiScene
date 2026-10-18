@@ -33,7 +33,7 @@ impl FasController {
         let floor = self.effective_perf_floor();
         let ceil = self.effective_perf_ceil();
 
-        // [动态 PID] PID 用 util 偏移后的有效 target 计算 budget（齿轮判断仍用原始 target），GPU bound 场景下 error 更小、输出更保守
+        // [动态 PID] PID 用 util 偏移后的有效 target 算 budget，齿轮判断仍用原始 target
         let eff_target = self.effective_target_fps();
         let budget_ms = 1000.0 / eff_target.max(1.0);
         let ema_budget = 1000.0 / (eff_target - self.fps_margin).max(1.0);
@@ -63,17 +63,17 @@ impl FasController {
             self.consecutive_normal_frames = 0;
             self.jank_cooldown =
                 scale_frames(self.cfg.jank_cooldown_frames * 3, self.current_target_fps);
-            // 紧急避险：jank 时立刻重置 util 偏移，恢复严格 target，避免突发时 PID 还在「偷懒」
+            // 紧急避险：jank 时重置 util 偏移，恢复严格 target
             self.target_fps_offset = 0.0;
-            // 重置采样计时器，防止下次 tick 立刻重新降低
+            // 重置采样计时器，防下次 tick 立刻重新降低
             self.util_sample_timer = std::time::Instant::now();
-            // [紧急跳频] 超大帧 >50ms（120fps 下掉 6+ 个 vsync）直接跳 perf 0.70，不走渐进爬升：按 max_inc≈0.09/帧从 floor=0.40 爬到 0.
-            // 70 需 3-4 帧，120fps 下即 25-33ms 额外卡顿窗口
+            // [紧急跳频] 超大帧 >50ms（120fps 下掉 6+ 个 vsync）直接跳 perf 0.70，不走渐进爬升
+            // 按 max_inc≈0.09/帧从 floor=0.40 爬到 0.70 需 3-4 帧，120fps 下即 25-33ms 额外卡顿窗口
             if actual_ms > 50.0 && self.perf_index < 0.70 {
                 self.perf_index = 0.70;
             }
 
-            // [Jank 恢复保护] 设置 post-jank perf 地板：crit 后恢复帧（error 变正）会立刻走pid-decay，原版 3 帧内 1.0→0.35 断崖导致再 jank；
+            // [Jank 恢复保护] 设 post-jank perf 地板：crit 后恢复帧（error 变正）立刻走 pid-decay，会断崖衰减导致再 jank
             // 保护期内 perf 不低于此值
             let guard_perf = (self.perf_index * 0.55).max(0.50);
             if guard_perf > self.post_jank_perf_floor {
@@ -103,7 +103,7 @@ impl FasController {
                 self.util_sample_timer = std::time::Instant::now();
             }
 
-            // [Jank 恢复保护] heavy 也设置保护地板，但比 crit 保守一些
+            // [Jank 恢复保护] heavy 也设保护地板，比 crit 保守
             let guard_perf = (self.perf_index * 0.50).max(0.45);
             if guard_perf > self.post_jank_perf_floor {
                 self.post_jank_perf_floor = guard_perf;
@@ -114,7 +114,7 @@ impl FasController {
         } else {
             self.jank_streak = 0;
             self.consecutive_normal_frames += 1;
-            // jank_cooldown 期间传 0.0 让 util_gain=1.0，确保恢复期 PID 全力拉频、不被旧低 util 拖后腿
+            // jank_cooldown 期间传 0.0 使 util_gain=1.0，恢复期 PID 全力拉频、不被旧低 util 拖累
             let pid_util = if self.jank_cooldown > 0 {
                 0.0
             } else {
@@ -132,8 +132,8 @@ impl FasController {
                 } else {
                     1.0
                 };
-                // 目标分裂安全护栏：target_fps_offset < 0 时 PID 的 effective target 低于齿轮 raw target，若实际 fps 低于 raw target，
-                // PID 不应视为「任务完成」而激进衰减（否则齿轮假升档/震荡），此时把衰减力度降到 30%，让 perf 缓慢下降而非断崖
+                // 目标分裂安全护栏：offset < 0 时 PID 的 effective target 低于齿轮 raw target，若实际 fps 低于 raw target
+                // PID 不应视为任务完成而激进衰减（否则齿轮假升档/震荡），衰减力度降到 30%，让 perf 缓降而非断崖
                 let avg = self.fps_window.mean();
                 let split_guard = if self.target_fps_offset < -0.5
                     && avg < self.current_target_fps - 1.0
@@ -146,7 +146,7 @@ impl FasController {
                 self.perf_index -= raw * d * norm * floor_guard * split_guard;
                 act = "pid-decay";
             } else {
-                // jank_cooldown 期间增频力度大幅衰减到 0.25（原 0.70 太激进，crit 后 3 帧即 1.0→0.35 断崖）
+                // jank_cooldown 期间增频力度衰减到 0.25，避免 crit 后断崖
                 let jd = if self.jank_cooldown > 0 { 0.25 } else { 1.0 };
                 let bd = if self.downgrade_boost_active {
                     0.0
@@ -184,8 +184,8 @@ impl FasController {
                 self.pid.reset();
                 self.floor_stuck_frames = 0;
                 act = "floor-rescue";
-                // [log] 触底救援 = 死锁后的可自愈兜底（PID 复位 + 强制抬 perf），按 warn 级而非 info：
-                // 稳态不应反复出现，出现即说明 perf 被压在地板上出不来，属异常但已自愈
+                // [log] 触底救援 = 死锁后的可自愈兜底（PID 复位 + 强制抬 perf），按 warn 级
+                // 稳态不应反复出现，出现即说明 perf 被压在地板上出不来
                 warn!(
                     "{}",
                     t_with_args(
@@ -203,10 +203,10 @@ impl FasController {
             self.floor_stuck_frames = 0;
         }
 
-        // [Jank 恢复保护] 在保护期内抬高 perf 下限，防止断崖衰减
+        // [Jank 恢复保护] 保护期内抬高 perf 下限，防断崖衰减
         let effective_floor = if self.post_jank_guard_frames > 0 {
             self.post_jank_guard_frames -= 1;
-            // 保护地板随时间线性衰减到 base floor，提供平滑过渡
+            // 保护地板随时间线性衰减到 base floor
             let guard_ratio = self.post_jank_guard_frames as f32
                 / scale_frames(60, self.current_target_fps).max(1) as f32;
             let decaying_guard = floor + (self.post_jank_perf_floor - floor) * guard_ratio;
@@ -215,11 +215,11 @@ impl FasController {
             floor
         };
 
-        // Clamp：effective floor 上限 0.45 可能超过低 perf_ceil 配置，min 保证 clamp 边界合法
+        // Clamp：effective floor 上限 0.45 可能超过低 perf_ceil 配置，min 保证边界合法
         let before_clamp = self.perf_index;
         self.perf_index = self.perf_index.clamp(effective_floor.min(ceil), ceil);
-        // [静默失效排查] 抬频动作（jank crit/heavy/emergency）算出的 perf 被 perf_ceil 上限吃掉：
-        // 控制器认为已升频，实际 perf 停在天花板，卡顿不会缓解且无任何痕迹。每帧路径，故 debug 级 + log_enabled! 门控
+        // [静默失效排查] 抬频动作（jank crit/heavy/emergency）算出的 perf 被 perf_ceil 吃掉：
+        // 控制器认为已升频，实际停在天花板，卡顿不缓解且无痕迹；每帧路径，debug 级 + log_enabled! 门控
         if (act == "crit" || act == "heavy" || act == "emergency-inc")
             && before_clamp > self.perf_index
             && log::log_enabled!(log::Level::Debug)
@@ -237,10 +237,10 @@ impl FasController {
                 )
             );
         }
-        // base * (fps/60)^0.3，高刷时允许更大的单帧增量
+        // base * (fps/60)^0.3，高刷允许更大的单帧增量
         let scale = (self.current_target_fps / 60.0).powf(0.3).clamp(0.8, 1.8);
-        // crit/emergency 不受常规 max_inc 限制：原版 max_inc≈0.092 在 120fps 下需 7-8 帧才能从 floor 爬到 1.0，超大帧（139ms，卡 16+ vsync）
-        // 等不起渐进式爬升
+        // crit/emergency 不受常规 max_inc 限制：max_inc≈0.092 在 120fps 下需 7-8 帧才能从 floor 爬到 1.0
+        // 超大帧（139ms，卡 16+ vsync）等不起渐进式爬升
         let max_inc = if act == "crit" || act == "emergency-inc" {
             (self.cfg.max_inc_normal * scale * 2.5).max(0.15)
         } else if damped {
@@ -248,10 +248,10 @@ impl FasController {
         } else {
             (self.cfg.max_inc_normal * scale).max(0.065)
         };
-        // floor-rescue 是死锁自救，必须真正跳出 perf_floor，否则会被 max_inc 截断成一次无效的小幅抬升
+        // floor-rescue 是死锁自救，必须真正跳出 perf_floor，否则被 max_inc 截断成一次无效小抬升
         if act != "floor-rescue" && self.perf_index > old_perf + max_inc {
             // [静默失效排查] 紧急抬频（crit/emergency）本该豁免常规爬升限制，仍被 max_inc 截断说明
-            // damped_perf_cap/档位阻尼与紧急路径冲突，抬频请求被无声削减。每帧路径，debug 级 + log_enabled! 门控
+            // damped_perf_cap/档位阻尼与紧急路径冲突；每帧路径，debug 级 + log_enabled! 门控
             if (act == "crit" || act == "emergency-inc") && log::log_enabled!(log::Level::Debug) {
                 debug!(
                     "{}",
@@ -269,8 +269,8 @@ impl FasController {
             self.perf_index = old_perf + max_inc;
         }
         if damped && self.perf_index > self.cfg.damped_perf_cap {
-            // [静默失效排查] 档位阻尼期内阻尼帽压掉抬频结果：阻尼是设计内的暂态，
-            // 但若 jank 期间长期停留在此处，卡顿不会缓解且 perf 曲线与「已升频」同形，故打点
+            // [静默失效排查] 档位阻尼期内阻尼帽压掉抬频结果：阻尼是设计内暂态，
+            // 但 jank 期间长期停留此处则卡顿不缓解且 perf 曲线与「已升频」同形，故打点
             if (act == "crit" || act == "emergency-inc") && log::log_enabled!(log::Level::Debug) {
                 debug!(
                     "{}",

@@ -13,14 +13,13 @@ use super::FasController;
 use super::pid::PidController;
 use super::policy_controller::PolicyController;
 
-// [reload]
-// 规则热重载
+// [reload] 规则热重载
 impl FasController {
-    /// 热重载规则（预留能力：当前 FAS 配置为编译期嵌入（module/config/normal/fas/<app>.yaml），每实例在 activate 时 load_policies 定型，
-    /// ConfigReload 不再重载 FAS，本方法暂无调用方）
+    /// 热重载规则（预留能力）：FAS 配置为编译期嵌入（module/config/normal/fas/<app>.yaml），实例在 activate 时 load_policies 定型
+    /// ConfigReload 不再重载 FAS，本方法暂无调用方
     #[allow(dead_code)]
     pub fn reload_rules(&mut self, new_rules: &FasRulesConfig) {
-        // 规范化配置（防 NaN/越界导致 clamp panic），遮蔽原引用使后续代码一致
+        // 规范化配置，防 NaN/越界导致 clamp panic，遮蔽原引用使后续代码一致
         let mut rules = new_rules.clone();
         rules.normalize();
         let new_rules = &rules;
@@ -29,7 +28,7 @@ impl FasController {
         let old_ki = self.cfg.pid.ki;
         let old_kd = self.cfg.pid.kd;
 
-        // 安全更新所有不影响状态机连续性的参数
+        // 更新不影响状态机连续性的参数
         self.cfg.perf_floor = new_rules.perf_floor;
         self.cfg.perf_ceil = new_rules.perf_ceil;
         self.cfg.perf_init = new_rules.perf_init;
@@ -162,12 +161,11 @@ impl FasController {
         );
     }
 
-    // [apply]
-    // 频率应用 — CPU 负载感知：利用 fg_util EMA 软封顶 perf，防 200ms 采样滞后造成断崖
+    // [apply] 频率应用：CPU 负载感知，利用 fg_util EMA 软封顶 perf，防 200ms 采样滞后造成断崖
 
     pub fn apply_freqs(&mut self) {
-        // 防篡改强制重写节拍：时间基准（早期按帧计数，节拍随刷新率线性放大，120fps 下30 帧 ≈0.25s），语义为「最多每 freq_force_reapply_interval 秒强制重写一次」，
-        // 配置项名与数值不变，仅单位由帧修正为秒normalize() 已把该值钳到 ≥ 1，避免 0 导致判定恒真
+        // 防篡改强制重写节拍：时间基准，语义为最多每 freq_force_reapply_interval 秒强制重写一次
+        // normalize() 已把该值钳到 ≥ 1，避免 0 导致判定恒真
         let force = self.freq_force_timer.elapsed()
             >= Duration::from_secs(self.cfg.freq_force_reapply_interval as u64);
         if force {
@@ -180,13 +178,13 @@ impl FasController {
         let thermal_cap = self.thermal_perf_cap();
         let mut effective_perf = self.perf_index.clamp(0.0, ceiling);
 
-        // 利用率软封顶 — 使用 EMA 平滑值，增加多重保护防止断崖
+        // 利用率软封顶：使用 EMA 平滑值，多重保护防止断崖
         let in_jank = self.jank_cooldown > 0 || self.jank_streak > 0;
         let floor = self.effective_perf_floor();
         // load-only（暂停反馈/预热/stale）解除帧率关联，地板用配置 base 而非含 target_fps bonus 的 effective floor
         let load_floor = self.load_control_floor();
         let near_floor = self.perf_index < floor + 0.10;
-        // 热降频检测：fg_util 骤降但 perf_index 高 → 内核在限频，util 数据不可信
+        // 热降频检测：fg_util 骤降但 perf_index 高说明内核在限频，util 数据不可信
         let thermal_suspected = self.ema_fg_util < 0.25 && self.perf_index > 0.50;
 
         if !load_only && !in_jank && !near_floor && !thermal_suspected && self.ema_fg_util > 0.05 {
@@ -204,7 +202,7 @@ impl FasController {
         for policy in &mut self.policies {
             let ratio = if load_only {
                 let demand = if policy.cpu_ids.is_empty() {
-                    // 拓扑缺失时使用整机保守需求，不把 policy ID 猜作 CPU 区间。
+                    // 拓扑缺失时使用整机保守需求，不把 policy ID 猜作 CPU 区间
                     self.core_utils
                         .iter()
                         .copied()
@@ -226,7 +224,7 @@ impl FasController {
             };
             if policy.freq_hold_frames > 0 && !force && !load_only && thermal_cap.is_none() {
                 policy.freq_hold_frames = policy.freq_hold_frames.saturating_sub(1);
-                // [silent-skip] 频率保持期内跳过写入：每 tick 高频路径，debug 门控
+                // [silent-skip] 频率保持期内跳过写入，每 tick 高频路径，debug 门控
                 if log::log_enabled!(log::Level::Debug) {
                     log::debug!(
                         "{}",
@@ -244,7 +242,7 @@ impl FasController {
             policy.freq_hold_frames = policy.freq_hold_frames.saturating_sub(1);
 
             let w = policy.cluster_profile.capacity_weight.max(0.1);
-            // 原始 ratio.powf(w) 对大核（w=2.3）惩罚过重：perf=0.50 时超大核仅 ≈20% 频率，高刷游戏跑不上去；改为 sqrt(w) 指数 + 线性混合，缓解大核频率被压制
+            // 原始 ratio.powf(w) 对大核（w=2.3）惩罚过重：perf=0.50 时超大核仅 ≈20% 频率，高刷游戏跑不上去；改 sqrt(w) 指数 + 线性混合缓解
             let pow_adj = ratio.powf(w.sqrt());
             let linear_adj = ratio;
             let blend = (w - 1.0).clamp(0.0, 1.5) / 1.5;
@@ -258,7 +256,7 @@ impl FasController {
 
                 // 变化小于迟滞阈值且非强制时跳过
                 if diff <= self.cfg.freq_hysteresis && !force && thermal_cap.is_none() {
-                    // [silent-skip] 迟滞窗口内跳过写入：每 tick 高频路径，debug 门控
+                    // [silent-skip] 迟滞窗口内跳过写入，每 tick 高频路径，debug 门控
                     if log::log_enabled!(log::Level::Debug) {
                         log::debug!(
                             "{}",
@@ -281,11 +279,10 @@ impl FasController {
             }
         }
     }
-    // [load]
-    // load_policies — 初始化
+    // [load] load_policies — 初始化
 
     pub fn load_policies(&mut self, fas_rules: &FasRulesConfig) {
-        // 规范化配置（防 NaN/越界导致 clamp panic），遮蔽原引用使后续代码一致
+        // 规范化配置，防 NaN/越界导致 clamp panic，遮蔽原引用使后续代码一致
         let mut rules = fas_rules.clone();
         rules.normalize();
         let fas_rules = &rules;
@@ -301,7 +298,7 @@ impl FasController {
         }
         self.fps_margin = fas_rules.fps_margin;
 
-        // 跨厂商候选节点（高通 perfmgr / MTK mtk_fpsgo）：逐条尝试写，单点失败 debug、全部失败 warn（见 utils::write_nodes）
+        // 跨厂商候选节点（高通 perfmgr / MTK mtk_fpsgo）：逐条尝试写，单点失败 debug、全部失败 warn，见 utils::write_nodes
         let perfmgr_items: [(&str, &str); 2] = [
             ("/sys/module/perfmgr/parameters/perfmgr_enable", "0"),
             ("/sys/module/mtk_fpsgo/parameters/perfmgr_enable", "0"),
@@ -310,9 +307,8 @@ impl FasController {
 
         let clusters = crate::scheduler::get_cpu_policies();
         if clusters.is_empty() {
-            // [silent-fail] 读不到任何 cpufreq policy（tmpfs 环境驱动未就绪/异常）时原本零日志：
-            // 后续循环体直接跳过， fas-init-summary 照打 clusters=0，故障态与「全部接管成功」同形。
-            // FAS 接管功能性失效，不可自愈、需人介入 → error（初始化路径，低频）
+            // [silent-fail] 读不到任何 cpufreq policy（tmpfs 环境驱动未就绪/异常）时后续循环体直接跳过
+            // fas-init-summary 照打 clusters=0，故障态与全部接管成功同形；FAS 接管功能性失效不可自愈、需人介入，按 error
             error!("{}", t("fas-no-policies"));
         }
 
@@ -342,8 +338,8 @@ impl FasController {
             .ok()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
-            // [silent-skip] governor 切换失败原本被 `let _ =` 吞掉（utils::write_sysfs 仅留 debug 兜底）：
-            // 锁频仍生效但可能受系统调频竞争者干扰，属可降级/可自愈异常 → warn（接管初始化路径，低频）
+            // [silent-skip] governor 切换失败被 `let _ =` 吞掉（utils::write_sysfs 仅留 debug 兜底）
+            // 锁频仍生效但可能受系统调频竞争者干扰，属可降级/可自愈异常，按 warn
             if let Err(e) = crate::utils::write_sysfs(
                 &format!(
                     "/sys/devices/system/cpu/cpufreq/policy{}/scaling_governor",
@@ -369,13 +365,11 @@ impl FasController {
             .filter_map(|s| s.parse().ok())
             .collect();
             if freqs.is_empty() {
-                // 读不到/空表时按 policy 首核映射核心组，回退 soc.yaml [freq_khz] 兜底（只补表）
+                // 读不到/空表时按 policy 首核映射核心组，回退 soc.yaml [freq_khz] 兜底，只补表
                 match crate::common::soc_freq_fallback_for_policy(pid) {
                     Some(f) => freqs = f,
-                    // [silent-skip] 频率表读空且无 soc.yaml 兜底 → 该 policy 整条被跳过：
-                    // 不再进入 policies，锁频/触摸升频对它全部不生效，但结尾的 fas-init-summary
-                    // 照打、集群计数只是少一个，与「全部接管成功」在输出上同形。异常但可自愈
-                    // （配置补齐/换机型后重启即恢复），按 warn
+                    // [silent-skip] 频率表读空且无 soc.yaml 兜底则整条 policy 被跳过
+                    // 锁频/触摸升频对它全部不生效，但 fas-init-summary 照打、集群计数只少一个，与全部接管成功同形；配置补齐/换机型重启即恢复，按 warn
                     None => {
                         warn!(
                             "{}",
@@ -482,10 +476,8 @@ impl FasController {
         self.temp_threshold = fas_rules.core_temp_threshold;
         self.apply_freqs();
 
-        // [silent-skip] 全部 policy 都被跳过（频率表不可用/写入器无效）时 self.policies 为空：
-        // 下面的 fas-init-summary 照打、内容与「接管成功」同形（只是 clusters=0），而 FAS 实际
-        // 一个簇都没接管 —— 档位、触摸升频、保护全部停摆。异常但可自愈（重启/换机型/修配置
-        // 即恢复），按 warn 单列一条，避免故障态被正常的 info 摘要盖过
+        // [silent-skip] 全部 policy 都被跳过（频率表不可用/写入器无效）时 self.policies 为空
+        // fas-init-summary 照打且与接管成功同形（只是 clusters=0），而 FAS 一个簇都没接管，档位、触摸升频、保护全部停摆；重启/换机型/修配置即恢复，按 warn 单列一条避免被 info 摘要盖过
         if self.policies.is_empty() && !clusters.is_empty() {
             warn!("{}", t("fas-policy-none-taken"));
         }
@@ -506,7 +498,7 @@ impl FasController {
     }
 
     // [reset]
-    /// 重置所有 policy 频率（退出游戏时调用）
+    /// 重置所有 policy 频率，退出游戏时调用
     pub fn reset_all_freqs(&mut self) {
         for policy in &mut self.policies {
             policy.reset();

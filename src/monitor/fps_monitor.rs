@@ -31,7 +31,7 @@ const SYMBOL_LONG: &str =
     "_ZN7android7Surface11queueBufferEP19ANativeWindowBufferiPNS_24SurfaceQueueBufferOutputE";
 const LIBGUI_PATH: &str = "/system/lib64/libgui.so";
 
-/// `android::Surface::queueBuffer` 的 mangled 前缀：类名/方法名固定，参数签名随 Android 版本变化，硬编码短/长名在新机型都可能解析失败（FAS 收不到帧、档位不动）；
+/// `android::Surface::queueBuffer` 的 mangled 前缀：类名/方法名固定，参数签名随 Android 版本变化，硬编码短/长名在新机型都可能解析失败（FAS 收不到帧、档位不动）
 /// 按前缀扫描，签名变化无感
 const SYMBOL_MANGLED_PREFIX: &str = "_ZN7android7Surface11queueBufferE";
 
@@ -41,8 +41,7 @@ const RETRY_BACKOFF_SECS: &[u64] = &[1, 2, 5];
 const RETRY_BACKOFF_NO_SYMBOL_SECS: u64 = 60;
 /// 无探针时的 poll 超时上限（退避窗口内按此周期醒来，不做 attach）
 const IDLE_POLL_MAX_MS: u64 = 1_000;
-/// [attach_stats] attach 失败摘要的最小间隔：主循环按事件驱动（有帧即刻唤醒，迭代间隔不固定），
-/// 节流基准必须是墙钟而不是迭代计数（计数会随帧率变化，密集时可远快于预期）
+/// [attach_stats] attach 失败摘要的最小间隔：主循环按事件驱动（有帧即刻唤醒，迭代间隔不固定），节流基准必须是墙钟而不是迭代计数
 const ATTACH_STATS_INTERVAL: Duration = Duration::from_secs(4);
 
 /// RingBuf 输出的帧时间戳事件（与 yumi-ebpf 的 FrameTimestampEvent 内存布局一致）
@@ -56,29 +55,22 @@ const MIN_FRAME_NS: u64 = 1_000_000;
 const MAX_FRAME_NS: u64 = 200_000_000;
 const FRAMETIME_WINDOW: usize = 144;
 
-// [play_hist]
-// 播放态旁路帧间隔直方图（2026-09-27，P2-3）：视频没有「应用申报的目标帧率」可对，且同一进程多 Surface 会混流
-//（视频层 24/30fps + 弹幕层 120Hz）——在线判 jank、判 fps 列都无从谈起，故只按秒落帧间隔直方图，由离线按
-//「占优簇反推基线 + 相对劣化」判读（口径见 `.cursor/commands/devimp-log-analysis.md` 播放态小节）。
-// 落点复用 main_ 通道的 event 行（decision=playback_fps、reason=直方图），不新建 devimp 文件/目录
-/// 直方图档数：每档 4ms。**实际覆盖上限 = `MAX_FRAME_NS`(200ms)**（探针侧只让 `[MIN_FRAME_NS,
-/// MAX_FRAME_NS]` 的间隔进来，>200ms 的帧整帧丢弃、既不进直方图也不进 `n`）→ 档号 50 以后恒为空，
-/// 离线长尾率的**分母不含** >200ms 的严重卡顿（2026-09-28 审查发现注释原写"覆盖 4ms–1020ms"与
-/// 过滤范围不符）。若日后要让直方图覆盖到 1020ms，需给直方图单列上限而**不能**抬高 `MAX_FRAME_NS`
-/// ——后者同时喂 FAS 的 `frametimes`（把 >200ms 的极端间隔算进窗口会拉低 avg_fps、引发过度降档）
+// [play_hist] 播放态旁路帧间隔直方图：视频没有申报目标帧率，同进程多 Surface 还会混流，在线判不了 jank
+// 故按秒落直方图由离线反推基线，落点复用 main_ 的 event 行（decision=playback_fps）
+/// 直方图档数：每档 4ms，覆盖上限为 MAX_FRAME_NS(200ms)，>200ms 的帧整帧丢弃，档号 50 以后恒为空
 const PLAY_HIST_BINS: usize = 256;
 /// 单档宽度（ns）
 const PLAY_HIST_BIN_NS: u64 = 4_000_000;
 /// 统计窗口：到点落一行；窗口内无帧（暂停/静态页）不落行，离线据此把暂停排除出统计
 const PLAY_WINDOW: Duration = Duration::from_secs(1);
 
-/// 播放态直方图窗口：fps_probe 线程局部状态，不参与 FAS 控制路径（FAS 会话下不累不加）
+/// 播放态直方图窗口：fps_probe 线程局部状态，不参与 FAS 控制路径，FAS 会话下不累不加
 struct PlayHist {
     hist: [u32; PLAY_HIST_BINS],
     frames: u32,
     win_start: Instant,
-    /// 窗口是否在计时中：帧源摘除或 FAS 会话期间置 false（`suspend`），回到旁路时 `resume` 从零起——
-    /// 防「上一段播放的半窗」与「新段首帧」被算进同一秒（n 偏小、看着像掉帧）
+    /// 窗口是否在计时中：帧源摘除或 FAS 会话期间置 false（`suspend`），回到旁路时 `resume` 从零起
+    /// 防上一段播放的半窗与新段首帧被算进同一秒（n 偏小、看着像掉帧）
     live: bool,
 }
 
@@ -123,7 +115,7 @@ impl PlayHist {
         }
     }
 
-    /// 直方图 → event 行 reason：`n=<帧数>;b<档号>=<计数>;…`（只落非零档，档号稀疏、可离线还原）
+    /// 直方图 → event 行 reason：`n=<帧数>;b<档号>=<计数>;…`，只落非零档，档号稀疏、可离线还原
     fn reason(&self) -> String {
         let mut s = String::with_capacity(64);
         s.push_str("n=");
@@ -148,7 +140,7 @@ struct ProbeState {
     cutoff_ns: u64,
     last_ktime_ns: Option<u64>,
     frametimes: VecDeque<Duration>,
-    /// 在 ingest 时绑定会话；出队不重新标记。
+    /// 在 ingest 时绑定会话，出队不重新标记
     pending: VecDeque<PendingFrame>,
 }
 
@@ -248,19 +240,17 @@ impl ProbeState {
 }
 
 // [identity]
-/// 目标进程存活门：优先持有 `pidfd`（内核对象绑定 pid，PID 号复用后原 fd 指向已退出进程，天然区分
-/// 旧/新进程）；内核不支持 `pidfd_open` 时退化为每个投喂批次的 `/proc/<pid>/stat` starttime 复验。
-/// `pidfd` 的探针失败/退出由 RAII 关闭，不在热循环里泄漏 fd。
+/// 目标进程存活门：优先持有 `pidfd`（内核对象绑定 pid，PID 号复用后原 fd 指向已退出进程，天然区分旧/新进程）；内核不支持 `pidfd_open` 时退化为每个投喂批次的 `/proc/<pid>/stat` starttime 复验
+/// `pidfd` 的探针失败/退出由 RAII 关闭，不在热循环里泄漏 fd
 struct ProcessIdentity {
     pid: u32,
     starttime: u64,
-    /// `Some` = pidfd 可用（`POLLIN`/`POLLHUP` 零超时判定退出）；`None` = 退化到 stat 复验。
+    /// `Some` = pidfd 可用（`POLLIN`/`POLLHUP` 零超时判定退出）；`None` = 退化到 stat 复验
     pidfd: Option<OwnedFd>,
 }
 
 impl ProcessIdentity {
-    /// 取 `pidfd`（失败即退化），再以 `stat` 复验 starttime：fd 对应的进程身份必须与 attach 期望一致，
-    /// 防止「取 fd 期间进程退出+号被复用」把新进程误当旧目标。
+    /// 取 `pidfd`（失败即退化），再以 `stat` 复验 starttime：fd 对应的进程身份必须与 attach 期望一致，防止取 fd 期间进程退出且号被复用时把新进程误当旧目标
     fn acquire(pid: u32) -> Result<Self, anyhow::Error> {
         let pidfd = open_pidfd(pid);
         let starttime = read_process_starttime(pid)?;
@@ -271,8 +261,7 @@ impl ProcessIdentity {
         })
     }
 
-    /// 零超时非阻塞探测：pidfd 可读/半关闭 = 目标已退出（内核在进程退出时置该状态）。
-    /// 无 pidfd 时返回 `None`，交由调用方走 stat 复验。
+    /// 零超时非阻塞探测：pidfd 可读/半关闭 = 目标已退出（内核在进程退出时置该状态）；无 pidfd 时返回 `None`，交由调用方走 stat 复验
     fn exited(&self) -> Option<bool> {
         let pidfd = self.pidfd.as_ref()?;
         let mut descriptor = libc::pollfd {
@@ -280,7 +269,7 @@ impl ProcessIdentity {
             events: libc::POLLIN,
             revents: 0,
         };
-        // SAFETY: descriptor 指向单个有效可写的 pollfd；timeout=0 立即返回，不阻塞。
+        // SAFETY: descriptor 指向单个有效可写的 pollfd；timeout=0 立即返回，不阻塞
         let ready = unsafe { libc::poll(&mut descriptor, 1, 0) };
         if ready < 0 {
             return None;
@@ -288,25 +277,25 @@ impl ProcessIdentity {
         Some(ready > 0 || descriptor.revents != 0)
     }
 
-    /// 退化路径复验：仅与记录的 starttime 比对，进程消失或未读到 starttime 均视为退出。
+    /// 退化路径复验：仅与记录的 starttime 比对，进程消失或未读到 starttime 均视为退出
     fn verify_starttime(&self) -> bool {
         read_process_starttime(self.pid).ok() == Some(self.starttime)
     }
 }
 
-/// `pidfd_open(2)`：Android/Linux 5.3+ 提供；返回的 fd 可零超时 `poll` 判定进程退出，旧内核返回 `ENOSYS`。
+/// `pidfd_open(2)`：Android/Linux 5.3+ 提供；返回的 fd 可零超时 `poll` 判定进程退出，旧内核返回 `ENOSYS`
 fn open_pidfd(pid: u32) -> Option<OwnedFd> {
-    // SAFETY: 系统调用仅读取 pid 数值，成功时返回新 fd 的所有权（立即包进 OwnedFd 由 RAII 关闭）。
+    // SAFETY: 系统调用仅读取 pid 数值，成功时返回新 fd 的所有权，立即包进 OwnedFd 由 RAII 关闭
     let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::c_long, 0) };
     if raw < 0 {
         return None;
     }
     let raw = i32::try_from(raw).ok()?;
-    // SAFETY: raw 由本函数刚取得的成功 pidfd，唯一所有权移交 OwnedFd。
+    // SAFETY: raw 由本函数刚取得的成功 pidfd，唯一所有权移交 OwnedFd
     Some(unsafe { OwnedFd::from_raw_fd(raw) })
 }
 
-/// 存活判定纯决策：pidfd 结论优先采信；无 pidfd 时仅在确有新帧时以 starttime 复验（idle 不扫描 /proc）。
+/// 存活判定纯决策：pidfd 结论优先采信；无 pidfd 时仅在确有新帧时以 starttime 复验，idle 不扫描 /proc
 fn liveness_failed(
     pidfd_exited: Option<bool>,
     fallback_identity_ok: bool,
@@ -318,8 +307,7 @@ fn liveness_failed(
     }
 }
 
-/// 重挂封锁纯决策：已判定退出的同一身份 `(pid, generation)` 不得自动重挂，直到目标身份变化
-/// （generation 递增或前台 pid 改变）——PID 号可能已被复用给新进程。
+/// 重挂封锁纯决策：已判定退出的同一身份 `(pid, generation)` 不得自动重挂，直到目标身份变化（generation 递增或前台 pid 改变），PID 号可能已被复用给新进程
 fn attach_blocked(blocked: Option<(u32, u64)>, target: FrameSource) -> bool {
     blocked == Some((target.pid, target.generation))
 }
@@ -342,12 +330,11 @@ struct FpsManager {
     symbol_candidates: Vec<String>,
     /// attach 连续失败次数（退避档位与 warn 降频共用）
     attach_fail_count: u32,
-    /// 当前目标会话的 attach 累计失败次数。
+    /// 当前目标会话的 attach 累计失败次数
     attach_fail_total: u64,
-    /// 当前 attach 目标的存活门（pidfd 优先，退化时记录 starttime 供批前复验）。
+    /// 当前 attach 目标的存活门：pidfd 优先，退化时记录 starttime 供批前复验
     identity: Option<ProcessIdentity>,
-    /// 已判定退出的帧源身份 `(pid, generation)`：同一身份不得自动重挂（防 PID 号被复用后静默接上新进程），
-    /// 直到目标身份变化（generation 递增或前台 pid 改变）才解除。
+    /// 已判定退出的帧源身份 `(pid, generation)`：同一身份不得自动重挂，防 PID 号被复用后静默接上新进程，直到目标身份变化（generation 递增或前台 pid 改变）才解除
     blocked_source: Option<(u32, u64)>,
     /// 最后一次 attach 失败原因（与 attach_fail_total 同步更新），供周期摘要诊断
     last_attach_error: Option<String>,
@@ -359,8 +346,7 @@ struct FpsManager {
     frame_silent_warned: bool,
 }
 
-/// 帧静默判定窗口：探针在挂但这么久无任何 ring 事件即视为帧源静默
-/// （uprobe 挂错符号/内核 uprobe→BPF 传递失效的典型症状，包1 小米 ChirunoNeko 内核实症）
+/// 帧静默判定窗口：探针在挂但这么久无任何 ring 事件即视为帧源静默，是 uprobe 挂错符号 / 内核 uprobe→BPF 传递失效的典型症状
 const FRAME_SILENT_WARN_AFTER: Duration = Duration::from_secs(5);
 
 impl FpsManager {
@@ -415,13 +401,13 @@ impl FpsManager {
         })
     }
 
-    /// 会话/PID/旁路变化均强制摘挂；失败目标也记账，退避不跨会话。
+    /// 会话/PID/旁路变化均强制摘挂；失败目标也记账，退避不跨会话
     fn switch_source(&mut self, target: Option<ProbeTarget>) -> Result<(), anyhow::Error> {
         if !same_target(self.requested_target, target) {
             self.detach_current()?;
             self.requested_target = target;
             self.requested_starttime = None;
-            // 目标身份变化（generation 递增或前台 pid 改变）即解除退出封锁。
+            // 目标身份变化（generation 递增或前台 pid 改变）即解除退出封锁
             if let Some(target) = target {
                 if !attach_blocked(self.blocked_source, target.source) {
                     self.blocked_source = None;
@@ -436,7 +422,7 @@ impl FpsManager {
             debug!("{}", t("fps-monitor-detached"));
             return Ok(());
         };
-        // 已判定退出的同一身份不得自动重挂（PID 号可能已被复用给新进程）。
+        // 已判定退出的同一身份不得自动重挂，PID 号可能已被复用给新进程
         if attach_blocked(self.blocked_source, target.source) {
             return Ok(());
         }
@@ -472,8 +458,8 @@ impl FpsManager {
             self.symbol_candidates = scan_queue_buffer_symbols(LIBGUI_PATH);
         }
 
-        // 候选顺序：短签名 → 长签名 → dynsym 扫描变体（覆盖短/长名都解析失败的机型，按 mangled 前缀匹配）
-        // TODO: 两个签名并存时先试短签名（旧版重载）——若真机帧数偏少，说明挂到非主路径重载，改长签名优先再验
+        // 候选顺序：短签名 → 长签名 → dynsym 扫描变体，覆盖短/长名都解析失败的机型，按 mangled 前缀匹配
+        // TODO: 两个签名并存时先试短签名，若真机帧数偏少说明挂到非主路径重载，改长签名优先再验
         let mut candidates: Vec<String> = vec![SYMBOL_SHORT.to_string(), SYMBOL_LONG.to_string()];
         for sym in &self.symbol_candidates {
             if !candidates.contains(sym) {
@@ -497,7 +483,7 @@ impl FpsManager {
                     break;
                 }
                 Err(e) => {
-                    // 最后一个候选的失败原因才是有效诊断信息（前面失败只说明签名不匹配）
+                    // 最后一个候选的失败原因才是有效诊断信息，前面失败只说明签名不匹配
                     if i + 1 == candidates.len() {
                         return Err(e.into());
                     }
@@ -508,7 +494,7 @@ impl FpsManager {
             return Err(anyhow::anyhow!("no queueBuffer symbol available"));
         };
 
-        // 取存活门并按期望 starttime 复验：pidfd 失败即退化到 stat 复验，仍与本次 starttime 一致才继续。
+        // 取存活门并按期望 starttime 复验：pidfd 失败即退化到 stat 复验，仍与本次 starttime 一致才继续
         let identity = match ProcessIdentity::acquire(new_pid) {
             Ok(identity) if identity.starttime == process_starttime => identity,
             Ok(_) => {
@@ -529,7 +515,7 @@ impl FpsManager {
 
         self.links.insert(new_pid, link);
         self.current_pid = new_pid;
-        // 摘除后清 ring；挂载完成后再清 ring 并取同源时钟界标，迟到的旧时间戳也不能进入新会话。
+        // 摘除后清 ring；挂载完成后再清 ring 并取同源时钟界标，迟到的旧时间戳也不能进入新会话
         self.drain_ring();
         let boundary = monotonic_timestamp_ns().and_then(|cutoff| {
             if read_process_starttime(new_pid)? != process_starttime {
@@ -548,8 +534,7 @@ impl FpsManager {
             .insert(new_pid, ProbeState::new(target.source, cutoff_ns));
         self.identity = Some(identity);
         self.attach_fail_count = 0;
-        // 一并清「最后一次失败原因」：不清则 attach 恢复后摘要会一直复读已失效的旧错误
-        // （attach_fail_total 保留作会话累计，供「本次会话共失败多少次」观测）
+        // 一并清最后一次失败原因：不清则 attach 恢复后摘要会一直复读已失效的旧错误；attach_fail_total 保留作会话累计
         self.last_attach_error = None;
         self.attach_retry_at = Instant::now();
         // 新 attach = 新一轮静默窗口：复位检测态，从挂上那一刻起重新计 5s
@@ -602,8 +587,7 @@ impl FpsManager {
         while ring.next().is_some() {}
     }
 
-    /// 出队/投喂前的存活门（零超时、无阻塞）：pidfd 可读即目标已退出 → 立即 detach、丢 pending、封锁该身份
-    /// 拒绝自动重挂；无 pidfd 的目标仅在确有新帧时以 starttime 复验一次（idle 不扫描 /proc）。
+    /// 出队/投喂前的存活门（零超时、无阻塞）：pidfd 可读即目标已退出，立即 detach、丢 pending、封锁该身份拒绝自动重挂；无 pidfd 的目标仅在确有新帧时以 starttime 复验一次，idle 不扫描 /proc
     fn check_liveness(&mut self, has_new_frames: bool) -> Result<bool, anyhow::Error> {
         if !self.has_active_probe() {
             return Ok(false);
@@ -641,10 +625,10 @@ impl FpsManager {
             if data.len() < size_of::<FrameTimestampEvent>() {
                 continue;
             }
-            // SAFETY: 长度已验证，整数事件字段允许任意位模式；ring 事件不保证对齐。
+            // SAFETY: 长度已验证，整数事件字段允许任意位模式；ring 事件不保证对齐
             let event = unsafe { ptr::read_unaligned(data.as_ptr().cast::<FrameTimestampEvent>()) };
 
-            // 帧静默恢复沿：收到事件即刷新时刻并复位 WARN 态（恢复供帧的 INFO 由 check_frame_silent 打）
+            // 帧静默恢复沿：收到事件即刷新时刻并复位 WARN 态，恢复供帧的 INFO 由 check_frame_silent 打
             self.last_ring_event_at = Some(Instant::now());
             if let Some(state) = self.states.get_mut(&event.pid) {
                 state.ingest(event.ktime_ns);
@@ -652,9 +636,8 @@ impl FpsManager {
         }
     }
 
-    /// 帧静默检测：探针在挂但 `FRAME_SILENT_WARN_AFTER` 内无任何 ring 事件 → WARN（翻转沿只打一次）。
-    /// 恢复供帧时打 INFO 复位。uprobe 挂错符号/内核 uprobe→BPF 传递失效时「attach 成功零帧」由此显性化
-    /// （包1 小米 ChirunoNeko 内核实证：挂载日志齐全但全程 0 帧事件，daemon.log 无任何告警，问题隐形）。
+    /// 帧静默检测：探针在挂但 `FRAME_SILENT_WARN_AFTER` 内无任何 ring 事件即 WARN（翻转沿只打一次），恢复供帧时打 INFO 复位
+    /// uprobe 挂错符号 / 内核 uprobe→BPF 传递失效时「attach 成功零帧」由此显性化，否则挂载日志齐全但全程 0 帧事件、daemon.log 无任何告警
     fn check_frame_silent(&mut self) {
         if !self.has_active_probe() {
             return;
@@ -664,9 +647,7 @@ impl FpsManager {
             .is_none_or(|t| t.elapsed() >= FRAME_SILENT_WARN_AFTER);
         if silent && !self.frame_silent_warned {
             self.frame_silent_warned = true;
-            // secs 报**实际静默时长**（None = 自 attach 起整段无帧，用 attach 时刻起算）
-            // ——恒量 FRAME_SILENT_WARN_AFTER.as_secs() 与 uptime 无关且在 last_ring_event_at
-            // 缺失时低估实情（attach 成功后从未收到帧 ⇒ 实际静默早已远超 5s）
+            // secs 报**实际静默时长**（None = 自 attach 起整段无帧，用 attach 时刻起算）；恒量 FRAME_SILENT_WARN_AFTER.as_secs() 会在 last_ring_event_at 缺失时低估实情
             let secs = match self.last_ring_event_at {
                 Some(t) => t.elapsed().as_secs(),
                 None => 0,
@@ -694,7 +675,7 @@ impl FpsManager {
         }
     }
 
-    /// 取走全部待投喂的新帧间隔（ns），各 PID 队列拼接返回；不保证严格时间序（FAS 只消费活跃 PID 样本）
+    /// 取走全部待投喂的新帧间隔（ns），各 PID 队列拼接返回；不保证严格时间序，FAS 只消费活跃 PID 样本
     fn take_pending(&mut self) -> Vec<PendingFrame> {
         let mut out = Vec::new();
         for state in self.states.values_mut() {
@@ -703,7 +684,7 @@ impl FpsManager {
         out
     }
 
-    /// 本窗口是否有新帧待投喂（存活门退化路径据此决定要不要读 /proc，idle 不扫描）。
+    /// 本窗口是否有新帧待投喂：存活门退化路径据此决定要不要读 /proc，idle 不扫描
     fn has_pending(&self) -> bool {
         self.states.values().any(|state| !state.pending.is_empty())
     }
@@ -712,12 +693,12 @@ impl FpsManager {
         self.current_pid > 0
     }
 
-    /// 是否到了可重试 attach 的时刻（退避窗口内 false）：符号解析失败是持续故障，按 500ms 反复重试等于每秒两次读解析 libgui ELF——纯浪费且刷爆 daemon.log
+    /// 是否到了可重试 attach 的时刻（退避窗口内 false）：符号解析失败是持续故障，按 500ms 反复重试等于每秒两次读解析 libgui ELF，纯浪费且刷爆 daemon.log
     fn attach_retry_due(&self) -> bool {
         Instant::now() >= self.attach_retry_at
     }
 
-    /// 无探针时睡到退避界标，上限 1s；新会话不继承旧目标退避。
+    /// 无探针时睡到退避界标，上限 1s；新会话不继承旧目标退避
     fn idle_poll_timeout(&self) -> Duration {
         let left = self
             .attach_retry_at
@@ -728,10 +709,10 @@ impl FpsManager {
         )
     }
 
-    /// 记录一次 attach 失败：推进退避窗口并降频打日志——首次与每 10 次打 warn，其余 debug （此前每次 warn，一个游戏会话能刷数千行，日志写入本身成了负担）
+    /// 记录一次 attach 失败：推进退避窗口并降频打日志，首次与每 10 次打 warn，其余 debug，避免一个游戏会话刷数千行
     fn report_attach_failure(&mut self, err: &anyhow::Error) {
         self.attach_fail_count = self.attach_fail_count.saturating_add(1);
-        // 累计计数 + 最后原因：供 [attach_stats] 周期摘要观测真实故障总量（warn 降频后总量不可见）
+        // 累计计数 + 最后原因：供 [attach_stats] 周期摘要观测真实故障总量，warn 降频后总量不可见
         self.attach_fail_total = self.attach_fail_total.saturating_add(1);
         self.last_attach_error = Some(err.to_string());
         let no_symbol = self.symbol_candidates.is_empty();
@@ -776,13 +757,13 @@ impl FpsManager {
     }
 }
 
-/// CLOCK_MONOTONIC 与 bpf_ktime_get_ns 同源，不使用包含休眠时间的 BOOTTIME。
+/// CLOCK_MONOTONIC 与 bpf_ktime_get_ns 同源，不使用包含休眠时间的 BOOTTIME
 fn monotonic_timestamp_ns() -> Result<u64, anyhow::Error> {
     let mut timestamp = libc::timespec {
         tv_sec: 0,
         tv_nsec: 0,
     };
-    // SAFETY: timestamp 指向有效可写的 timespec，调用不保留指针。
+    // SAFETY: timestamp 指向有效可写的 timespec，调用不保留指针
     if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut timestamp) } != 0 {
         return Err(std::io::Error::last_os_error().into());
     }
@@ -800,8 +781,8 @@ fn read_process_starttime(pid: u32) -> Result<u64, anyhow::Error> {
         .ok_or_else(|| anyhow::anyhow!("frame source process unavailable: {pid}"))
 }
 
-/// 从 ELF64 dynsym 取回所有 `android::Surface::queueBuffer` 变体名只支持小端 ELF64（Android 目标机皆如此）；解析不了返回空 vec，由调用方按「帧源不可用」
-/// 退避处理——不拿硬编码名反复撞墙
+/// 从 ELF64 dynsym 取回所有 `android::Surface::queueBuffer` 变体名，只支持小端 ELF64（Android 目标机皆如此）
+/// 解析不了返回空 vec，由调用方按帧源不可用退避处理，不拿硬编码名反复撞墙
 fn scan_queue_buffer_symbols(path: &str) -> Vec<String> {
     let Ok(data) = std::fs::read(path) else {
         return Vec::new();
@@ -969,12 +950,12 @@ mod session_tests {
 
     #[test]
     fn pidfd_verdict_is_authoritative_and_fallback_is_frame_gated() {
-        // pidfd 报退出：无论 fallback 与是否有新帧，都判退出。
+        // pidfd 报退出：无论 fallback 与是否有新帧，都判退出
         assert!(liveness_failed(Some(true), true, false));
         assert!(liveness_failed(Some(true), true, true));
-        // pidfd 报存活：即便 fallback 复验失败也不误杀。
+        // pidfd 报存活：即便 fallback 复验失败也不误杀
         assert!(!liveness_failed(Some(false), false, true));
-        // 无 pidfd：仅在有新帧时以 starttime 复验，idle（无新帧）不扫描 /proc。
+        // 无 pidfd：仅在有新帧时以 starttime 复验，idle 无新帧不扫描 /proc
         assert!(!liveness_failed(None, false, false));
         assert!(liveness_failed(None, false, true));
         assert!(!liveness_failed(None, true, true));
@@ -982,14 +963,14 @@ mod session_tests {
 
     #[test]
     fn pidfd_detects_child_exit_on_this_host() {
-        // 本机 fork 子进程：存活时 pidfd 不应报退出，退出后应零超时报退出（无 Android 设备也可验证）。
+        // 本机 fork 子进程：存活时 pidfd 不应报退出，退出后应零超时报退出
         let mut child = std::process::Command::new("sleep")
             .arg("30")
             .spawn()
             .expect("spawn sleep");
         let identity = ProcessIdentity::acquire(child.id()).expect("acquire identity");
         if identity.pidfd.is_none() {
-            // 旧内核无 pidfd_open：退化路径也必须能识别存活进程，不误杀。
+            // 旧内核无 pidfd_open：退化路径也必须能识别存活进程，不误杀
             assert!(identity.verify_starttime());
             let _ = child.kill();
             let _ = child.wait();
@@ -998,7 +979,7 @@ mod session_tests {
         assert_eq!(identity.exited(), Some(false));
         child.kill().expect("kill child");
         child.wait().expect("reap child");
-        // 退出后 poll 结果可能滞后极短时间，重试几次仍必须报退出。
+        // 退出后 poll 结果可能滞后极短时间，重试几次仍必须报退出
         let exited = (0..50).any(|_| {
             std::thread::sleep(Duration::from_millis(10));
             identity.exited() == Some(true)
@@ -1009,15 +990,15 @@ mod session_tests {
     #[test]
     fn exited_identity_stays_blocked_until_target_identity_changes() {
         let dead = (42, 7);
-        // 同一身份（同 pid 同 generation）拒绝自动重挂。
+        // 同一身份（同 pid 同 generation）拒绝自动重挂
         assert!(attach_blocked(Some(dead), source(7)));
-        // generation 递增 = 新会话，解除封锁。
+        // generation 递增 = 新会话，解除封锁
         assert!(!attach_blocked(Some(dead), source(8)));
-        // 前台 pid 改变（播放态/换游戏）同样解除。
+        // 前台 pid 改变（播放态/换游戏）同样解除
         let mut other_pid = source(7);
         other_pid.pid = 99;
         assert!(!attach_blocked(Some(dead), other_pid));
-        // 无封锁时一律放行。
+        // 无封锁时一律放行
         assert!(!attach_blocked(None, source(7)));
     }
 }
@@ -1049,11 +1030,11 @@ pub async fn start_fps_loop(
                 }
             };
 
-// 反偷跑：FAS 未激活时不挂任何 uprobe（eBPF 已加载但无 attach 点即零执行）此前 daemon 启动即 attach，
-// 桌面/普通应用每帧 queueBuffer 都过探针而 FrameUpdate 被调度侧丢弃，纯白烧；首个 FAS 应用激活后由 PID 广播驱动 switch_pid 正常挂载
+// 反偷跑：FAS 未激活时不挂任何 uprobe（eBPF 已加载但无 attach 点即零执行），否则桌面/普通应用每帧 queueBuffer 都过探针而 FrameUpdate 被调度侧丢弃
+// 首个 FAS 应用激活后由 PID 广播驱动 switch_pid 正常挂载
             info!("{}", t("fps-monitor-passive"));
 
-// mio 轮询（只创建一次；创建失败本线程无法工作，告警退出交看门狗自愈）
+// mio 轮询只创建一次；创建失败本线程无法工作，告警退出交看门狗自愈
             let mut poll = match Poll::new() {
                 Ok(p) => p,
                 Err(e) => {
@@ -1070,14 +1051,14 @@ pub async fn start_fps_loop(
             let mut events = Events::with_capacity(64);
             let token = Token(0);
             let mut frame_counter: u32 = 0;
-// [attach_stats] 摘要节流基准（上次落摘要的时刻；None = 本轮循环还没落过）
+// [attach_stats] 摘要节流基准：上次落摘要的时刻，None = 本轮循环还没落过
             let mut last_stats_at: Option<Instant> = None;
-// 事件通道拥塞丢弃的帧样本数（仅计数，EMA 平滑可容忍少量丢失）
+// 事件通道拥塞丢弃的帧样本数，仅计数，EMA 平滑可容忍少量丢失
             let mut dropped_frames: u64 = 0;
-// 播放态旁路直方图窗口（只在 FAS 未激活时累加，见下方分流）
+// 播放态旁路直方图窗口，只在 FAS 未激活时累加
             let mut play = PlayHist::new();
 
-// 注册 RingBuf fd（只一次）。fd 与 attach 无关（attach/detach 前后不变），无条件注册最简单——未注册仅丢事件驱动唤醒，poll 超时兜底仍可处理帧（代价是无谓的 500ms 轮询）
+// 注册 RingBuf fd 只一次：fd 与 attach 无关，attach/detach 前后不变，无条件注册最简单，未注册仅丢事件驱动唤醒，poll 超时兜底仍可处理帧
             let fd = manager.ring_fd;
             let mut source = SourceFd(&fd);
             if let Err(e) =
@@ -1094,8 +1075,8 @@ pub async fn start_fps_loop(
             }
 
             loop {
-// [attach_stats] attach 失败可见性：失败只在「首次 + 每 10 次」warn 且消息不带总数，长尾偶发与持续故障
-// 无从区分；距上次摘要满 ATTACH_STATS_INTERVAL 落一行，log_enabled! 门控省掉 INFO 级别下的 format!
+// [attach_stats] attach 失败可见性：失败只在首次 + 每 10 次 warn 且消息不带总数，长尾偶发与持续故障无从区分
+// 距上次摘要满 ATTACH_STATS_INTERVAL 落一行，log_enabled! 门控省掉 INFO 级别下的 format!
                 let stats_due = last_stats_at.map_or(true, |t| t.elapsed() >= ATTACH_STATS_INTERVAL);
                 if manager.attach_fail_total > 0
                     && stats_due
@@ -1139,7 +1120,7 @@ pub async fn start_fps_loop(
                     let timeout = needs_bounded_wait.then_some(Duration::from_secs(1));
                     let wait_started = Instant::now();
                     fas_signal.wait_until_frame_source(timeout);
-                    // 播放态诊断关闭时信号谓词可能仍为 true，保留有界阻塞而不是空转。
+                    // 播放态诊断关闭时信号谓词可能仍为 true，保留有界阻塞而不是空转
                     if needs_bounded_wait {
                         let still_idle = select_target(
                             fas_signal.is_active(), fas_signal.frame_source(),
@@ -1180,20 +1161,19 @@ pub async fn start_fps_loop(
                 manager.poll_frames();
                 manager.check_frame_silent();
 
-// 出队/投喂前存活门：pidfd 零超时判定目标已退出则立即 detach 丢 pending（旧 generation 封锁不重挂）；
-// 无 pidfd 时仅在确有新帧时以 starttime 复验一次。
+// 出队/投喂前存活门：pidfd 零超时判定目标已退出则立即 detach 丢 pending，旧 generation 封锁不重挂；无 pidfd 时仅在确有新帧时以 starttime 复验一次
                 let has_new_frames = manager.has_pending();
                 if manager.check_liveness(has_new_frames).unwrap_or(false) {
                     continue;
                 }
 
-// 全量投喂本窗口真实新帧间隔此前每 100ms 只发 latest_frametime() 一条：60fps 下 6 帧丢 5 帧，所有以「帧数」为单位的控制常数实际时间尺度被拉长 6 倍，
-// PID/防抖/jank 响应全面钝化（平均帧降、1% Low 崩塌）；且无新帧时同一条陈旧 delta 反复投喂，静态 UI 一条 heavy 帧重复计入即可累积出假 loading（perf 被钳 0.60~0.70）
+// 全量投喂本窗口真实新帧间隔：每 100ms 只发 latest_frametime() 一条会丢帧（60fps 下 6 帧丢 5 帧），以帧数为单位的控制常数时间尺度被拉长 6 倍，PID/防抖/jank 响应全面钝化
+// 且无新帧时同一条陈旧 delta 反复投喂，静态 UI 一条 heavy 帧重复计入即可累积出假 loading（perf 被钳 0.60~0.70）
                 let new_deltas = manager.take_pending();
                 for frame in new_deltas {
                     let delta_ns = frame.delta_ns;
-// 分流：FAS 未激活 = 播放态旁路，只累直方图不投喂——FAS 未激活时调度侧对 FrameUpdate 是 no-op
-//（chiri 侧 is_active 判定），投喂只白烧通道与唤醒；诊断总闸关闭时既不挂帧源也不累（门控处已挡，此处兜底）
+// 分流：FAS 未激活 = 播放态旁路，只累直方图不投喂，此时调度侧对 FrameUpdate 是 no-op（chiri 侧 is_active 判定），投喂只白烧通道与唤醒
+// 诊断总闸关闭时既不挂帧源也不累，门控处已挡，此处兜底
                     if target.playback {
                         if !fas_signal.is_active() && fas_signal.frame_source().is_none()
                             && fas_signal.playback_active() && crate::logger::diag_active()
@@ -1231,7 +1211,7 @@ pub async fn start_fps_loop(
                         source_generation: frame.source.generation,
                     }) {
                         Ok(()) => {}
-// 通道拥塞：丢弃本帧样本。绝不能阻塞发送——fps_probe 阻塞会让 eBPF ring buffer 被新事件覆盖，丢更多帧
+// 通道拥塞：丢弃本帧样本，绝不能阻塞发送，fps_probe 阻塞会让 eBPF ring buffer 被新事件覆盖，丢更多帧
                         Err(TrySendError::Full(_)) => {
                             dropped_frames = dropped_frames.saturating_add(1);
                             if dropped_frames % 300 == 1 {
@@ -1244,13 +1224,13 @@ pub async fn start_fps_loop(
                     }
                 }
 
-// 播放态旁路落行（每轮 poll 至多一次；FAS 会话不落此表）：整秒落一行，窗口内无帧则只清窗口不落行
+// 播放态旁路落行：每轮 poll 至多一次，FAS 会话不落此表，整秒落一行，窗口内无帧则只清窗口不落行
                 if target.playback && !fas_signal.is_active() && fas_signal.frame_source().is_none()
                     && fas_signal.playback_active() && crate::logger::diag_active()
                     && play.win_start.elapsed() >= PLAY_WINDOW
                 {
                     if play.frames > 0 {
-// event 行：decision=playback_fps、reason=直方图（ts/mode/package 列由 logger 自动填充）
+// event 行：decision=playback_fps、reason=直方图，ts/mode/package 列由 logger 自动填充
                         crate::logger::main_event("playback_fps", "", &play.reason());
                     }
                     play.reset();

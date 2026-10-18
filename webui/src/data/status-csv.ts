@@ -1,11 +1,5 @@
-// status-csv.ts: [columns] [types] [parse]logs/status.csv 契约（src/logger.rs STATUS_HEADER / status_log_snapshot）
-// ：27 列、首行表头、type 恒为 snap；timestamp 是设备本地时间 HH:MM:SS.mmm（无日期）；缺测值统一 '-'，screen_on/clg_active 用 0/1；
-// fps 预留列（仅 FAS 激活且帧窗口有样本为实测值）；screen_prop 是 debug.tracing.screen_state 原始值（'-' = 属性缺失）；
-// daemon_utime_ms/daemon_stime_ms = daemon 自身累计用户态/内核态 CPU 时间（ms，自测量基线，2026-10-01 加）。该文件仅 ChiRi 机型的调度线程产生，
-// 读取一律取尾部窗口。
-// 末两列 cpu_dyn_w/resid_w = 功耗分解（2026-10-05 加）：cpu_dyn_w 是 CPU 动态功率估计（能效表折算，只含动态项，
-// 无功耗表的 SoC 恒 '-'），resid_w = batt_power_w − cpu_dyn_w（残差 = 屏幕/modem/GPU/静态这些调度层碰不到的外围）。
-// 充电行的 resid_w 无意义（batt_power_w 是充电功率），界面与离线只看放电行
+// status-csv.ts: [columns] [types] [parse] logs/status.csv 契约（src/logger.rs STATUS_HEADER / status_log_snapshot）：27 列、首行表头、type 恒为 snap，timestamp 是设备本地时间 HH:MM:SS.mmm（无日期），缺测值统一 -，screen_on/clg_active 用 0/1，screen_prop 是 debug.tracing.screen_state 原始值，fps 仅 FAS 激活且帧窗口有样本时有效
+// 末两列 cpu_dyn_w（CPU 动态功率估计，W，无功耗表的 SoC 恒 -）/ resid_w = batt_power_w − cpu_dyn_w（残差 = 屏幕/modem/GPU/静态），充电行 resid_w 无意义，只看放电行
 
 // [columns]
 export const STATUS_COLUMNS = [
@@ -66,7 +60,7 @@ export interface StatusRow {
   wakeups: number | null
   migrations: number | null
   freqTrans: number | null
-  /** FAS 实测帧率；未启动 FAS 时为 null（CSV 里是 '-'） */
+/** FAS 帧率；未启动 FAS 时为 null（CSV 里是 '-'） */
   fps: number | null
   /** debug.tracing.screen_state 原始值；属性缺失为空串（CSV 里是 '-'） */
   screenProp: string
@@ -96,7 +90,7 @@ function str(raw: string | undefined): string {
   return v === NA ? '' : v
 }
 
-/** 解析 CSV 为快照行窗口可能从行中间开始（tail -c），按「字段数必须等于 25」过滤残缺行，表头按首列名识别；按文件顺序返回，展示方向由调用方定 */
+/** 解析 CSV 为快照行：窗口可能从行中间开始（tail -c），按「字段数必须等于 27」过滤残缺行，表头按首列名识别；按文件顺序返回，展示方向由调用方定 */
 export function parseStatusCsv(text: string, maxRows = 300): StatusRow[] {
   const rows: StatusRow[] = []
   const lines = text.split('\n')

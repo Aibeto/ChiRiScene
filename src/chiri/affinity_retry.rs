@@ -40,7 +40,7 @@ impl InvalidMaskRetry {
         mask: &[usize],
         now: Instant,
     ) {
-        // 仅 Linux EINVAL 建立冷却；成功与其他错误清除连续失败状态。
+        // 仅 Linux EINVAL 建立冷却，成功与其他错误清除连续失败状态
         if errno != Some(22) {
             self.clear();
             return;
@@ -162,7 +162,7 @@ mod tests {
     fn skipped_requests_do_not_extend_missing_deadline_and_probe_bypasses_same_value_guard() {
         let cache = MissingNodeCache::default();
         cache.record(Some(2), 0);
-        // 值变化与恢复请求均只改变正常写入守卫，不清除节点缺失状态。
+        // 值变化与恢复请求只改变正常写入守卫，不清除节点缺失状态
         assert!(!cache.allows_write(true, 10_000));
         assert!(!cache.allows_write(true, 590_000));
         assert!(!cache.allows_write(false, 599_999));

@@ -23,8 +23,7 @@ use aya_ebpf::{
     programs::{ProbeContext, TracePointContext},
 };
 
-// [fps-probe]
-// FPS Probe — uprobe on Surface::queueBuffer
+// [fps-probe] uprobe on Surface::queueBuffer，经 RING_BUF 上报帧时间戳
 
 #[repr(C)]
 pub struct FrameTimestampEvent {
@@ -56,17 +55,15 @@ fn try_handle_frame(_ctx: ProbeContext) -> Result<u32, u32> {
     Ok(0)
 }
 
-// [cpu-probe]
-// CPU Probe — tracepoint on sched/sched_switch
+// [cpu-probe] tracepoint on sched/sched_switch
 
-// sched_switch 参数布局（offset → field）：24 = prev_pid、56 = next_pid （完整布局含
-// pad/prev_comm/prev_prio/prev_state/next_comm 等，写死偏移需对照内核 tracepoint 格式）
+// sched_switch 参数布局（offset → field）：24 = prev_pid、56 = next_pid
+// 完整布局含 pad/prev_comm/prev_prio/prev_state/next_comm，写死偏移需对照内核 tracepoint 格式
 const OFF_PREV_PID: usize = 24;
 const OFF_NEXT_PID: usize = 56;
 
-/// 每核心运行时状态（合并原 5 个独立 PerCpuArray，sched_switch 的 map 查找 5 次 → 1 次）布局硬契约：必须与用户态 src/monitor/cpu_monitor
-/// rs 同名结构逐字段一致——#[repr(C)]、u64×3 在前（last_time/idle/busy，单位 ns）、u32×2 在后（cur_tid/cur_tgid），恰 32 字节无 padding；
-/// 两侧必须同批发布
+/// 每核心运行时状态（合并原 5 个独立 PerCpuArray，sched_switch 的 map 查找 5 次 → 1 次）
+/// 布局硬契约：必须与用户态 src/monitor/cpu_monitor.rs 同名结构逐字段一致（#[repr(C)]、u64×3 + u32×2，恰 32 字节），两侧同批发布
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct CoreState {
@@ -88,27 +85,26 @@ static THREAD_RUN_TIME: HashMap<u32, u64> = HashMap::with_max_entries(32768, 0);
 #[map]
 static TGID_RUN_TIME: HashMap<u32, u64> = HashMap::with_max_entries(1024, 0);
 
-/// 线程级记账开关（0 = 关，非 0 = 开）：由用户态写，置位条件与 cpu_monitor 的FAS_FG_UTIL_ENABLED 相同（ChiRi SoC 且 FAS 配置可用）
-/// 关闭时 sched_switch 跳过 THREAD_RUN_TIME 的 hash 查找/插入——该 map 只被用户态「TGID 主路径失败」降级路径消费
+/// 线程级记账开关（0 = 关，非 0 = 开）：由用户态写，置位条件与 cpu_monitor 的 FAS_FG_UTIL_ENABLED 相同
+/// 关闭时 sched_switch 跳过 THREAD_RUN_TIME 的 hash 查找/插入（该 map 只被 TGID 主路径失败的降级路径消费）
 #[map]
 static THREAD_ACCT: Array<u32> = Array::with_max_entries(1, 0);
 
 const ZERO_KEY: u32 = 0;
 const NS_10_SEC: u64 = 10_000_000_000;
 
-// [telemetry-probes]
-// Telemetry Probes — 唤醒 / 线程迁移 / 频率切换计数（ChiRi 专属遥测）
+// [telemetry-probes] 唤醒 / 线程迁移 / 频率切换计数（ChiRi 专属遥测）
 // userspace 每 2s 读取累计值取增量；探针挂载失败（内核缺 tracepoint）不影响主探针
 
 /// sched_wakeup 唤醒次数（全核累计）
 #[map]
 static WAKEUP_COUNT: PerCpuArray<u64> = PerCpuArray::with_max_entries(1, 0);
 
-/// sched_migrate_task 线程跨核迁移次数（亲和策略的实际迁移观测）
+/// sched_migrate_task 线程跨核迁移次数
 #[map]
 static MIGRATE_COUNT: PerCpuArray<u64> = PerCpuArray::with_max_entries(1, 0);
 
-/// cpufreq_transition 频率切换次数（调频活跃度，含热限频切换）
+/// cpufreq_transition 频率切换次数（含热限频切换）
 #[map]
 static FREQ_TRANS_COUNT: PerCpuArray<u64> = PerCpuArray::with_max_entries(1, 0);
 
@@ -149,7 +145,7 @@ fn try_handle_sched_switch(ctx: &TracePointContext) -> Result<u32, i64> {
     let prev_tid: i32 = unsafe { ctx.read_at(OFF_PREV_PID)? };
     let next_tid: i32 = unsafe { ctx.read_at(OFF_NEXT_PID)? };
 
-    // bpf_get_current_pid_tgid() 在 sched_switch 中返回 **next** 任务的 pid_tgid
+    // bpf_get_current_pid_tgid() 在 sched_switch 中返回 next 任务的 pid_tgid
     let pid_tgid = bpf_get_current_pid_tgid();
     let next_tgid = (pid_tgid >> 32) as u32;
 

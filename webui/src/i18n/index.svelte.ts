@@ -1,5 +1,5 @@
-// index.svelte.ts: [locale] [t]界面语言与守护进程 meta.language 解耦：界面语言存浏览器本地、仅影响 UI 文案；meta
-// language 只决定 daemon 日志/提示语言（配置页设置）
+// index.svelte.ts: [locale] [t] 界面语言与守护进程 meta.language 解耦：界面语言存浏览器本地、仅影响 UI 文案
+// meta.language 只决定 daemon 日志/提示语言（配置页设置）
 import zh from './locales/zh'
 import en from './locales/en'
 

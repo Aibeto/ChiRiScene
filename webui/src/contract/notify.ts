@@ -1,13 +1,5 @@
-// notify.ts: [send] [contract]。通知测试契约：把标题/tag/正文交给模块自带的 scripts/notify.sh 投递。
-//
-// 为什么不在这里自己拼 `cmd notification post`：见 scripts/notify.sh 的文件头。要点是
-// ①各 ROM 旗标支持不一、要按序试错；②`-c` 不是渠道、第三位置参数是 tag；③**以 root 投递时
-// `cmd` 退出码为 0 但通知栏什么都不出现**（uid 0 归属伪包 `root`，enqueue 阶段就被丢弃），
-// 必须换身份到 uid 2000（`su 2000 /system/bin/cmd …`，真机实测可用）。这三点都需要 shell
-// 里的条件分支与引号转义，因此整体下沉到脚本，WebUI 只做「传参 + 原样回显脚本输出」。
-//
-// 回显是刻意的：脚本 stdout 逐行带着「第几条策略、是否成功、cmd 的报错首行」。若只显示一句
-// 「已发送」，真的没发出去时用户和我们都无从判断——这正是 daemon 那个 bug 的形态
+// notify.ts: [send] [contract]
+// 通知测试契约：把标题/tag/正文交给模块自带的 scripts/notify.sh 投递（各 ROM 旗标支持不一要按序试错、-c 不是渠道、第三位置参数是 tag、以 root 投递 cmd 退出码 0 但通知栏不出现，须换身份到 uid 2000）；WebUI 只做传参 + 原样回显脚本输出
 import { absOf, shQuote } from './paths'
 import { isLive, run } from '@/kernel/shell'
 import { absent, failed, ok, shellError, type ReadResult } from './errors'
@@ -27,10 +19,7 @@ export interface NotifyResult {
   accepted: boolean
 }
 
-/**
- * 发一条测试通知。三参交给 `scripts/notify.sh`；脚本退出码非 0 记为失败但**仍带着输出**，
- * 免得「命令失败(1)」这种没有上下文的报错把真正的诊断盖掉
- */
+/** 发一条测试通知：三参交给 scripts/notify.sh；脚本退出码非 0 记为失败但仍带着输出，免得「命令失败(1)」这种没有上下文的报错把真正的诊断盖掉 */
 export async function sendTestNotification(
   title: string,
   body: string

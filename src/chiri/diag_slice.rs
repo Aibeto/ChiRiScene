@@ -1,5 +1,5 @@
 //! diag_slice.rs - [policy] [reuse]
-//! Same-frame cooperative work slices; never discard a candidate or defer it to another tick.
+//! 同帧协作工作切片：候选只在本帧内处理完，不丢弃也不推迟到下一 tick
 use std::time::Duration;
 
 // [policy]

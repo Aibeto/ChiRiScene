@@ -1,16 +1,16 @@
 //! fas_process.rs: [read] [identity] [alive]
-//! 进程身份取证：starttime 快照 + 可选 pidfd。用于 FAS owner 的 PID 复用判定与存活轮询。
+//! 进程身份取证：starttime 快照 + 可选 pidfd，用于 FAS owner 的 PID 复用判定与存活轮询
 
 use std::fs;
 
-// pidfd 仅在真机（Linux/Android 且非 test profile）编译：test/runtime 不依赖 libc，也不引入自定义 cfg
+// pidfd 仅在真机（Linux/Android 且非 test profile）编译，test/runtime 不依赖 libc，也不引入自定义 cfg
 #[cfg(all(not(test), any(target_os = "linux", target_os = "android")))]
 type PidFd = std::os::fd::OwnedFd;
 #[cfg(not(all(not(test), any(target_os = "linux", target_os = "android"))))]
 type PidFd = ();
 
 // [read]
-/// 读取进程 starttime（`/proc/<pid>/stat` 第 22 字段，pid 后第 20 项）；Z/X 僵尸或读取失败返回 None。
+/// 读取进程 starttime（`/proc/<pid>/stat` 第 22 字段，pid 后第 20 项），Z/X 僵尸或读取失败返回 None
 pub fn read_process_starttime(pid: i32) -> Option<u64> {
     if pid <= 0 {
         return None;
@@ -26,7 +26,7 @@ pub fn read_process_starttime(pid: i32) -> Option<u64> {
 }
 
 // [identity]
-/// 进程身份快照。pidfd 可用时 `is_alive` 为零开销 poll；否则回退 starttime 比对（仅有基准时）。
+/// 进程身份快照，pidfd 可用时 `is_alive` 为零开销 poll，否则回退 starttime 比对（仅有基准时）
 pub struct ProcessIdentity {
     starttime: Option<u64>,
     #[cfg(all(not(test), any(target_os = "linux", target_os = "android")))]
@@ -34,7 +34,7 @@ pub struct ProcessIdentity {
 }
 
 impl ProcessIdentity {
-    /// attach：先读 starttime、再开 pidfd、再读一次交叉校验；前后不一致（attach 窗口内被替换）则放弃身份基准。
+    /// attach：先读 starttime、再开 pidfd、再读一次交叉校验，前后不一致（attach 窗口内被替换）则放弃身份基准
     pub fn attach(pid: i32) -> Self {
         let before = read_process_starttime(pid);
         #[cfg(all(not(test), any(target_os = "linux", target_os = "android")))]
@@ -48,7 +48,7 @@ impl ProcessIdentity {
         }
     }
 
-    /// 与给定 starttime 快照是否同一进程。任一侧未知即判不同（fail-closed：无法证明同一进程时不认会话）。
+    /// 与给定 starttime 快照是否同一进程，任一侧未知即判不同（fail-closed：无法证明同一进程时不认会话）
     pub fn matches_starttime(&self, starttime: Option<u64>) -> bool {
         match (self.starttime, starttime) {
             (Some(stored), Some(provided)) => stored == provided,
@@ -56,7 +56,7 @@ impl ProcessIdentity {
         }
     }
 
-    /// 存活判定：优先 pidfd 零 poll；pidfd 不可用时按 starttime 比对。基准未知判死（fail-closed，交由主线退出）。
+    /// 存活判定：优先 pidfd 零 poll，不可用时按 starttime 比对，基准未知判死（fail-closed，交由主线退出）
     pub fn is_alive(&self, pid: i32) -> bool {
         if self.starttime.is_none() {
             return false;
@@ -71,8 +71,7 @@ impl ProcessIdentity {
         }
     }
 
-    /// 廉价存活提示：有 pidfd 时返回 Some(是否存活)（零 poll，可每帧调用）；仅回退路径返回 None——
-    /// 每帧读 /proc 代价高，改由主线 `owner_is_alive` 低频 reconcile。
+    /// 廉价存活提示：有 pidfd 时返回 Some(是否存活)（零 poll，可每帧调用），回退路径返回 None 交由主线 `owner_is_alive` 低频 reconcile
     pub fn cheap_alive(&self) -> Option<bool> {
         if self.starttime.is_none() {
             return Some(false);
@@ -95,8 +94,7 @@ impl ProcessIdentity {
 }
 
 // [alive]
-/// pidfd 零超时 poll：仅「返回 0（无事件）」算存活；就绪、POLLIN/POLLERR/POLLHUP/POLLNVAL、
-/// 或 poll 出错一律判死（fail-closed，绝不把异常当存活）。
+/// pidfd 零超时 poll：仅返回 0（无事件）算存活，就绪、POLLIN/POLLERR/POLLHUP/POLLNVAL 或 poll 出错一律判死（fail-closed）
 #[cfg(all(not(test), any(target_os = "linux", target_os = "android")))]
 fn pidfd_alive(pidfd: &PidFd) -> bool {
     use std::os::fd::AsRawFd;
@@ -116,7 +114,7 @@ fn pidfd_alive(pidfd: &PidFd) -> bool {
     poll_fd.revents & fatal == 0
 }
 
-/// pidfd_open：用 syscall 直调，避免依赖各平台 libc 的包装可用性；不可用时返回 None 走 starttime 回退。
+/// pidfd_open：syscall 直调避免依赖 libc 包装，不可用时返回 None 走 starttime 回退
 #[cfg(all(not(test), any(target_os = "linux", target_os = "android")))]
 fn open_pidfd(pid: i32) -> Option<PidFd> {
     use std::os::fd::FromRawFd;

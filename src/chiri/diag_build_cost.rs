@@ -1,7 +1,5 @@
 //! diag_build_cost.rs - 区块索引: [blocks] [stats] [tests]
-//! build 子账只分解父 build，不能与 selfcost/1 相加。
-//! clock_errors 累计子块失败的读钟端点与逆行区间；父端点错误仍在父账。
-//! residual_errors 累计不可得的残差维度，wall/CPU 各计一次，不伪造有效零。
+//! build 子账只分解父 build，不能与 selfcost/1 相加；clock_errors 记子块读钟端点缺失与逆行，residual_errors 记不可得残差维度，均不伪造有效零
 
 // [blocks]
 #[derive(Clone, Copy, Debug)]
@@ -88,7 +86,7 @@ impl BuildCostStats {
         }
     }
 
-    /// 每帧仅结算一次；缺失时钟、溢出和负残差均不产生有效零值。
+    /// 每帧仅结算一次，缺失时钟、溢出和负残差均不产生有效零值
     pub fn finish(&mut self, wall_ns: u64, cpu_ns: Option<u64>) {
         let children = &self.blocks[..BuildBlock::Residual.slot()];
         let wall_sum = children
@@ -156,8 +154,7 @@ impl BuildCostStats {
         &self.blocks[block.slot()]
     }
 
-    /// residual 含组装/差分/渲染和父区间内未计入子块的观察者开销。
-    /// 子块 CPU 起点读钟尾部与终点读钟前部归子块，其余读钟与 record 归 residual。
+    /// residual 含组装/差分/渲染和父区间内未计入子块的观察者开销；子块 CPU 起点读钟尾部与终点读钟前部归子块，其余读钟与 record 归 residual
     pub fn summary_line(&self, session: &str, start: &str, end: &str, block: BuildBlock) -> String {
         let stats = self.stats(block);
         format!(

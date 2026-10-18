@@ -1,7 +1,5 @@
-// export.ts: [start] [poll]。导出历史归档：把 logd/（历次重启的日志归档）打成 tar 放到 /sdcard/Download。打包交给外部脚本 scripts/pack
-// sh（对外暴露的稳定接口，与守护进程启动归档共用、构建流程不得修改）：仅 tar 不压缩（2026-10-13 起，zstd -19 在设备上分钟级太慢）——
-// 后台执行：归档可达几百 MB，前台等ksu exec 会被桥的超时掐断，命令自己 fork 到后台、结束写产物/标记文件，前端只轮询——
-// 进度取文件读数而不是脚本回显：.part 字节 / 源总字节（tar 边读边写，文件大小就是已读入量）
+// export.ts: [start] [poll]
+// 导出历史归档：把 logd/（历次重启的日志归档）打成 tar 放到 /sdcard/Download，打包交给外部脚本 scripts/pack.sh（对外暴露的稳定接口，与守护进程启动归档共用）：仅 tar 不压缩，命令自己 fork 到后台，前端只轮询产物/标记文件，进度取 .part 字节 / 源总字节
 import { absOf, shQuote } from './paths'
 import { isLive, run } from '@/kernel/shell'
 import { absent, failed, ok, shellError, type ReadResult } from './errors'
@@ -32,10 +30,7 @@ function stamp(now = new Date()): string {
 }
 
 // [start]
-/**
- * 启动后台打包并立刻返回，完成状态由 pollExport 轮询三个标记文件得出；目录不存在
- * / 只剩本次运行的文件等错误由后台脚本写进 failFlag，前端读退出码映射文案
- */
+/** 启动后台打包并立刻返回，完成状态由 pollExport 轮询三个标记文件得出；目录不存在 / 只剩本次运行的文件等错误由后台脚本写进 failFlag，前端读退出码映射文案 */
 export async function startExport(): Promise<ReadResult<ExportJob>> {
   if (!isLive()) return absent<ExportJob>('unsupported-env')
   // pack.sh export 的 dest_base 是不带扩展名的基准名（脚本自己生成 <base>.tar）：传带 .tar 的名字产物会变 logd_X.tar.tar，
@@ -45,7 +40,7 @@ export async function startExport(): Promise<ReadResult<ExportJob>> {
     target: `${base}.tar`,
     failFlag: FAIL_FILE
   }
-  // pack.sh 打包细节见文件头；/sdcard/Download 刻意不创建——真撞上不可写会落到失败标记
+  // /sdcard/Download 刻意不创建：真撞上不可写会落到失败标记
   const cmd =
     `nohup sh ${shQuote(absOf('packSh'))} export ${shQuote(absOf('logdDir'))} ` +
     `${shQuote(base)} ${shQuote(FAIL_FILE)} ${shQuote(LOG_FILE)} ${shQuote(TOTAL_FILE)} ` +
@@ -72,7 +67,7 @@ export interface ExportProgress {
   planned: number
   /** 产物当前字节（.part，单调增长） */
   written: number
-  /** 保留字段：导出已无压缩段，恒 false（界面不定态分支不再触发） */
+  /** 保留字段：导出无压缩段，恒 false */
   blind: boolean
 }
 

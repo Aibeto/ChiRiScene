@@ -1,21 +1,13 @@
-//! governor.rs: [types] [activate] [release] [residue]performance 调速器接管（FAS / contingency 使用）：
-//! 激活时快照各 policy 的 `scaling_governor` 原值并写 `performance`，release 逐 policy 恢复。与 FastLock 同构：对象归调度线程独占、无内部锁；
-//! 快照读不到原值的 policy 直接跳过（宁可不管它，也不留下恢复不回去的残留）。健壮性边界：release 覆盖 FAS 退出 / contingency 退出 / DOWN 进入 / panic 自愈收尾 / 进程收尾；
-//! SIGKILL 场景收尾不执行，残留由 [residue] 启动清理兜底
+//! governor.rs: [types] [activate] [release] [residue]
+//! performance 调速器接管（FAS / contingency）：激活时快照各 policy 的 `scaling_governor` 原值并写 `performance`，release 逐 policy 恢复；对象归调度线程独占、无内部锁，SIGKILL 残留由 [residue] 启动清理兜底
 use log::{debug, error, info, warn};
 use std::fs;
 
 use crate::fluent_args;
 use crate::i18n::t_with_args;
 
-/// 调速器写入（区分成败，日志精简）。**不用 `try_write_file`**：内部吞错恒返回 Ok， 无法判断成败，且收尾会把文件 chmod 0444——对之后还要恢复的 sysfs 节点是毒药
-///
-/// 写前 `enable_perm` + 失败读回校验（2026-09-28 统一写路径）：走 `utils::write_sysfs`（与 FAS
-/// 引擎同款，不做收尾 chmod），**不再裸 `fs::write`**——引擎侧 `write_to_file`/`try_write_file`
-/// 写完会把同一节点 chmod 0444，裸写在它写过一次之后就必然 `EACCES`（跨全部已收 daemon.log，
-/// 本函数成功行 `governor-switched` **0 次**、失败行成批出现，FAS 期的 performance 实际由引擎兜住）。
-/// 万一仍失败：**读回等于目标值就按成功计**（典型场景：引擎刚写过同一节点），只记 debug，
-/// 免得把「别人已经写好了」继续报成失败、污染判读（详见命令文档「`scaling_governor` 写入」条）
+/// 调速器写入（区分成败）：不用 `try_write_file`，其内部吞错恒返回 Ok，且收尾会把文件 chmod 0444，对之后还要恢复的 sysfs 节点是毒药
+/// 写前 `enable_perm` + 失败读回校验，走 `utils::write_sysfs`（与 FAS 引擎同款，不做收尾 chmod）；读回等于目标值即按成功计，只记 debug
 fn write_governor(path: &str, value: &str) -> bool {
     match crate::utils::write_sysfs(path, value) {
         Ok(()) => true,
@@ -40,7 +32,7 @@ fn write_governor(path: &str, value: &str) -> bool {
 }
 
 // [types]
-/// 单个 policy 的调速器快照。governor 为 None 的 policy 不接管
+/// 单个 policy 的调速器快照，governor 为 None 的 policy 不接管
 struct GovernorSnapshot {
     policy_id: i32,
     original: String,
@@ -49,10 +41,8 @@ struct GovernorSnapshot {
 pub struct GovernorGuard {
     snapshots: Vec<GovernorSnapshot>,
     active: bool,
-    /// [no-op] activate 全军覆没 error 已报标记（翻转沿去重）：governor 节点只读的机型上
-    /// ok==0 属常态（performance 写不进，靠 min=max 锁频窗口等效），每次 FAS 激活 /
-    /// contingency/babel 切换都重报会刷屏并掩盖真异常——首次 error，之后降 debug；
-    /// 接管成功或 release 时复位，状态真变了允许再报
+    /// [no-op] activate 全军覆没 error 已报标记（翻转沿去重）：governor 节点只读的机型上 ok==0 属常态（performance 写不进，靠 min=max 锁频窗口等效）
+    /// 首次 error、之后降 debug，接管成功或 release 时复位，状态真变了允许再报
     noop_reported: bool,
 }
 
@@ -69,11 +59,8 @@ impl GovernorGuard {
         self.active
     }
 
-    // [activate]
-    /// 快照各 policy 原调速器并切到 performance。重复激活是 no-op
-    /// 部分 policy 读不到原值属常态（离线簇 / 无 cpufreq policy），跳过不打点；**一个 policy 都拿不到**则是
-    /// 接管失败——contingency/babel/FAS 的 performance 语义整条丢失，且与「从未调用 activate」在日志上同形，
-    /// 按 error 记账（与 FAS 开环同口径：能力丢失且不可自愈）
+    /// 快照各 policy 原调速器并切到 performance，重复激活是 no-op
+    /// 部分 policy 读不到原值属常态（离线簇 / 无 cpufreq policy），跳过不打点；一个都拿不到则按 error 记账
     pub fn activate(&mut self) {
         if self.active {
             return;
@@ -124,12 +111,8 @@ impl GovernorGuard {
                 );
             }
         }
-        // [no-op] 一个 policy 都没接管到：performance 语义整条未生效，与「activate 从未被调用」在日志上完全同形（都是无 governor-switched 行），
-        // 真机无法区分——按功能性失效记账。policy 列表本身为空（cpufreq 不可见）也算，一并覆盖。
-        // [no-op] 去重（翻转沿）：governor 节点只读的机型上本态是已知常态（mod.rs 的
-        // sync_lab_governor_gpu 注释「governor 节点只读的机型写不进 performance，靠锁频窗口等效」），
-        // 每次 FAS 激活 / contingency-babel 切换都会走到这里重报，error 刷屏且掩盖真异常——
-        // 首次报 error，此后降 debug；状态变化（接管成功 / release）即复位，允许再次上报
+        // [no-op] 一个 policy 都没接管到：performance 语义整条未生效，与「activate 从未被调用」在日志上同形（都无 governor-switched 行），按功能性失效记账
+        // policy 列表本身为空（cpufreq 不可见）也算；[no-op] 去重（翻转沿）首次报 error、此后降 debug，接管成功或 release 复位
         if ok == 0 {
             if self.noop_reported {
                 debug!(
@@ -158,16 +141,15 @@ impl GovernorGuard {
     }
 
     // [release]
-    /// 恢复全部快照的原调速器；未接管时为 no-op
-    /// 快照为空会静默跳过还原——调用方（退出路径 / 收尾）看起来 release 成功，performance 却留在节点上，
-    /// 与「还原成功」在日志上完全同形（都没有 governor-restore-failed），下一次启动只能靠残留清理兜底，故显式打点
+    /// 恢复全部快照的原调速器，未接管时为 no-op
+    /// 快照为空会静默跳过还原，与「还原成功」在日志上同形（都没有 governor-restore-failed），故显式打点
     pub fn release(&mut self) {
         if !self.active {
             return;
         }
         if self.snapshots.is_empty() {
             warn!(
-                "[Governor] empty snapshot: release has no policy to restore, performance may remain on the nodes (cleaned up by residue cleanup on next start)"
+                "[Governor] empty snapshot: nothing to restore, performance may persist until next start"
             );
         }
         for snap in self.snapshots.drain(..) {
@@ -221,8 +203,8 @@ impl GovernorGuard {
         }
     }
 
-    /// 启动残留清理：SIGKILL 等异常退出会把 `performance` 留在节点上（收尾 release 不执行）performance` 不是任何厂商的默认调速器，启动时见到它必然是残留，
-    /// 一律写回该 policy 的默认调速器（选型见 common.rs [governor]）；正常值不动
+    /// 启动残留清理：SIGKILL 等异常退出会把 `performance` 留在节点上（收尾 release 不执行），它不是任何厂商默认调速器，启动时见到必是残留
+    /// 一律写回该 policy 的默认调速器（common.rs [governor] 选型），正常值不动
     pub fn cleanup_residue() {
         Self::each_residue_policy(&mut |pid, path| {
             let target = crate::common::cpu_governor_for_policy(pid);
@@ -238,7 +220,7 @@ impl GovernorGuard {
         });
     }
 
-    /// 停摆期的同款体检：**只报不写**——停摆语义是把系统交回原状，残留是上一轮 ChiRi 留下的还是系统/厂商默认无从区分，写了就把基线改成「ChiRi 认为系统该有的样子」，
+    /// 停摆期的同款体检：只报不写，停摆语义是把系统交回原状，残留来源无从区分，写了就把基线盖成 ChiRi 认为的样子
     /// 等于停摆期还在替用户调度（上一次修的就是这类洞）只留日志让用户判断
     pub fn report_residue() {
         Self::each_residue_policy(&mut |pid, _path| {

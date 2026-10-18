@@ -28,7 +28,7 @@ impl CpuScheduler {
         }
     }
 
-    /// 应用所有一次性的、与模式无关的系统调整。停摆期一律跳过（含调用的竞争窗口）：本函数是唯一的入口，闸内的那次复查才是权威判定
+    /// 应用所有一次性的、与模式无关的系统调整，停摆期一律跳过（含调用的竞争窗口）：本函数是唯一入口，闸内的复查才是权威判定
     pub fn apply_system_tweaks(&self) -> Result<()> {
         let _gate = Self::tweaks_gate()
             .lock()
@@ -46,9 +46,8 @@ impl CpuScheduler {
     }
 
     // [snapshot]
-    /// 一次性系统调整的**原值快照**（节点路径 → 接管前内容），与 governor snapshot/restore 同语义：
-    /// DOWN 停摆要把系统还原成「ChiRi 没改过」的样子（否则被关的 cpu_boost、改过的 cpuidle/IO/sched_* 停摆期依旧生效，基线失真）
-    /// **每个节点只记第一次的值**——配置热重载会重复下发，覆盖快照会把上一次 tweak 的值当成系统原值
+    /// 一次性系统调整的原值快照（节点路径 → 接管前内容），与 governor snapshot/restore 同语义：DOWN 停摆要把系统还原成「ChiRi 没改过」的样子，否则基线失真
+    /// 每个节点只记第一次的值——配置热重载会重复下发，覆盖快照会把上一次 tweak 的值当成系统原值
     fn tweak_snapshot() -> &'static Mutex<HashMap<String, String>> {
         static SNAP: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
         SNAP.get_or_init(|| Mutex::new(HashMap::new()))
@@ -61,8 +60,7 @@ impl CpuScheduler {
         GATE.get_or_init(|| Mutex::new(()))
     }
 
-    /// 节点不存在/不可读时不记录（写也一定失败，没有可还原的东西）。IO 调度器节点（`*/queue/scheduler`）读出是候选列表、当前值带方括号，
-    /// 写回必须剥壳——原样写 "[mq-deadline] kyber" 是非法值
+    /// 节点不存在/不可读时不记录（写也一定失败）；IO 调度器节点（`*/queue/scheduler`）读出是候选列表、当前值带方括号，写回必须剥壳，原样写 "[mq-deadline] kyber" 是非法值
     fn snapshot_node(path: &str) {
         let Ok(raw) = fs::read_to_string(path) else {
             return;
@@ -78,8 +76,7 @@ impl CpuScheduler {
         snap.entry(path.to_string()).or_insert(value);
     }
 
-    /// `write_nodes` 批量写不读原值，写前先补齐快照。与 `utils::write_nodes` 同口径泛型：`Vec<(String, String)>` 与 `&[(&str, &str)]` 都能直接传（这里只取路径，
-    /// 值不参与快照）
+    /// `write_nodes` 批量写不读原值，写前先补齐快照；与 `utils::write_nodes` 同口径泛型，`Vec<(String, String)>` 与 `&[(&str, &str)]` 都能直接传
     fn snapshot_nodes<P: AsRef<str>, V>(items: &[(P, V)]) {
         for (path, _) in items {
             Self::snapshot_node(path.as_ref());
@@ -101,8 +98,7 @@ impl CpuScheduler {
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         if snap.is_empty() {
-            // [snapshot] 空快照（启动即停摆、或本轮从未下发过 tweak）此前完全无声：与「有快照但一个都没还原成功」
-            // 在日志上同形，排查时无从区分，故补一条显式的「无需还原」
+            // [snapshot] 空快照（启动即停摆、或本轮从未下发过 tweak）与「有快照但一个都没还原成功」在日志上同形，故补一条显式的「无需还原」
             log::info!("[Tweaks] DOWN 停摆：一次性系统调整快照为空，无节点需要还原");
             return;
         }
@@ -114,11 +110,10 @@ impl CpuScheduler {
                 restored += 1;
             }
         }
-        // [snapshot] 还原数与快照数不一致 = 有节点没还回去（停摆期残留 ChiRi 改动、基线失真）。
-        // `write_sysfs` 不吞错、返回真实写入结果（失败细节走 debug 日志），INFO 级别下只看得见汇总，故这里显式报警
+        // [snapshot] 还原数与快照数不一致 = 有节点没还回去（停摆期残留 ChiRi 改动、基线失真）；`write_sysfs` 不吞错、返回真实写入结果，失败细节走 debug，故这里显式报警
         if restored != total {
             log::warn!(
-                "[Tweaks] DOWN 停摆：一次性系统调整还原不完整，{}/{} 个节点写回失败（失败细节仅 debug 级可见：write sysfs failed）",
+                "[Tweaks] DOWN 停摆：一次性系统调整还原不完整，{}/{} 个节点写回失败",
                 restored,
                 total
             );
@@ -133,8 +128,7 @@ impl CpuScheduler {
     }
 
     // [sched]
-    /// 内核调度器参数写白名单：只允许写这些 /proc/sys/kernel 节点（借鉴 LittleYouran CTS 的 Scheduler 段）白名单外（含用户篡改 feature.yaml 注入）
-    /// 一律拒绝并 warn
+    /// 内核调度器参数写白名单：只允许写这些 /proc/sys/kernel 节点（借鉴 LittleYouran CTS 的 Scheduler 段），白名单外（含用户篡改 feature.yaml 注入）一律拒绝并 warn
     const SCHED_ALLOWED_PARAMS: &'static [&'static str] = &[
         "sched_migration_cost_ns",
         "sched_nr_migrate",
@@ -145,7 +139,7 @@ impl CpuScheduler {
         "sched_schedstats",
     ];
 
-    /// 写入 Sched 段配置的内核调度器参数：节点写入去重不是本层职责（FastWriter 面向高频路径，此处热重载频率低、直接写）。逐节点 debug、结束 info 汇总实际写入数；空值与越白名单键跳过
+    /// 写入 Sched 段配置的内核调度器参数：写入去重不是本层职责（热重载频率低、直接写），逐节点 debug、结束 info 汇总实际写入数，空值与越白名单键跳过
     fn apply_sched_params(&self) -> Result<()> {
         let config = self.config.read().unwrap();
         let sched = &config.sched;
@@ -174,15 +168,14 @@ impl CpuScheduler {
                 continue;
             }
             if value.trim().is_empty() {
-                // [sched] 空值此前静默跳过：键配了却没值，真机只看到 applied 计数偏小，看不出丢的是哪一项
+                // [sched] 空值静默跳过会让 applied 计数偏小，看不出丢的是哪一项
                 log::warn!("[Sched] 内核调度器参数 {key} 值为空，已跳过");
                 empty += 1;
                 continue;
             }
             let path = format!("/proc/sys/kernel/{key}");
-            // [sched] 白名单内的参数配了、但本机内核没有这个 /proc/sys/kernel 节点：`try_write_file` 只把
-            // ENOENT 降 debug，日志上「写了 N 项」与「一项都没生效」同形（真机无法区分）。此处显式点名，
-            // 不改变下发流程与 applied 口径（快照与写入照旧，缺失节点本就写不进去）
+            // [sched] 白名单内的参数配了、但本机内核没有这个 /proc/sys/kernel 节点：`try_write_file` 只把 ENOENT 降 debug，日志上「写了 N 项」与「一项都没生效」同形
+            // 此处显式点名，不改变下发流程与 applied 口径（快照与写入照旧，缺失节点本就写不进去）
             if !std::path::Path::new(&path).exists() {
                 log::warn!("[Sched] 内核调度器参数节点不存在，该项微调未生效: {path}");
                 missing += 1;
@@ -191,8 +184,7 @@ impl CpuScheduler {
             applied += 1;
             log::debug!("SchedTuning: wrote {} = {}", path, value);
         }
-        // [sched] 三类跳过的总数：汇总只报成功数，失败侧无声会让「配了 7 项只生效 2 项」这种部分失效
-        // 与全部生效同形。空值/节点缺失属配置或机型问题、写失败已由 utils 打 warn，这里只补总账
+        // [sched] 三类跳过的总数：汇总只报成功数会让「配了 7 项只生效 2 项」与全部生效同形；空值/节点缺失属配置或机型问题、写失败已由 utils 打 warn，这里只补总账
         if rejected + empty + missing > 0 {
             log::warn!(
                 "[Sched] 内核调度器参数下发不完整: 白名单拒绝 {} 项、空值 {} 项、节点不存在 {} 项",
@@ -212,8 +204,8 @@ impl CpuScheduler {
     }
 
     // [governor]
-    /// 启动（及每次热重载）时算定各 policy 的目标 cpufreq 调速器：表内已有时只取副本、不重复读 sysfs。
-    /// 停摆期本函数随 apply_system_tweaks 一起跳过，缺的 policy 由写入点惰性补算（见 common.rs [governor]）
+    /// 启动（及每次热重载）时算定各 policy 的目标 cpufreq 调速器：表内已有时只取副本、不重复读 sysfs
+    /// 停摆期本函数随 apply_system_tweaks 一起跳过，缺的 policy 由写入点惰性补算（common.rs [governor]）
     fn apply_cpu_governors(&self) -> Result<()> {
         let mut picked: Vec<(i32, String)> = crate::common::select_cpu_governors()
             .iter()
@@ -251,7 +243,7 @@ impl CpuScheduler {
                 // 仅在真正发起写入时输出"已完成"，避免开关未开启时误报
                 log::info!("{}", t("apply-cpu-idle-governor-start"));
             } else {
-                // [cpu_idle] 开关与目标 governor 都配了、节点却不存在：整项功能静默失效，此前无任何日志
+                // [cpu_idle] 开关与目标 governor 都配了、节点却不存在时整项功能静默失效
                 log::warn!(
                     "[CpuIdle] cpuidle current_governor 节点不存在，目标 governor {} 未下发",
                     config.cpu_idle.current_governor
@@ -276,8 +268,7 @@ impl CpuScheduler {
             return Ok(());
         }
 
-        // 逐设备逐参数收集，最后一次批量写：单节点失败 debug、全部失败 warn（见 utils::write_nodes）。不再逐节点预判 exists——块设备/参数节点各机型差异大，
-        // 预判会让日志与真实写入结果脱节
+        // 逐设备逐参数收集，最后一次批量写：单节点失败 debug、全部失败 warn；不逐节点预判 exists，否则日志与真实写入结果脱节
         let mut items: Vec<(String, String)> = Vec::new();
         if let Ok(entries) = fs::read_dir(block_dir) {
             for entry in entries.flatten() {
@@ -314,7 +305,7 @@ impl CpuScheduler {
 
     // [touch_boost]
     /// 屏蔽 Android/内核自带的触摸升频（cpu_boost 驱动），改由 ChiRi 触摸升频统一接管：关闭 input_boost 与 sched_boost_on_input，避免内核一上一下互抢导致频率抖动
-    /// 候选节点逐条尝试写（不再预判存在性）：单点失败 debug、**全部**失败 warn（见 utils::write_nodes）——非 ChiRi 通用内核可能一个节点都没有
+    /// 候选节点逐条尝试写（不预判存在性）：单点失败 debug、全部失败 warn，非 ChiRi 通用内核可能一个节点都没有
     fn apply_disable_touch_boost(&self) -> Result<()> {
         // 路径是字面量，直接用 `(&str, &str)` 数组，省掉逐个 `to_string()` 与 Vec 分配
         let items: [(&str, &str); 4] = [

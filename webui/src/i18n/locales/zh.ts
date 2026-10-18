@@ -10,7 +10,7 @@ export default {
   'nav.logs': '日志',
   'nav.main': '主导航',
 
-  // 注释掉的键：手动刷新按钮已移除（状态/日志页改为每秒自刷新）'action.refresh': '刷新',
+  // 'action.refresh': '刷新',
   'action.toBottom': '回到底部',
   'action.cancel': '取消',
   'action.confirm': '确认',
@@ -133,7 +133,7 @@ export default {
   'config.advanced.back': '返回配置',
   'config.down': 'DOWN',
   'config.down.hint': '除非开发者要求否则不应启用',
-  // 非 ChiRi 机型：daemon 不接管调度、恒为停摆，开关置灰（见 AdvancedView 的 downFixed）
+  // 非 ChiRi 机型：daemon 不接管调度、恒为停摆，开关置灰
   'config.down.hint.unsupported': '本机不在 ChiRi 支持列表，调度不接管 CPU，恒为停摆',
   'config.down.on': 'DOWN 已启用',
   'config.down.off': '正常调度',
@@ -164,7 +164,7 @@ export default {
   'config.screenoff.hint': '设置息屏判定值',
   'config.screenoff.saved': '息屏判定值已保存',
 
-  // 通知测试：固定 tag ChiRi-Test，标题/正文预填可改；显示脚本原始输出（只显示「已发送」会把真失败藏起来）
+  // 通知测试：固定 tag ChiRi-Test，标题/正文预填可改，显示脚本原始输出（只显示「已发送」会把真失败藏起来）
   'config.notifyTest': '通知测试',
   'config.notifyTest.hint': '标题与正文可改',
   'config.notifyTest.title': '标题',
@@ -243,7 +243,7 @@ export default {
   'logs.source': '数据源',
   'logs.source.daemon': '守护进程日志',
   'logs.source.status': '状态快照',
-  // 日志面板副标题按需求隐藏'logs.window': '仅显示最近一段（每次读取固定字节窗口，不加载整个文件）',
+  // 'logs.window': '仅显示最近一段（每次读取固定字节窗口，不加载整个文件）',
   'logs.archive': '历史日志已打包进 logd/，可从归档包中查看',
   'logs.devimp': '诊断日志',
   'logs.empty': '暂无内容',
@@ -262,7 +262,7 @@ export default {
   'logs.charge.full': '充满',
   'logs.charge.not_charging': '未充电',
 
-  // CLG 四档：显示名与 id 同名、不分语言；desc 全部注释（卡片只显「家族 + 模式」，不再展示描述）
+  // CLG 四档：显示名与 id 同名、不分语言，desc 全部注释（卡片只显「家族 + 模式」）
   'mode.reduce': 'reduce',
   // 'mode.reduce.desc': '限制上限，优先续航',
   'mode.default': 'default',
@@ -275,7 +275,7 @@ export default {
   // 'mode.contingency.desc': 'CPU+GPU 全核最高频、performance 调速器、停线程迁移',
   'mode.babel': 'babel',
   'mode.frozen': '待春归',
-  // 'mode.babel.desc': '规整化：后台小核、前台/顶部大核+超大核、系统进程大核',DOWN 停摆：显示名同样是 id、不分语言
+  // 'mode.babel.desc': '规整化：后台小核、前台/顶部大核+超大核、系统进程大核',
   'mode.down': 'down',
   // 'mode.down.desc': '调度停摆，只保留采集与日志',
   'mode.scenemode': '息屏场景',

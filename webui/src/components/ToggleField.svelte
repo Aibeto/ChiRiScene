@@ -1,5 +1,5 @@
 <script lang="ts">
-  // ToggleField.svelte: [switch]玻璃开关（.g-switch）：原生 checkbox[role=switch]，轨道必须作 input 的兄弟元素（项目红线禁 :has()）
+  // ToggleField.svelte: [switch] 玻璃开关（.g-switch）：原生 checkbox[role=switch]，轨道必须作 input 的兄弟元素（项目红线禁 :has()）
   let {
     label,
     hint = '',

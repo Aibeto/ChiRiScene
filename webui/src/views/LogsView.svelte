@@ -1,6 +1,6 @@
 <script lang="ts">
-  // LogsView.svelte: [source] [terminal] [snapshot]两类数据源都只读尾部窗口（daemon.log 上限 50MB、status.csv 8MB），界面写明「最近一段」
-  // 与归档位置
+  // LogsView.svelte: [source] [terminal] [snapshot] 两类数据源都只读尾部窗口（daemon.log 上限 50MB、status.csv 8MB）
+  // 界面写明「最近一段」与归档位置
   import { onMount } from 'svelte'
   import Panel from '@/components/Panel.svelte'
   import Segmented from '@/components/Segmented.svelte'
@@ -83,8 +83,8 @@
     }
   }
 
-  // [poll] 每秒自刷新（loadLogs 有在飞守卫，轮询不堆积）；跳过 hidden 期 tick 省电，恢复可见时立即补一次回调闭包里 source 取当前值（$state 可变），
-  // 不能在 onMount 快照
+  // [poll] 每秒自刷新（loadLogs 有在飞守卫，轮询不堆积）；跳过 hidden 期 tick 省电，恢复可见时立即补一次
+  // 回调闭包里 source 取当前值（$state 可变），不能在 onMount 快照
   onMount(() => {
     void app.loadLogs(source)
     const timer = setInterval(() => {
@@ -288,7 +288,7 @@
     color: var(--text-muted);
   }
 
-  /* 级别列不设固定宽：min-width 会让「级别→内容」间距大于「时间→级别」（要求两者一致）；代价是 4/5 字档名混排时模块列起点差约一字宽，可接受 */
+  /* 级别列不设固定宽：min-width 会让「级别→内容」间距大于「时间→级别」；4/5 字档名混排时模块列起点差约一字宽 */
   .log__level {
     color: var(--text-muted);
     font-weight: 700;
@@ -324,7 +324,7 @@
   }
 
   .snapshot-wrap {
-    /* 列宽随数据自适应；与 daemon 终端同款子滚动窗口：限高 60vh + 双轴滑动（配合跟随底部），滚动行为来自 .u-scroll；
+    /* 列宽随数据自适应；与 daemon 终端同款子滚动窗口：限高 60vh + 双轴滑动（配合跟随底部），滚动行为来自 .u-scroll
        干玻璃底不叠模糊（嵌在玻璃页面里），圆角成块 */
     max-width: 100%;
     max-height: 60vh;

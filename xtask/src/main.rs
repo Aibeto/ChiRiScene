@@ -57,7 +57,7 @@ fn cal_git_code(sh: &Shell) -> Result<usize> {
 //     chrono::Local::now().format("%H%M").to_string()
 // }
 
-/// 从 module/module.prop（KEY=VALUE，Magisk/KernelSU 模块规范）读取 name 与 version，作为产物命名依据
+/// 从 module/module.prop（KEY=VALUE）读取 name 与 version，作为产物命名依据
 fn read_module_prop() -> Result<(String, String)> {
     let content = fs::read_to_string("module/module.prop")?;
     let mut name = String::new();
@@ -84,7 +84,7 @@ fn read_module_prop() -> Result<(String, String)> {
 fn build(sh: &Shell, no_pack: bool) -> Result<()> {
     let temp_dir = temp_dir();
 
-    // 产物命名以 module.prop 为准（name-version-提交数-时分）；无日期，同日多次构建靠时分区分、跨天靠版本号+提交数保证唯一
+    // 产物命名以 module.prop 为准（name-version-提交数-时分），同日多次构建靠时分、跨天靠版本号+提交数区分
     let (module_name, module_version) = read_module_prop()?;
     let base_name = format!(
         "{}-{}-{}",
@@ -112,13 +112,11 @@ fn build(sh: &Shell, no_pack: bool) -> Result<()> {
         fs::remove_file(temp_dir.join(".gitignore"))?;
     }
 
-    // 删模块文本文件中的整行 # 注释（保留 shebang、行内 # 与无扩展名标记文件）；
-    // **只作用于 temp_dir 副本**：module/ 是唯一真身，任何构建中途失败/被杀都不会污染工作区
-    // （旧实现由 CI 的 perl -i 或 build-arch.sh 的「换入副本 + trap 还原」完成，
-    //  SIGKILL/断电时 trap 不执行会把 module/ 永久停在已剥状态）
+    // 删模块文本文件中的整行 # 注释（保留 shebang、行内 # 与无扩展名标记文件），只作用于 temp_dir 副本
+    // module/ 是唯一真身，构建中途失败/被杀都不会污染工作区
     strip_comments(&temp_dir);
 
-    // 从模块包移除仅二进制使用的配置：运行时只读嵌入内容，磁盘上无任何读取方，取消对外暴露以缩小可篡改面；meta.yaml / rules.yaml / 特调与 FAS 导出文件有 WebUI 读取方，保留
+    // 从模块包移除仅二进制使用的配置：运行时只读嵌入内容，磁盘上无读取方；meta.yaml / rules.yaml / 特调与 FAS 导出文件有 WebUI 读取方，保留
     const BIN_ONLY: [&str; 5] = [
         "config/feature.yaml",
         "config/normal/tuned_profiles.yaml",
@@ -132,8 +130,8 @@ fn build(sh: &Shell, no_pack: bool) -> Result<()> {
     }
     // normal/fas/ 目录（每应用 FAS 调优）整体只进二进制
     let _ = fs::remove_dir_all(temp_dir.join("config/normal/fas"));
-    // 每 SoC 目录：feature.yaml 与 soc.yaml（硬件基线，仅作 sysfs 兜底基准）同样只进二进制。
-    // 遍历到的 normal/i18n 子目录下无这两个文件，remove_file 失败忽略即可，无需特判目录名
+    // 每 SoC 目录的 feature.yaml 与 soc.yaml（硬件基线，仅作 sysfs 兜底基准）同样只进二进制
+    // 遍历到的 normal/i18n 子目录下无这两个文件，remove_file 失败忽略即可
     if let Ok(rd) = fs::read_dir(temp_dir.join("config")) {
         for e in rd.flatten() {
             if e.path().is_dir() {
@@ -163,7 +161,7 @@ fn build(sh: &Shell, no_pack: bool) -> Result<()> {
     fs::create_dir_all(output_dir)?;
 
     if no_pack {
-        // 不打包：组装好的模块目录移出临时目录，交 CI/GitHub 打包，目录名即 artifact 名（下载时自动生成同名 .zip）
+        // 不打包：模块目录移出临时目录，交 CI/GitHub 打包，目录名即 artifact 名
         let final_dir = output_dir.join(&base_name);
         let _ = fs::remove_dir_all(&final_dir);
         fs::rename(&temp_dir, &final_dir)?;
@@ -179,7 +177,7 @@ fn build(sh: &Shell, no_pack: bool) -> Result<()> {
         zip_create_from_directory_with_options(&zip_path, &temp_dir, |_| options)?;
     }
 
-    println!("构建成功！");
+    println!("构建成功");
     Ok(())
 }
 
@@ -197,11 +195,11 @@ fn aarch64_bin_path() -> PathBuf {
 }
 
 fn build_core(sh: &Shell) -> Result<()> {
-    println!("正在编译 Rust Core...");
-    // push_env 会在当前作用域内设置环境变量，离开作用域自动恢复
+    println!("正在编译 Rust Core");
+    // push_env 在当前作用域内设置环境变量，离开作用域自动恢复
     let _env = sh.push_env("RUSTFLAGS", "-C default-linker-libraries");
-    // CI 钉住 nightly 后 `+nightly` 会触发 rustup 自动安装最新版；用环境变量让 CI
-    // 指定与 lint 相同的固定工具链，本地未设置时仍是 `nightly`。
+    // CI 钉住 nightly 后 `+nightly` 会触发 rustup 自动安装最新版，用环境变量让 CI 指定与 lint 相同的固定工具链
+    // 本地未设置时仍是 `nightly`
     let toolchain =
         std::env::var("CHIRI_RUSTUP_TOOLCHAIN").unwrap_or_else(|_| "nightly".to_string());
     cmd!(
@@ -213,8 +211,8 @@ fn build_core(sh: &Shell) -> Result<()> {
 }
 
 fn build_webui(sh: &Shell) -> Result<()> {
-    println!("正在编译 WebUI...");
-    // push_dir 类似于 cd，离开作用域后会自动切回原目录
+    println!("正在编译 WebUI");
+    // push_dir 类似 cd，离开作用域后自动切回原目录
     let _dir = sh.push_dir("webui");
     cmd!(sh, "npm run build").run()?;
     Ok(())
@@ -222,13 +220,9 @@ fn build_webui(sh: &Shell) -> Result<()> {
 
 // [strip] 在产物副本上删整行注释
 
-/// 删模块文本文件中的整行 `#` 注释，保留 shebang（`#!`）、行内 `#`。
-///
-/// **只应在 `temp_dir` 副本上调用**：`module/` 是唯一真身，构建中断（含 SIGKILL/断电）
-/// 不得污染它。谓词与历史 CI 的 `perl -i -ne 'print if /^\s*#!/ || !/^\s*#/'` 等价；
-/// 排除 `META-INF/`（updater-script 的 `#MAGISK` 为必需标记）与 `scripts/`
-/// （对外稳定接口：`notify.sh`/`pack.sh` 由 WebUI 直接执行，注释保留便于人工排障；
-///  daemon 自己执行的是二进制内嵌正文，与此处剥离与否无关），二者只在顶层生效。
+/// 删模块文本文件中的整行 `#` 注释，保留 shebang（`#!`）、行内 `#`
+/// 只应在 `temp_dir` 副本上调用：`module/` 是唯一真身，构建中断不得污染它
+/// 排除 `META-INF/`（updater-script 的 `#MAGISK` 为必需标记）与 `scripts/`（对外稳定接口，注释保留便于排障），二者只在顶层生效
 fn strip_comments(root: &Path) {
     const EXTS: [&str; 5] = ["sh", "block", "yaml", "yml", "ftl"];
     let mut stack = vec![root.to_path_buf()];

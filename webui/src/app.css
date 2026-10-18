@@ -1,31 +1,9 @@
 /* app.css: [fonts] [scene] [tokens] [base] [glass] [primitives] [signal-map] [utilities] [fallbacks]
- *
- * 玻璃拟态（Nocturne Glassmorphism）设计系统。风格资源见 ../stylekit/glassmorphism/：
- *   - glassmorphism-globals.css  ← 上游 StyleKit 的官方 Global CSS（本文件 [scene] 与 [glass] 的基础）
- *   - glassmorphism-SKILL.md     ← 完整规则集（禁止项 / 必须项 / token 字典）
- * 上游给的是 Tailwind 类名口径；本项目不用 Tailwind，这里把同一套数值落成原生 CSS 变量 + 原子类。
- *
- * 不可违反（违反即风格报废）：
- *   ① 玻璃无色——面板一律白色低透明度 5%~12%，颜色只能来自 [scene] 场景底（现纯色夜景）；禁止给面板上色
- *   ② 必须有场景——深墨夜景纯色底（2026-10-16 用户要求去除所有渐变：原三个大半径 radial
- *      光源光斑已删，副作用与恢复口径见下方 [scene] 注）；纯色平面上玻璃质感随之削弱
- *   ③ backdrop-blur 按用户要求三次下调（上游 40/60 → 25% → 再四分之一 → 2026-10-16 再减半）：
- *      --glass-blur 1.25px / --glass-blur-heavy 1.875px（2026-10-16 再次减半，前值 2.5/3.75）——远低于上游 SKILL.md 的 ≥30px，
- *      是刻意的用户口径，且必须带 saturate(180%)，缺一不可
- *   ④ 阴影必须三层（外层深度 + inset 顶边受光 + inset 底边暗缘）；单层扁平阴影即失去光的方向
- *   ⑤ 唯一强调色香槟金 #E4B863，只用于主 CTA / 关键数字 / 高亮文字；禁止第二强调色、禁止紫粉渐变
- *   ⑥ 圆角 ≥16px；过渡一律 500ms + cubic-bezier(0.16,1,0.3,1)（禁 duration-100/150）
+ * 玻璃拟态设计系统，风格资源见 ../stylekit/glassmorphism/，硬规则：面板永远无色、阴影三层、唯一强调色香槟金 #E4B863、圆角 ≥16px、过渡 500ms
  */
 
-/*
- * [fonts]
- * 拉丁/数字 → 'ChiRi Sans'（Poppins，SIL OFL 1.1）；中文 → 'ChiRi Sans CJK'（Noto Sans SC，SIL OFL 1.1）；
- * 等宽 → 'ChiRi Mono'（JetBrains Mono 拉丁子集，SIL OFL 1.1）——遥测数值/日志/路径走等宽栈，数字对齐与字形稳定
- * 许可正文随仓库同目录（LICENSE-OFL-*.txt）；Poppins/Noto 二进制不入库，构建期由 scripts/fetch-fonts.mjs 拉取，等宽已入库
- * 中文字体已按仓库用字裁剪、不含拉丁字形，无需 unicode-range（范围过宽缺字会出豆腐块）
- * 一律用相对路径——交给 vite 处理后带 hash 落到 dist/assets/（写成 /fonts/ 绝对路径会既不进产物又 404）
- * 风格自检要求避开 Inter / Roboto / Geist 等滥用字体，Poppins + Noto Sans SC + JetBrains Mono 满足
- */
+/* [fonts] 拉丁/数字 'ChiRi Sans'（Poppins），中文 'ChiRi Sans CJK'（Noto Sans SC），等宽 'ChiRi Mono'（JetBrains Mono 拉丁子集）
+ * 二进制不入库，构建期由 scripts/fetch-fonts.mjs 拉取，路径一律用相对路径交给 vite 处理，绝对路径会既不进产物又 404 */
 @font-face {
   font-family: 'ChiRi Sans';
   src: url('./assets/fonts/poppins-regular.woff2') format('woff2');
@@ -82,45 +60,40 @@
   font-display: swap;
 }
 
-/*
- * [tokens]
- * 色值一律用上游 [scene]/[glass] 口径的原始值；不要把色值散进组件 <style>，改这里即可换肤
- */
+/* [tokens] 色值一律用上游 [scene]/[glass] 口径的原始值，不要把色值散进组件 <style>，改这里即可换肤 */
 :root {
   color-scheme: dark;
 
-  /* —— 夜景场景（背景承载全部颜色）—— */
+  /* 夜景场景，背景承载全部颜色 */
   --night-deep: #060a13; /* 近黑：页面边缘 */
   --night: #0b1322; /* 深墨蓝：主背景 */
-  --night-steel: #16233a; /* 钢蓝抬升：原 165° 夜空渐变的第三色标；渐变 2026-10-16 已删，当前无引用，留作色阶备用 */
-  --moon-steel: #33517a; /* 月光钢蓝（深）：原光源光斑配色；光斑 2026-10-16 已删，当前无引用，留作色阶备用 */
-  --moonlight: #7c9cc4; /* 月光（亮）：信息信号色（signal/progress/notice 的 var 回退）；原光源光斑配色，光斑已删 */
+  --night-steel: #16233a; /* 钢蓝抬升，原夜空渐变第三色标，当前无引用，留作色阶备用 */
+  --moon-steel: #33517a; /* 月光钢蓝（深），原光源光斑配色，当前无引用，留作色阶备用 */
+  --moonlight: #7c9cc4; /* 月光（亮），信息信号色（signal/progress/notice 的 var 回退） */
 
-  /* —— 唯一强调色（克制使用：主 CTA / 关键数字 / 高亮文字）—— */
+  /* 唯一强调色，只用主 CTA / 关键数字 / 高亮文字 */
   --champagne: #e4b863;
   --champagne-bright: #f3dca8; /* 香槟按钮上的文字 */
 
-  /* —— 玻璃（永远无色）—— */
+  /* 玻璃永远无色 */
   --glass-bg: rgb(255 255 255 / 8%);
   --glass-bg-strong: rgb(255 255 255 / 12%);
   --glass-bg-hover: rgb(255 255 255 / 15%);
   --glass-bg-weak: rgb(255 255 255 / 6%);
   --glass-border: rgb(255 255 255 / 15%);
   --glass-border-hover: rgb(255 255 255 / 30%);
-  /* 模糊半径按用户要求三次下调：上游 40/60 → 25% → 再四分之一（40/16=2.5、60/16=3.75）
-     → 2026-10-16 再减半（最终 40/32=1.25、60/32=1.875）。
-     saturate 保持 180%：饱和度增强是「暗景光透玻璃发亮」的来源，与模糊强弱无关，不随之缩放 */
-  --glass-blur: 1.25px; /* 2026-10-16 用户要求再减半（前值 2.5px） */
-  --glass-blur-heavy: 1.875px; /* 同上再减半（前值 3.75px） */
+  /* 模糊半径按用户要求三次下调，最终 40/32=1.25、60/32=1.875，saturate 保持 180% 不随模糊缩放 */
+  --glass-blur: 1.25px;
+  --glass-blur-heavy: 1.875px;
   --glass-saturate: 180%;
 
-  /* —— 文本（正文 ≥ white/60 才够对比度；white/60 在 #0B1322 上约 8.9:1，远超 AA）—— */
+  /* 文本，正文 ≥ white/60 才够对比度，white/60 在 #0B1322 上约 8.9:1 */
   --text-primary: #fff;
   --text-secondary: rgb(255 255 255 / 78%);
   --text-muted: rgb(255 255 255 / 58%);
   --text-faint: rgb(255 255 255 / 40%);
 
-  /* —— 方向性阴影：外层深度 + 顶边受光 + 底边暗缘（禁单层）—— */
+  /* 方向性阴影：外层深度 + 顶边受光 + 底边暗缘，禁单层 */
   --glass-shadow-sm: 0 2px 8px rgb(3 7 18 / 35%),
     inset 0 1px 0 rgb(255 255 255 / 18%);
   --glass-shadow: 0 16px 40px rgb(3 7 18 / 50%), inset 0 1px 0 rgb(255 255 255 / 22%),
@@ -133,7 +106,7 @@
     inset 0 -1px 0 rgb(2 6 16 / 30%);
   --focus-ring: 0 0 0 3px rgb(228 184 99 / 18%), 0 8px 24px rgb(3 7 18 / 45%);
 
-  /* —— 几何与动效 —— */
+  /* 几何与动效 */
   --radius-m: 16px; /* rounded-2xl */
   --radius-l: 24px; /* rounded-3xl */
   --space-1: 4px;
@@ -142,13 +115,13 @@
   --space-4: 16px;
   --space-5: 20px;
   --space-6: 24px;
-  --control-h: 44px; /* 最小命中区（无障碍硬要求） */
+  --control-h: 44px; /* 最小命中区 */
   --hairline: 1px;
   --spring: cubic-bezier(0.16, 1, 0.3, 1);
   --motion: 500ms;
   --safe-b: env(safe-area-inset-bottom, 0px);
 
-  /* —— 字体栈 ——（中文等宽必须插 'ChiRi Sans CJK'：ChiRi Mono 只裁了拉丁） */
+  /* 字体栈，中文等宽必须插 'ChiRi Sans CJK'，ChiRi Mono 只裁了拉丁 */
   --font-body: 'ChiRi Sans', 'ChiRi Sans CJK', system-ui, -apple-system, 'PingFang SC',
     'Noto Sans SC', 'Source Han Sans SC', Roboto, 'Helvetica Neue', Arial, sans-serif;
   --font-mono: 'ChiRi Mono', 'ChiRi Sans CJK', ui-monospace, SFMono-Regular, Menlo, Monaco,
@@ -191,40 +164,29 @@ label {
   outline-offset: 2px;
 }
 
-/*
- * [scene]
- * .g-scene 提供「深墨夜景纯色底」（2026-10-16 用户要求去除所有渐变，原三个大半径光源光斑已删）；
- * .g-grain 叠 2.5% feTurbulence 噪点消塑料感。光斑原用伪元素而非 background 多层渐变，
- * 是为了让它们能被 backdrop-filter 真实模糊到——玻璃必须"有东西可模糊"，
- * 纯色平面上做玻璃是本风格的头号禁止项；光斑删除后该前提削弱，副作用说明见下方 .g-scene::before。
- */
+/* [scene] .g-scene 提供深墨夜景纯色底，.g-grain 叠 2.5% feTurbulence 噪点消塑料感 */
 .g-scene {
   position: relative;
   min-height: 100vh;
   min-height: 100dvh;
-  background: var(--night); /* 2026-10-16 用户要求去除所有渐变：原为 165deg 夜空三色渐变 */
-  /* 关键：isolate 让下面 z-index:-1 的伪元素被约束在本元素的层叠上下文里。
-     否则负 z-index 会逃到根上下文、被 body 背景盖住，光源光斑整个不可见 */
+  background: var(--night);
+  /* isolate 让下面 z-index:-1 的伪元素被约束在本元素的层叠上下文里，否则负 z-index 会逃到根上下文被 body 背景盖住 */
   isolation: isolate;
 }
 
-/*
- * 光源光斑：2026-10-16 用户要求去除所有渐变，三个 radial-gradient 光斑已删。
- * 副作用自记：原 [scene] 风格规则②（"玻璃必须有可折射之物"）不再满足——
- * backdrop-filter 模糊的对象只剩纯色底 + 颗粒噪点，玻璃质感会明显减弱。
- * 纯色替代口径（如需恢复"有东西可模糊"）：可改用同色系大半径纯色圆（border-radius:50% + 低透明度纯色，非渐变）。
- */
+/* 光源光斑占位：三个 radial-gradient 已删，backdrop-filter 只剩纯色底 + 噪点可模糊，玻璃质感随之减弱
+ * 如需恢复可改用同色系大半径纯色圆（border-radius:50% + 低透明度纯色，非渐变） */
 .g-scene::before {
   position: absolute;
   z-index: -1;
   inset: 0;
   content: '';
-  /* 原：三个 radial-gradient 光源（右上月光/左下月光钢蓝/中偏左暖色）——按用户要求删除 */
+  /* 原三个 radial-gradient 光源（右上月光/左下月光钢蓝/中偏左暖色）已删 */
   background: none;
   pointer-events: none;
 }
 
-/* 2.5% 颗粒噪点：全屏固定叠层，消除塑料感 */
+/* 2.5% 颗粒噪点，全屏固定叠层，消除塑料感 */
 .g-grain::after {
   position: fixed;
   z-index: 40;
@@ -235,11 +197,7 @@ label {
   pointer-events: none;
 }
 
-/*
- * [glass]
- * 三层玻璃结构：① 无色表面 + blur + saturate ② 内发光（顶亮下透）③ 方向性阴影。
- * .g-glass 是可组合的基类，面板/按钮/输入框都建在它之上。
- */
+/* [glass] 三层玻璃结构：无色表面 + blur + saturate，内发光（顶亮下透），方向性阴影，.g-glass 是可组合基类 */
 .g-glass {
   position: relative;
   background: var(--glass-bg);
@@ -249,8 +207,7 @@ label {
   box-shadow: var(--glass-shadow);
 }
 
-/* 第 2 层内发光：顶边受光。2026-10-16 用户要求去除所有渐变：原为向下渐隐 linear-gradient，
-   改为顶边纯色高光（box-shadow inset 等价物，保持"顶边受光"语义，规则④不破坏） */
+/* 第 2 层内发光：顶边受光，原为向下渐隐 linear-gradient，改为顶边纯色高光以保持顶边受光语义 */
 .g-glass::before {
   position: absolute;
   inset: 0;
@@ -266,13 +223,13 @@ label {
   z-index: 1;
 }
 
-/* 扫光是玻璃的装饰层，必须留在内发光之下、且保持绝对定位——否则会被上面这条规则改成 static 而挤占布局 */
+/* 扫光是玻璃的装饰层，必须留在内发光之下且保持绝对定位，否则会被上面这条规则变成 static 而挤占布局 */
 .g-glass > .g-sheen {
   position: absolute;
   z-index: 0;
 }
 
-/* 干玻璃（无模糊）：用于已经嵌在玻璃里的小元素，避免叠加 blur 造成层数/性能失控 */
+/* 干玻璃无模糊，用于已嵌在玻璃里的小元素，避免叠加 blur 造成层数/性能失控 */
 .g-glass--flat {
   background: var(--glass-bg-weak);
   -webkit-backdrop-filter: none;
@@ -287,7 +244,7 @@ label {
   backdrop-filter: blur(var(--glass-blur-heavy)) saturate(var(--glass-saturate));
 }
 
-/* 扫光高光（光反射）：hover 时斜向扫过，玻璃"活"起来 */
+/* 扫光高光：hover 时斜向扫过 */
 .g-sheen {
   position: absolute;
   inset: 0;
@@ -305,14 +262,14 @@ label {
   transition: transform 700ms ease-out;
 }
 
-/* 2026-10-16 用户要求：闪光只保留在可点击元素——.g-card（状态页大卡片，无点击语义）已移出宿主列表 */
+/* 闪光只保留在可点击元素，.g-card 无点击语义已移出宿主列表 */
 :where(.g-btn, .g-row-item):hover .g-sheen::after {
   transform: translateX(150%) skewX(-20deg);
 }
 
-/* [primitives] —— 卡片 / 按钮 / 输入 / 标签 / 状态 / 分段 / 开关 / 弹层 / 通知 / 进度 */
+/* [primitives] 卡片 / 按钮 / 输入 / 标签 / 状态 / 分段 / 开关 / 弹层 / 通知 / 进度 */
 
-/* —— 卡片（面板容器）—— */
+/* 卡片（面板容器） */
 .g-card {
   padding: var(--space-5);
   border-radius: var(--radius-l);
@@ -328,7 +285,7 @@ label {
   transform: translateY(-4px);
 }
 
-/* 卡片只在小屏上浮；触屏设备没有 hover，避免无谓位移 */
+/* 卡片只在小屏上浮，触屏设备没有 hover，避免无谓位移 */
 @media (hover: none) {
   .g-card:hover {
     transform: none;
@@ -369,7 +326,7 @@ label {
   gap: var(--space-2);
 }
 
-/* 左侧信号条：卡片语义（危险/警告/成功）——不靠颜色单独传递，标题文字同时给出语义 */
+/* 左侧信号条：卡片语义（危险/警告/成功），不靠颜色单独传递，标题文字同时给出语义 */
 .g-card[data-signal] {
   overflow: hidden;
 }
@@ -385,7 +342,7 @@ label {
   background: var(--signal);
 }
 
-/* —— 按钮 —— */
+/* 按钮 */
 .g-btn {
   position: relative;
   display: inline-flex;
@@ -447,7 +404,7 @@ label {
   box-shadow: 0 8px 28px rgb(228 184 99 / 22%), inset 0 1px 0 rgb(243 220 168 / 45%);
 }
 
-/* 危险操作：语义红信号，仍走玻璃（不上色面板） */
+/* 危险操作：语义红信号，仍走玻璃不上色面板 */
 .g-btn--danger {
   border-color: rgb(224 113 111 / 45%);
   background: rgb(224 113 111 / 14%);
@@ -495,7 +452,7 @@ label {
   line-height: 1;
 }
 
-/* —— 输入框 / 下拉 —— */
+/* 输入框 / 下拉 */
 .g-input {
   box-sizing: border-box;
   width: 100%;
@@ -542,7 +499,7 @@ label {
   color: var(--text-primary);
 }
 
-/* 数字输入去掉浏览器微调箭头（触屏误触且与玻璃观感冲突） */
+/* 数字输入去掉浏览器微调箭头，触屏误触且与玻璃观感冲突 */
 .g-input[type='number'] {
   appearance: textfield;
   -moz-appearance: textfield;
@@ -554,12 +511,12 @@ label {
   -webkit-appearance: none;
 }
 
-/* 非法输入：红边 + 红字（文字提示在组件里，不靠颜色单独传达） */
+/* 非法输入：红边 + 红字，文字提示在组件里，不靠颜色单独传达 */
 .g-input[aria-invalid='true'] {
   border-color: rgb(224 113 111 / 60%);
 }
 
-/* —— 字段 / 表单 —— */
+/* 字段 / 表单 */
 .g-field {
   display: grid;
   gap: var(--space-2);
@@ -585,7 +542,7 @@ label {
   gap: var(--space-5);
 }
 
-/* —— 标签（包名 / 配置名 / 模式名）—— */
+/* 标签（包名 / 配置名 / 模式名） */
 .g-tag {
   display: inline-flex;
   align-items: center;
@@ -594,7 +551,7 @@ label {
   border: var(--hairline) solid var(--glass-border);
   border-radius: 999px;
   background: var(--glass-bg-weak);
-  /* 标签承载标识符：不做大小写变换，避免界面显示与设备真实取值不一致 */
+  /* 标签承载标识符，不做大小写变换，避免界面显示与设备真实取值不一致 */
   text-transform: none;
   color: var(--text-secondary);
   font-family: var(--font-mono);
@@ -608,7 +565,7 @@ label {
   color: var(--text-muted);
 }
 
-/* 特调 / FAS / 实验室接管等"值得注意"的标签：香槟金边 = 高亮位置，符合唯一强调色的克制用法 */
+/* 特调 / FAS / 实验室接管等值得注意的标签用香槟金边 */
 .g-tag--accent {
   border-color: rgb(228 184 99 / 40%);
   background: rgb(228 184 99 / 12%);
@@ -628,7 +585,7 @@ label {
   min-width: 0;
 }
 
-/* —— 存活状态芯片 —— */
+/* 存活状态芯片 */
 .g-status {
   display: inline-flex;
   align-items: center;
@@ -668,12 +625,12 @@ label {
   white-space: nowrap;
 }
 
-/* 只有 running 态脉冲：存活才该"呼吸"，停止/未知不该闪 */
+/* 只有 running 态脉冲，停止/未知不闪 */
 .g-status--running .g-status__signal {
   animation: g-pulse 2s ease-in-out infinite;
 }
 
-/* —— 分段切换器 —— */
+/* 分段切换器 */
 .g-segmented {
   display: flex;
   width: 100%;
@@ -717,7 +674,7 @@ label {
   box-shadow: var(--glass-shadow-inset);
 }
 
-/* 横向滑动变体：项多时窄屏被压到看不清，改成按内容宽度排、整条左右滑 */
+/* 横向滑动变体：项多时窄屏被压到看不清，按内容宽度排、整条左右滑 */
 .g-segmented[data-scroll] {
   overflow-x: auto;
   overscroll-behavior-x: contain;
@@ -734,11 +691,8 @@ label {
   padding: 0 var(--space-4);
 }
 
-/* —— 开关 ——
- * 项目红线禁 :has()：track 必须是 input 的兄弟元素、靠 input:checked ~ track 联动。
- * 结构：<label class="g-switch"><input hidden><span class="g-switch__track"><span class="g-switch__thumb"></span></span>...</label>
- * thumb 放在 track 内，用 track 的 overflow 收纳，避免绝对定位两处对齐出错
- */
+/* 开关：项目红线禁 :has()，track 必须是 input 的兄弟元素、靠 input:checked ~ track 联动
+ * thumb 放在 track 内，用 track 的 overflow 收纳，避免绝对定位两处对齐出错 */
 .g-switch {
   position: relative;
   display: flex;
@@ -756,7 +710,7 @@ label {
   margin-top: 2px;
 }
 
-/* 原生 checkbox 视觉隐藏但**保持可聚焦可点击**（不能用 hidden/display:none，否则键盘与无障碍失效）。
+/* 原生 checkbox 视觉隐藏但保持可聚焦可点击，不能用 hidden/display:none 否则键盘与无障碍失效
  * 铺满整个 label 的命中区，焦点环由 :focus-visible 画在 track 上 */
 .g-switch__input {
   position: absolute;
@@ -834,7 +788,7 @@ label {
   opacity: 0.55;
 }
 
-/* 「待提交」标记：香槟金小点（关键状态的提示，不是装饰） */
+/* 待提交标记：香槟金小点 */
 .g-pending {
   flex: 0 0 auto;
   width: 6px;
@@ -844,7 +798,7 @@ label {
   box-shadow: 0 0 6px var(--champagne);
 }
 
-/* —— 弹层（确认 sheet）—— */
+/* 弹层（确认 sheet） */
 .g-dialog {
   width: min(32rem, calc(100vw - 2rem));
   padding: 0;
@@ -860,7 +814,7 @@ label {
 
 .g-dialog::backdrop {
   background: rgb(6 10 19 / 62%);
-  -webkit-backdrop-filter: blur(0.25px); /* 2026-10-16 用户要求模糊减半（前值 0.5px） */
+  -webkit-backdrop-filter: blur(0.25px);
   backdrop-filter: blur(0.25px);
 }
 
@@ -904,7 +858,7 @@ label {
   padding: var(--space-4) var(--space-5) var(--space-5);
 }
 
-/* —— 通知 / 状态占位（StateBox 底座）—— */
+/* 通知 / 状态占位（StateBox 底座） */
 .g-notice {
   position: relative;
   display: grid;
@@ -921,11 +875,7 @@ label {
   box-shadow: var(--glass-shadow-sm);
 }
 
-/*
- * 信号条用 ::after 而不是 ::before：.g-notice 与 .g-glass 同挂一个元素上，
- * ::before 已被 .g-glass 的顶边内发光占用（三层玻璃结构的第 2 层），
- * 两条 ::before 规则特异性相同、会互相顶掉，必须各占一条伪元素
- */
+/* 信号条用 ::after 而不是 ::before：.g-notice 与 .g-glass 同挂一个元素，::before 已被内发光占用，两条同特异性规则会互相顶掉 */
 .g-notice::after {
   position: absolute;
   z-index: 2;
@@ -970,7 +920,7 @@ label {
   overflow-wrap: anywhere;
 }
 
-/* —— 进度条（总览页功耗/进度）—— */
+/* 进度条（总览页功耗/进度） */
 .g-progress {
   display: grid;
   gap: var(--space-2);
@@ -998,12 +948,12 @@ label {
 }
 
 .g-progress__fill {
-  /* 必须是 block：标记里是 <span>（行内元素），行内盒上 width/height 一律无效 → 条恒为空。
+  /* 必须是 block，标记里是 <span>，行内盒上 width/height 一律无效，条恒为空
      上游 ak-ui 的 .ak-progress__fill 正有 display:block，改写时漏掉是这两个功耗条不出填充的真正原因
      （此前误判成宽度/变量问题，改 width 方向自然无效） */
   display: block;
   height: 100%;
-  /* 宽度可由使用方在 .g-progress 根上给 --progress-width（如 style="--progress-width: 42%"），
+  /* 宽度由使用方在 .g-progress 根上给 --progress-width（如 style="--progress-width: 42%"）
      也能直接内联 width；两者都支持，缺省 0 */
   width: var(--progress-width, 0);
   border-radius: 999px;
@@ -1012,7 +962,7 @@ label {
   transition: width var(--motion) var(--spring);
 }
 
-/* 关键数字：香槟金（唯一强调色的合法用法） */
+/* 关键数字：香槟金，唯一强调色的合法用法 */
 .g-progress__value {
   color: var(--progress-signal, var(--champagne));
   font-family: var(--font-mono);
@@ -1031,12 +981,8 @@ label {
   line-height: 1.1;
 }
 
-/*
- * [signal-map]
- * data-signal="info|action|danger|success|accent" → --signal 单点映射。
- * 语义信号色是**状态**信息（无障碍要求"不能只靠颜色"，故每个信号都有对应文字），
- * 与"唯一强调色香槟金"不冲突：香槟金是唯一用于*强调*的颜色，信号色只标状态。
- */
+/* [signal-map] data-signal="info|action|danger|success|accent" → --signal 单点映射
+ * 语义信号色只标状态，每个信号都有对应文字，香槟金是唯一用于强调的颜色 */
 [data-signal] {
   --signal: var(--sig-info);
 }
@@ -1066,7 +1012,7 @@ label {
 }
 
 :root {
-  /* 信号色：全部为夜景里的低饱和玻璃语言（不引入第二强调色） */
+  /* 信号色：全部为夜景里的低饱和玻璃语言，不引入第二强调色 */
   --sig-info: #7c9cc4; /* 月光：信息 / 中性态 */
   --sig-action: #e4b863; /* 香槟金：待提交 / 需注意（与唯一强调色同源） */
   --sig-danger: #e0716f; /* 危险：红信号（仍低饱和，不刺穿玻璃） */
@@ -1075,10 +1021,7 @@ label {
   --sig-muted: rgb(255 255 255 / 40%);
 }
 
-/*
- * [utilities] 项目级通用类：只做布局与排版，视觉决策一律走上面的 token。
- * 一律 :where() 降特异性，便于视图局部覆写；但 .u-stack 的列宽是硬约束（见下）
- */
+/* [utilities] 项目级通用类，只做布局与排版，视觉决策走上面的 token，一律 :where() 降特异性便于视图局部覆写 */
 
 .u-row {
   display: flex;
@@ -1114,10 +1057,7 @@ label {
   min-width: 0;
 }
 
-/*
- * 纵向分组：列宽必须显式 minmax(0,1fr)——网格项默认 min-width:auto，
- * 日志这类 nowrap 宽内容会把整列（乃至整页）撑出屏幕（历史血泪教训，不得删）
- */
+/* 纵向分组：列宽必须显式 minmax(0,1fr)，网格项默认 min-width:auto，日志这类 nowrap 内容会把整列撑出屏幕 */
 .u-stack {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -1150,7 +1090,7 @@ label {
   text-overflow: ellipsis;
 }
 
-/* 说明性小字；.u-mt-* 必须定义在其后，组合使用时 margin-top 才不被 margin:0 吃掉 */
+/* 说明性小字，.u-mt-* 必须定义在其后，组合使用时 margin-top 才不被 margin:0 吃掉 */
 .u-note {
   margin: 0;
   color: var(--text-muted);
@@ -1170,7 +1110,7 @@ label {
 .u-scroll {
   overflow: auto;
   overscroll-behavior: contain;
-  /* WebView 默认 overlay 滚动条一滑即隐，"还有没有内容"看不出来——显式绘制细滚动条 */
+  /* WebView 默认 overlay 滚动条一滑即隐，看不出来还有没有内容，显式绘制细滚动条 */
   scrollbar-width: thin;
   scrollbar-color: rgb(255 255 255 / 22%) transparent;
 }
@@ -1249,10 +1189,7 @@ label {
   background: var(--champagne);
 }
 
-/*
- * [fallbacks] 无 backdrop-filter 支持的环境（极旧 WebView）退化为更高不透明度的实心表面。
- * 这不是"给玻璃上色"，而是能力降级——宁可失去玻璃错觉，也不能让文字落在透光背景上不可读。
- */
+/* [fallbacks] 无 backdrop-filter 的环境（极旧 WebView）退化为更高不透明度的实心表面，属能力降级而非给玻璃上色 */
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   .g-glass,
   .g-card,
@@ -1270,7 +1207,7 @@ label {
   }
 }
 
-/* 骨架脉冲 / 存活呼吸：唯一的两处关键动效 */
+/* 骨架脉冲 / 存活呼吸，唯一的两处关键动效 */
 @keyframes g-pulse {
   0%,
   100% {
@@ -1298,7 +1235,7 @@ label {
   animation: g-fade-in var(--motion) var(--spring) both;
 }
 
-/* 减弱动效：尊重系统设置（风格自检硬要求） */
+/* 减弱动效：尊重系统设置 */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

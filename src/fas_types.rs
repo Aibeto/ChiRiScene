@@ -72,7 +72,6 @@ pub fn default_cluster_profiles() -> Vec<ClusterProfile> {
 // [per_app]
 
 /// 每个游戏的配置档案：只需指定 target_fps 数组，运行时按实际帧率匹配最近档位
-/// YAML 示例:
 /// ```yaml
 /// per_app_profiles:
 /// "com.miHoYo.GenshinImpact": { target_fps: [30, 60], fps_margin: 4.0 }
@@ -80,7 +79,7 @@ pub fn default_cluster_profiles() -> Vec<ClusterProfile> {
 /// ```
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct PerAppProfile {
-    /// 目标帧率数组（如 [30, 60] 表示可能以 30 或 60fps 渲染），运行时动态匹配最近档位
+    /// 目标帧率数组（如 [30, 60] 表示可能以 30 或 60fps 渲染），运行时匹配最近档位
     #[serde(default)]
     pub target_fps: Option<Vec<f32>>,
 
@@ -156,7 +155,7 @@ pub struct FasRulesConfig {
     #[serde(default = "d_sd_min")]
     pub steady_decay_min_step: f32,
 
-    /// 失去白名单前台后的延迟退出秒数：期间切回白名单应用无缝续期，超时才真正退出（缺省 15）
+    /// 失去白名单前台后的延迟退出秒数：期间切回白名单应用无缝续期（缺省 15）
     #[serde(default = "d_fas_exit_delay")]
     pub deactivate_delay_secs: u32,
 
@@ -175,8 +174,7 @@ pub struct FasRulesConfig {
     #[serde(default = "d_switch_perf")]
     pub app_switch_resume_perf: f32,
 
-    /// 防篡改强制重写间隔（**秒**，最小 1，默认 30）：最多每 N 秒把当前锁频值无条件重写一遍，把被改写/压制的 scaling_min_freq / scaling_max_freq 收敛回目标（兜底收敛，
-    /// 非与常驻竞争者常态对抗）历史口径：旧实现按帧计数（120fps 下 30 帧 ≈ 0.25s，4 次/s），现改为时间基准，数值含义不变
+    /// 防篡改强制重写间隔（秒，最小 1，默认 30）：每 N 秒把锁频值无条件重写一遍，收敛被改写/压制的 scaling_min_freq / scaling_max_freq
     #[serde(default = "d_force_int")]
     pub freq_force_reapply_interval: u32,
     #[serde(default = "d_max_frame")]
@@ -205,7 +203,7 @@ pub struct FasRulesConfig {
     #[serde(default)]
     pub migration_cost_ns: Option<u64>,
 
-    /// CPU 负载辅助：前台线程利用率封顶的除数 (越小越激进)
+    /// CPU 负载辅助：前台线程利用率封顶的除数（越小越激进）
     #[serde(default = "d_util_cap_divisor")]
     pub util_cap_divisor: f32,
 }
@@ -259,8 +257,8 @@ fn d_post_guard() -> u32 {
     90
 }
 fn d_up_confirm() -> u32 {
-    // 2026-10-16 快升慢降（非对称滞回）：升档确认 60 → 45 帧（0.75s@60fps），
-    // 升档要快；慢降由 gear_state.rs 升档后最短驻留 + 现有降档确认保证
+    // 快升慢降（非对称滞回）：升档确认 60 → 45 帧（0.75s@60fps），升档要快；
+    // 慢降由 gear_state.rs 升档后最短驻留 + 现有降档确认保证
     45
 }
 fn d_dn_confirm() -> u32 {
@@ -291,9 +289,8 @@ fn d_sd_min() -> f32 {
     0.004
 }
 fn d_fas_exit_delay() -> u32 {
-    // 2026-10-16 用户定：15s → 3s。15s 本意是白名单应用间切换无缝续期，但非白名单
-    // 前台（淘宝/launcher）接管时 mode 残留 fas 造成归因污染与功耗虚高
-    // （logd_1016-165413 实测 26 样本），3s 足以覆盖同引擎快速切换
+    // 15s → 3s：15s 本意是白名单应用间切换无缝续期，但非白名单前台接管时 mode 残留 fas
+    // 造成归因污染与功耗虚高，3s 足以覆盖同引擎快速切换
     3
 }
 fn d_jank_cd() -> u32 {
@@ -314,7 +311,7 @@ fn d_switch_ms() -> f32 {
 fn d_switch_perf() -> f32 {
     0.60
 }
-/// 防篡改强制重写间隔默认 30 —— 单位为秒（旧实现按帧计数，见字段说明）
+/// 防篡改强制重写间隔默认 30，单位为秒
 fn d_force_int() -> u32 {
     30
 }
@@ -324,7 +321,7 @@ fn d_max_frame() -> f32 {
 fn d_cold_ms() -> u64 {
     3500
 }
-/// 写频后校验间隔（秒）：更快发现锁频值被压低（内核 thermal cap / QoS 收窄）；仅写频后触发一次，非周期轮询
+/// 写频后校验间隔（秒）：更快发现锁频值被压低（内核 thermal cap / QoS 收窄），仅写频后触发一次
 fn d_verify_interval() -> u32 {
     1
 }
@@ -339,11 +336,10 @@ fn d_util_cap_divisor() -> f32 {
 }
 
 impl FasRulesConfig {
-    /// 校验并规范化配置：非有限值（NaN/±Inf）回退默认，防止污染 PID 控制链；perf/步长交叉约束保证 clamp 永不 panic；fps_gears 过滤非法值，空时回退默认档位
+    /// 校验并规范化配置：非有限值回退默认，perf/步长交叉约束保证 clamp 永不 panic，fps_gears 过滤非法值
     pub fn normalize(&mut self) {
-        // [log] 非法值（NaN/±Inf）回退默认原本完全静默——用户改错配置后被无声丢弃，
-        // 排障时只看到「行为不对」而没有任何线索（与 FAS 开环同形的静默失效）。
-        // 这里累计被修正的字段名，末尾一次性 warn（仅在真有修正时打，稳态不出现）。
+        // [log] 非法值回退默认原本完全静默，排障只看到行为不对而无线索
+        // 这里累计被修正的字段名，末尾一次性 warn（仅真有修正时打，稳态不出现）
         let mut fixed: Vec<&'static str> = Vec::new();
         macro_rules! finite_or_default {
             ($field:expr, $default:expr) => {
@@ -375,7 +371,7 @@ impl FasRulesConfig {
         if self.fps_gears.is_empty() {
             self.fps_gears = default_fps_gears();
         }
-        // per-app 的 target_fps 同理过滤（set_game 时直接使用，绕过顶层过滤）
+        // per-app 的 target_fps 同理过滤（set_game 直接使用，绕过顶层过滤）
         for profile in self.per_app_profiles.values_mut() {
             if let Some(gears) = &mut profile.target_fps {
                 let before = gears.len();
@@ -420,8 +416,8 @@ impl FasRulesConfig {
         self.post_loading_perf = self
             .post_loading_perf
             .clamp(self.perf_floor, self.perf_ceil);
-        // [钳制留痕] damped_perf_cap 硬钳制会改变行为，与上面 perf_floor/perf_ceil 一样 push 进
-        // fixed（warn 只在 !fixed.is_empty() 时打，漏 push 则「配置被改却无任何线索」）
+        // [钳制留痕] damped_perf_cap 硬钳制会改变行为，与 perf_floor/perf_ceil 一样 push 进 fixed
+        // warn 只在 !fixed.is_empty() 时打，漏 push 则配置被改却无线索
         let damped_perf_cap0 = self.damped_perf_cap;
         self.damped_perf_cap = self.damped_perf_cap.clamp(self.perf_floor, self.perf_ceil);
         if self.damped_perf_cap != damped_perf_cap0 {
@@ -431,9 +427,8 @@ impl FasRulesConfig {
             .app_switch_resume_perf
             .clamp(self.perf_floor, self.perf_ceil);
 
-        // steady_decay 步长约束：min <= max*0.6（decay_scale 最坏 0.6），否则 clamp 边界反转 panic。
-        // [钳制留痕] min_step 有两步可改值（负数归零、超上限拍平），两步都要与原值比较，
-        // 任一生效即 push（dedup 兜底重复）
+        // steady_decay 步长约束：min <= max*0.6（decay_scale 最坏 0.6），否则 clamp 边界反转 panic
+        // [钳制留痕] min_step 两步可改值（负数归零、超上限拍平），任一生效即 push（dedup 兜底重复）
         let steady_decay_min_step0 = self.steady_decay_min_step;
         self.steady_decay_max_step = self.steady_decay_max_step.max(0.0);
         self.steady_decay_min_step = self.steady_decay_min_step.max(0.0);
@@ -443,22 +438,21 @@ impl FasRulesConfig {
         if self.steady_decay_min_step != steady_decay_min_step0 {
             fixed.push("steady_decay_min_step");
         }
-        // 延迟退出：1s 下限防抖，10 分钟上限防呆（配得再大也不该常驻接管）
-        // [钳制留痕] 同上，硬钳制改变行为需进 fixed
+        // 延迟退出：1s 下限防抖，10 分钟上限防呆
+        // [钳制留痕] 硬钳制改变行为需进 fixed
         let deactivate_delay_secs0 = self.deactivate_delay_secs;
         self.deactivate_delay_secs = self.deactivate_delay_secs.clamp(1, 600);
         if self.deactivate_delay_secs != deactivate_delay_secs0 {
             fixed.push("deactivate_delay_secs");
         }
-        // 防篡改强制重写间隔最小 1：旧实现 interval=0 是除零 panic（看门狗反复重启，FAS 停摆）；时间基准后 0 会令「已到期」判定恒真（每帧强制重写），同样必须钳到 ≥ 1
+        // 防篡改强制重写间隔最小 1：时间基准下 0 会令「已到期」恒真（每帧强制重写），必须钳到 ≥ 1
         self.freq_force_reapply_interval = self.freq_force_reapply_interval.max(1);
 
-        // [log] 仅在真有修正时打一条 warn：字段名列表直接给出被改了什么，
-        // 避免「配置不生效却无任何线索」。normalize 在启动/热重载时调用，非高频路径。
+        // [log] 仅在真有修正时打一条 warn，字段名列表直接给出被改了什么；normalize 在启动/热重载时调用
         if !fixed.is_empty() {
             fixed.dedup();
             log::warn!(
-                "[FAS] 配置存在非法值，已回退默认/钳制: {}",
+                "[FAS] 配置非法值已回退默认/钳制: {}", // 字段名列表
                 fixed.join(", ")
             );
         }

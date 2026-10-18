@@ -29,7 +29,7 @@
 </div>
 
 <style>
-  /* 骨架/信号色来自 .g-notice；这里只保留加载脉冲与两点结构修正。
+  /* 骨架/信号色来自 .g-notice；这里只保留加载脉冲与两点结构修正
      脉冲打在信号条（::after）上——::before 是玻璃的顶边内发光，不该闪 */
   .state[data-kind='loading']::after {
     animation: state-pulse 1.4s ease-in-out infinite;

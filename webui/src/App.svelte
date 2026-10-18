@@ -1,7 +1,6 @@
 <script lang="ts">
-  // App.svelte: [shell] [bar] [views] [nav]顶层骨架：顶栏（关闭 / 模块名版本 + 守护进程状态 + 界面语言）、路由视图区、玻璃底栏
-  // 场景（深墨夜景纯色底 + 噪点，2026-10-16 起光源光斑已删）挂在 .g-scene/.g-grain 上——见 app.css [scene]
-  // 光斑删除后「有东西可模糊」的前提削弱：玻璃质感由纯色底 + 颗粒噪点 + 自定义背景图承担
+  // App.svelte: [shell] [bar] [views] [nav] 顶层骨架：顶栏（关闭 / 模块名版本 + 守护进程状态 + 界面语言）、路由视图区、玻璃底栏
+  // 场景（深墨夜景纯色底 + 噪点）挂在 .g-scene/.g-grain 上，玻璃质感由纯色底 + 颗粒噪点 + 自定义背景图承担
   import { onMount } from 'svelte'
   import LiveStatus from '@/components/LiveStatus.svelte'
   import AppsView from '@/views/AppsView.svelte'
@@ -27,12 +26,8 @@
     probeBackendBg()
   })
 
-  // [custom-bg] 自定义背景：与 index.html 同目录存在 backend.chr 时，用它作为页面背景。
-  //
-  // 为什么用 Image 探测而不是 fetch/HEAD：设备上页面跑在 WebView 的 file:// 或自定义 scheme 下，
-  // fetch 常被同源策略拒绝；<img> 加载不受此限，且顺带校验它确实是浏览器能解码的图片
-  // （文件存在但内容不是图片时静默保持夜景底，不出现半张破图）。
-  // './backend.chr' 是相对**文档**（index.html 所在目录）解析的，不是相对打包后的 JS 目录。
+  // [custom-bg] 自定义背景：与 index.html 同目录存在 backend.chr 时用它作为页面背景；'./backend.chr' 相对**文档**（index.html 所在目录）解析，不是相对打包后的 JS 目录
+  // 用 Image 探测而不是 fetch/HEAD：WebView 的 file:// 或自定义 scheme 下 fetch 常被同源策略拒绝，<img> 加载不受此限且顺带校验可解码（不是图片时静默保持夜景底）
   const BACKEND_BG_URL = './backend.chr'
   let customBg = $state(false)
 
@@ -48,11 +43,8 @@
     probe.src = BACKEND_BG_URL
   }
 
-  /**
-   * 关闭 WebUI：优先走管理器注入的 ksu.exit（真正的原生关闭）
-   * 只有拿不到该 API（旧版管理器 / 外部浏览器）时才退回 window.close() + 历史后退——
-   * 只做后退会变成「返回上一页」，不是关闭
-   */
+  /** 关闭 WebUI：优先走管理器注入的 ksu.exit（真正的原生关闭）
+   *  拿不到该 API（旧版管理器 / 外部浏览器）时才退回 window.close() + 历史后退，只做后退会变成返回上一页 */
   function exitWebui(): void {
     if (exitApp()) return
     window.close()
@@ -60,7 +52,7 @@
   }
 </script>
 
-<!-- 场景层：底色 + 全屏噪点（2026-10-16 起光源光斑已删；.g-grain 的 ::after 固定在视口上，不随滚动位移） -->
+<!-- 场景层：底色 + 全屏噪点（.g-grain 的 ::after 固定在视口上，不随滚动位移） -->
 <div class="shell g-scene g-grain {customBg ? 'g-scene--custom-bg' : ''}">
   {#if customBg}
     <!-- 自定义背景：与 index.html 同目录的 backend.chr（src 是运行时字符串，Vite 不参与解析，
@@ -141,11 +133,8 @@
     min-height: 100dvh;
   }
 
-  /* [custom-bg] 自定义背景层：与 index.html 同目录的 backend.chr，铺满视口。
-     position:fixed 而非 absolute——absolute 的包含块是 .g-scene，页面比视口长时背景会随内容拉长、
-     滚动到底露出空白；fixed 恒定贴合视口。层级用 z-index:-1，与 .g-scene::before（原光源光斑）同一套路：
-     落在场景底色之上、所有内容之下。**不能给 0**——定位元素（含 z-index:0）会画在非定位的正文之上，
-     把 .shell__main 里没套玻璃面板的文字整段盖住；-1 才是在流内容之下。 */
+  /* [custom-bg] 自定义背景层：与 index.html 同目录的 backend.chr，铺满视口；position:fixed 而非 absolute——absolute 的包含块是 .g-scene，页面比视口长时背景会随内容拉长、滚动到底露出空白
+     层级用 z-index:-1 落在场景底色之上、所有内容之下；不能给 0，定位元素会画在非定位的正文之上把文字整段盖住 */
   .shell__bg {
     position: fixed;
     z-index: -1;
@@ -157,13 +146,11 @@
     object-fit: cover;
     object-position: center;
     pointer-events: none;
-    /* 用户图不可控，可能很亮：压暗一层让上方白字仍达 AA。这是"给场景提亮/压暗"，
-       不是给玻璃上色——玻璃仍是无色半透明 */
+    /* 用户图不可控可能很亮，压暗一层让上方白字仍达 AA，玻璃仍是无色半透明 */
     filter: brightness(0.72) saturate(1.05);
   }
 
-  /* 有自定义背景时关掉 .g-scene 的夜景底（含已空的 ::before 光斑层；光斑 2026-10-16 已删）：
-     背景图自己就是"可折射之物"（叠纯色夜景底只会盖掉背景图，风格铁律：颜色由场景承载，只能有一个场景） */
+  /* 有自定义背景时关掉 .g-scene 的夜景底，背景图自己就是可折射之物，叠纯色夜景底只会盖掉它 */
   .g-scene--custom-bg {
     background: var(--night-deep);
   }
@@ -171,10 +158,7 @@
     display: none;
   }
 
-  /*
-   * 吸顶顶栏：重玻璃（60px 模糊）。底部用 1px 收边而不是实色分隔线——
-   * 玻璃之间靠"受光顶边 + 底边暗缘"分层，画线会把它变回普通导航栏
-   */
+  /* 吸顶顶栏：重玻璃（60px 模糊）；底部用 1px 收边而不是实色分隔线——玻璃之间靠受光顶边 + 底边暗缘分层，画线会把它变回普通导航栏 */
   .shell__bar {
     position: sticky;
     top: 0;

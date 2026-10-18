@@ -22,9 +22,8 @@ use crate::fluent_args;
 use crate::i18n::{t, t_with_args};
 
 // [guard]
-/// 受护子线程入口：监控子线程 panic 时线程级死亡看门狗感知不到（它只监控进程存活），该监控会永久缺失（如 fps 死后 FAS 无帧）此处落盘后 `exit(1)`，
-/// 由看门狗 3s 后按进程级拉起全新daemon（main 启动初始化会重建全部监控）仅 `Err`（panic）触发退出，正常返回行为不变；消息刻意不走 i18n：运行在 panic 收尾路径，
-/// 纯英文便于检索且避免碰 i18n 锁
+/// 受护子线程入口：子线程 panic 时线程级死亡看门狗感知不到（它只监控进程存活），该监控会永久缺失（如 fps 死后 FAS 无帧），故落盘后 `exit(1)`，由看门狗 3s 后按进程级拉起全新 daemon
+/// 仅 `Err`（panic）触发退出，正常返回行为不变；消息不走 i18n，运行在 panic 收尾路径，纯英文便于检索且避免碰 i18n 锁
 fn spawn_guarded<F: FnOnce() + Send + 'static>(name: &'static str, f: F) -> std::io::Result<()> {
     if let Err(e) = thread::Builder::new()
         .name(name.to_string())
@@ -35,21 +34,18 @@ fn spawn_guarded<F: FnOnce() + Send + 'static>(name: &'static str, f: F) -> std:
             }
         })
     {
-        // [silent-cascade] 语义注意：本函数**并未**消除级联跳过 —— spawn 失败仍经 `return Err(e)`
-        // 上抛，`start_monitor` 的后续 `spawn_guarded(...)?` 调用点全部不再执行（旧 `})?;` 行为等价）。
-        // 改进仅在于：多一条含线程名的 error，点名「是哪个线程没起来 + 后续线程不会启动」，
-        // 由上层（main.rs 的 monitor-module-crashed）决定处置。若要真正「失败只跳过该线程、
-        // 继续启动其余」，需把 6 个 spawn 点逐个改为记录后继续 —— 目前未做，勿误读为已修。
+        // [silent-cascade] 本函数不消除级联跳过：spawn 失败仍经 return Err(e) 上抛，start_monitor 后续调用点全部不再执行
+        // 这里只多一条含线程名的 error，点名哪个线程没起来且后续线程不会启动，由上层 main.rs 的 monitor-module-crashed 决定处置
         log::error!(
-            "[Monitor] thread \"{name}\" spawn failed (subsequent monitor threads will not start): {e}"
+            "[Monitor] thread \"{name}\" spawn failed, remaining monitor threads skipped: {e}"
         );
         return Err(e);
     }
     Ok(())
 }
 
-/// CPU hotplug 事件标记：netlink uevent 收到 `cpu` 子系统事件（cpuN/online 变更）时置位，affinity 消费方见到即刷新在线核位图（不必等 8s 周期）；周期兜底保留，
-/// 不广播 uevent 的机型行为不变
+/// CPU hotplug 事件标记：netlink uevent 收到 `cpu` 子系统事件（cpuN/online 变更）时置位，affinity 消费方见到即刷新在线核位图，不必等 8s 周期
+/// 周期兜底保留，不广播 uevent 的机型行为不变
 pub static CPU_HOTPLUG_DIRTY: AtomicBool = AtomicBool::new(false);
 
 // [fas_signal]
@@ -60,24 +56,23 @@ pub struct FrameSource {
     pub frame_feedback: bool,
 }
 
-/// FAS 所有权与帧反馈信号：load-only 仍 active，但不要求挂帧探针。
-/// 状态发布、等待谓词和通知共用互斥锁，PID 不变的反馈恢复也会唤醒。
+/// FAS 所有权与帧反馈信号：load-only 仍 active 但不要求挂帧探针
+/// 状态发布、等待谓词和通知共用互斥锁，PID 不变的反馈恢复也会唤醒
 pub struct FasSignal {
-    /// 状态本体。热路径只读原子量，与改造前的裸 `AtomicBool` 同价
+    /// 状态本体，热路径只读原子量，与裸 `AtomicBool` 同价
     flag: AtomicBool,
     frame_feedback: AtomicBool,
-    /// **播放态旁路采样**谓词（2026-09-27）：特调 `playback` 接管时置位，让 fps 探针在非 FAS 会话里也挂帧源。
-    /// 与 `flag` 分开存而非复用：`flag` 的语义被 FasManager/调度侧消费（FAS 是否接管），播放态混进去会让
-    /// 「FAS 未激活」的判定失真；两者只在帧源门控处取或
+    /// **播放态旁路采样**谓词：特调 `playback` 接管时置位，让 fps 探针在非 FAS 会话里也挂帧源
+    /// 与 `flag` 分开存：`flag` 被 FasManager/调度侧消费（FAS 是否接管），播放态混进去会让 FAS 未激活判定失真，两者只在帧源门控处取或
     playback: AtomicBool,
-    /// 帧源快照与等待谓词共用锁；None 表示没有具名 FAS 帧源。
+    /// 帧源快照与等待谓词共用锁；None = 没有具名 FAS 帧源
     lock: Mutex<Option<FrameSource>>,
-    /// 配合 `lock` 唤醒待机线程；`set`/`set_playback` 与等待谓词同锁，故不存在丢唤醒
+    /// 配合 `lock` 唤醒待机线程；`set`/`set_playback` 与等待谓词同锁，不存在丢唤醒
     cvar: Condvar,
 }
 
 impl FasSignal {
-    /// `active` 为初值（daemon 启动时 false = FAS 未激活）；播放态谓词恒以 false 起
+    /// `active` 为初值，daemon 启动时 false = FAS 未激活；播放态谓词恒以 false 起
     pub const fn new(active: bool) -> Self {
         Self {
             flag: AtomicBool::new(active),
@@ -93,7 +88,7 @@ impl FasSignal {
         self.flag.load(Ordering::Acquire)
     }
 
-    /// 兼容旧布尔入口；有具名帧源时保留其反馈门控，同值不通知。
+    /// 兼容旧布尔入口；有具名帧源时保留其反馈门控，同值不通知
     pub fn set(&self, active: bool) {
         let mut source = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         if !active {
@@ -126,12 +121,12 @@ impl FasSignal {
         self.cvar.notify_all();
     }
 
-    /// 播放态谓词只读判定（热路径同价）
+    /// 播放态谓词只读判定，热路径同价
     pub fn playback_active(&self) -> bool {
         self.playback.load(Ordering::Acquire)
     }
 
-    /// 播放态谓词与通知同锁，同值不通知。
+    /// 播放态谓词与通知同锁，同值不通知
     pub fn set_playback(&self, on: bool) {
         let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         if self.playback.swap(on, Ordering::AcqRel) != on {
@@ -139,14 +134,13 @@ impl FasSignal {
         }
     }
 
-    /// 帧源采样门控：FAS 反馈启用或播放态诊断采样。
+    /// 帧源采样门控：FAS 反馈启用或播放态诊断采样
     pub fn frame_source_active(&self) -> bool {
         self.frame_feedback.load(Ordering::Acquire) || self.playback_active()
     }
 
-    /// 阻塞直到帧源需要采样（FAS 激活或播放态），或到达 `timeout`；`None` = 无限等待（纯待机 0 周期唤醒）。
-    /// 超时分支供「播放态已接管但诊断总闸关着」这一种情形：诊断开关（meta.dev_record）改动**不经过本信号**、
-    /// 没有唤醒通道，故用 1s 有界等待代替挂 uprobe 常驻——挂上就每帧过探针，比每秒醒一次贵两个数量级
+    /// 阻塞直到帧源需要采样（FAS 激活或播放态）或到达 `timeout`；`None` = 无限等待，纯待机 0 周期唤醒
+    /// 超时分支只供播放态已接管但诊断总闸关着：诊断开关（meta.dev_record）改动不经过本信号、没有唤醒通道，故用 1s 有界等待代替挂 uprobe 常驻
     pub fn wait_until_frame_source(&self, timeout: Option<Duration>) {
         let mut guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
         let deadline = timeout.map(|d| Instant::now() + d);
@@ -225,8 +219,8 @@ mod fas_signal_tests {
 }
 
 // [start]
-/// `ak_active`：特调（akmode）激活标志，cpu_monitor 据此在常规与 40ms 采样间切换`sample_ms_normal`：常规采样间隔（main.rs 按 SoC 传入：
-/// ChiRi 160ms / 非 ChiRi 200ms）`fas_signal`：FAS 前台激活信号（见 `[fas_signal]`），fps_monitor 据此门控 eBPF 探针加载与 uprobe 挂载
+/// `ak_active`：特调（akmode）激活标志，cpu_monitor 据此在常规与 40ms 采样间切换
+/// `sample_ms_normal`：常规采样间隔（main.rs 按 SoC 传入，ChiRi 160ms / 非 ChiRi 200ms）；`fas_signal`：FAS 前台激活信号，fps_monitor 据此门控 eBPF 探针加载与 uprobe 挂载
 pub fn start_monitor(
     tx: SyncSender<DaemonEvent>,
     ak_active: Arc<AtomicBool>,
@@ -235,8 +229,7 @@ pub fn start_monitor(
 ) -> Result<(), Box<dyn Error>> {
     log::debug!("{}", t("monitor-starting"));
 
-    // [init]
-    // 解除内核 eBPF Map 内存锁定限制
+    // [init] 解除内核 eBPF Map 内存锁定限制
     unsafe {
         let rlim = libc::rlimit {
             rlim_cur: libc::RLIM_INFINITY,
@@ -247,14 +240,13 @@ pub fn start_monitor(
         }
     }
 
-    // --- 初始化配置 ---
-    // 嵌入 rules.yaml 为唯一规则来源（编译期打包，防篡改）；磁盘文件仅是启动时复制的展示副本（main.rs::sync_rules_snapshot），不参与运行时读取
+    // 初始化配置：嵌入 rules.yaml 为唯一规则来源（编译期打包，防篡改），磁盘文件仅是启动时复制的展示副本（main.rs::sync_rules_snapshot），不参与运行时读取
     let initial_config = crate::common::embedded_rules();
 
     let config_arc = Arc::new(Mutex::new(initial_config));
     let config_arc_clone_for_watcher = Arc::clone(&config_arc);
 
-    // --- 初始化共享的屏幕状态 ---
+    // 初始化共享的屏幕状态
     let screen_state_arc = Arc::new(Mutex::new(true));
     let screen_state_clone_for_watcher = Arc::clone(&screen_state_arc);
     let screen_state_clone_for_app_detect = Arc::clone(&screen_state_arc);
@@ -263,17 +255,15 @@ pub fn start_monitor(
     let force_refresh_arc = Arc::new(AtomicBool::new(false));
     let force_refresh_clone_for_watcher = Arc::clone(&force_refresh_arc);
 
-    // [watchers]
-    // 屏幕状态监控线程：debug.tracing.screen_state 属性轮询（见 screen_detect.rs [prop]），
-    // 变化即直推 ScreenStateChange 事件；app_detect 的轮询转发退化为 verify 自愈兜底（双发由消费端去重）
-    // [PAUSED] 原 uevent sysfs 投票直推已暂停（screen_detect.rs [source]）
+    // [watchers] 屏幕状态监控线程：debug.tracing.screen_state 属性轮询，变化即直推 ScreenStateChange 事件
+    // app_detect 的轮询转发退化为 verify 自愈兜底，双发由消费端去重；[PAUSED] 原 uevent sysfs 投票直推已暂停
     log::debug!("{}", t("monitor-thread-start-screen"));
     let tx_screen = tx.clone();
     spawn_guarded("screen_watcher", move || {
         screen_detect::monitor_screen_state_property(screen_state_clone_for_watcher, tx_screen);
     })?;
 
-    // 3b. uevent 线程：现仅服务 CPU hotplug（置 CPU_HOTPLUG_DIRTY，2s 周期块刷新核位图）；屏幕分支已 [PAUSED]，见 screen_detect.rs [uevent]
+    // 3b. uevent 线程：现仅服务 CPU hotplug，置 CPU_HOTPLUG_DIRTY，2s 周期块刷新核位图；屏幕分支已 [PAUSED]
     let screen_state_clone_for_uevent = Arc::clone(&screen_state_arc);
     let tx_uevent = tx.clone();
     spawn_guarded("uevent_watcher", move || {
@@ -310,26 +300,21 @@ pub fn start_monitor(
     })?;
 
     // 前台 PID 统一广播源：FPS/CPU 两个 eBPF 监控共享同一 watch 通道，替代各自 500ms 的重复轮询
-    // 推送源在 app_detect（`CURRENT_PID` 唯一写入点 set_current_package，变化即发）；原 pid_watcher 线程（500ms 空转转发）已删除
-    // fps_monitor 在下方启动块 clone Receiver 消费同一广播
+    // 推送源在 app_detect（`CURRENT_PID` 唯一写入点 set_current_package，变化即发），fps_monitor 在下方启动块 clone Receiver 消费同一广播
     let initial_pid = app_detect::get_current_pid();
     let (tx_pid, rx_pid_cpu) = tokio::sync::watch::channel(initial_pid as u32);
 
-    // [ebpf]
-    // eBPF FPS 监控线程（独立 Tokio runtime）：服务 FAS 调频，兼服务播放态旁路帧间隔直方图；仅 ChiRi 且 FAS 可用时启动
-    // （空 uprobe attach + RingBuf 轮询是纯开销，非 ChiRi 零开销）PID 复用上方共享广播
-    // 反偷跑门控：帧源（FAS 激活 或 播放态旁路）到来前线程以**信号等待**待机（见 `[fas_signal]`）——tokio runtime /
-    // eBPF 加载 / uprobe 挂载推迟到首个帧源进前台；稳态阻塞在条件变量 0 次周期唤醒（改造前 1s 轮询）
+    // [ebpf] eBPF FPS 监控线程（独立 Tokio runtime）：服务 FAS 调频，兼服务播放态旁路帧间隔直方图；仅 ChiRi 且 FAS 可用时启动，PID 复用上方共享广播
+    // 反偷跑门控：帧源（FAS 激活或播放态旁路）到来前线程以信号等待待机，tokio runtime / eBPF 加载 / uprobe 挂载推迟到首个帧源进前台，稳态阻塞在条件变量 0 次周期唤醒
     if crate::common::is_chiri_soc() && crate::common::fas_available() {
         log::debug!("{}", t("monitor-thread-start-fps"));
         let tx_fps = tx.clone();
         let rx_pid_fps = rx_pid_cpu.clone();
         spawn_guarded("fps_monitor_ebpf", move || {
-            // 激活前待机：等待**帧源**信号（FAS 激活 或 播放态旁路，见 [fas_signal]；稳态 0 周期唤醒），
-            // 不建 runtime 不加载 eBPF——播放态旁路开启前同样零开销，首帧源到来时一次性建起来
+            // 激活前待机：等待帧源信号（FAS 激活或播放态旁路，稳态 0 周期唤醒），不建 runtime 不加载 eBPF
+            // 播放态旁路开启前同样零开销，首帧源到来时一次性建起来
             fas_signal.wait_until_frame_source(None);
-            // 单线程 runtime：本线程只跑这一个 async 循环（无跨线程 spawn 需求），current_thread
-            // 省去 multi-thread 的 worker/blocking 空闲线程池；enable_time 供 interval/timeout 使用
+            // 单线程 runtime：本线程只跑这一个 async 循环，无跨线程 spawn 需求，current_thread 省去 multi-thread 的 worker/blocking 空闲线程池，enable_time 供 interval/timeout 使用
             if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
                 .enable_time()
                 .build()
@@ -382,14 +367,12 @@ pub fn start_monitor(
         }
     })?;
 
-    // 遥测线程：1s 轮询 PSI / GPU busy% / 电池电流电压，写进程级共享原子量（telemetry()）
-    // 供 chiri 调度层消费与落盘；**全 SoC 启动**——非 ChiRi 的独立诊断线程（chiri::start_diag_thread）
-    // 的 main_snap 行同样以它为数据源（原仅 ChiRi 启动，非 ChiRi 该行数据恒为空）
+    // 遥测线程：1s 轮询 PSI / GPU busy% / 电池电流电压，写进程级共享原子量（telemetry()），供 chiri 调度层消费与落盘
+    // 全 SoC 启动：非 ChiRi 的独立诊断线程（chiri::start_diag_thread）的 main_snap 行同样以它为数据源
     log::debug!("{}", t("monitor-thread-start-telemetry"));
     spawn_guarded("telemetry_monitor", telemetry::telemetry_loop)?;
 
-    // [detect]
-    // 8. 启动应用检测主循环 (阻塞)
+    // [detect] 8. 启动应用检测主循环（阻塞）
     log::debug!("{}", t("monitor-thread-start-app-detect"));
     app_detect::app_detection_loop(
         config_arc,

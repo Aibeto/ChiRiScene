@@ -38,7 +38,7 @@ impl FpsWindow {
         self.sq_sum += fps * fps;
         self.pos = (self.pos + 1) % WINDOW_SIZE;
         self.push_count += 1;
-        // 每 64 帧重算一次（WINDOW_SIZE=120 每半圈、144fps 下 ≈0.44s），抑制浮点累积误差影响齿轮决策
+        // 每 64 帧重算一次（WINDOW_SIZE=120 半圈、144fps 下 ≈0.44s）抑制浮点累积误差
         if self.push_count >= 64 {
             self.recalculate();
             self.push_count = 0;

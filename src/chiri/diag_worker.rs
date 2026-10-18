@@ -1,52 +1,5 @@
 //! diag_worker.rs: [task] [worker]
-//! 诊断渲染/写入的去阻塞 worker：单线程 + 有界 FIFO，任务保序，停机排空。
-//!
-//! **职责边界（阶段 D）**：本模块**只**做「已渲染好的 @S 行 → 单次原子落盘」。
-//! 采样/差分判定仍留在调度线程原时点完成，worker 只消费不可变的 `FrameTask`，
-//! 不访问可变 `AffinityManager`、控制器或任何 sysfs 调度节点，**不**改调度策略、
-//! **不**绑定 CPU、**不**改线程优先级。
-//!
-//! **单写者**：worker 线程内唯一写入调用是
-//! `crate::logger::aff_snapshot_drain(&rows, full, ts)`——该函数把整帧
-//! （帧头 + 所有行）拼成一个 block 并单次 `write_all` 原子落盘，帧头计数由 logger
-//! 反推，本模块**不拼帧头、不写 @A 行、不自己算 ntop/nfg**。`ts` 取调用方在**采样时点**
-//! 已格式化的 `MMDD-HHmmss`（`logger::aff_frame_ts()`），保证异步写出时 `@S ts=` 仍记采样
-//! 时刻而非写出时刻，维持 @S 与 status.csv 的时序配对。
-//! **排空写入不再受 `diag_active()` 门控**（仅要求 devimp 目录存在），因此诊断关闭后
-//! 已提交进队列的「已采集」帧仍会被写出，不会被门控直接丢弃。
-//!
-//! **失败处理（非「永不丢帧」，分三层勿混淆）**：
-//! - **(a) `submit` 失败**：shutdown / 通道断开 / 阻塞 `send` 失败时以 `Err(task)`
-//!   **把 `FrameTask` 所有权交还调用方**（`ts`/`rows`/`full` 与身份字段完好），
-//!   调用方据此**回退同步写**（`logger::aff_snapshot`），禁止静默丢弃整帧。
-//!   **顺序不变式（先旧后新）**：worker 因写入 panic 进入失败态后**仍在**排空旧帧，
-//!   故此态下 `submit` **先等排空完成再交还任务**（无超时，见 `submit` 文档），
-//!   保证调用方随后同步写出的新帧必然排在旧帧之后。
-//! - **(b) panic 在飞帧**：worker 因写入 panic 时，**正在处理**的那一帧随栈展开被销毁，
-//!   **无回滚可能**——把它的 `FrameId` 计入 `lost_frames`/`last_lost` 并 `log::error!`
-//!   明确标注 **missing/partial 风险（可能已部分写入，无法回滚）**。
-//! - **(c) panic 排队帧**：catch_unwind 后对队列中已入队帧**逐帧**再包一层
-//!   `catch_unwind` 改走统一写出口 `write`（生产即 `aff_snapshot_drain`，不受
-//!   `diag_active()` 门控、用各自 `ts`）：写出成功计入 `recovered_frames`；失败
-//!   （返回 `false`）或**写入器二次 panic** 均计入 `lost_frames`/`last_lost`，且**继续**
-//!   排空剩余帧（二次 panic 只损失当帧记账，不让其余已入队帧失去记账）。**不声称零丢帧**。
-//! - **写出门控/IO 失败（普通路径）**：`write` 返回 `false` 表示该帧未写出——**不推进**
-//!   `last_written`，累加 `lost_frames`、记录 `last_lost` 并 `log::error!`。
-//!
-//! **身份对账**：`FrameTask` 携带前台 `fg_pid` 与 `config_identity`，供 worker 侧比对
-//! 「同包换 PID / 配置热重载」造成的跨身份混写；`@S` 帧格式不变。
-//!
-//! **保序**：`sync_channel` 是 FIFO，任务自带 `FrameId`；worker 只按**收到顺序**写，
-//! 不重排、不合并。worker 侧记录「最后已写出帧」`last_written` 仅供诊断/对账，
-//! 不作为消费侧可写状态。
-//!
-//! **回压口径**：容量 `CAPACITY=2` 帧（完整帧任务），`submit` 在队满时**阻塞**交付，
-//! 不覆盖旧任务、不丢帧——这是**保真优先的回压，不宣称永不阻塞**。队满次数用
-//! `AtomicU64` 记入 `backpressure_count()`，供「普遍回压则停止扩大异步范围」判读。
-//!
-//! **停机**：`shutdown` 取走发送端并 drop（std mpsc `Sender` 无显式 close），
-//! worker 在 `recv` 收到通道关闭后把**通道内剩余任务全部处理完**再退出，然后 join；
-//! 幂等——重复调用不 panic、不等第二次 join。
+//! 诊断渲染/写入的去阻塞 worker：单线程 + 有界 FIFO，任务保序，停机排空，只做已渲染 @S 行的单次原子落盘
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, SyncSender, TrySendError};
@@ -55,15 +8,14 @@ use std::thread::{self, JoinHandle};
 use std::time::Instant;
 
 // [task]
-/// 帧标识：`generation` 为诊断代际（前台切换/诊断重开/配置代际变化时递增），
-/// `sequence` 为帧序号（调用方在采样时点取号，保证序号与采样顺序一致）。
+/// 帧标识：`generation` 为诊断代际（前台切换/诊断重开/配置代际变化时递增），`sequence` 为帧序号（调用方在采样时点取号）
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct FrameId {
     pub generation: u64,
     pub sequence: u64,
 }
 
-/// 一个完整帧任务：自带采样时点语义与已渲染好的行，worker 只负责写出。
+/// 一个完整帧任务：自带采样时点语义与已渲染好的行，worker 只负责写出
 pub struct FrameTask {
     pub id: FrameId,
     /// 采样时点（由调度线程在原本该采集的时点取），保留时点语义（排队/延迟对账用，非墙钟）
@@ -84,15 +36,12 @@ pub struct FrameTask {
 }
 
 // [worker]
-/// 可注入写入器类型：给定帧任务，返回**是否真正落盘**（供测试与真实 logger 解耦）。
-/// **唯一写出口**——普通处理与 panic 后排空都走它；生产默认指向
-/// `crate::logger::aff_snapshot_drain`（不受 `diag_active()` 门控，用帧自带 `ts` 作帧头）。
+/// 可注入写入器类型：给定帧任务返回是否真正落盘，普通处理与 panic 后排空共用这一唯一写出口
+/// 生产默认指向 `crate::logger::aff_snapshot_drain`（不受 `diag_active()` 门控，用帧自带 `ts` 作帧头）
 type WriteFn = Box<dyn Fn(&FrameTask) -> bool + Send>;
 
-/// 诊断渲染/写入 worker：单线程 + 有界 FIFO。
-///
-/// 默认关闭——**只在调用方 `start()` 时才创建线程**，不做全局单例 lazy；
-/// 生命周期由 `mod.rs` 决定（前台切换/诊断关闭/停机时由调用方 `shutdown`）。
+/// 诊断渲染/写入 worker：单线程 + 有界 FIFO，默认关闭，只在调用方 `start()` 时创建线程，生命周期由 `mod.rs` 经 `shutdown` 结束
+/// panic 在飞帧记 `lost_frames`/`last_lost`，排队帧逐帧 catch_unwind 排空，成功记 `recovered_frames`，失败记 lost 后继续
 pub struct DiagWorker {
     /// 有界发送端：`Option` 以便 `shutdown` 取走并 drop 关闭通道（std mpsc 无显式 close）
     tx: Arc<Mutex<Option<SyncSender<FrameTask>>>>,
@@ -106,8 +55,7 @@ pub struct DiagWorker {
     backpressure: AtomicU64,
     /// worker 最后**成功写出**的帧标识（诊断/对账用；未写出时为 None，仅成功才推进）
     last_written: Arc<Mutex<Option<FrameId>>>,
-    /// 累计「已接收但未能写出」的帧数（普通写入失败 + panic 在飞帧 + panic 排空写入失败；
-    /// **不含**排空成功的帧——那些记在 `recovered_frames`）
+    /// 累计「已接收但未能写出」的帧数（普通写入失败 + panic 在飞帧 + panic 排空写入失败），不含排空成功的帧
     lost_frames: Arc<AtomicU64>,
     /// 累计「已接收、未经普通路径写出，但经 panic 排空成功补写」的帧数
     recovered_frames: Arc<AtomicU64>,
@@ -115,18 +63,16 @@ pub struct DiagWorker {
     last_lost: Arc<Mutex<Option<FrameId>>>,
     /// worker 是否已进入失败态（panic 后为 true；此后 submit 一律返回 Err(task)）
     failed: Arc<AtomicBool>,
-    /// 排空是否已完成（worker panic 后旧帧是否已全部写出 / 已逐帧记账完毕）；
-    /// 供失败态下 `submit` 等待（顺序不变式）与验收对账
+    /// 排空是否已完成（worker panic 后旧帧是否已全部写出 / 已逐帧记账完毕），供失败态下 `submit` 等待与验收对账
     drain_finished: Arc<AtomicBool>,
 }
 
 impl DiagWorker {
-    /// 队列容量（完整帧任务数）。供报告字节容量/峰值内存用。
+    /// 队列容量（完整帧任务数），供报告字节容量/峰值内存用
     pub const CAPACITY: usize = 2;
 
-    /// 启动 worker：单线程 + 容量 `CAPACITY` 的有界 FIFO（`mpsc::sync_channel(2)`），
-    /// 线程名 `diag_render`。写入器默认指向真实 logger 的 drain 出口；线程体用 `catch_unwind`
-    /// 自愈并 `log::error!` 上报。
+    /// 启动 worker：单线程 + 容量 `CAPACITY` 的有界 FIFO（`mpsc::sync_channel(2)`），线程名 `diag_render`
+    /// 写入器默认指向真实 logger 的 drain 出口，线程体用 `catch_unwind` 自愈并 `log::error!` 上报
     pub fn start() -> Self {
         // 唯一写出口：排空写入不受 diag_active() 门控，用帧自带 ts 作帧头，返回是否真正落盘
         Self::start_with(Box::new(|task: &FrameTask| {
@@ -134,8 +80,8 @@ impl DiagWorker {
         }))
     }
 
-    /// 以注入的写入器启动 worker（供测试解耦真实 logger）；生产经 [`start`] 使用真实 logger。
-    /// 注入点语义为 `fn(&FrameTask) -> bool`（即 drain 的替身），普通处理与 panic 排空共用。
+    /// 以注入的写入器启动 worker（供测试解耦真实 logger），生产经 [`start`] 使用真实 logger
+    /// 注入点语义为 `fn(&FrameTask) -> bool`（drain 的替身），普通处理与 panic 排空共用
     fn start_with(write: WriteFn) -> Self {
         let (tx, rx) = mpsc::sync_channel::<FrameTask>(Self::CAPACITY);
         let tx = Arc::new(Mutex::new(Some(tx)));
@@ -153,8 +99,7 @@ impl DiagWorker {
         let ll = Arc::clone(&last_lost);
         let fl = Arc::clone(&failed);
         let df = Arc::clone(&drain_finished);
-        // 在飞帧登记：worker 取到任务后、写出前写入 Some(id)，写出返回后置回 None。
-        // 若 write panic，则不会置回 None，panic 分支据此取出该 FrameId 记为缺帧。
+        // 在飞帧登记：取到任务后、写出前写入 Some(id)，写出返回后置回 None；write panic 时不置回，panic 分支据此记缺帧
         let in_flight: Arc<Mutex<Option<FrameId>>> = Arc::new(Mutex::new(None));
         let if_arc = Arc::clone(&in_flight);
 
@@ -162,14 +107,10 @@ impl DiagWorker {
         let handle = match thread::Builder::new()
             .name("diag_render".to_string())
             .spawn(move || {
-                // 关键：闭包**只借用 `&rx`**（`Receiver::recv`/`try_recv` 均取 `&self`），
-                // 而非把 rx move 进去——这样 catch_unwind 抛出 panic 后仍返回、rx 仍归本线程所有，
-                // 可继续排空「已入队但未处理」的帧并改走统一写出口写出。
+                // 闭包只借用 `&rx`（`recv`/`try_recv` 均取 `&self`），不 move 进闭包，panic 后仍可排空已入队帧
                 let rx_ref = &rx;
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    // 单写者：唯一写入调用；保序：只按收到顺序写，不重排。
-                    // 取到帧先登记「在飞」，写完/失败后再清；write panic 时保持登记供 panic 分支记账。
-                    // 只有写入成功(true)才推进 last_written；失败(false)记缺帧，不谎报已写出。
+                    // 单写者 + 保序：只按收到顺序写；取到帧先登记在飞，写完/失败后清；仅写入成功才推进 last_written
                     let process = |task: FrameTask| {
                         let id = task.id;
                         *if_arc.lock().unwrap_or_else(|p| p.into_inner()) = Some(id);
@@ -182,7 +123,7 @@ impl DiagWorker {
                             lf.fetch_add(1, Ordering::Relaxed);
                             *ll.lock().unwrap_or_else(|p| p.into_inner()) = Some(id);
                             log::error!(
-                                "diag render worker: frame {id:?} 未写出（write 返回 false）"
+                                "diag render worker: frame {id:?} 未写出"
                             );
                         }
                     };
@@ -196,9 +137,9 @@ impl DiagWorker {
                     }
                 }));
                 if result.is_err() {
-                    // panic：进入失败态（此后 submit 在等排空完成后交还任务）。
+                    // panic：进入失败态，此后 submit 等排空完成后交还任务
                     fl.store(true, Ordering::SeqCst);
-                    // 关闭新发送端入口；已克隆的发送端仍可交付，排空须等它们全部释放。
+                    // 关闭新发送端入口，已克隆的发送端仍可交付，排空须等它们全部释放
                     if let Some(sender_slot) = worker_tx.upgrade() {
                         sender_slot
                             .lock()
@@ -214,18 +155,14 @@ impl DiagWorker {
                         lf.fetch_add(1, Ordering::Relaxed);
                         *ll.lock().unwrap_or_else(|p| p.into_inner()) = Some(id);
                         log::error!(
-                            "diag render worker panicked: 在飞帧 {id:?} 可能已部分写入\
-                             （missing/partial 风险），无法回滚，记入缺帧"
+                            "diag render worker panicked: 在飞帧 {id:?} 可能已部分写入，无法回滚，记入缺帧"
                         );
                     }
                     log::error!(
-                        "diag render worker panicked: 进入失败态；现对队列中已入队帧改走统一\
-                         写出口（drain，不受 diag_active 门控）排空"
+                        "diag render worker panicked: 进入失败态，已入队帧改走统一写出口排空"
                     );
-                    // panic 排队帧：统一写出口排空；成功记 recovered，失败/二次 panic 记 lost。
-                    // **逐帧 catch_unwind**：写入器在排空途中**二次 panic** 时，仅当帧按 lost
-                    // 记账，**不中断**排空、不让其余已入队帧失去记账（若整段排空被展开，
-                    // 剩余已入队帧会被静默丢弃，既不进 lost 也不进 recovered）。
+                    // panic 排队帧：统一写出口排空，成功记 recovered，失败/二次 panic 记 lost
+                    // 逐帧 catch_unwind：二次 panic 只让当帧按 lost 记账，不中断排空，否则剩余帧会静默丢失
                     while let Ok(task) = rx.recv() {
                         let id = task.id;
                         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| write(&task)))
@@ -237,7 +174,7 @@ impl DiagWorker {
                                 lf.fetch_add(1, Ordering::Relaxed);
                                 *ll.lock().unwrap_or_else(|p| p.into_inner()) = Some(id);
                                 log::error!(
-                                    "diag render worker: frame {id:?} 排空写入失败（write 返回 false），记入缺帧"
+                                    "diag render worker: frame {id:?} 排空写入失败，记入缺帧"
                                 );
                             }
                             Err(_) => {
@@ -251,8 +188,7 @@ impl DiagWorker {
                         }
                     }
                 }
-                // 排空已完成（正常路径：通道关闭后退出；panic 路径：旧帧已逐帧记账后退出）。
-                // 置真供失败态下的 `submit` 等待，保证「旧帧先于新帧落盘」。
+                // 排空已完成（正常路径通道关闭后退出，panic 路径旧帧已逐帧记账），置真供失败态下的 `submit` 等待
                 df.store(true, Ordering::SeqCst);
             }) {
             Ok(h) => Some(h),
@@ -277,23 +213,8 @@ impl DiagWorker {
         }
     }
 
-    /// 阻塞交付一个完整帧任务（保真优先回压，不覆盖旧任务、不丢帧）。
-    ///
-    /// **先查失败态**：worker 已 panic（`failed==true`）时**不立即**交还任务，而是
-    /// **先等待 worker 排空完成**，再 `return Err(task)`（顺序不变式，见下）。
-    /// 成功入队返回 `Ok(())`；worker 已退出（通道关闭）/ 已 `shutdown` / 阻塞 `send` 失败时
-    /// 返回 `Err(task)`，**把 `FrameTask` 所有权交还调用方**——调用方必须据此回退同步写
-    /// （`logger::aff_snapshot`），**不得静默丢弃**（丢整帧会破坏 `full=1`、帧序号与
-    /// 完整快照契约）。队满仍先记回压再阻塞交付，保真优先。
-    ///
-    /// **顺序不变式（先旧后新）**：worker 因写入 panic 进入失败态后，**仍在**对队列中
-    /// 已入队的旧帧逐帧排空写出。若此刻**立即**把任务交还，调用方会**立即**同步写出新帧，
-    /// 而 worker 还在写旧帧 —— `@S` 是**槽级差分**帧，顺序错会破坏离线按序重建。
-    /// 文件锁只保证**单帧**原子写入（`write_all` 一次落盘），**并不保证**跨帧「先旧后新」。
-    /// 故失败态下本方法**必须等排空完成再交还**：调用方拿到 `Err(task)` 时旧帧已落盘，
-    /// 其随后同步写出的新帧必然排在旧帧之后。
-    ///
-    /// 所有失败路径均等待线程退出，不持有发送端锁；写入器卡住时等待无超时。
+    /// 阻塞交付一个完整帧任务：成功入队 `Ok(())`，worker 已 panic / 已退出 / send 失败时以 `Err(task)` 交还所有权供回退同步写
+    /// 失败态下先等排空完成再交还，保证 @S 槽级差分帧先旧后新；所有失败路径等待线程退出，写入器卡住时无超时
     pub fn submit(&self, task: FrameTask) -> Result<(), FrameTask> {
         if self.failed.load(Ordering::SeqCst) {
             self.await_drain();
@@ -313,14 +234,11 @@ impl DiagWorker {
             Err(TrySendError::Full(task)) => {
                 // 队满：记一次回压，随后阻塞交付（不覆盖、不丢帧）
                 let pressure = self.backpressure.fetch_add(1, Ordering::Relaxed);
-                // [回压可观测] backpressure 目前**没有生产侧读取方**，纯计数等于静默：
-                // 写盘跟不上采样时诊断数据会持续滞后/缺帧，而 devimp 与 status.csv 上只是
-                // 「间隔变大/整段空白」，与正常态同形，排查时看不出是回压造成的。
-                // 首次 + 之后每 60 次报一次（帧间隔缺省 1s → 至多每分钟一条），
-                // 条件不满足时不进入 format，INFO 级别下无额外开销
+                // [回压可观测] backpressure 无生产侧读取方，纯计数等于静默，故首次 + 之后每 60 次报一次
+                // 帧间隔缺省 1s 时至多每分钟一条，条件不满足时不进入 format，INFO 下无额外开销
                 if pressure == 0 || pressure % 60 == 0 {
                     log::warn!(
-                        "diag render worker: submit backpressure (queue full, hit #{}); disk writes lag sampling, diagnostic data may be delayed or missing frames",
+                        "diag render worker: backpressure, queue full hit #{}, frames dropped",
                         pressure + 1
                     );
                 }
@@ -330,7 +248,7 @@ impl DiagWorker {
             // worker 已退出（接收端 drop）：交还任务供回退
             Err(TrySendError::Disconnected(task)) => Err(task),
         };
-        // 排空等待通道关闭，等待前必须释放本次提交的发送端。
+        // 排空等待通道关闭，等待前必须释放本次提交的发送端
         drop(tx);
         if result.is_err() {
             self.await_drain();
@@ -338,54 +256,50 @@ impl DiagWorker {
         result
     }
 
-    /// 等待排空并仅 join 一次；句柄锁串行化所有等待者，worker 不使用此锁。
+    /// 等待排空并仅 join 一次，句柄锁串行化所有等待者，worker 不使用此锁
     fn await_drain(&self) {
         let mut handle = self
             .handle
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if let Some(worker_handle) = handle.take() {
-            // [静默失败] join 返回 Err = worker 线程体在 catch_unwind **之外** panic 退出：
-            // 排空未走完、`drain_finished` 可能永远为假，devimp 该时段帧整段缺失且无人上报
+            // [静默失败] join 返回 Err = 线程体在 catch_unwind 之外 panic 退出，排空未走完、`drain_finished` 可能永假
             if worker_handle.join().is_err() {
                 log::error!(
-                    "diag render worker: thread ended with panic (join failed), drain incomplete; devimp @S frames for this period may be missing entirely"
+                    "diag render worker: thread panicked, drain incomplete, @S frames missing for this period"
                 );
-                // join 失败是**硬失败**（排空中断、无逐帧记账），与正常态在 devimp 上同形
-                // （该时段无 @S 帧），真机排查必须能看见——维持 error!
+                // join 失败是硬失败（排空中断、无逐帧记账），与正常态在 devimp 上同形，维持 error!
             }
-            // [缺帧收尾] lost_frames / recovered_frames 目前**无生产侧读取方**，只记账不汇总等于静默：
-            // 丢帧在 devimp 里表现为「该时段没有 @S 帧」，与「没采样」同形，排查时区分不出来。
-            // 故在工作线程生命周期结束时（停机 / 失败态提交）汇总一次：有缺帧必须可见。
-            // 频率：每个 worker 生命周期至多一条，不是每帧路径。
+            // [缺帧收尾] lost_frames / recovered_frames 无生产侧读取方，只记账不汇总等于静默，故在 worker 生命周期结束时汇总一次
+            // 丢帧在 devimp 里与「没采样」同形，每个生命周期至多一条，不在每帧路径上
             let lost = self.lost_frames.load(Ordering::Relaxed);
             let recovered = self.recovered_frames.load(Ordering::Relaxed);
             if lost > 0 {
                 let last = *self.last_lost.lock().unwrap_or_else(|p| p.into_inner());
-                // 逐帧缺帧已在发生处 error! 上报（及时），此处只做生命周期收尾汇总，故用 warn
+                // 逐帧缺帧已在发生处 error! 上报，此处只做生命周期收尾汇总，故用 warn
                 log::warn!(
-                    "diag render worker: {lost} frames not written this run (panic drain recovered {recovered}); last missing frame {last:?} — devimp @S frames incomplete for this period, do not read as a complete series"
+                    "diag render worker: {lost} frames lost, recovered {recovered}, last missing {last:?}"
                 );
             }
         }
     }
 
-    /// 取下一个序号（调用方在采样时点取号，保证序号与采样顺序一致）。
+    /// 取下一个序号（调用方在采样时点取号，保证序号与采样顺序一致）
     pub fn next_sequence(&self) -> u64 {
         self.sequence.fetch_add(1, Ordering::Relaxed)
     }
 
-    /// 递增代际（前台切换/诊断重开/配置代际变化时调用），返回新代际。
+    /// 递增代际（前台切换/诊断重开/配置代际变化时调用），返回新代际
     pub fn bump_generation(&self) -> u64 {
         self.generation.fetch_add(1, Ordering::Relaxed) + 1
     }
 
-    /// 当前代际。
+    /// 当前代际
     pub fn generation(&self) -> u64 {
         self.generation.load(Ordering::Relaxed)
     }
 
-    /// 排空已提交任务后停机；幂等。
+    /// 排空已提交任务后停机，幂等
     pub fn shutdown(&self) {
         // 关闭发送端：取走并 drop（std mpsc Sender 无显式 close）
         {
@@ -395,38 +309,37 @@ impl DiagWorker {
         self.await_drain();
     }
 
-    /// 累计回压次数（submit 时队列已满而阻塞的次数）。
+    /// 累计回压次数（submit 时队列已满而阻塞的次数）
     pub fn backpressure_count(&self) -> u64 {
         self.backpressure.load(Ordering::Relaxed)
     }
 
-    /// worker 最后**成功写出**的帧标识（诊断/对账用；尚未成功写出任何帧时为 None）。
+    /// worker 最后成功写出的帧标识（诊断/对账用，尚未成功写出任何帧时为 None）
     pub fn last_written(&self) -> Option<FrameId> {
         *self.last_written.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    /// 累计「已接收但未能写出」的帧数（普通写入失败 + panic 在飞帧 + panic 排空写入失败）；
-    /// **不含** panic 排空成功的帧（那些记在 `recovered_frames`）。
+    /// 累计「已接收但未能写出」的帧数（普通写入失败 + panic 在飞帧 + panic 排空写入失败），不含 panic 排空成功的帧
     pub fn lost_frames(&self) -> u64 {
         self.lost_frames.load(Ordering::Relaxed)
     }
 
-    /// 累计「已接收、未经普通路径写出，但经 panic 排空成功补写」的帧数。
+    /// 累计「已接收、未经普通路径写出，但经 panic 排空成功补写」的帧数
     pub fn recovered_frames(&self) -> u64 {
         self.recovered_frames.load(Ordering::Relaxed)
     }
 
-    /// 最近一次写出失败的帧标识（供缺帧定位）。
+    /// 最近一次写出失败的帧标识（供缺帧定位）
     pub fn last_lost(&self) -> Option<FrameId> {
         *self.last_lost.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    /// worker 是否已进入失败态（panic 后为 true；此后 submit 在等待排空完成后返回 Err(task)）。
+    /// worker 是否已进入失败态（panic 后为 true，此后 submit 等排空完成后返回 Err(task)）
     pub fn is_failed(&self) -> bool {
         self.failed.load(Ordering::SeqCst)
     }
 
-    /// 排空是否已完成（panic 后旧帧是否已全部写出）；供验收对账。
+    /// 排空是否已完成（panic 后旧帧是否已全部写出），供验收对账
     pub fn drain_finished(&self) -> bool {
         self.drain_finished.load(Ordering::SeqCst)
     }
@@ -439,8 +352,7 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
     use std::time::Duration;
 
-    // 测试通过注入写入器与真实 logger 解耦：`aff_snapshot_drain` 在测试环境
-    // （devimp 目录通常不存在）会返回 false，故默认 `start()` 不适合断言 last_written。
+    // 测试用注入写入器与真实 logger 解耦：`aff_snapshot_drain` 在测试环境（devimp 目录通常不存在）返回 false
 
     fn task(generation: u64, sequence: u64) -> FrameTask {
         FrameTask {
@@ -458,7 +370,7 @@ mod tests {
         }
     }
 
-    /// 恒成功的注入写入器。
+    /// 恒成功的注入写入器
     fn true_writer() -> WriteFn {
         Box::new(|_t: &FrameTask| true)
     }
@@ -744,8 +656,7 @@ mod tests {
         assert_eq!(w.recovered_frames(), 0);
     }
 
-    /// 改动 1 验证：排空途中写入器**二次 panic** 时**逐帧记账**——每帧各记一次 lost，
-    /// recovered 为 0，且 writer 被调用次数 == 队列帧数（无帧被无声丢弃）。
+    /// 排空途中写入器二次 panic 时逐帧记账：每帧各记一次 lost，recovered 为 0，writer 调用次数等于队列帧数
     #[test]
     fn panic_drain_double_panic_counts_each_frame_lost() {
         let calls = Arc::new(AtomicUsize::new(0));
@@ -786,8 +697,7 @@ mod tests {
         );
     }
 
-    /// 改动 2 验证：**先旧后新**——失败态下 `submit` 返回 `Err(task)` 前须等旧帧全部写出；
-    /// 用 writer 写出序号的 push 顺序与 `recovered_frames` 共同断言。
+    /// 先旧后新：失败态下 `submit` 返回 `Err(task)` 前须等旧帧全部写出，用写出序号顺序与 `recovered_frames` 断言
     #[test]
     fn submit_after_panic_waits_for_drain_then_returns_err() {
         let calls = Arc::new(AtomicUsize::new(0));
@@ -850,7 +760,7 @@ mod tests {
         w.shutdown();
     }
 
-    /// 排空超过 500ms 仍须等待，多个失败提交只能在旧帧完成后交还。
+    /// 排空超过 500ms 仍须等待，多个失败提交只能在旧帧完成后交还
     #[test]
     fn concurrent_failed_submits_wait_beyond_old_timeout() {
         let calls = Arc::new(AtomicUsize::new(0));
@@ -890,7 +800,7 @@ mod tests {
             }
             drop(returned_tx);
             let early_return = returned_rx.recv_timeout(Duration::from_millis(650));
-            // 先放行再断言，避免测试失败时留下阻塞线程。
+            // 先放行再断言，避免测试失败时留下阻塞线程
             let _ = slow_tx.send(());
             let _ = slow_tx.send(());
             assert!(matches!(early_return, Err(mpsc::RecvTimeoutError::Timeout)));
@@ -914,7 +824,7 @@ mod tests {
         assert!(w.drain_finished(), "放行后排空须完成");
     }
 
-    /// 已获准的发送端在排空暂时为空后交付，帧仍须被接收并记账。
+    /// 已获准的发送端在排空暂时为空后交付，帧仍须被接收并记账
     #[test]
     fn panic_drain_waits_for_previously_admitted_sender() {
         let (panic_tx, panic_rx) = mpsc::channel();
@@ -928,7 +838,7 @@ mod tests {
             true
         });
         let worker = DiagWorker::start_with(writer);
-        // 模拟 submit 已检查失败标志并克隆发送端，尚未实际发送。
+        // 模拟 submit 已检查失败标志并克隆发送端，尚未实际发送
         let admitted_sender = worker.tx.lock().unwrap().as_ref().unwrap().clone();
         assert!(worker.submit(task(0, 0)).is_ok());
         assert!(worker.submit(task(0, 1)).is_ok());

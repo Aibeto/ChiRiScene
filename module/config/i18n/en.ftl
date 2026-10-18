@@ -1,128 +1,128 @@
 # en.ftl: [main-monitor] [app-detect] [screen-detect] [monitors] [scheduler] [scheduler-config-watcher] [sysfs] [clg] [tuned] [touch] [fas] [fas-whitelist] [scheduler-settings] [fast-lock] [logger] [affinity] [corectl] [telemetry] [notify] [config-reload] [governor] [gpu]
 # --- Main & Monitor ---
-chiri-module-starting = chiri-module Unified Starting...
-scheduler-module-started = Scheduler module started.
+chiri-module-starting = chiri-module Unified Starting
+scheduler-module-started = Scheduler module started
 scheduler-module-start-failed = Failed to start scheduler module: { $error }
 monitor-module-crashed = Monitor module crashed: { $error }
-monitor-module-started = Monitor module started.
-monitor-starting = Starting chiri-monitor module...
+monitor-module-started = Monitor module started
+monitor-starting = Starting chiri-monitor module
 monitor-screen-watcher-failed = [Main] Screen state watcher thread crashed: { $error }
 monitor-config-watcher-failed = [Main] Config watcher thread crashed: { $error }
 monitor-fps-crashed = [Main] FPS Monitor crashed: { $error }
 monitor-fps-tokio-failed = [Main] Failed to create Tokio runtime for FPS monitor
 monitor-cpu-crashed = [Main] CPU Load Monitor crashed: { $error }
 monitor-cpu-tokio-failed = [Main] Failed to create Tokio runtime for CPU monitor
-monitor-rlimit-memlock-failed = [Main] Failed to raise RLIMIT_MEMLOCK. eBPF maps might fail to load.
+monitor-rlimit-memlock-failed = [Main] Failed to raise RLIMIT_MEMLOCK, eBPF maps may fail to load
 main-chdir = [Main] Changed working directory to: { $dir }
 main-module-root = [Main] Module root: { $path }
 main-config-loaded = [Main] Config loaded: { $path } (loglevel={ $loglevel }, language={ $language })
 main-module-version = [Main] Module version: { $name } { $version } (versionCode { $code }) | SoC { $soc } | kernel { $kernel }
-main-chiri-scheduler-selected = [Main] Specific SoC detected, enabling Chiri scheduler
-main-no-chiri-scheduler = [Main] SoC not in Chiri support list, CPU is not taken over (monitor/WebUI/logging only)
-main-diag-thread-started = [Main] Non-ChiRi SoC: independent diagnostic thread started (devimp toggled via meta.dev_record, not gated by halt)
+main-chiri-scheduler-selected = [Main] Supported SoC, Chiri scheduler enabled
+main-no-chiri-scheduler = [Main] Unsupported SoC, CPU not taken over
+main-diag-thread-started = [Main] Non-ChiRi SoC: independent diagnostic thread started
 main-diag-thread-failed = [Main] Failed to start independent diagnostic thread: { $error }
-main-diag-thread-panic = [Diag] independent diagnostic thread (diag_writer) panicked, devimp output stopped (restart the module to recover)
+main-diag-thread-panic = [Diag] diag_writer panicked, devimp output stopped
 main-special-tuned-exported = [Main] exported { $count } internal special-tuned whitelist entries to special_tuned.yaml
 main-log-archive-submitted = [Main] previous logs archived, packing in background to logd/{ $zip }
 main-devimp-archive-submitted = [Main] previous devimp diagnostics archived, packing in background to logd/{ $zip }
 main-nofix-skip = [Main] meta.yaml has nofix=true: skipping webui asset restore and meta.yaml self-heal
 main-webui-restored = [Main] WebUI assets restored from embedded copy: { $count } file(s)
-main-webui-not-embedded = [Main] binary has no embedded WebUI assets (webui/dist missing at build time), restore skipped
-main-log-short-session-discarded = [Main] previous session lived less than 30s; its logs were discarded without packing
-monitor-thread-start-screen = [Main] Starting screen state watcher thread...
-monitor-thread-start-config-watch = [Main] Starting config watcher thread...
-monitor-thread-start-fps = [Main] Starting eBPF FPS monitor thread...
-monitor-thread-start-cpu = [Main] Starting eBPF CPU load monitor thread...
-monitor-thread-start-app-detect = [Main] Starting app detection loop...
+main-webui-not-embedded = [Main] binary has no embedded WebUI assets, restore skipped
+main-log-short-session-discarded = [Main] previous session lived less than 30s, logs discarded
+monitor-thread-start-screen = [Main] Starting screen state watcher thread
+monitor-thread-start-config-watch = [Main] Starting config watcher thread
+monitor-thread-start-fps = [Main] Starting eBPF FPS monitor thread
+monitor-thread-start-cpu = [Main] Starting eBPF CPU load monitor thread
+monitor-thread-start-app-detect = [Main] Starting app detection loop
 
 # --- AppDetect ---
-app-detect-config-watch = [AppDetect] Started watching config file: { $path }
-app-detect-change-detected = [AppDetect] Change detected, debouncing (100ms)...
-app-detect-reloading = [AppDetect] Debounce finished. Reloading config...
-app-detect-reload-success = [AppDetect] Config reloaded successfully.
-app-detect-loop-started = [AppDetect] App detection loop started (3000ms poll).
-app-detect-screen-changed = [AppDetect] Screen state changed: { $old } -> { $new }
-app-detect-mode-change-pkg = [AppDetect] Mode change: { $old } -> { $new } ({ $pkg })
-app-detect-ime-auto = [AppDetect] Auto-detected IME: { $pkg }
-app-detect-ime-fallback = [AppDetect] Failed to auto-detect IME, using fallback list.
-app-detect-debounce-start = [AppDetect] Debounce started: new app { $pkg } (pid={ $pid })
-app-detect-debounce-confirmed = [AppDetect] Debounce confirmed: app { $pkg } (pid={ $pid }) is stable
-app-detect-pkg-change = [AppDetect] Foreground app state: { $pkg } (pid={ $pid }, temp={ $temp }°C, force={ $force })
-app-detect-activity-changed = [AppDetect] Foreground activity changed: { $pkg } { $activity }
-app-detect-no-app = [AppDetect] No valid foreground app detected (system process or unknown package)
-app-detect-special-override = [AppDetect] Special profile applied: { $pkg } -> { $mode }
-app-detect-special-rejected = [AppDetect] Non-whitelisted app { $pkg } mapped to special profile { $mode }, rejected, falling back to global mode
-app-detect-special-unavailable = [AppDetect] Special tuning unavailable (tuned_profiles.yaml missing/corrupt), { $pkg } mapped { $mode } not applied, falling back to global mode
-app-detect-special-fallback = [AppDetect] Special whitelist hit: { $pkg } uses fallback profile { $mode }
-app-detect-special-global-rejected = [AppDetect] Global mode { $mode } is a special profile and does not apply to non-whitelisted app { $pkg }, falling back to default
+app-detect-config-watch = [AppDetect] watching config file: { $path }
+app-detect-change-detected = [AppDetect] change detected, debouncing 100ms
+app-detect-reloading = [AppDetect] debounce done, reloading config
+app-detect-reload-success = [AppDetect] config reloaded
+app-detect-loop-started = [AppDetect] app detection loop started (3000ms poll)
+app-detect-screen-changed = [AppDetect] screen state changed: { $old } -> { $new }
+app-detect-mode-change-pkg = [AppDetect] mode change: { $old } -> { $new } ({ $pkg })
+app-detect-ime-auto = [AppDetect] auto-detected IME: { $pkg }
+app-detect-ime-fallback = [AppDetect] IME auto-detect failed, using fallback list
+app-detect-debounce-start = [AppDetect] debounce started: new app { $pkg } (pid={ $pid })
+app-detect-debounce-confirmed = [AppDetect] debounce confirmed: app { $pkg } (pid={ $pid }) stable
+app-detect-pkg-change = [AppDetect] foreground app state: { $pkg } (pid={ $pid }, temp={ $temp }°C, force={ $force })
+app-detect-activity-changed = [AppDetect] foreground activity changed: { $pkg } { $activity }
+app-detect-no-app = [AppDetect] no valid foreground app detected
+app-detect-special-override = [AppDetect] special profile applied: { $pkg } -> { $mode }
+app-detect-special-rejected = [AppDetect] non-whitelisted app { $pkg } mapped to special profile { $mode }, rejected, falling back to global mode
+app-detect-special-unavailable = [AppDetect] special tuning unavailable, { $pkg } mapped { $mode } not applied, falling back to global mode
+app-detect-special-fallback = [AppDetect] special whitelist hit: { $pkg } uses fallback profile { $mode }
+app-detect-special-global-rejected = [AppDetect] global mode { $mode } is a special profile and does not apply to non-whitelisted app { $pkg }, falling back to default
 
 # --- ScreenDetect ---
-screen-state-change-detected = [Screen] State change detected via '{ $source }'.
-screen-state-changed-value = [Screen] Screen state changed: { $state }
-screen-netlink-started = [Screen] Started netlink-sys socket listener.
-screen-state-detect-detail = [Screen] State evaluate: { $old } -> { $new } (src: { $source })
+screen-state-change-detected = [Screen] state change detected via '{ $source }'
+screen-state-changed-value = [Screen] screen state changed: { $state }
+screen-netlink-started = [Screen] netlink socket listener started
+screen-state-detect-detail = [Screen] state evaluate: { $old } -> { $new } (src: { $source })
 screen-uevent-received = [Screen] uevent received: subsystem={ $subsystem } devpath={ $devpath }
 screen-uevent-power-action = [Screen] power action: { $action }
 screen-uevent-backlight = [Screen] backlight event: { $dev } -> state={ $state }
 screen-uevent-backlight-unreadable = [Screen] backlight state unreadable: { $dev }
-screen-detect-source-found = [Screen] Screen state source ready: { $kind } @ { $path }
-screen-detect-no-source = [Screen] No usable screen state source (/sys/class/backlight, backlight leds under /sys/class/leds, /sys/class/graphics/fb*/blank, /sys/class/lcd/*/lcd_power and the enabled/dpms node of internal DRM connectors all unavailable); state cannot be self-healed, uevent events only
-screen-off-vetoed = [Screen] Not enough screen-off votes: node { $node } reports ON (source: { $source }); screen-off not confirmed
-screen-off-unconfirmed = [Screen] No readable screen-state node (source: { $source }); screen-off not confirmed
+screen-detect-source-found = [Screen] screen state source ready: { $kind } @ { $path }
+screen-detect-no-source = [Screen] no usable screen state source, uevent only
+screen-off-vetoed = [Screen] not enough screen-off votes: node { $node } reports ON (source: { $source }), screen-off not confirmed
+screen-off-unconfirmed = [Screen] no readable screen-state node (source: { $source }), screen-off not confirmed
 screen-uevent-leds = [Screen] leds backlight event: { $dev } -> state={ $state }
 screen-uevent-leds-unreadable = [Screen] leds backlight state unreadable: { $dev }
-scheduler-screen-on = [Scheduler] Screen ON trigger event
-scheduler-screen-off = [Scheduler] Screen OFF trigger event
+scheduler-screen-on = [Scheduler] screen ON trigger event
+scheduler-screen-off = [Scheduler] screen OFF trigger event
 
 # --- Monitors ---
-cpu-monitor-started = [CPU Monitor] eBPF System Load monitor started (Long-task blind spot fixed).
-cpu-monitor-online-cpus-failed = [CPU Monitor] Failed to get online CPUs: { $error }
-cpu-monitor-online-cpus = [CPU Monitor] Detected online CPU core IDs: { $cpus }
-cpu-monitor-fg-pid-updated = [CPU Monitor] Foreground PID updated { $old } -> { $new }
+cpu-monitor-started = [CPU Monitor] eBPF system load monitor started
+cpu-monitor-online-cpus-failed = [CPU Monitor] failed to get online CPUs: { $error }
+cpu-monitor-online-cpus = [CPU Monitor] detected online CPU core IDs: { $cpus }
+cpu-monitor-fg-pid-updated = [CPU Monitor] foreground PID updated { $old } -> { $new }
 cpu-monitor-baseline = [CPU Monitor] baseline init | online_cpus={ $cpus } max_cpu_id={ $max_cpu }
 cpu-monitor-fg-baseline-reset = [CPU Monitor] foreground PID changed, util baseline reset: { $old } -> { $new }
 cpu-monitor-util-fallback = [CPU Monitor] TGID map missing, falling back to thread-level (pid={ $pid }, raw_tgid={ $raw })
 cpu-monitor-tick-log = [CPU Monitor] cores=[{ $cores }] fg_pid={ $pid } fg_max_util={ $util }% threads_tracked={ $threads } delta={ $delta }ms
-cpu-monitor-channel-closed = [CPU Monitor] Channel closed, exiting loop.
-fps-monitor-init = [FPS Monitor] Initializing eBPF FPS monitor...
-fps-monitor-attached = [FPS Monitor] Attached uprobe to PID: { $pid }
-fps-monitor-attach-failed-initial = [FPS Monitor] Initial attach failed: { $error }
-fps-monitor-frame-silent = [FPS Monitor] frame source silent: PID { $pid } probe attached but no frame events for { $secs }s, uprobe likely missing the per-frame path or kernel delivery broken (FAS will run open-loop)
+cpu-monitor-channel-closed = [CPU Monitor] channel closed, exiting loop
+fps-monitor-init = [FPS Monitor] initializing eBPF FPS monitor
+fps-monitor-attached = [FPS Monitor] attached uprobe to PID: { $pid }
+fps-monitor-attach-failed-initial = [FPS Monitor] initial attach failed: { $error }
+fps-monitor-frame-silent = [FPS Monitor] frame source silent: PID { $pid } probe attached but no frame events for { $secs }s, FAS runs open-loop
 fps-monitor-frame-resumed = [FPS Monitor] frame source resumed: PID { $pid } receiving frame events again
 fps-monitor-pid-switch-failed = [FPS Monitor] PID switch failed: { $error }
-fps-monitor-started = [FPS Monitor] eBPF FPS monitor started (per-PID uprobe mode)
-fps-monitor-passive = [FPS Monitor] FAS not active, probe standing by (no uprobe attached, zero overhead)
-fps-monitor-detached = [FPS Monitor] FAS deactivated, probe detached (back to zero-overhead standby)
-fps-monitor-symbol-short-miss = [FPS Monitor] short symbol attach failed, trying long symbol...
+fps-monitor-started = [FPS Monitor] eBPF FPS monitor started (per-PID uprobe)
+fps-monitor-passive = [FPS Monitor] FAS not active, probe standing by
+fps-monitor-detached = [FPS Monitor] FAS deactivated, probe detached
+fps-monitor-symbol-short-miss = [FPS Monitor] short symbol attach failed, trying long symbol
 fps-monitor-attach-symbol = [FPS Monitor] attached with symbol: { $lib } (pid={ $pid })
 fps-monitor-attach-symbol-name = [FPS Monitor] matched symbol: { $symbol }
 fps-monitor-symbol-scan = [FPS Monitor] libgui symbol scan: { $count } queueBuffer variant(s) found
-fps-monitor-frame-source-missing = [FPS Monitor] frame source unavailable: no Surface::queueBuffer symbol in { $lib }, FAS gear control stalled (retry in { $secs }s)
+fps-monitor-frame-source-missing = [FPS Monitor] frame source unavailable: no Surface::queueBuffer symbol in { $lib }, FAS gear control stalled, retry in { $secs }s
 fps-monitor-frame-summary = [FPS Monitor] frame summary | pid={ $pid } window={ $window } latest={ $latest_ms }ms avg={ $avg_ms }ms
-fps-monitor-frames-dropped = [FPS Monitor] event channel congested, { $count } frame samples dropped (scheduler consuming too slowly)
+fps-monitor-frames-dropped = [FPS Monitor] event channel congested, { $count } frame samples dropped
 fps-monitor-attach-stats = [FPS Monitor] attach failed { $count } time(s) in total, last error: { $error }
 
 # --- Scheduler ---
-scheduler-ipc-started = [Scheduler] IPC Channel listener started.
-scheduler-mode-change-request = [Scheduler] Mode change request: { $old } -> { $new } (Pkg: { $pkg }, Temp: { $temp })
-scheduler-channel-closed = [Scheduler] Channel closed! Thread exiting.
-scheduler-ipc-panic = [Scheduler] IPC thread panicked, releasing CPU control.
-scheduler-ipc-restart = [Scheduler] Cleaned up and restarting scheduler loop (attempt { $count }).
-scheduler-ipc-restart-giveup = [Scheduler] { $count } consecutive panics, giving up on scheduler loop restart.
-scheduler-doze-enable = [Scheduler] Screen OFF.
-scheduler-doze-special-keep = [Scheduler] Screen OFF: Special tuned mode keeps control, skipping CLG.
-scheduler-doze-restore = [Scheduler] Screen ON: Restoring previous performance constraints.
+scheduler-ipc-started = [Scheduler] IPC channel listener started
+scheduler-mode-change-request = [Scheduler] mode change request: { $old } -> { $new } (Pkg: { $pkg }, Temp: { $temp })
+scheduler-channel-closed = [Scheduler] channel closed, thread exiting
+scheduler-ipc-panic = [Scheduler] IPC thread panicked, releasing CPU control
+scheduler-ipc-restart = [Scheduler] cleaned up and restarting scheduler loop, attempt { $count }
+scheduler-ipc-restart-giveup = [Scheduler] { $count } consecutive panics, giving up on scheduler loop restart
+scheduler-doze-enable = [Scheduler] screen OFF: timer started
+scheduler-doze-special-keep = [Scheduler] screen OFF: special tuned mode keeps control, skipping CLG
+scheduler-doze-restore = [Scheduler] screen ON: restoring previous performance constraints
 scheduler-clg-init = [Scheduler] CPU Load Governor: initialized at startup (mode={ $mode })
 scheduler-event-screen = [Scheduler] screen event received: on={ $on } (last={ $last })
 scheduler-event-mode-change = [Scheduler] mode change event: pkg={ $pkg } { $old } -> { $new } (temp={ $temp })
 scheduler-event-load = [Scheduler] load event: core_utils=[{ $cores }]
 scheduler-event-frame = [Scheduler] frame event: delta={ $delta_ms }ms
 scheduler-event-config-reload = [Scheduler] config reload event: mode={ $mode }, screen_on={ $screen_on }
-scheduler-special-mode-active = [Scheduler] Special profile active: { $pkg } -> { $mode }
-scheduler-tuned-cooldown = [Scheduler] Special tuning takeover failed, entering { $secs }s cooldown; CLG takes over during cooldown
-scheduler-scene-mode-enter = [Scheduler] Screen off past threshold, switching to scenemode extreme power-saving.
-scheduler-scene-mode-exit-fas = [Scheduler] FAS re-activated, exiting scenemode early (all cores restored)
-scheduler-scene-mode-exit-switch = [Scheduler] scenemode_enabled disabled, exiting scenemode and restoring screen-off power-saving config
+scheduler-special-mode-active = [Scheduler] special profile active: { $pkg } -> { $mode }
+scheduler-tuned-cooldown = [Scheduler] special tuning takeover failed, entering { $secs }s cooldown, CLG takes over
+scheduler-scene-mode-enter = [Scheduler] screen off past threshold, switching to scenemode
+scheduler-scene-mode-exit-fas = [Scheduler] FAS re-activated, exiting scenemode early
+scheduler-scene-mode-exit-switch = [Scheduler] scenemode_enabled disabled, exiting scenemode
 scheduler-fas-switch-off = [Scheduler] fas_enabled disabled, deactivating all FAS instances and restoring scheduler takeover
 scheduler-scene-mode-saturation = [Scheduler] scenemode perf ceiling saturated (little util { $util }%), falling back to reduce with 300s cooldown
 
@@ -132,16 +132,16 @@ scheduler-down-exit = [Scheduler] DOWN halt lifted, scheduling resumes
 down-enabled = [Down] down.chr says down, scheduling halted
 down-disabled = [Down] down.chr cleared, scheduling back to normal
 down-watch-error = [Down] down.chr watch failed: { $error }
-down-boot-halted = [Down] Booting in halt mode: no takeover is enabled, telemetry and logs continue
-down-heartbeat = [Down] Halt still in effect ({ $mins } min): scheduling stays released, telemetry and logs continue (clear down.chr to resume)
-down-unsupported-soc = [Down] SoC not in the ChiRi list: no CPU takeover, external state aligned to halt (current_mode.chr only)
+down-boot-halted = [Down] booting in halt mode: no takeover enabled, telemetry and logs continue
+down-heartbeat = [Down] halt still in effect ({ $mins } min): scheduling stays released, telemetry and logs continue
+down-unsupported-soc = [Down] SoC not in the ChiRi list, external state aligned to halt
 
 # --- Scheduler: Config Watcher ---
-config-reloading = [Config] Config file change detected, reloading...
-config-reloaded-success = [Config] Config reloaded successfully.
-config-reload-fail = [Config] Config reload failed: { $error }
-config-special-parse-failed = [Config] Failed to parse special-tuned config: { $path } ({ $error }) — special tuning unavailable, whitelisted apps fall back to CLG
-config-special-merged = [Config] Merged special-tuned config: { $path }
+config-reloading = [Config] config file change detected, reloading
+config-reloaded-success = [Config] config reloaded
+config-reload-fail = [Config] config reload failed: { $error }
+config-special-parse-failed = [Config] failed to parse special-tuned config: { $path } ({ $error }), whitelisted apps fall back to CLG
+config-special-merged = [Config] merged special-tuned config: { $path }
 
 # --- Governor (performance take-over, FAS/contingency) ---
 governor-selected = [Governor] default governor pick: { $policies }
@@ -149,28 +149,34 @@ governor-switched = [Governor] P{ $pid } governor { $from } -> performance
 governor-restored = [Governor] P{ $pid } governor performance -> { $to }
 governor-switch-failed = [Governor] failed to switch governor on policy { $pid }
 governor-restore-failed = [Governor] failed to restore governor { $governor } on policy { $pid }
-governor-residue-cleanup = [Governor] leftover performance governor detected (abnormal exit?), restored to schedutil
-governor-residue-down = [Governor] policy{ $pid } still on performance during halt: not cleaning it up (recording the stock state); if it is a residue from an abnormal exit, disable halt and restart the scheduler once
+governor-residue-cleanup = [Governor] leftover performance governor detected, restored to schedutil
+governor-residue-down = [Governor] policy{ $pid } still on performance during halt, not cleaning it up
+governor-activate-noop = [Governor] no policy taken over (of { $total }), performance semantics not in effect
 
 # --- GPU frequency lock (contingency) ---
 gpu-locked = [GPU] locked to max frequency { $khz } kHz ({ $nodes } nodes)
 gpu-released = [GPU] original frequency limits restored
-gpu-detect-miss = [GPU] no usable GPU frequency node found; contingency GPU lock skipped
+gpu-detect-miss = [GPU] no usable GPU frequency node found, contingency GPU lock skipped
+gpu-lock-partial = [GPU] lock succeeded on only { $ok }/{ $total } nodes
+gpu-probe-rejected = [GPU] devfreq dir rejected: { $path } ({ $reason })
+gpu-snapshot-unavailable = [GPU] pre-takeover snapshot unavailable, original governor/freq may not be restorable
+gpu-lock-failed = [GPU] all { $nodes } nodes failed to lock, contingency GPU frequency lock lost
+gpu-release-max-stuck = [GPU] { $nodes } nodes failed to restore original max frequency, stuck at max
 
 # --- SysFS generic ---
 sysfs-write-failed = [SysFS] failed to write { $path }: { $error }
-config-scenemode-merged = [Config] Merged scenemode config: { $path }
-config-scenemode-parse-failed = [Config] Failed to parse the scenemode config ({ $path }): { $error }; keeping the current scenemode
-battery-status-unknown = [Battery] Unrecognized status node value ({ $raw }); treated as unknown. Power averaging only samples while discharging, so check that the node uses a standard value (Charging / Discharging / Full / Not charging)
-power-avg-skip = [PowerAVG] this sample was not counted ({ $reason }); PowerAVG.chr keeps its previous value. Sampling needs the battery discharging, and average mode also needs the screen on
-telemetry-raw-snapshot = [Telemetry] first-reading snapshot (for unit checking): private node raw voltage={ $v }, raw current={ $i }; divisors voltage/{ $vd }, current/{ $cd } -> V={ $v }/{ $vd }, A={ $i }/{ $cd }
-config-watch-error = [Config] Failed to watch config directory: { $error }
-config-apply-tweaks-failed = [Config] Failed to apply reloaded system tweaks: { $error }
-
-# --- SysFS (shared FastWriter) ---
-sysfs-open-failed = [SysFS] Failed to open { $path }: { $error }
+sysfs-open-failed = [SysFS] failed to open { $path }: { $error }
 sysfs-umount2-failed = [SysFS] umount2({ $path }) failed: { $error }
-sysfs-write-freq-failed = [SysFS] Write freq { $freq } failed: { $error }
+sysfs-write-freq-failed = [SysFS] write freq { $freq } failed: { $error }
+config-scenemode-merged = [Config] merged scenemode config: { $path }
+config-scenemode-parse-failed = [Config] failed to parse the scenemode config ({ $path }): { $error }, keeping the current scenemode
+battery-status-unknown = [Battery] unrecognized status node value: { $raw }, treated as unknown
+power-avg-skip = [PowerAVG] this sample was not counted ({ $reason }), PowerAVG.chr keeps its previous value
+telemetry-raw-snapshot = [Telemetry] first-reading snapshot: raw voltage={ $v }, raw current={ $i }, divisors voltage/{ $vd }, current/{ $cd } -> V={ $v }/{ $vd }, A={ $i }/{ $cd }
+config-watch-error = [Config] failed to watch config directory: { $error }
+config-apply-tweaks-failed = [Config] failed to apply reloaded system tweaks: { $error }
+config-feature-parse-failed = [Config] feature.yaml parse failed: { $error }
+config-meta-fallback = [Config] meta config fell back to embedded defaults: { $path }
 
 # --- CLG ---
 clg-init = [CLG] P{ $pid } init | cores={ $cpus } | freqs={ $fmin }-{ $fmax } MHz | P={ $perf } -> { $freq } kHz
@@ -178,7 +184,10 @@ clg-activated = [CLG] CPU Load Governor activated, taking over { $count } cluste
 powerbase-activated = [PowerBase] power-based governor took over (CLG released)
 powerbase-deactivated = [PowerBase] power-based governor released
 powerbase-writer-invalid = [PowerBase] P{ $pid } frequency writer unavailable, cluster skipped
-powerbase-touch-tier = [PowerBase] Touch raise to frontier bucket #{ $tier } ceiling (falls back to standard tier when the window expires)
+powerbase-touch-tier = [PowerBase] touch raise to frontier bucket #{ $tier } ceiling
+powerbase-takeover-skipped = [PowerBase] P{ $pid } freq table and soc.yaml fallback both unavailable, cluster takeover skipped
+powerbase-init-write-failed = [PowerBase] P{ $pid } initial max write failed, cluster perf stays 0
+powerbase-init-min-failed = [PowerBase] P{ $pid } initial min write failed, min cannot be lowered
 clg-no-clusters = [CLG] CPU Load Governor: no valid clusters found, staying inactive
 clg-deactivated = [CLG] CPU Load Governor deactivated
 clg-config-reloaded = [CLG] config hot-reloaded | up={ $up } down={ $down } floor={ $floor } ceil={ $ceil }
@@ -188,18 +197,18 @@ clg-tick-log = [CLG] P{ $pid } util={ $util }% perf={ $perf } freq={ $freq }kHz 
 clg-pf-tick-log = [CLG-PF] P{ $pid } util={ $util }% perf={ $perf } freq={ $freq }kHz decay={ $decay } pf={ $pf_khz }kHz
 clg-pf-enabled = [CLG-PF] Pareto frontier lookup enabled | fingerprint={ $fp } buckets={ $buckets }
 clg-pf-fallback = [CLG-PF] frontier table unavailable ({ $reason }), falling back to ratio path (once)
-clg-writer-invalid = [CLG] P{ $pid } sysfs writer invalid (max_valid: { $max_valid }, min_valid: { $min_valid }), skipping.
+clg-writer-invalid = [CLG] P{ $pid } sysfs writer invalid (max_valid: { $max_valid }, min_valid: { $min_valid }), skipping
 clg-freq-set = [CLG] P{ $pid } freq change: { $old_khz }MHz -> { $new_khz }MHz
 clg-freq-write-failed-cached = [CLG] P{ $pid } freq write failed, keeping cached { $cached_khz }MHz (target { $target_khz }MHz)
-clg-watchdog-release = [CLG] WATCHDOG: no load events for { $secs }s, eBPF source failed. Releasing CPU control to system defaults.
-clg-touch-boost = [CLG] Touch boost window open: big-core perf floor={ $floor } held { $ms }ms
-clg-thermal-cap = [CLG] Thermal guard: battery={ $batt }°C / CPU={ $cpu }°C, perf ceiling capped to { $cap }% (>= { $free } exempt)
-clg-thermal-no-sensor = [CLG] Thermal guard: no CPU temperature sensor, CPU reference disabled
+clg-watchdog-release = [CLG] WATCHDOG: no load events for { $secs }s, eBPF source failed, releasing CPU control
+clg-touch-boost = [CLG] touch boost window open: big-core perf floor={ $floor } held { $ms }ms
+clg-thermal-cap = [CLG] thermal guard: battery={ $batt }°C / CPU={ $cpu }°C, perf ceiling capped to { $cap }% (>= { $free } exempt)
+clg-thermal-no-sensor = [CLG] thermal guard: no CPU temperature sensor, CPU reference disabled
+clg-thermal-no-battery = [CLG] thermal guard: battery temp node not found, CPU-only suppression
+clg-min-write-failed = [CLG] P{ $pid } failed to write scaling_min_freq={ $khz }MHz
 thermal-config-clamped = [Thermal] thermal config out of range, clamped: { $key } { $value } -> { $fixed }
-clg-thermal-no-battery = [CLG] Thermal guard: battery temp node not found, CPU-only suppression
-battery-temp-scale = [Thermal] battery temp scale pre-detected: { $unit } (divisor { $divisor }); shared by CLG thermal guard and FAS temperature guard
-battery-temp-scale-unknown = [Thermal] battery temp scale pre-detection inconclusive (node missing or reading not ready); degrading to CPU-only this run
-clg-min-write-failed = [CLG] P{ $pid } failed to write scaling_min_freq={ $khz }MHz, idle floor may stay high
+battery-temp-scale = [Thermal] battery temp scale pre-detected: { $unit } (divisor { $divisor })
+battery-temp-scale-unknown = [Thermal] battery temp scale pre-detection inconclusive, degrading to CPU-only this run
 
 # --- Special tuning (per-mode profiles: akmode / playback / daily ...) ---
 tuned-init = [Tuned] { $mode } special tuning take over (tier-less load-following)
@@ -209,22 +218,22 @@ tuned-cluster-skipped = [Tuned] { $mode } P{ $pid } skipped (reason: { $reason }
 tuned-deactivated = [Tuned] { $mode } special tuning deactivated
 tuned-config-reloaded = [Tuned] { $mode } profile hot-reloaded
 tuned-tick-log = [Tuned] { $mode } { $state }
-tuned-watchdog-release = [Tuned] WATCHDOG: no load events for { $secs }s, eBPF source failed. Releasing special tuning and restoring original governor/min/max.
-tuned-profile-missing = [Tuned] whitelist mode { $mode } has no profile; takeover falls back to the akmode section (game params) - check tuned_profiles.yaml
+tuned-watchdog-release = [Tuned] WATCHDOG: no load events for { $secs }s, eBPF source failed, releasing special tuning
+tuned-profile-missing = [Tuned] whitelist mode { $mode } has no profile, takeover falls back to the akmode section
 
 # --- Touch (touch boost) ---
-touch-detect-started = [Touch] Touch detection thread started (reading /dev/input devices).
-touch-detect-no-devices = [Touch] No readable input devices found, retrying in 3s.
+touch-detect-started = [Touch] touch detection thread started (reading /dev/input)
+touch-detect-no-devices = [Touch] no readable input devices found, retrying in 3s
 touch-detect-poll-error = [Touch] poll on input devices failed, re-enumerating: { $error }
-touch-detect-input-unreadable = [Touch] /dev/input is unreadable (permission/path issue), touch detection cannot enumerate devices; touch boost is dead
-touch-detect-device-open-failed = [Touch] { $count } input device(s) failed to open; touches on them will not be detected: { $list }
+touch-detect-input-unreadable = [Touch] /dev/input is unreadable, touch detection cannot enumerate devices
+touch-detect-device-open-failed = [Touch] { $count } input device(s) failed to open: { $list }
 touch-detect-device-error = [Touch] input device { $index } reported an error event (revents={ $revents }), re-enumerating
 touch-detect-read-failed = [Touch] input device { $index } read failed or disconnected, re-enumerating
-touch-detect-thread-exit = [Touch] touch detection thread exited (including panic): touch boost is permanently dead, restart the daemon to recover
-touch-detect-down = [Touch] Touch down detected (type={ $type } code={ $code })
-touch-event-received = [Touch] Touch event received, boosting big cores and flushing immediately.
-touch-boost-disable-node = [TouchBoost] Wrote { $path } = 0 (disabled system touch boost)
-touch-boost-disable-applied = [TouchBoost] Android built-in touch boost (cpu_boost) disabled, now handled by ChiRi touch boost.
+touch-detect-thread-exit = [Touch] touch detection thread exited, touch boost is dead
+touch-detect-down = [Touch] touch down detected (type={ $type } code={ $code })
+touch-event-received = [Touch] touch event received, boosting big cores and flushing immediately
+touch-boost-disable-node = [TouchBoost] wrote { $path } = 0
+touch-boost-disable-applied = [TouchBoost] Android built-in touch boost (cpu_boost) disabled
 sched-tuning-applied = [Sched] kernel scheduler knobs applied ({ $count } items)
 sched-tuning-key-rejected = [Sched] kernel scheduler knob rejected by whitelist: { $key }
 system-tweaks-restore = [Tweaks] DOWN halt: one-shot system tweaks restored ({ $count } nodes)
@@ -251,37 +260,51 @@ fas-loop-open = [FAS] frame feedback silent, entering open-loop (load-only), gea
 fas-loop-close = [FAS] frame feedback restored, back to closed-loop: { $pkg }
 fas-pid-reloaded = [FAS] PID coefficients hot-reloaded: Kp={ $kp } Ki={ $ki } Kd={ $kd }
 fas-rules-reloaded = [FAS] rules hot-reloaded (margin={ $margin }, floor={ $floor }, ceil={ $ceil }, profiles={ $profiles })
-fas-policy-writer-invalid = [FAS] P{ $pid } policy writer invalid (max_valid: { $max_valid }, min_valid: { $min_valid }), skipping.
+fas-policy-writer-invalid = [FAS] P{ $pid } policy writer invalid (max_valid: { $max_valid }, min_valid: { $min_valid }), skipping
 fas-qos-clamp-enter = [FAS] P{ $pid } locked freq clamped by QoS (wrote { $wrote }kHz, read { $read }kHz, dcvsh_limit={ $dcvsh })
 fas-qos-clamp-exit = [FAS] P{ $pid } QoS clamp released after { $held }s (max restored to { $freq }kHz)
-fas-qos-clamp-long = [FAS] P{ $pid } QoS clamped for { $held }s (wrote { $wrote }kHz, read { $read }kHz), thermal may be pinned
-fas-freq-tamper = [FAS] P{ $pid } locked freq tampered (wrote { $wrote }kHz, read { $read }kHz) -> re-applying
+fas-qos-clamp-long = [FAS] P{ $pid } QoS clamped for { $held }s (wrote { $wrote }kHz, read { $read }kHz)
+fas-freq-tamper = [FAS] P{ $pid } locked freq tampered (wrote { $wrote }kHz, read { $read }kHz), re-applying
 fas-native-gear-skip-samples = [FAS] native gear detect skipped: { $count }/{ $need } samples, avg:{ $avg }
 fas-native-gear-no-match = [FAS] native gear no match: avg:{ $avg } stddev:{ $stddev }, no gear within ±8fps (target { $target }fps)
 fas-native-gear-skip-jitter = [FAS] native gear detect skipped: jitter { $stddev } ≥ { $limit }, avg:{ $avg }
-fas-native-gear-detected = [FAS] native gear detected: avg:{ $avg } stddev:{ $stddev }, { $from } -> { $to }fps (confirm bypassed)
+fas-native-gear-detected = [FAS] native gear detected: avg:{ $avg } stddev:{ $stddev }, { $from } -> { $to }fps
 fas-downgrade-deferred-dwell = [FAS] downgrade deferred by dwell: { $dwell } frames left, avg:{ $avg } below { $threshold } (target { $target }fps)
-fas-extreme-jank-fasttrack = [FAS] extreme jank fast-track: avg:{ $avg } far below target { $target }fps (stddev:{ $stddev }), bypassing boost
+fas-extreme-jank-fasttrack = [FAS] extreme jank fast-track: avg:{ $avg } far below target { $target }fps (stddev:{ $stddev })
+fas-no-policies = [FAS] no cpufreq policy found, FAS takeover failed
+fas-governor-write-failed = [FAS] P{ $pid } failed to write performance governor: { $error }
+fas-freq-table-unavailable = [FAS] P{ $pid } frequency table unavailable and no soc.yaml fallback ({ $path }), policy skipped
+fas-policy-none-taken = [FAS] all policies skipped, no cluster taken over
+fas-freq-hold-skip = [FAS] P{ $pid } freq hold { $frames } frames left, write skipped
+fas-freq-hysteresis-skip = [FAS] P{ $pid } freq diff { $diff } <= hysteresis { $hysteresis }, write skipped
+fas-verify-read-failed = [FAS] P{ $pid } verify read-back failed
+fas-verify-read-restored = [FAS] P{ $pid } verify read-back restored, verification chain re-established
+fas-boost-ceil-clamped = [FAS] { $act } boost clamped by ceiling: requested { $req } -> P { $perf } (ceiling { $ceil })
+fas-boost-max-inc-clamped = [FAS] { $act } boost limited by max step: requested { $req } -> P { $perf } (max inc { $max_inc })
+fas-boost-damped-cap-clamped = [FAS] { $act } boost clamped by damped cap: requested { $req } -> P { $cap }
+fas-frame-dropped = [FAS] frame sample dropped: { $ms }ms ({ $reason })
 
 # --- FAS (whitelist / scheduler integration) ---
 main-fas-whitelist-exported = [Main] exported { $count } FAS whitelist entries to fas_whitelist.yaml
 app-detect-fas-fallback = [AppDetect] foreground app hit FAS whitelist, entering FAS mode: { $pkg }
 app-detect-pkg-normalized = [AppDetect] foreground name has a sub-process suffix, normalized to the base package: { $pkg } -> { $base }
 rule-key-normalized = [Rules] rule key has a sub-process suffix, treated as its base package: { $key } -> { $base }
-rule-key-conflict = [Rules] normalized rule key conflicts with an existing base-package rule; the latter wins: { $key } -> { $base }
+rule-key-conflict = [Rules] normalized rule key conflicts with an existing base-package rule, the latter wins: { $key } -> { $base }
+rule-app-modes-empty = [AppDetect] rules app_modes empty or null, treating as empty map
+rule-global-mode-defaulted = [AppDetect] rules global_mode missing, defaulted to: { $mode }
 app-detect-fas-rejected = [AppDetect] non-whitelisted app { $pkg } mapped to FAS mode { $mode }, rejected, falling back to global mode
 app-detect-fas-global-rejected = [AppDetect] global mode { $mode } is a FAS mode and does not apply to non-whitelisted app { $pkg }, falling back to default
 scheduler-fas-activate = [Scheduler] FAS instance activated: { $pkg } (pid={ $pid })
 scheduler-fas-switch = [Scheduler] FAS instance hot-switched: { $old } -> { $new }
-scheduler-fas-deactivate = [Scheduler] FAS instance deactivated (frequencies restored): { $pkg }
-scheduler-fas-delayed-exit = [Scheduler] FAS delayed exit expired; governor restored, taking over as { $mode }
+scheduler-fas-deactivate = [Scheduler] FAS instance deactivated, frequencies restored: { $pkg }
+scheduler-fas-delayed-exit = [Scheduler] FAS delayed exit expired, governor restored, taking over as { $mode }
 scheduler-fas-init-failed = [Scheduler] FAS instance init failed, falling back to CLG: { $pkg }
-scheduler-fas-cooldown = [Scheduler] FAS init failed, entering { $secs }s cooldown; CLG takes over during cooldown
+scheduler-fas-cooldown = [Scheduler] FAS init failed, entering { $secs }s cooldown, CLG takes over
 
 # --- Scheduler: Settings ---
-apply-cpu-idle-governor-start = CPU idle governor settings applied.
-apply-io-settings-start = I/O settings applied.
-main-config-watch-thread-create = Main config watcher thread created.
+apply-cpu-idle-governor-start = CPU idle governor settings applied
+apply-io-settings-start = I/O settings applied
+main-config-watch-thread-create = main config watcher thread created
 
 # --- Fast Lock ---
 fast-activated = [Fast] activated, all cores locked to max frequency
@@ -291,138 +314,110 @@ fast-rewrite = [Fast] policy { $pid } rewrite { $khz } kHz (target)
 fast-writer-invalid = [Fast] policy { $pid } writer invalid (max_valid: { $max_valid }, min_valid: { $min_valid }), skipping
 fast-restore = [Fast] policy { $pid } restore governor={ $governor } min={ $min } max={ $max }
 fast-watchdog-release = [Fast] load source timeout ({ $secs }s), releasing fast lock
+fast-freq-table-unavailable = [Fast] P{ $pid } freq table unavailable with no soc.yaml fallback, cluster not locked: { $path }
 
 # --- Logger ---
 log-level-updated = Log level updated to: { $level }
 logger-log-restart-for-archive = [Logger] { $dir } reached { $mb }MB, restarting scheduler to archive logs (overrun notification notify={ $notify })
-logger-log-restart-suppressed = [Logger] { $dir } reached { $mb }MB but no watchdog detected (pidfile mismatch and parent is not a detached shell); auto-restart-for-archive skipped. Overrun notification notify={ $notify }, manual-takeover alert alert={ $alert }. Normal for direct debug runs; on-device, check logs/watchdog.pid
-logger-log-watchdog-alert-posted = [Logger] no watchdog detected; manual-takeover alert posted (tag ChiRi-Watchdog)
-logger-log-restart-fas-deferred = [Logger] { $dir } reached { $mb }MB but the current mode is { $mode }; log-overrun restart skipped with no notification because only non-FAS mode may handle it. Re-evaluated in { $min } minutes
-logger-log-restart-mode-unknown = [Logger] cannot read current_mode.chr, so FAS cannot be confirmed; proceeding as non-FAS (an unreadable file is abnormal, and here the overrun notification takes priority)
-logger-append-failed = [Logger] Log write failed (continuously { $n } times): handle rebuild or disk write error, discarded handle to be rebuilt on the next log; persistent failure will keep this round's log at the last successfully written line
+logger-log-restart-suppressed = [Logger] { $dir } reached { $mb }MB, no watchdog detected, auto-restart-for-archive skipped, overrun notification notify={ $notify } alert={ $alert }
+logger-log-watchdog-alert-posted = [Logger] no watchdog detected, manual-takeover alert posted (tag ChiRi-Watchdog)
+logger-log-restart-fas-deferred = [Logger] { $dir } reached { $mb }MB, current mode { $mode } is FAS, restart and notification skipped, re-evaluated in { $min } minutes
+logger-log-restart-mode-unknown = [Logger] cannot read current_mode.chr, proceeding as non-FAS
+logger-append-failed = [Logger] log write failed ({ $n } times in a row), handle discarded and rebuilt on the next log
+logger-status-write-failed = [Logger] status.csv write failed for the { $n }th consecutive time, that second's row is lost
 
 # --- Rhine (Lab) ---
 rhine-state-created = [Rhine] rhine.chr missing, created with default content (not enabled)
 rhine-state-invalid = [Rhine] rhine.chr content invalid ({ $value }), reset to default (not enabled)
-rhine-mode-enabled = [Rhine] Lab mode enabled: { $mode }
-rhine-mode-disabled = [Rhine] Lab mode disabled, changes reverted from backup
+rhine-state-write-failed = [Rhine] rhine.chr state write-back failed, file and in-memory state diverge
+rhine-mode-enabled = [Rhine] lab mode enabled: { $mode }
+rhine-mode-disabled = [Rhine] lab mode disabled, changes reverted from backup
 rhine-restored = [Rhine] reverted { $origin } changes from rhine-back.chr
 rhine-restore-invalid = [Rhine] rhine-back.chr invalid, reverted with built-in defaults and cleared lab overrides
-rhine-restore-meta-failed = [Rhine] failed to revert meta.yaml; rhine-back.chr kept for the next attempt
-rhine-lock-unavailable = [Rhine] neither /tmp nor /dev is writable; lab lock not created (the lab still works)
+rhine-restore-meta-failed = [Rhine] failed to revert meta.yaml, rhine-back.chr kept for the next attempt
+rhine-apply-failed = [Rhine] failed to enable lab mode: { $mode } ({ $error })
+rhine-watch-error = [Rhine] rhine.chr watch failed: { $error }
+rhine-lock-unavailable = [Rhine] neither /tmp nor /dev is writable, lab lock not created
 rhine-lock-refused = [Rhine] lab is locked: turning it off needs a device reboot, request ignored
 rhine-lock-lost = [Rhine] lock file exists but the locked mode is unknown, lock cleared
-rhine-force-off = [Rhine] rhine.chr says off: lab force-disabled and original values restored (reboot skipped - reboot soon to verify)
-rhine-lock-note-no-backup = rhine-back.chr was missing (the original state of the last enable is unknown), rebuilt from built-in defaults
-rhine-apply-failed = [Rhine] Failed to enable lab mode: { $mode } ({ $error })
-rhine-watch-error = [Rhine] rhine.chr watch failed: { $error }
+rhine-force-off = [Rhine] rhine.chr says off, lab force-disabled and original values restored
+rhine-lock-note-no-backup = rhine-back.chr was missing, rebuilt from built-in defaults
 
 # --- Affinity (CPU affinity & thread migration) ---
 affinity-boost-applied = [Affinity] boost layout applied: top-app/foreground → { $big }, background groups → { $little }
-affinity-normal-restore = [Affinity] normal affinity layout restored (background kept on little cores)
+affinity-normal-restore = [Affinity] normal affinity layout restored
 affinity-promoted = [Affinity] background thread { $tid } promoted to big core (util { $util }%)
 affinity-fdp-promoted = [Affinity] FDP: background thread { $tid } migrated to { $dst } (net benefit { $net_mw } mW)
 affinity-demoted = [Affinity] background thread { $tid } demoted back to the little cluster (util { $util }%)
 affinity-write-fail-summary = [Affinity] affinity write failures in this 25-tick window: mask={ $mask } cpuset={ $cpuset } uclamp={ $uclamp }
-affinity-uclamp-unavailable = [Affinity] top_app_uclamp_max_pct unavailable, auto-corrected (kernel { $version }, reason: { $reason }; uclamp requires kernel >= 5.3 with a writable node)
+affinity-uclamp-unavailable = [Affinity] top_app_uclamp_max_pct unavailable, auto-corrected (kernel { $version }, reason: { $reason })
 affinity-released = [Affinity] takeover released, system affinity config restored
+affinity-self-root-failed = [Affinity] failed to move daemon's own threads back to original cpuset (errno={ $errno })
 
 # --- CoreCtl (core_ctl online control) ---
 corectl-boost-on = [CoreCtl] boost: min_cpus raised to keep all { $count } clusters fully online
 corectl-boost-off = [CoreCtl] core_ctl min_cpus snapshot restored
-corectl-scenemode-on = [CoreCtl] scenemode core offline: { $count } little cores taken offline (big/prime kept at low freq, highest big core reserved for scheduler)
+corectl-scenemode-on = [CoreCtl] scenemode core offline: { $count } little cores taken offline
 corectl-scenemode-off = [CoreCtl] { $count } offlined cores restored online
 corectl-restore-pending = [CoreCtl] { $count } cores failed to come back online, retrying every 2s
 corectl-self-pinned = [CoreCtl] scheduler service pinned to dedicated big core cpu{ $core }
 corectl-unavailable = [CoreCtl] no usable core_ctl node found, takeover skipped
 corectl-write-failed = [CoreCtl] core_ctl write failed: { $path }
-corectl-node-missing = [CoreCtl] core_ctl node missing/unreadable: { $path } (cluster falls back to per-core offline)
-corectl-enable-off = [CoreCtl] core_ctl enable=0 (core_ctl does not enforce limits; writes have no effect): { $path }; skipping the no-op write and falling back to per-core offline
-corectl-enable-off-boost = [CoreCtl] core_ctl enable=0 (core_ctl does not enforce limits; the whole cluster is already online): { $path }; boost keeps-online skipped for this cluster
-corectl-vendor-override = [CoreCtl] core_ctl node overridden by vendor (read-back differs from target): { $path }; not fighting vendor, restored from snapshot on exit
-corectl-verify-failed = [CoreCtl] core_ctl node read-back failed (write issued, accounted as applied): { $path }
+corectl-node-missing = [CoreCtl] core_ctl node missing/unreadable: { $path }, cluster falls back to per-core offline
+corectl-enable-off = [CoreCtl] core_ctl enable=0, writes have no effect: { $path }, falling back to per-core offline
+corectl-enable-off-boost = [CoreCtl] core_ctl enable=0, the whole cluster is already online: { $path }, boost keeps-online skipped
+corectl-vendor-override = [CoreCtl] core_ctl node overridden by vendor (read-back differs from target): { $path }
+corectl-verify-failed = [CoreCtl] core_ctl node read-back failed, accounted as applied: { $path }
 corectl-scenemode-halt = [CoreCtl] scenemode target cluster converged by core_ctl max_cpus
-corectl-reserved-core-halted = [CoreCtl] boot core CPU0 went offline after the core_ctl keep value was written (kernel treats it as halt); max_cpus rolled back, core_ctl clamp abandoned
+corectl-reserved-core-halted = [CoreCtl] boot core CPU0 went offline after the core_ctl keep value was written, max_cpus rolled back
 clampev-node-missing = [Diag] clamp-evidence node unavailable: { $key } ({ $path })
 
 # --- Notify (generic notification component; src/notify.rs hands three args to scripts/notify.sh) ---
-# FAS open-loop warning (rate-limited by the ChiRi-FAS channel interceptor: first 120 silenced + 1h same-text dedup)
+# FAS open-loop warning, rate-limited by the ChiRi-FAS interceptor: first 120 silenced + 1h same-text dedup
 notify-fas-openloop-title = Warning: FAS open-loop
 notify-fas-openloop-body = FAS is not working properly while { $pkg } is running and has entered open-loop mode
-notify-post-failed = [Notify] cmd notification post failed (tag={ $tag } title={ $title }): not delivered, dedup not recorded so it retries
-notify-post-ok = [Notify] posted (tag={ $tag } title={ $title } strategy={ $strategy } verify={ $verify }) — only verify=posted means AOSP's own re-query confirmed it landed; verify=unverified means the ROM ignores -v and there is no evidence either way
+notify-post-failed = [Notify] cmd notification post failed (tag={ $tag } title={ $title })
+notify-post-ok = [Notify] posted (tag={ $tag } title={ $title } strategy={ $strategy } verify={ $verify })
 notify-script-missing = [Notify] notify script missing, notification cannot be posted: { $path }
-# Startup-complete notification (main.rs startup tail, tag ChiRi-Status, direct post without interceptor; title/body are literals, not i18n)
+# Startup-complete notification, main.rs startup tail, tag ChiRi-Status, title/body are literals not i18n
 notify-startup-posted = [Notify] startup-complete notification posted (tag ChiRi-Status)
-# Remote push (remote_push.rs: fetch remindPush.json every 2h between 08:00 and 24:00, notify only on a versionCode hit, tag ChiRi-Remote)
+# Remote push, remote_push.rs: fetch remindPush.json every 2h between 08:00 and 24:00, notify only on a versionCode hit
 remote-push-started = [Remote] remote-push thread started (fetches every 2 hours between 08:00 and 24:00)
-remote-push-primary-failed = [Remote] primary source fetch failed: { $error }; trying the fallback (no retry)
-remote-push-fallback-failed = [Remote] fallback source fetch failed: { $error }; giving up for this slot (no retry)
+remote-push-primary-failed = [Remote] primary source fetch failed: { $error }, trying the fallback
+remote-push-fallback-failed = [Remote] fallback source fetch failed: { $error }, giving up for this slot
 remote-push-notified = [Remote] matched versionCode { $code }, reminder notification sent: { $title }
-remote-push-no-match = [Remote] no match for versionCode { $code } (silent)
+remote-push-no-match = [Remote] no match for versionCode { $code }
 remote-push-thread-failed = [Remote] failed to start the remote-push thread: { $error }
 
 # --- Telemetry ---
-monitor-thread-start-telemetry = [Main] starting telemetry monitor thread (PSI/GPU/battery)...
-telemetry-oplus-bcc = [Telemetry] OPlus private node bcc_parms enabled: battery current/voltage reads use real-time BCC data (bypassing the ~10s cache of standard power_supply nodes)
-telemetry-oplus-bcc-missing = [Telemetry] meta enables the OPlus private node (oplus_chg) but bcc_parms does not exist; falling back to the standard power_supply nodes for this run
-telemetry-bcc-unusable = [Telemetry] bcc_parms fields 6/8 (voltage/current) are missing or non-integer; real-time BCC power is unavailable, so telemetry fell back to the standard power_supply node (~10s cache; its current unit may not match the uA assumption, so verify the power column scale)
-telemetry-battery-unavailable = [Telemetry] all battery current/voltage candidate nodes are unreadable (both OPlus BCC and the standard power_supply nodes failed); power/voltage columns will be written as - (reported once per outage)
-telemetry-gpu-unavailable = [Telemetry] no GPU busy candidate node exists (non-Adreno/GED device); the GPU column stays - (reported once)
+monitor-thread-start-telemetry = [Main] starting telemetry monitor thread (PSI/GPU/battery)
+telemetry-oplus-bcc = [Telemetry] OPlus private node bcc_parms enabled, battery current/voltage reads use real-time BCC data
+telemetry-oplus-bcc-missing = [Telemetry] meta enables oplus_chg but bcc_parms does not exist, falling back to the standard power_supply nodes
+telemetry-bcc-unusable = [Telemetry] bcc_parms fields 6/8 missing or non-integer, real-time BCC power unavailable, falling back to the standard power_supply node
+telemetry-battery-unavailable = [Telemetry] all battery current/voltage candidate nodes unreadable, power/voltage columns written as -
+telemetry-gpu-unavailable = [Telemetry] no GPU busy candidate node exists, the GPU column stays -
 telemetry-probe-attached = [CPU Monitor] eBPF telemetry probe attached: { $name }
-telemetry-probe-failed = [CPU Monitor] eBPF telemetry probe { $name } attach failed (tracepoint may be missing): { $error }
-telemetry-map-missing = [CPU Monitor] map { $name } missing from eBPF binary (binary/daemon version skew), its counters stay 0
+telemetry-probe-failed = [CPU Monitor] eBPF telemetry probe { $name } attach failed: { $error }
+telemetry-map-missing = [CPU Monitor] map { $name } missing from eBPF binary, its counters stay 0
 telemetry-summary = [Telemetry] PSI cpu={ $cpu }% io={ $io }% mem={ $mem }% | GPU={ $gpu }% | wakeups={ $wakeups } migrations={ $migrations } freq={ $freq } | battery { $power }W
 
 # --- Config hot-reload sync ---
 scheduler-config-dirty-reload = [Scheduler] feature.yaml hot reload synced to scheduler (mode={ $mode })
 
-# --- silent-failure coverage (2026-10-17 log level re-triage) ---
+# --- silent-failure coverage ---
 app-detect-activity-override = [AppDetect] foreground activity overrides package mapping: { $pkg } <- { $activity }
-config-feature-parse-failed = [Config] feature.yaml parse failed: { $error }
-config-meta-fallback = [Config] meta config fell back to embedded defaults (external file unusable): { $path }
 down-chr-created = [Down] down.chr missing, template recreated (not halted)
 down-chr-read-failed = [Down] down.chr read failed, treating as not-halted: { $error }
-down-chr-recreate-failed = [Down] down.chr recreate failed: file stays missing, only watch can detect it, may stay halted after restart
-rhine-state-write-failed = [Rhine] rhine.chr state write-back failed: file and in-memory state diverge, UI may show a stale state
-rule-app-modes-empty = [AppDetect] rules app_modes empty or null, treating as empty map
-rule-global-mode-defaulted = [AppDetect] rules global_mode missing, defaulted to: { $mode }
-logger-status-write-failed = [Logger] status.csv write failed for the { $n }th consecutive time: that second's row is lost, analysis has a gap
-affinity-self-root-failed = [Affinity] failed to move daemon's own threads back to original cpuset (errno={ $errno }): may stay in the managed group
-gpu-lock-partial = [GPU] lock succeeded on only { $ok }/{ $total } nodes: the rest stay unmanaged, invisible in readings
-gpu-probe-rejected = [GPU] devfreq dir rejected: { $path } ({ $reason })
-gpu-snapshot-unavailable = [GPU] pre-takeover snapshot unavailable: original governor/freq may not be restorable on release
-gpu-lock-failed = [GPU] all { $nodes } nodes failed to lock: contingency GPU frequency lock capability lost (lock has no retry)
-gpu-release-max-stuck = [GPU] { $nodes } nodes failed to restore original max frequency: stuck at the highest frequency with no further retry
+down-chr-recreate-failed = [Down] down.chr recreate failed, file stays missing
 window-probe-query-failed = [WindowProbe] query failed pkg={ $pkg } pid={ $pid }: { $error }
 window-probe-stopped = [WindowProbe] probe thread stopped, visibility decisions no longer update
-window-probe-worker-failed = [WindowProbe] query worker failed to start/run: window visibility capability lost, FAS falls back
+window-probe-worker-failed = [WindowProbe] query worker failed to start/run, window visibility capability lost
 activity-sample-failed = [WindowProbe] activity sample failed pkg={ $pkg }: { $error }
-activity-sampler-stopped = [WindowProbe] activity sampler thread stopped, activity column and activity-level rules no longer update
-activity-sampler-worker-failed = [WindowProbe] activity sampler worker failed to start/run: activity-level rules and activity column stay unknown
-fas-verify-read-failed = [FAS] P{ $pid } verify read-back failed: write effectiveness unknown, verification chain is down
-fas-verify-read-restored = [FAS] P{ $pid } verify read-back restored, verification chain re-established
-fas-boost-ceil-clamped = [FAS] { $act } boost clamped by ceiling: requested { $req } -> P { $perf } (ceiling { $ceil })
-fas-boost-max-inc-clamped = [FAS] { $act } boost limited by max step: requested { $req } -> P { $perf } (max inc { $max_inc })
-fas-boost-damped-cap-clamped = [FAS] { $act } boost clamped by damped cap: requested { $req } -> P { $cap }
-fas-frame-dropped = [FAS] frame sample dropped: { $ms }ms ({ $reason })
-fast-freq-table-unavailable = [Fast] P{ $pid } freq table unavailable with no soc.yaml fallback, cluster not locked: { $path }
-governor-activate-noop = [Governor] no policy taken over (of { $total }): performance semantics not in effect at all
-
-powerbase-takeover-skipped = [PowerBase] P{ $pid } freq table and soc.yaml fallback both unavailable, cluster takeover skipped (capability lost)
-powerbase-init-write-failed = [PowerBase] P{ $pid } initial max write failed: cluster perf stays 0, freq will decay to hardware min
-powerbase-init-min-failed = [PowerBase] P{ $pid } initial min write failed: min cannot be lowered, subsequent max writes are rejected by the kernel (min>max), cluster tuning is fully ineffective
-
-cpu-monitor-percpu-read-failed = [CPU Monitor] eBPF per-cpu counter read failed (cpu offline / lookup failed), counted as 0 this round
+activity-sampler-stopped = [WindowProbe] activity sampler thread stopped, activity column no longer updates
+activity-sampler-worker-failed = [WindowProbe] activity sampler worker failed to start/run, activity column stays unknown
+cpu-monitor-percpu-read-failed = [CPU Monitor] eBPF per-cpu counter read failed, counted as 0 this round
 cpu-monitor-tids-read-failed = [CPU Monitor] failed to read thread list of pid { $pid }: { $error }
 cpu-monitor-core-state-read-failed = [CPU Monitor] core online state read failed, treating core as offline: { $error }
 cpu-monitor-snap-handle-missing = [CPU Monitor] eBPF process-snapshot handle unregistered / map missing, @S frame process section empty
 cpu-monitor-snap-map-open-failed = [CPU Monitor] failed to open eBPF process-snapshot map, @S frame process section empty
 screen-uevent-recv-failed = [Screen] uevent recv failed, retrying in 1s: { $error }
-
-fas-no-policies = [FAS] No cpufreq policy found, FAS takeover failed - gears and protections stalled; check kernel/environment
-fas-governor-write-failed = [FAS] P{ $pid } failed to write performance governor: { $error }; system governor interference possible
-fas-freq-table-unavailable = [FAS] P{ $pid } frequency table unavailable and no soc.yaml fallback ({ $path }); policy skipped
-fas-policy-none-taken = [FAS] All policies skipped - no cluster taken over, FAS gear control stalled
-fas-freq-hold-skip = [FAS] P{ $pid } freq hold { $frames } frames left, write skipped
-fas-freq-hysteresis-skip = [FAS] P{ $pid } freq diff { $diff } <= hysteresis { $hysteresis }, write skipped

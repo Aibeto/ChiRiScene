@@ -14,8 +14,7 @@ use super::policy_controller::PolicyController;
 pub(super) const FRAME_FEEDBACK_WARMUP_FRAMES: u32 = 12;
 const FRAME_FEEDBACK_STALE: std::time::Duration = std::time::Duration::from_millis(500);
 
-// [struct]
-// FasController — 主控制器：帧率档位匹配 + PID 控制
+// [struct] FasController — 主控制器：帧率档位匹配 + PID 控制
 // CPU 负载数据（core_utils/fg_util）由 SystemLoadUpdate 事件喂入
 
 pub struct FasController {
@@ -51,14 +50,14 @@ pub struct FasController {
     pub(super) downgrade_confirm_frames: u32,
     pub(super) upgrade_cooldown: u32,
     pub(super) gear_dampen_frames: u32,
-    /// 快升慢降：升档后降档驻留剩余帧数（>0 时普通降档被抑制），见 gear_state.rs
+    /// 快升慢降：升档后降档驻留剩余帧数，>0 时普通降档被抑制
     pub(super) downgrade_dwell_frames: u32,
     pub(super) consecutive_downgrade_count: u32,
     pub(super) last_downgrade_from_fps: f32,
-    /// 上次降档时刻：退避计数的时间衰减依据（距上次超过 `DOWNGRADE_BACKOFF_RESET` 视为新一轮降档，计数归 1）
+    /// 上次降档时刻：距上次超过 `DOWNGRADE_BACKOFF_RESET` 视为新一轮降档，退避计数归 1
     pub(super) last_downgrade_at: Option<Instant>,
     pub(super) stable_gear_frames: u32,
-    /// 开环（load-only）状态翻转沿告警的现行态：true = 已在开环（WARN 已打，不重复刷）
+    /// 开环（load-only）告警现行态：true = 已在开环，翻转沿只打一次
     pub(super) load_only_warned: bool,
 
     // 降档 Boost
@@ -72,7 +71,7 @@ pub struct FasController {
 
     // 时间
     pub(super) init_time: Instant,
-    /// 上一次「防篡改强制重写」的时刻（间隔 = FasRulesConfig::freq_force_reapply_interval 秒）
+    /// 上一次防篡改强制重写时刻，间隔 = FasRulesConfig::freq_force_reapply_interval 秒
     pub(super) freq_force_timer: Instant,
 
     // 缓存
@@ -83,10 +82,11 @@ pub struct FasController {
     // 温度感知
     pub(super) current_temperature: f64,
     pub(super) temp_threshold: f64,
-    /// 温度护栏锁存：≥temp_threshold 进入、<temp_threshold-3℃ 退出（迟滞防振荡）PID 只看帧时间，感知不到 thermal 压频，热限频时继续抬频会与 thermal 形成正反馈
+    /// 温度护栏锁存：≥temp_threshold 进入、<temp_threshold-3℃ 退出，迟滞防振荡
+    /// PID 只看帧时间，感知不到 thermal 压频，热限频时继续抬频会与 thermal 形成正反馈
     pub(super) thermal_hold: bool,
 
-    // [新] CPU 负载数据 — 由 SystemLoadUpdate 事件更新
+    // [新] CPU 负载数据，由 SystemLoadUpdate 事件更新
     pub(super) foreground_max_util: f32,
     pub(super) core_utils: Vec<f32>,
 
@@ -98,14 +98,15 @@ pub struct FasController {
     // perf 地板死锁连续帧计数
     pub(super) floor_stuck_frames: u32,
 
-    // util_cap EMA 平滑值，防止 200ms 采样周期的滞后数据造成断崖
+    // util_cap EMA 平滑值，抑制 200ms 采样周期滞后造成的断崖
     pub(super) ema_fg_util: f32,
 
     // [Jank 恢复保护] crit/heavy 后的 perf 地板：防恢复帧后 PID 2-3 帧内衰减到 floor 再引发连锁 jank
     pub(super) post_jank_perf_floor: f32,
     pub(super) post_jank_guard_frames: u32,
 
-    // [动态 PID] CPU 利用率驱动的 target_fps 偏移，范围 [-3.0, 0.0]：利用率持续偏低时逐步降低有效 target 让 PID 少给频率省电，回升时逐步恢复
+    // [动态 PID] CPU 利用率驱动的 target_fps 偏移，范围 [-3.0, 0.0]
+    // 利用率持续偏低时逐步降低有效 target 让 PID 少给频率省电，回升时逐步恢复
     pub(super) target_fps_offset: f32,
     pub(super) util_sample_timer: Instant,
 }
@@ -171,8 +172,7 @@ impl FasController {
         }
     }
 
-    // [load]
-    // CPU 负载接口 (来自 SystemLoadUpdate 事件)
+    // [load] CPU 负载接口，数据来自 SystemLoadUpdate 事件
 
     /// 更新前台最重线程的 CPU 利用率
     pub fn update_cpu_util(&mut self, fg_util: f32) {
@@ -180,7 +180,7 @@ impl FasController {
         if self.ema_fg_util <= 0.001 {
             self.ema_fg_util = fg_util;
         } else {
-            // 升快降慢（alpha 0.4/0.15），防止瞬时低 util 误杀频率
+            // 升快降慢 alpha 0.4/0.15，防止瞬时低 util 误杀频率
             let alpha = if fg_util > self.ema_fg_util {
                 0.40
             } else {
@@ -204,9 +204,9 @@ impl FasController {
         self.reset_frame_feedback();
     }
 
-    /// 新会话清空帧控制状态；12 个有效新帧完成预热，期间只按簇负载调频。
+    /// 新会话清空帧控制状态，12 个有效新帧完成预热，期间只按簇负载调频
     pub fn reset_frame_feedback(&mut self) {
-        // set_game 已按 per-app 齿轮集合选定目标；这里只抬高非法目标，全局齿轮情形下保持既定 target 语义
+        // set_game 已按 per-app 齿轮集合选定目标，这里只抬高非法目标，全局齿轮下保持既定 target
         let max_gear = self.max_gear();
         if !self
             .fps_gears
@@ -239,20 +239,19 @@ impl FasController {
                 .is_none_or(|timestamp| timestamp.elapsed() >= FRAME_FEEDBACK_STALE)
     }
 
-    /// 帧反馈是否**当前可用**（= `uses_load_control()` 取反）：帧反馈已启用、已过预热、
-    /// 且最近一帧未过期（`FRAME_FEEDBACK_STALE=500ms`）。
-    /// 供上层判断「现在真的能取到窗口帧率」，用于「帧率可用时不因叠加窗口降级为仅调频」。
+    /// 帧反馈是否**当前可用**（= `uses_load_control()` 取反）：已启用、已过预热且最近一帧未过期（`FRAME_FEEDBACK_STALE=500ms`）
+    /// 供上层判断现在真的能取到窗口帧率，帧率可用时不因叠加窗口降级为仅调频
     pub fn frame_feedback_active(&self) -> bool {
         !self.uses_load_control()
     }
 
-    /// load-only 的地板：沿用配置 base，不叠加 current_target_fps bonus（帧反馈暂停时目标帧率与负载无关）。
+    /// load-only 的地板：沿用配置 base，不叠加 current_target_fps bonus，帧反馈暂停时目标帧率与负载无关
     pub(super) fn load_control_floor(&self) -> f32 {
         self.cfg.perf_floor.min(self.cfg.perf_ceil)
     }
 
-    /// 负载事件推进热护栏；仅 load-only、热护栏进入或 perf 实际变化时才 apply_freqs——
-    /// 正常 FPS 反馈且热态未变时不得改写 freq_hold_frames/强写节奏。
+    /// 负载事件推进热护栏，仅 load-only、热护栏进入或 perf 实际变化时才 apply_freqs
+    /// 正常 FPS 反馈且热态未变时不得改写 freq_hold_frames/强写节奏
     pub fn update_load_control(&mut self) {
         let previous_perf = self.perf_index;
         let was_holding = self.thermal_hold;
@@ -260,12 +259,8 @@ impl FasController {
         let load_only = self.uses_load_control();
         if load_only && !self.load_only_warned {
             self.load_only_warned = true;
-            // [log] 开环 = FAS 功能性失效（档位/卡顿/保护全停摆），按 error 级落盘并触发通知。
-            // 注意：用户通知与 `[fas]` warn 由 src/chiri/fas_manager.rs 侧的 was_open_loop 翻转沿发
-            // （fas_manager.rs:386-399 的 on_load_update），本处只负责 error 级留痕（本 flag 使
-            // error/info 仅在翻转沿各打一行，防逐帧重复）；同一事件存在两条独立记录链，
-            // 属有意设计，勿删任一条。
-            // fas-loop-open 文案（zh/en）不含 $secs，勿再传无用实参。
+            // [log] 开环 = FAS 功能性失效（档位/卡顿/保护全停摆），按 error 级落盘；用户通知与 [fas] warn 由 src/chiri/fas_manager.rs 的 on_load_update 翻转沿发，本处只做 error 级留痕
+            // 本 flag 使 error/info 仅在翻转沿各打一行防逐帧重复，两条记录链勿删任一条；fas-loop-open 文案（zh/en）不含 $secs，勿再传无用实参
             error!(
                 "{}",
                 t_with_args(
@@ -304,19 +299,17 @@ impl FasController {
         }
     }
 
-    // [helpers]
-    // 辅助方法
+    // [helpers] 辅助方法
 
     /// 有效 perf_floor：高刷 budget 仅 6.9~8.3ms，perf 过低时突发负载立刻卡顿，故随 target_fps 抬高
-    /// 旧公式硬顶 0.35 使 120fps 下 perf 贴地；新公式 floor = base + (target_fps-60)*0.004，上限 0.45
-    /// （60fps→0.22、90fps→0.34、120fps→0.40、144fps→0.45）
+    /// floor = base + (target_fps-60)*0.004，上限 0.45（60fps→0.22、90fps→0.34、120fps→0.40、144fps→0.45）
     pub(super) fn effective_perf_floor(&self) -> f32 {
         let base = self.cfg.perf_floor;
         let fps_bonus = ((self.current_target_fps - 60.0).max(0.0) * 0.004).min(0.25);
         (base + fps_bonus).min(0.45)
     }
 
-    /// 获取有效 perf_ceil
+    /// 有效 perf_ceil
     pub(super) fn effective_perf_ceil(&self) -> f32 {
         self.cfg.perf_ceil
     }
@@ -345,10 +338,10 @@ impl FasController {
         (1_000_000_000.0 / self.max_gear()) as u64 / 2
     }
 
-    /// 当前帧率——fps_window 窗口均值（120 帧窗口，60fps 下约 2s），与齿轮决策 avg_fps 同口径供 status.csv 的 fps 列读取，
+    /// 当前帧率：fps_window 窗口均值（120 帧窗口，60fps 下约 2s），与齿轮决策 avg_fps 同口径，供 status.csv 的 fps 列读取
     /// 窗口无样本（未收到帧/加载退出/切换后已 clear）时返回 None
     pub fn current_fps(&self) -> Option<f32> {
-        // 预热期或帧源已过期（stale fallback 中）不算有效帧率，避免把旧统计当当前 fps
+        // 预热期或帧源过期（stale fallback）不算有效帧率，避免把旧统计当当前 fps
         if self.warmup_remaining > 0
             || self
                 .last_frame_at
@@ -369,15 +362,15 @@ impl FasController {
         self.pid.adapt_to_target_fps(self.current_target_fps);
     }
 
-    /// 基于 CPU 利用率动态偏移 target_fps（每秒采样一次）：util ≤ 0.10 重置偏移（可能在菜单/暂停画面）；util ≤ 0.55 逐步降低 -0.1/s、最多 -3fps；util ≥ 0.
-    /// 65 逐步恢复 +0.1/s 至 0效果：GPU bound 场景自动放宽帧率目标，减少无效拉频
+    /// 基于 CPU 利用率动态偏移 target_fps（每秒采样一次）：util ≤ 0.10 重置；util ≤ 0.55 逐步降低 -0.1/s、最多 -3fps；util ≥ 0.65 逐步恢复 +0.1/s 至 0
+    /// GPU bound 场景自动放宽帧率目标，减少无效拉频
     pub(super) fn adjust_target_for_util(&mut self) {
         if self.util_sample_timer.elapsed().as_millis() < 1000 {
             return;
         }
         self.util_sample_timer = Instant::now();
 
-        // jank_cooldown 期间禁止降低 target（只允许恢复），防止刚从卡顿恢复、util 未爬满就又降目标
+        // jank_cooldown 期间禁止降低 target，只允许恢复，防止刚从卡顿恢复、util 未爬满就又降目标
         let allow_decrease = self.jank_cooldown == 0 && self.jank_streak == 0;
 
         let util = self.ema_fg_util;
@@ -390,16 +383,15 @@ impl FasController {
         }
     }
 
-    /// 获取经过 util 偏移后的有效 target_fps
+    /// 经过 util 偏移后的有效 target_fps
     #[inline]
     pub(super) fn effective_target_fps(&self) -> f32 {
         (self.current_target_fps + self.target_fps_offset).max(10.0)
     }
 
-    // [game]
-    // 公共接口：游戏生命周期
+    // [game] 公共接口：游戏生命周期
 
-    /// 通知 FAS 当前前台游戏变化
+    /// 通知 FAS 当前前台游戏变化，按 per-app profile 切换齿轮与 margin
     pub fn set_game(&mut self, _pid: i32, package: &str) {
         self.current_package = package.to_string();
         let profile = self.cfg.per_app_profiles.get(package).cloned();
@@ -447,7 +439,7 @@ impl FasController {
         self.active_profile = profile;
     }
 
-    /// 通知 FAS 退出游戏
+    /// 通知 FAS 退出游戏，恢复全局 margin 与齿轮
     pub fn clear_game(&mut self) {
         self.current_package.clear();
         self.active_profile = None;
@@ -455,7 +447,7 @@ impl FasController {
         self.ema_fg_util = 0.0;
         self.core_utils.clear();
         self.target_fps_offset = 0.0;
-        // 恢复全局 margin 和 gears
+        // 恢复全局 margin 与齿轮
         self.fps_margin = self.cfg.fps_margin;
         self.fps_gears = self.cfg.fps_gears.clone();
     }
@@ -602,7 +594,7 @@ pub(crate) mod tests {
         controller.policies[0].freq_hold_frames = 2;
         controller.update_core_utils(&[0.9]);
         controller.update_load_control();
-        // 正常帧反馈路径不得 apply_freqs：freq_hold_frames 不被递减、perf 不被负载改写
+        // 正常帧反馈路径不得 apply_freqs：freq_hold_frames 不递减、perf 不被负载改写
         assert_eq!(controller.policies[0].freq_hold_frames, 2);
         assert_eq!(controller.perf_index, 0.7);
     }
@@ -617,7 +609,7 @@ pub(crate) mod tests {
         controller.cfg.perf_ceil = 0.90;
         controller.update_core_utils(&[0.0]);
         controller.update_load_control();
-        // 地板用配置 base（0.10），不叠加 144fps 的 target_fps bonus（否则会是 0.35）
+        // 地板用配置 base 0.10，不叠加 144fps 的 target_fps bonus（否则为 0.35）
         assert!(controller.effective_perf_floor() > controller.cfg.perf_floor);
         assert!((controller.perf_index - 0.10).abs() < 1e-6);
     }
@@ -643,7 +635,7 @@ pub(crate) mod tests {
         controller.fps_window.push(999.0);
         controller.last_frame_at = Some(Instant::now() - std::time::Duration::from_secs(1));
         controller.update_frame(16_666_667);
-        // stale 后首个有效帧应重置为预热，且不把旧 999 fps 并进新窗口
+        // stale 后首个有效帧重置为预热，且不把旧 999 fps 并进新窗口
         assert_eq!(
             controller.warmup_remaining,
             FRAME_FEEDBACK_WARMUP_FRAMES - 1

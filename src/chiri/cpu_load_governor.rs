@@ -15,12 +15,11 @@ use crate::i18n::{t, t_with_args};
 
 // [thermal_clamp] 热压制「重钳」开关（feature.yaml `Thermal.clamp_heavy`，serde default = true）
 
-/// 是否在 cap 窗口内对**所有簇**恒钳写频目标：true（默认）= 恒钳写侧，current_perf 照常平滑、不回写（窗口解除即恢复全速）；
-/// false = 回退旧行为（current_perf >= free_above 的簇豁免、不钳制）。进程级原子量，由 `Config::load` 启动/热重载时一次性写入；Worker 每次 flush 读一次，
-/// 无额外轮询
+/// 是否在 cap 窗口内对所有簇恒钳写频目标：true（默认）= 恒钳写侧，current_perf 照常平滑、不回写，窗口解除即恢复全速；false = 回退旧行为（current_perf >= free_above 的簇豁免、不钳制）
+/// 进程级原子量，Config::load 启动/热重载写入，Worker 每次 flush 读一次
 static CLAMP_HEAVY: AtomicBool = AtomicBool::new(true);
 
-/// 由配置层同步 `Thermal.clamp_heavy`（`Config::load` 调用）。热重载即时生效
+/// 由配置层同步 `Thermal.clamp_heavy`（`Config::load` 调用），热重载即时生效
 pub fn set_clamp_heavy(v: bool) {
     CLAMP_HEAVY.store(v, Ordering::Relaxed);
 }
@@ -28,8 +27,7 @@ pub fn set_clamp_heavy(v: bool) {
 // [frontier_pf] 前沿查表缺数据的一次性告警门（进程级）：表是静态资产、首 tick 即定型，刷日志无意义
 static PF_FALLBACK_WARNED: AtomicBool = AtomicBool::new(false);
 
-// [frontier_pf] 接管提示的一次性门（进程级）：表与指纹都是编译期资产，每个 worker / 每次重建（息屏等
-// 热切换）重复打没有信息量，只在首次接管时报一次
+// [frontier_pf] 接管提示的一次性门（进程级）：表与指纹都是编译期资产，每个 worker / 每次重建重复打没有信息量
 static PF_ENABLED_LOGGED: AtomicBool = AtomicBool::new(false);
 
 /// 前沿表不可用时打一条 warn（只此一次），说明回退原因（reason = 缺容量/桶越界/该簇无目标）
@@ -92,13 +90,13 @@ struct ClusterState {
     max_writer: FastWriter,
     /// 当前目标性能比 [0,1]，调频时换算成频率档位
     current_perf: f32,
-    /// 已写入的 scaling_max_freq（kHz）；0 = 未写入成功、下次 tick 重试注意是上限而非实际频率，实际由 schedutil 在 [硬件最低, 上限] 内自主决定
+    /// 已写入的 scaling_max_freq（kHz）；0 = 未写入成功、下次 tick 重试；是上限而非实际频率，实际由 schedutil 在 [硬件最低, 上限] 内自主决定
     current_freq: u32,
     /// 降频确认计数：连续满 down_rate_limit_ticks 才执行降频
     down_wait: u32,
     /// 升频确认计数：连续满 up_rate_limit_ticks 才执行升频
     up_wait: u32,
-    // [steady_decay] T11 稳态下探状态（只作写侧偏移，绝不回写 current_perf）
+    // [steady_decay] 稳态下探状态（只作写侧偏移，绝不回写 current_perf）
     /// 当前稳态下探量（性能比，0 = 无下探）
     steady_decay: f32,
     /// 连续稳定 tick 计数（满 steady_decay_stable_ticks 才开始下探）
@@ -107,7 +105,7 @@ struct ClusterState {
     last_util: f32,
     /// 决策负载 EMA 状态（util_smoothing < 1 时启用；-1 = 未初始化），语义同 tuned
     ema_util: f32,
-    // [dwell] 写频滞回状态（Phase 2）：最小驻留 + 死区 + 方向翻摆抑制
+    // [dwell] 写频滞回状态：最小驻留 + 死区 + 方向翻摆抑制
     /// 上次**实际写频**成功时刻（含豁免写），dwell 以它计时；None = 接管初写未启动时钟，首次受控写频立即生效
     last_write_at: Option<Instant>,
     /// 上次实际写频方向：升 = 1、降 = -1、未写过 = 0（翻摆判定基准）
@@ -117,14 +115,13 @@ struct ClusterState {
     /// on_load_update 命中「极低负载立即降频」快路径（豁免滞回），flush 消费清零
     fast_down: bool,
     // [high_zone] 高位升频门槛状态：达标确认计数与上轮达标结果
-    /// 连续达标 tick 计数：当前 perf 已在高位区时，「≥high_zone_count 核 util ≥ high_zone_util」
-    /// 未达标即累加，满 high_zone_hold_ticks 强制放行一次并清零；达标 tick 清零
+    /// 连续达标 tick 计数：当前 perf 已在高位区时，「≥high_zone_count 核 util ≥ high_zone_util」未达标即累加，满 high_zone_hold_ticks 强制放行一次并清零；达标 tick 清零
     high_zone_wait: u32,
 }
 
 impl ClusterState {
-    /// 目标性能比映射到频率表中 **≤ 目标** 的最大档（floor 对齐）：写的是 scaling_max 上限，落点不得高于计算目标；目标落两档之间时内核本就把 max 向下 clamp——先对齐再写才能账实一致、
-    /// 同值不落盘去重有效
+    /// 目标性能比映射到频率表中 ≤ 目标 的最大档（floor 对齐）：写的是 scaling_max 上限，落点不得高于计算目标
+    /// 目标落两档之间时内核本就把 max 向下 clamp，先对齐再写才能账实一致、同值不落盘去重有效
     #[inline]
     fn find_floor_freq(&self, target_ratio: f32) -> u32 {
         let idx = self.cached_ratios.partition_point(|&r| r <= target_ratio);
@@ -142,18 +139,18 @@ impl ClusterState {
         hw_max * deadzone_ratio
     }
 
-    /// 写 scaling_max_freq（性能上限）：min 已在 init 压到硬件最低，之后只调 max，无写序问题。内核调速器在 [min, max] 内自主调频，内核微秒级即可降频，空转发热少
+    /// 写 scaling_max_freq（性能上限）：min 已在 init 压到硬件最低，之后只调 max，无写序问题；内核调速器在 [min, max] 内自主调频，微秒级即可降频，空转发热少
     fn write_freq(&mut self, freq: u32, dwell_ms: u64, deadzone_ratio: f32, exempt: bool) {
         if freq == self.current_freq {
             // 目标与缓存一致：上次写失败的补写诉求已消失，清标记防下次真实写频白豁免滞回一次
             self.last_failed = false;
             return;
         }
-        // [dwell] 写频滞回：死区内不写；距上次实际写频不足 dwell 且方向翻摆时延迟写，到期后下次 flush 补写当前 target。豁免路径（触摸 floor 提频 / 极低负载立即降频 / 防篡改补写）直通；
-        // 接管初写/恢复不走本函数
+        // [dwell] 写频滞回：死区内不写；距上次实际写频不足 dwell 且方向翻摆时延迟写，到期后下次 flush 补写当前 target
+        // 豁免路径（触摸 floor 提频 / 极低负载立即降频 / 防篡改补写）直通；接管初写/恢复不走本函数
         if !exempt {
-            // [deadzone_hold] 死区 gate（双保险）：与 on_load_update hold 判定同源走 deadzone_band()；flush 层落点与决策层不一致（热 clamp / 触摸 floor 后）
-            // 时同样不写近距档
+            // [deadzone_hold] 死区 gate（双保险）：与 on_load_update hold 判定同源走 deadzone_band()
+            // flush 层落点与决策层不一致（热 clamp / 触摸 floor 后）时同样不写近距档
             if (freq.abs_diff(self.current_freq) as f32) < self.deadzone_band(deadzone_ratio) {
                 return;
             }
@@ -363,9 +360,8 @@ struct CoreGroupWorker {
     /// [frontier_pf] 各 CPU 的容量（真机 cpu_capacity 优先，缺失按核心组回退 soc.yaml [capacity]；再缺 = None）
     /// spawn 时一次性解析并缓存，flush 每 tick 只读；None 项会让 PF 需求折算整段回退比例路径
     core_capacities: Vec<Option<u32>>,
-    /// [frontier_pf] 本簇的逐桶落点（索引 = 需求桶，值 = 已 floor 对齐到 available_freqs 的目标 kHz，0 = 无目标）：
-    /// 键为「核心组 + 频率表」的进程级缓存（`common::frontier_aligned`），跨 worker / 跨重建复用，
-    /// flush 每 tick 只做「二分找桶 + 取数组」；None = 非 PF SoC / 判不出核心组 → 走原比例路径
+    /// [frontier_pf] 本簇的逐桶落点（索引 = 需求桶，值 = 已 floor 对齐到 available_freqs 的目标 kHz，0 = 无目标）
+    /// 键为「核心组 + 频率表」的进程级缓存（`common::frontier_aligned`），跨 worker / 跨重建复用，flush 每 tick 只做「二分找桶 + 取数组」；None = 非 PF SoC 走原比例路径
     pf_aligned: Option<Arc<Vec<u32>>>,
     load_rx: LoadReceiver,
     stop: Arc<AtomicBool>,
@@ -386,8 +382,8 @@ struct CoreGroupWorker {
 }
 
 impl CoreGroupWorker {
-    /// 在新线程中运行 Worker 事件循环：接收负载、决策、写频；线程退出（stop 或 channel 断开）前恢复系统原始状态。性能响应全部走推送事件（负载包 / 触摸空包立即 flush）；超时分支只做两件非性能任务：
-    /// 清理过期触摸窗口、重写当前频率防篡改（异常改写是秒级动作，1s 粒度足够兜住），空闲时空转从 ~6 次/s 降到 1 次
+    /// 在新线程中运行 Worker 事件循环：接收负载、决策、写频；线程退出（stop 或 channel 断开）前恢复系统原始状态
+    /// 性能响应全部走推送事件（负载包 / 触摸空包立即 flush），超时分支只做清理过期触摸窗口与重写当前频率防篡改，空闲空转从 ~6 次/s 降到 1 次
     fn run(mut self) {
         let tick_interval = Duration::from_secs(1);
         let mut log_counter: u32 = 0;
@@ -418,7 +414,7 @@ impl CoreGroupWorker {
         ClusterState::restore_policy(&self.restore);
     }
 
-    /// 决策入口：只计算目标性能比不写 sysfs，同时记录 main_ tick 行摘要（over/under、目标性能、决策标签）。标签四种：
+    /// 决策入口：只计算目标性能比不写 sysfs，同时记录 main_ tick 行摘要（over/under、目标性能、决策标签），标签四种：
     /// up / down_wait / down / hold（hold = 降频落点与当前频点差在死区内，不计 debounce、不写频）
     fn on_load_update(&mut self, core_utils: &[f32]) {
         let raw_util = self.cluster.max_util(core_utils);
@@ -451,10 +447,8 @@ impl CoreGroupWorker {
         };
         self.cluster.ema_util = smoothed;
 
-        // [steady_decay] T11 稳态下探 = 对「写侧性能偏移」的**限幅积分控制**（被控量是 util）：
-        // 下探会抬高实际 util，故以目标水位 T = up_threshold × target_ratio 为均衡点——util 高于 T 就回收下探（步长 ×2 防过冲）、
-        // 低于 T 就加深、死区内保持 → 回路自带稳态，不会像「稳态就无脑累加」那样形成 2~4s 频率锯齿（R6 要防的震荡）；
-        // 限幅 [0, max] = 抗积分饱和。必须用**更新前的** last_util 算差量（下行会把 last_util 覆盖成 smoothed）
+        // [steady_decay] 稳态下探 = 对「写侧性能偏移」的限幅积分控制（被控量是 util）：以目标水位 T = up_threshold × target_ratio 为均衡点
+        // util 高于 T 就回收下探（步长 ×2 防过冲）、低于 T 就加深、死区内保持，回路自带稳态，不会形成 2~4s 频率锯齿；限幅 [0, max] = 抗积分饱和，必须用更新前的 last_util 算差量
         let prev_smoothed = self.cluster.last_util;
         let delta = smoothed - prev_smoothed;
         let stable = delta.abs() <= self.cfg.steady_decay_band;
@@ -505,9 +499,8 @@ impl CoreGroupWorker {
             1.0
         };
 
-        // [high_zone] 高位升频门槛：已处于高位区（current_perf ≥ gate）时，把目标抬得更高需全簇
-        // 「≥high_zone_count 核 util ≥ high_zone_util」确认。只压决策意图，不回写 current_perf、
-        // 不动 up_wait/down_wait（冻结）；降频方向不受影响。未启用（0 核数/0 gate）不生效。
+        // [high_zone] 高位升频门槛：已处于高位区（current_perf ≥ gate）时，把目标抬得更高需全簇「≥high_zone_count 核 util ≥ high_zone_util」确认
+        // 只压决策意图，不回写 current_perf、不动 up_wait/down_wait（冻结），降频方向不受影响；未启用（0 核数/0 gate）不生效
         let old_perf = self.cluster.current_perf;
         // hold 兜底：确认被连续阻塞满 high_zone_hold_ticks 强制放行一次并重新计数，
         // 防负载形态与确认条件错配时永久卡高位
@@ -521,12 +514,8 @@ impl CoreGroupWorker {
             let hits = self
                 .cluster
                 .high_zone_hits(core_utils, self.cfg.high_zone_util);
-            // [high_zone] 确认核数按**本簇规模**封顶：hits 的可达上限 = 本簇在线核数（prime 单核
-            // 簇恒为 1）。若 high_zone_count 大于本簇核数，确认条件永远不成立，该簇只能靠
-            // high_zone_hold_ticks 兜底放行一次（8550 prime 实测阻塞占比 52%），把「高位需多核确认」
-            // 退化成「周期性突刺」。同一份配置在单核簇上必须仍有可达的确认条件，故取
-            // min(count, 本簇核数)。little(3)/big(4) 在 count=2 下逐位不变；仅当**接管时**在线核数
-            // 少于 2（核下线）才会比原设计更松——此时「不要求多于在线核数的确认」本就是正确语义。
+            // [high_zone] 确认核数按本簇规模封顶：hits 的可达上限 = 本簇在线核数（prime 单核簇恒为 1），取 min(count, 本簇核数)
+            // 否则 high_zone_count 大于本簇核数时确认条件永不成立，只能靠 high_zone_hold_ticks 兜底放行一次，退化成周期性突刺
             let need = self
                 .cfg
                 .high_zone_count
@@ -555,20 +544,8 @@ impl CoreGroupWorker {
         // [perf_eps] 浮点停滞防护：慢升分支 α≤0.5 在差 1 ulp 处增量舍入为 0，严格 > 比较使停滞态永久落 up 分支（假 up + up_wait 无限累加）；
         // 加 ε=1e-6 让停滞态落入死区 hold 正常收尾，ε 远小于真实负载增量
         if target_perf > old_perf + 1e-6 {
-            // [dir_stabilize] 上边补齐与下边同源的死区 gate（P1-2，2026-09-27）：落点与当前频差 ≤ 写频死区= 写不进 sysfs 的 no-op up，
-            // 按下面 [deadzone_hold] 的口径记 hold、不累计 up_wait、**不清 down_wait**（此条为有意保留：见下方 [dir_stabilize_tick] 的 off-by-a-tick 说明）
-            // 原实现只有下边有这条：上边任意 +1e-6 的目标抬升都会走 up 分支并清零 down_wait，
-            // 于是「本 tick 根本写不出一次频差」的噪声也在翻转方向——实测 big 簇 52~86 次/分（coolapk 4.4min 379 次、1s 内最多 6 次，QQ 达 7 次/s），确认进度被单 tick 噪声互相抹掉
-            // 下边同理把 `up_wait = 0` 挪到死区判定之后
-            //
-            // [dir_stabilize_tick] 已知且有意保留的 off-by-a-tick：up-hold 分支既不累加 up_wait 也不清 down_wait，
-            // 于是「down 侧已攒到 down_rate_limit_ticks - 1、紧接一个 up-hold、再一个真 down」会比「连续 N 个真 down」
-            // 提前 1 tick 写出降频——被 up-hold 暂停的那次 down intent 仍被算作确认进度。影响 = 降频最多早 1 tick
-            // （Worker tick 级），换来的是「写不出频差的噪声 tick 不抹掉降频确认进度」这条更贵的收益；up-hold 判据
-            // 本身是**有频差方向**的（落点更靠上说明目标确实在往上），不属纯噪声，故当前保留。生产配置里
-            // `down_rate_limit_ticks` 取 1..10（8550 default 2 / boost 5 / 8998 部分档 1，N=1 时该 off-by-a-tick
-            // 即退化为「下一 tick 立即降频」），非无影响路径。若要改成「同向未推进即视为未确认」，须在 up-hold 里
-            // `down_wait = 0`，代价是方向翻转更频繁——当前不采纳
+            // [dir_stabilize] 上边补齐与下边同源的死区 gate：落点与当前频差 ≤ 写频死区 = 写不进 sysfs 的 no-op up，记 hold、不累计 up_wait、不清 down_wait
+            // [dir_stabilize_tick] 有意保留的 off-by-a-tick：up-hold 不清 down_wait，被暂停的那次 down intent 仍算确认进度，降频最多早 1 tick，换取噪声 tick 不抹掉降频确认进度
             let up_freq = self.cluster.find_floor_freq(target_perf);
             if (up_freq.abs_diff(self.cluster.current_freq) as f32)
                 <= self.cluster.deadzone_band(self.cfg.write_deadzone)
@@ -602,7 +579,7 @@ impl CoreGroupWorker {
             }
         } else {
             self.cluster.up_wait = 0;
-            // 先算降频落点：与当前频点差在死区内（含同档 OPP）= 写频无效果，不计数不写频标 hold（否则稳态每 tick 假 down、deb_down 无限涨）；真实降频路径不变。util=0 不计升频、计入降频
+            // 先算降频落点：与当前频点差在死区内（含同档 OPP）= 写频无效果，不计数不写频标 hold（否则稳态每 tick 假 down、deb_down 无限涨）；真实降频路径不变；util=0 不计升频、计入降频
             let target_freq = self.cluster.find_floor_freq(target_perf);
             // [deadzone_hold] hold 判定：≤ 死区频差（含相等；write_deadzone=0 退化为精确相等），与吞写 gate 同源，写不进 sysfs 的落点不累计 down_wait
             if (target_freq.abs_diff(self.cluster.current_freq) as f32)
@@ -611,7 +588,7 @@ impl CoreGroupWorker {
                 self.cluster.down_wait = 0;
                 self.dev_decision = "hold";
             } else {
-                // [dir_stabilize] 真实降频 intent 才清零 up_wait（P1-2）：原先这条在上面的死区判定之前，no-op 的deadband hold 也会把升频侧的确认进度抹掉，
+                // [dir_stabilize] 真实降频 intent 才清零 up_wait：原先这条在死区判定之前，no-op 的 deadband hold 也会把升频侧确认进度抹掉
                 // 与上边补的 up-side gate 对称后，两个方向都只有「真能写出频差」的 tick 才翻转方向
                 self.cluster.up_wait = 0;
                 self.cluster.down_wait += 1;
@@ -650,7 +627,7 @@ impl CoreGroupWorker {
             .cluster
             .current_perf
             .clamp(self.cfg.perf_floor, self.cfg.perf_ceil);
-        // 热压制（重钳，只作用于 CLG、不含 tuned）：只钳写频、不回写 current_perf（回写才会卡死在 cap），窗口解除立即恢复全速。clamp_heavy=true（默认）所有簇恒钳；
+        // 热压制（重钳，只作用于 CLG、不含 tuned）：只钳写频、不回写 current_perf（回写才会卡死在 cap），窗口解除立即恢复全速，clamp_heavy=true（默认）所有簇恒钳；
         // false 时 current_perf >= 豁免档 free_above 不钳（豁免档需严格大于 soft_perf_cap，free_above 仅此分支生效）
         let cap = f32::from_bits(self.thermal_cap.load(Ordering::Relaxed));
         let free_above = f32::from_bits(self.thermal_free_above.load(Ordering::Relaxed));
@@ -660,10 +637,8 @@ impl CoreGroupWorker {
         } else {
             self.cluster.current_perf
         };
-        // [steady_decay] T11 下探只作「写侧偏移」，绝不回写 current_perf：压下去后真实 util 被反馈抬高，
-        // 一旦 util >= up_threshold 立即清零（见 on_load_update），自限且不与升频分支的 target_perf 比较打架。
-        // **触摸窗口内不叠加下探**：上方已把 current_perf 抬到 touch floor，再减 decay 会把落点压到地板之下，
-        // 与「触摸升频兜交互响应」的口径打架（只影响本次写入，已积分的 decay 状态保留、窗口结束自动恢复）
+        // [steady_decay] 下探只作「写侧偏移」，绝不回写 current_perf：压下去后真实 util 被反馈抬高，一旦 util >= up_threshold 立即清零，自限且不与升频分支的 target_perf 比较打架
+        // 触摸窗口内不叠加下探：current_perf 已抬到 touch floor，再减 decay 会把落点压到地板之下（只影响本次写入，已积分的 decay 状态保留、窗口结束自动恢复）
         let decay = if touch_active {
             0.0
         } else {
@@ -671,10 +646,8 @@ impl CoreGroupWorker {
         };
         let write_perf = (eff_perf - decay).max(self.cfg.perf_floor);
         let ratio_freq = self.cluster.find_floor_freq(write_perf);
-        // [frontier_pf] 前沿落点**只允许下调**：target = min(比例路径落点, PF 目标)；非稳态/缺数据/PF 未启用一律 = ratio_freq。
-        // 不变式：PF 结果严格劣于等于「比例路径 + T11 下探」的功耗，绝不可能比不加 PF 更激进；触摸 floor / 热钳 /
-        // perf_floor / perf_ceil 已在上方生效，PF 只替换「比例→频点」这一步的落点。
-        // 触摸窗口内与 decay 同口径关闭：min() 否则会把上面刚抬到触摸 floor 的落点拉回低频桶，抵消触摸升频
+        // [frontier_pf] 前沿落点只允许下调：target = min(比例路径落点, PF 目标)；非稳态/缺数据/PF 未启用一律 = ratio_freq
+        // 不变式：PF 结果严格劣于等于「比例路径 + 稳态下探」的功耗，PF 只替换「比例→频点」这一步；触摸窗口内关闭，min() 会把刚抬到触摸 floor 的落点拉回低频桶
         let pf_target = if touch_active {
             None
         } else {
@@ -797,7 +770,7 @@ impl CoreGroupWorker {
         }
     }
 
-    /// [frontier_pf] 本 tick 全局需求（真机容量单位）= Σ(各核 util × 该核 capacity)。
+    /// [frontier_pf] 本 tick 全局需求（真机容量单位）= Σ(各核 util × 该核 capacity)
     /// 只累加 util > 0 的核（0 贡献无需容量）；任一贡献核容量缺失（真机 cpu_capacity 与 soc.yaml 兜底都没）→ None（整段回退）
     fn demand_units(&self, core_utils: &[f32]) -> Option<f32> {
         // 空切片 = 负载超时 flush（无观测），不是「缺容量」：静默回退，不占用一次性告警
@@ -819,8 +792,7 @@ impl CoreGroupWorker {
         Some(sum)
     }
 
-    /// [frontier_pf] 前沿目标频点（spawn 时已 floor 对齐到本簇频率表，tick 内只查索引），
-    /// 失败一律 None → 调用方回退比例路径。只下调的前提由调用方保证（`ratio_freq.min(pf)`）。
+    /// [frontier_pf] 前沿目标频点（spawn 时已 floor 对齐到本簇频率表，tick 内只查索引），失败一律 None → 调用方回退比例路径，只下调的前提由调用方保证
     /// 缺数据打一次性 warn；非 PF SoC（`pf_aligned` 为 None）静默返回 None
     fn frontier_lookup(&self, core_utils: &[f32]) -> Option<u32> {
         let aligned = self.pf_aligned.as_ref()?;
@@ -959,7 +931,7 @@ impl CoreGroupWorker {
             hw_max: *freqs.last().unwrap(),
         };
 
-        // 写入默认调速器（选型见 common.rs [governor]）
+        // 写入默认调速器
         let _ =
             crate::utils::try_write_file(&gov_path, crate::common::cpu_governor_for_policy(pid));
 
@@ -1028,9 +1000,8 @@ impl CoreGroupWorker {
             core_capacities.push(cap);
         }
 
-        // [frontier_pf] 逐桶落点表：进程级摊平（soc.yaml 编入二进制，见 common::frontier_table）+ 本簇频率表的
-        // floor 对齐，键 = 核心组 + 频率表 → 同一簇的 worker 重建（息屏/模式热切换）复用同一份、不重算。
-        // 非 PF SoC（`soc_frontier_policy()` = None）恒 None → flush 走原比例路径、行为逐位不变
+        // [frontier_pf] 逐桶落点表：进程级摊平（soc.yaml 编入二进制）+ 本簇频率表的 floor 对齐，键 = 核心组 + 频率表
+        // 同一簇的 worker 重建（息屏/模式热切换）复用同一份、不重算；非 PF SoC 恒 None → flush 走原比例路径、行为逐位不变
         let pf_aligned = if crate::common::soc_frontier_policy().is_some() {
             match pf_group_of(&affected, &core_ranges) {
                 // 判不出核心组（区间配置与真机不符）：只此一次告警，PF 整段不生效
@@ -1059,9 +1030,8 @@ impl CoreGroupWorker {
             )
         );
 
-        // [frontier_pf] 启用前沿的 SoC（8550）确认一条：表是进程级资产（指纹/桶数与 worker 无关），
-        // 只在首次接管打一次（非 PF 机型不打）——filter 的判据只在 PF SoC 上求值，一次性门也只在此时翻转，
-        // 于是息屏等热切换引起的 worker 重建不再重复刷
+        // [frontier_pf] 启用前沿的 SoC（8550）确认一条：表是进程级资产（指纹/桶数与 worker 无关），只在首次接管打一次（非 PF 机型不打）
+        // filter 的判据只在 PF SoC 上求值，一次性门也只在此时翻转，息屏等热切换引起的 worker 重建不再重复刷
         if let Some(pol) = crate::common::soc_frontier_policy()
             .filter(|_| !PF_ENABLED_LOGGED.swap(true, Ordering::Relaxed))
         {
@@ -1133,20 +1103,16 @@ struct WorkerHandle {
     policy_id: i32,
     load_tx: LoadSender,
     handle: Option<JoinHandle<()>>,
-    /// [silent-drop] Disconnected 已上报标记（翻转沿去重）：Worker 死亡后本句柄的每一次
-    /// send_load 都会 Disconnected，逐 tick 重报会刷屏——首次 warn，之后降 debug；
-    /// 发送恢复成功（重 spawn / stop_workers 后重建句柄，本字段随句柄重建归 false）即复位
+    /// [silent-drop] Disconnected 已上报标记（翻转沿去重）：Worker 死亡后本句柄的每一次 send_load 都会 Disconnected，逐 tick 重报会刷屏
+    /// 首次 warn，之后降 debug；发送恢复成功（重 spawn / stop_workers 后重建句柄）即复位
     dead_reported: bool,
 }
 
 impl WorkerHandle {
     /// 发送负载数据到 Worker（非阻塞，满则丢弃本 tick）
     fn send_load(&mut self, core_utils: Arc<Vec<f32>>) {
-        // [silent-drop] 丢弃本 tick 负载此前无痕：Worker 若已退出（panic/被 join），此后**每一次**
-        // 负载都静默丢弃，该簇频率永久停在最后一次决策上——与「负载一直没变」同形，且**无自愈路径**
-        // （Worker 不会重 spawn，直到 stop_workers/release 或重载），故按翻转沿报 warn：首次上报，
-        // 之后降 debug 门控；发送恢复成功即复位（重 spawn 后允许下次故障再报）。
-        // try_send 是每 tick 路径，故 Full（正常背压）不报——与既有语义一致
+        // [silent-drop] 丢弃本 tick 负载原本无痕：Worker 已退出（panic/被 join）时每一次负载都静默丢弃，该簇频率永久停在最后一次决策上
+        // 故按翻转沿报 warn：首次上报、之后降 debug 门控；try_send 是每 tick 路径，Full（正常背压）不报
         match self.load_tx.try_send(core_utils) {
             Ok(()) => {
                 // 从 Disconnected 恢复（重 spawn / 重建句柄）：状态翻转，复位允许下次失败再报
@@ -1156,12 +1122,12 @@ impl WorkerHandle {
                 if self.dead_reported {
                     if log::log_enabled!(log::Level::Debug) {
                         log::debug!(
-                            "[CLG] load channel disconnected (worker exited); cluster keeps its last frequency"
+                            "[CLG] load channel disconnected，worker 已退出，该簇频率停在最后一次决策"
                         );
                     }
                 } else {
                     log::warn!(
-                        "[CLG] load channel disconnected (worker exited); cluster keeps its last frequency and will not be re-tuned until restart/reload"
+                        "[CLG] load channel disconnected，worker 已退出，该簇频率冻结至重启或重载"
                     );
                     self.dead_reported = true;
                 }
@@ -1178,7 +1144,7 @@ impl WorkerHandle {
             // 一次决策），而调度器仍认为它在管——与正常运行同形，必须留痕
             if h.join().is_err() {
                 log::warn!(
-                    "[CLG] worker thread exited with panic; its cluster is no longer being tuned"
+                    "[CLG] worker 线程 panic 退出，该簇不再调频，频率冻结在最后一次决策，需重启或重载模块恢复"
                 );
             }
         }
@@ -1256,10 +1222,8 @@ impl CpuLoadGovernor {
         }
     }
 
-    /// [backend] PowerBase 当选判据：**两个入口共用**（`init_policies` 与 `reload_config`）——
-    /// 亮屏恢复走的是 reload 而不是 init，只判「PowerBase 正在接管」会让它在一次息屏之后
-    /// 再也选不上（息屏时选的是 Worker doze，亮屏仍走 reload）。三个前提缺一不可：CLG 段启用、
-    /// 总开关开启、亮屏（息屏该由 doze 接管，接管会抬高夜间功耗）、未停摆
+    /// [backend] PowerBase 当选判据：两个入口共用（`init_policies` 与 `reload_config`）——亮屏恢复走的是 reload 而不是 init，只判「PowerBase 正在接管」会让它在一次息屏之后再选不上
+    /// 三个前提缺一不可：CLG 段启用、总开关开启、亮屏（息屏该由 doze 接管，接管会抬高夜间功耗）、未停摆
     fn pb_wanted(cfg: &CpuLoadGovernorConfig) -> bool {
         cfg.enabled
             && crate::common::powerbase_enabled()
@@ -1267,9 +1231,8 @@ impl CpuLoadGovernor {
             && !crate::down::is_down()
     }
 
-    /// 接管 CLG 角色位置（唯一入口）：[backend] 先选后端——PowerBase 与 Worker 共用同一批 cpufreq
-    /// 节点，此处二选一之后全程只有一个 owner，无需外部再兜底互斥。选后端的判据与 PF 的 `pf_aligned`
-    /// 同款：只在接管那一刻求值一次，缺任一前提就落回 Worker 路径（逐位等价旧行为）
+    /// 接管 CLG 角色位置（唯一入口）：[backend] 先选后端——PowerBase 与 Worker 共用同一批 cpufreq 节点，此处二选一之后全程只有一个 owner
+    /// 判据与 PF 的 `pf_aligned` 同款：只在接管那一刻求值一次，缺任一前提就落回 Worker 路径（逐位等价旧行为）
     pub fn init_policies(&mut self, gov_cfg: &CpuLoadGovernorConfig) {
         self.stop_workers();
         self.cfg = gov_cfg.clone();
@@ -1345,14 +1308,11 @@ impl CpuLoadGovernor {
         self.active = false;
     }
 
-    /// 热切换配置：停旧 Worker 并用新配置重建（与 init_policies 同路径，current_perf 重置到新 perf_init 并立即写频），
-    /// 避免息屏期间 current_perf 掉到 ~0 后亮屏恢复时频率从地板缓慢爬升数秒。
-    /// PowerBase 路径是**整段重建**：perf 回到 1.0、档位回落标准档、触摸窗口清空——一次热重载会
-    /// 打断进行中的触摸升档窗口并重新读写 min/max
+    /// 热切换配置：停旧 Worker 并用新配置重建（与 init_policies 同路径，current_perf 重置到新 perf_init 并立即写频），避免息屏期间 current_perf 掉到 ~0 后亮屏恢复时频率从地板缓慢爬升数秒
+    /// PowerBase 路径是整段重建：perf 回到 1.0、档位回落标准档、触摸窗口清空，一次热重载会打断进行中的触摸升档窗口并重新读写 min/max
     pub fn reload_config(&mut self, gov_cfg: &CpuLoadGovernorConfig) {
-        // [backend] 双向重判：PowerBase 接管中、或新配置下它应当当选，都整段走 init_policies——
-        // 它内部自有 release/init 顺序，不会出现两个 owner 并存。缺了「应当当选」这一半，一次息屏
-        // （那时选的是 Worker doze）之后亮屏走本入口就再也切不回 PowerBase
+        // [backend] 双向重判：PowerBase 接管中、或新配置下它应当当选，都整段走 init_policies——它内部自有 release/init 顺序，不会出现两个 owner 并存
+        // 缺了「应当当选」这一半，一次息屏（那时选的是 Worker doze）之后亮屏走本入口就再也切不回 PowerBase
         if self.pb.is_active() || Self::pb_wanted(gov_cfg) {
             self.init_policies(gov_cfg);
             return;
@@ -1424,7 +1384,7 @@ impl CpuLoadGovernor {
             let _ = self.pb.on_load_update(core_utils);
             return;
         }
-        // 复用上一 tick 的广播缓冲：引用计数归 1 且长度一致时原地覆盖，否则新建（两种路径内容与长度与原实现一致）
+        // 复用上一 tick 的广播缓冲：引用计数归 1 且长度一致时原地覆盖，否则新建
         let mut shared = match self.load_buf.take() {
             Some(arc) if arc.len() == core_utils.len() => arc,
             _ => Arc::new(core_utils.to_vec()),
@@ -1499,7 +1459,7 @@ impl CpuLoadGovernor {
         self.cfg.normalize();
     }
 
-    /// 停止所有 Worker：通知停止 → 等待线程退出 → 恢复系统状态。 Worker 线程退出前会自行恢复其 policy，此处仅做 join 确保退出完成
+    /// 停止所有 Worker：通知停止 → 等待线程退出 → 恢复系统状态， Worker 线程退出前会自行恢复其 policy，此处仅做 join 确保退出完成
     fn stop_workers(&mut self) {
         // 通知所有 Worker 停止
         self.stop.store(true, Ordering::Release);

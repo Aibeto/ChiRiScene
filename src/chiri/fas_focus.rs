@@ -13,13 +13,8 @@ pub(crate) enum FocusDecision {
 }
 
 // [decision]
-/// 焦点决策。`frame_feedback_active` = 「现在真的能取到窗口帧率」（`FasManager::frame_feedback_active`）。
-///
-/// **帧率优先规则**：窗口证据判为 `LoadOnly`（即 `WindowVisibility::VisibleUnfocused`）时，若帧源
-/// 仍在正常产出帧，则维持帧驱动控制、不降级为仅调频。动机：游戏上加一层帧率悬浮窗/输入法时游戏
-/// 窗口不再 `Focused`，但帧数据依旧可取；此时降 `LoadOnly` 会关掉帧驱动，表现为「FAS 异常退出」。
-/// **边界**：本规则只作用于 `LoadOnly`。`Hidden`/`Unknown`（含真正隐藏）仍按原样走 `Grace`，
-/// 「有叠加窗口时退出 FAS 是预期行为」这条语义不变。
+/// 焦点决策：`frame_feedback_active` = 现在真能取到窗口帧率（`FasManager::frame_feedback_active`）
+/// 帧率优先：证据为 `LoadOnly`（`WindowVisibility::VisibleUnfocused`）但帧源仍在产帧时维持帧驱动、不降为仅调频；`Hidden`/`Unknown` 仍走 `Grace`
 pub(crate) fn decide_focus(
     same_foreground_owner: bool,
     same_raw_owner: bool,

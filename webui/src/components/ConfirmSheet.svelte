@@ -1,5 +1,5 @@
 <script lang="ts">
-  // ConfirmSheet.svelte: [dialog]破坏性操作确认：原生 <dialog> 提供焦点陷阱、Esc 关闭与无障碍语义；视觉是重玻璃弹层（.g-dialog）
+  // ConfirmSheet.svelte: [dialog] 破坏性操作确认：原生 <dialog> 提供焦点陷阱、Esc 关闭与无障碍语义，视觉是重玻璃弹层（.g-dialog）
   let {
     open = false,
     title,
@@ -80,10 +80,8 @@
 </dialog>
 
 <style>
-  /* 弹层骨架/皮肤来自 .g-dialog，这里只保留项目特有的「注意事项」块。
-     注意：旧版基线用 border-left 2px 单侧竖条标记它，玻璃拟态风格明令禁止单侧粗边框
-     装饰（border-left/right accent stripe）——改为整圈极淡描边 + 内发光的玻璃提示块，
-     信号色仍跟随弹层（CONFIRM 香槟 / DANGER 危险红），不引入第三种颜色。 */
+  /* 弹层骨架/皮肤来自 .g-dialog，这里只保留项目特有的「注意事项」块：整圈极淡描边 + 内发光的玻璃提示块
+     信号色跟随弹层（CONFIRM 香槟 / DANGER 危险红），不引入第三种颜色 */
   .note {
     margin-top: var(--space-3);
     padding: var(--space-2) var(--space-3);

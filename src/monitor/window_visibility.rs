@@ -8,24 +8,18 @@ use std::time::{Duration, Instant};
 
 use crate::i18n::t;
 
-/// 最近一次 dumpsys 解析出的焦点 Activity 查表键（空 = 未知）。
-/// 写入有两个来源：① FAS 可见性探针（`query_visibility`，窗口核验时）；
-/// ② 全局 `ActivitySampler`（屏幕亮且有有效前台时按节流采样，**不限于 FAS**，覆盖普通应用）。
-/// 消费方必须把空值当作「未知」并回退包名级判定。
+/// 最近一次 dumpsys 解析出的焦点 Activity 查表键（空 = 未知）
+/// 写入有两个来源：FAS 可见性探针（`query_visibility`，窗口核验时）与全局 `ActivitySampler`（屏幕亮且有有效前台时按节流采样，**不限于 FAS**，覆盖普通应用）；消费方必须把空值当作未知并回退包名级判定
 static LAST_ACTIVITY: LazyLock<Mutex<Arc<str>>> = LazyLock::new(|| Mutex::new(Arc::from("")));
 
-/// 读最近一次焦点 Activity 查表键（零分配，Arc 克隆）。未知/未采到返回空串。
+/// 读最近一次焦点 Activity 查表键（零分配，Arc 克隆）；未知/未采到返回空串
 pub fn last_activity_key() -> Arc<str> {
     LAST_ACTIVITY.lock().unwrap().clone()
 }
 
 // [activity]
-/// Activity 采样器：与 FAS 可见性探针解耦，只跑 `dumpsys -t 1 window` 取 `mCurrentFocus`。
-/// 供 Activity 级规则与 devimp `activity` 列使用；屏幕亮且存在有效前台时由调度 1s 块请求。
-/// **不限 FAS**：普通应用（微信/B 站等页面内多 Activity）同样采样——游戏通常只有一个
-/// Activity，Activity 级规则真正的用武之地是这类多页面应用。
-/// 换包后的第一次请求立即执行（1s 最小间隔），同包稳态按 [`ACTIVITY_SAMPLE_INTERVAL`] 节流；
-/// 重复请求合并为一次查询。屏幕熄灭/前台为空时调用方不请求，不产生 dumpsys 开销。
+/// Activity 采样器：与 FAS 可见性探针解耦，只跑 `dumpsys -t 1 window` 取 `mCurrentFocus`，供 Activity 级规则与 devimp `activity` 列使用，屏幕亮且存在有效前台时由调度 1s 块请求
+/// **不限 FAS**：普通应用（微信/B 站等页面内多 Activity）同样采样；换包后第一次请求立即执行（1s 最小间隔），同包稳态按 [`ACTIVITY_SAMPLE_INTERVAL`] 节流，屏幕熄灭/前台为空时不请求
 pub struct ActivitySampler {
     shared: Arc<(Mutex<ActivitySampleState>, Condvar)>,
     worker: Option<JoinHandle<()>>,
@@ -42,13 +36,12 @@ struct ActivitySampleState {
     stopped: bool,
 }
 
-/// 同包稳态下的 Activity 采样间隔。页面内切换（聊天/视频通话、浏览/播放）通常在秒级，
-/// 3s 采样足以让 activity 规则跟上；再密会明显增加 dumpsys 自耗。
+/// 同包稳态下的 Activity 采样间隔：页面内切换（聊天/视频通话、浏览/播放）通常在秒级，3s 采样足以让 activity 规则跟上，再密会明显增加 dumpsys 自耗
 const ACTIVITY_SAMPLE_INTERVAL: Duration = Duration::from_secs(3);
-/// 换包后的最小采样间隔：应用切换时立即采一次，但不允许连续刷屏式查询。
+/// 换包后的最小采样间隔：应用切换时立即采一次，但不允许连续刷屏式查询
 const ACTIVITY_SAMPLE_MIN_GAP: Duration = Duration::from_secs(1);
 
-/// 下一次允许查询的时刻（纯函数，便于测试）：首次立即；同包按 3s 节流；换包只要求 1s 最小间隔。
+/// 下一次允许查询的时刻（纯函数，便于测试）：首次立即；同包按 3s 节流；换包只要求 1s 最小间隔
 fn allowed_query_at(last_query: Option<Instant>, same_package: bool, now: Instant) -> Instant {
     match last_query {
         None => now,
@@ -72,8 +65,7 @@ impl ActivitySampler {
         Self { shared, worker }
     }
 
-    /// 请求采样当前前台：换包立即（≥1s 间隔），同包按 3s 节流；请求合并。
-    /// 采样线程已停时只留 debug 痕（与窗口探针 stopped 语义一致），不做无痕丢弃。
+    /// 请求采样当前前台：换包立即（≥1s 间隔），同包按 3s 节流，请求合并；采样线程已停时只留 debug 痕，与窗口探针 stopped 语义一致，不做无痕丢弃
     pub fn request(&self, foreground: &str) {
         if foreground.is_empty() {
             return;
@@ -97,7 +89,7 @@ impl Default for ActivitySampler {
 impl Drop for ActivitySampler {
     fn drop(&mut self) {
         {
-            // 与 worker panic 路径共用同一把锁；毒化时取回内部值（Drop 中再 panic = abort）
+            // 与 worker panic 路径共用同一把锁；毒化时取回内部值，Drop 中再 panic = abort
             let mut state = self.shared.0.lock().unwrap_or_else(|e| e.into_inner());
             state.stopped = true;
             state.pending = None;
@@ -144,8 +136,7 @@ fn activity_loop(shared: Arc<(Mutex<ActivitySampleState>, Condvar)>) {
                     allowed_query_at(state.last_query, package == state.last_query_package, now);
                 if now >= allowed_at {
                     state.pending = None;
-                    // 节流基准以「上次查询的包」为准（失败也算），否则换包后失败/空焦点会永久
-                    // 退化为 1s 重试并刷 warn
+                    // 节流基准以上次查询的包为准（失败也算），否则换包后失败/空焦点会永久退化为 1s 重试并刷 warn
                     state.last_query_package = package.clone();
                     break package;
                 }
@@ -191,7 +182,7 @@ fn activity_loop(shared: Arc<(Mutex<ActivitySampleState>, Condvar)>) {
     }
 }
 
-/// 轻量焦点查询：只跑 `dumpsys window`（不取 `window windows` 段），解析 `mCurrentFocus`。
+/// 轻量焦点查询：只跑 `dumpsys window`（不取 `window windows` 段），解析 `mCurrentFocus`
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn query_focus_key() -> io::Result<Arc<str>> {
     let snapshot = collect_one(&["-t", "1", "window"], &|| false)?;
@@ -229,9 +220,8 @@ pub struct WindowObservation {
     pub request: WindowRequest,
     pub visibility: WindowVisibility,
     pub observed_at: Instant,
-    /// 当前焦点窗口的 Activity 名（`mCurrentFocus` 的 `pkg/Activity` 段，已归一为短形
-    /// `pkg/.MainActivity`；无焦点/解析失败为空）。`LAST_ACTIVITY` 由全局 [`ActivitySampler`]
-    /// 与 FAS 可见性探针共同刷新，**不再限于 FAS**；消费方仍必须把空值当作「未知」并回退包名级判定。
+    /// 当前焦点窗口的 Activity 名（`mCurrentFocus` 的 `pkg/Activity` 段，已归一为短形 `pkg/.MainActivity`；无焦点/解析失败为空）
+    /// `LAST_ACTIVITY` 由全局 [`ActivitySampler`] 与 FAS 可见性探针共同刷新，**不再限于 FAS**；消费方仍必须把空值当作未知并回退包名级判定
     pub activity: Arc<str>,
 }
 
@@ -256,10 +246,8 @@ impl WindowVisibilityProbe {
             .spawn(move || run_worker(worker_shared))
             .ok();
         if worker.is_none() {
-            // [FAS] 窗口查询线程起不来 ⇒ 后续所有 request 都石沉大海，probe.latest() 恒返回
-            // None ⇒ reconcile_fas_focus 的 evidence 为空 ⇒ 走 Grace ⇒ 延迟退出 FAS。
-            // 现象上「 praying 」和「应用真的失去焦点」完全一致（都不聚焦+无 FPS），
-            // 稳态打不出来、日志也没有 ⇒ 排查时必踩坑。这是功能性失效且不可自愈，按 error!。
+            // [FAS] 窗口查询线程起不来则后续所有 request 都石沉大海，probe.latest() 恒返回 None，reconcile_fas_focus 的 evidence 为空，走 Grace 延迟退出 FAS
+            // 现象上与「应用真的失去焦点」完全一致（都不聚焦+无 FPS），稳态打不出来、日志也没有，属功能性失效且不可自愈，按 error!
             log::error!("{}", t("window-probe-worker-failed"));
             shared.0.lock().unwrap().stopped = true;
         }
@@ -272,8 +260,7 @@ impl WindowVisibilityProbe {
             state.enqueue(request);
             self.shared.1.notify_one();
         } else if log::log_enabled!(log::Level::Debug) {
-            // [FAS] 探针已停摆（工作线程未起来/已退出）却仍在被请求：请求被静默丢弃，
-            // 调用方拿到的 latest() 依旧是 None，与「窗口还没查完」同形。高频路径仅 debug。
+            // [FAS] 探针已停摆（工作线程未起来/已退出）却仍在被请求：请求被静默丢弃，调用方拿到的 latest() 依旧是 None，与「窗口还没查完」同形，高频路径仅 debug
             log::debug!("{}", t("window-probe-stopped"));
         }
     }
@@ -354,13 +341,8 @@ impl ProbeState {
     }
 }
 
-/// worker 退出哨兵：Drop 无条件置位 `stopped` 并失效全部状态、唤醒等待者。
-/// 覆盖 worker 的两条死亡路径 —— 正常 return（probe Drop 已先行置位 ⇒ 幂等）与
-/// 运行期 panic unwind（此前无人置位 ⇒ 唯一补救）。缺了后者：worker 线程 panic 死亡后
-/// `stopped` 恒 false，`request()` 恒走 enqueue、请求静默石沉大海、`latest()` 恒 None，
-/// `:86-90` 的 `window-probe-stopped` 分支永不可达 —— 与「启动失败」同级的静默失效，
-/// 而 ftl 文案 `window-probe-worker-failed`（启动/运行失败）的「运行」一半无留痕。
-/// 锁可能已被 worker panic 毒化：Drop 里禁 unwrap（Drop 中再 panic = abort）。
+/// worker 退出哨兵：Drop 无条件置位 `stopped` 并失效全部状态、唤醒等待者，覆盖正常 return（probe Drop 已先行置位，幂等）与运行期 panic unwind 两条死亡路径
+/// 缺了后者时 `stopped` 恒 false，`request()` 恒走 enqueue、请求静默石沉大海、`latest()` 恒 None，`window-probe-stopped` 分支永不可达；锁可能已被毒化，Drop 里禁 unwrap（再 panic = abort）
 struct WorkerStopGuard(Arc<(Mutex<ProbeState>, Condvar)>);
 
 impl Drop for WorkerStopGuard {
@@ -380,11 +362,8 @@ fn run_worker_with_query(
     shared: Arc<(Mutex<ProbeState>, Condvar)>,
     query: impl Fn(&WindowRequest, &dyn Fn() -> bool) -> io::Result<WindowVisibility>,
 ) {
-    // panic 隔离：与 `mod.rs` 的 `spawn_guarded` 同属 monitor 口径 —— worker 循环任何 panic
-    // 都就地收场（catch_unwind），随后 guard Drop 置位 stopped，`request()` 从此转入
-    // `window-probe-stopped` 分支，不再静默吞请求。error 只补一次：若 panic 时 stopped 已为
-    // true，说明启动失败路径（:70-77 已打 `window-probe-worker-failed`）或 probe 自身 Drop
-    // 已先收尾——前者已有留痕，后者意味着探针正在析构、调用方即将不再使用它，均无需再报。
+    // panic 隔离：与 `mod.rs` 的 `spawn_guarded` 同属 monitor 口径，worker 循环任何 panic 都就地收场（catch_unwind），随后 guard Drop 置位 stopped，`request()` 从此转入 `window-probe-stopped` 分支
+    // error 只补一次：若 panic 时 stopped 已为 true，说明启动失败路径已打过 `window-probe-worker-failed`，或 probe 自身 Drop 已先收尾，均无需再报
     let guard = WorkerStopGuard(shared.clone());
     let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         worker_loop(shared.clone(), query)
@@ -396,7 +375,7 @@ fn run_worker_with_query(
     drop(guard);
 }
 
-/// worker 主体循环（由 `run_worker_with_query` 在 catch_unwind 内调用）。
+/// worker 主体循环，由 `run_worker_with_query` 在 catch_unwind 内调用
 fn worker_loop(
     shared: Arc<(Mutex<ProbeState>, Condvar)>,
     query: impl Fn(&WindowRequest, &dyn Fn() -> bool) -> io::Result<WindowVisibility>,
@@ -431,10 +410,8 @@ fn worker_loop(
             state.stopped || state.revision != revision
         };
         let result = query(&request, &cancelled);
-        // [FAS] 查询失败原本是完全静默的：只体现在 backoff 变长、observation 不更新。
-        // 下游 `reconcile_fas_focus` 拿到 `None` 证据就走 Grace ⇒ 关帧反馈 + 延迟退出 FAS，
-        // 和「应用真的失去焦点」在调度行为、status.csv 输出上完全同形，排查时无从区分。
-        // 这里补一条 warn：单次失败可自愈（下次 3~5s 后重试），故不提 error。
+        // [FAS] 查询失败若完全静默则只体现在 backoff 变长、observation 不更新，下游 `reconcile_fas_focus` 拿到 `None` 证据就走 Grace，关帧反馈 + 延迟退出 FAS
+        // 和「应用真的失去焦点」在调度行为、status.csv 输出上完全同形，故补一条 warn；单次失败可自愈（下次 3~5s 后重试），不提 error
         if let Err(error) = &result {
             log::warn!(
                 "{}",
@@ -555,21 +532,12 @@ fn make_nonblocking(pipe: &impl std::os::fd::AsRawFd) -> io::Result<()> {
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn collect_snapshot(cancelled: &dyn Fn() -> bool) -> io::Result<Vec<u8>> {
-    // 两条 dumpsys 子命令**互补**，实测（8550/PHB110, ColorOS）：
-    //   `window`          → 有 mCurrentFocus/mFocusedApp，**没有** mObscured/mViewVisibility
-    //   `window windows`  → 有 mObscured/mViewVisibility，**没有** mCurrentFocus/mFocusedApp
-    // 只用 `window windows`（旧实现）会让焦点判定恒不可达（Focused 永不成立）；只用 `window`
-    // 会让遮挡字段缺失、parse_windows 的 match 落 `_` 分支而连 VisibleUnfocused/Hidden 都拿不到。
-    // 故两段都取，用分隔标记拼接，由 parse_windows 按段解析。
-    // 预算：单命令实测 简单场景 79/63ms、复杂场景（多叠加窗口 + 输入法）180/114ms；
-    // 两次**各自**给 QUERY_TIMEOUT(800ms) 预算（最坏 1600ms），而**不是**共享一份——
-    // 共享会让第一段吃掉大部分预算后第二段只剩零头，复杂场景实测已达 294ms 合计，
-    // 低端机/更多窗口时第二段会先超时 → 整次查询失败 → Unknown → Grace（误判）。
-    // cancelled() 在上层被取代时会提前中止，故实际延迟由请求生命周期约束，不会长期占满。
-    // 输出上限：单段 ≤512KB，两段合计 ≤2×OUTPUT_CAP。
+    // 两条 dumpsys 子命令互补（8550/PHB110, ColorOS）：`window` 有 mCurrentFocus/mFocusedApp 但没有 mObscured/mViewVisibility，`window windows` 反之
+    // 故两段都取、用分隔标记拼接后按段解析；只用其中一段会让焦点判定恒不可达，或让遮挡字段缺失而连 VisibleUnfocused/Hidden 都拿不到
+    // 预算：两次各自给 QUERY_TIMEOUT(800ms)（最坏 1600ms），不共享一份，否则第一段吃掉大部分预算后第二段只剩零头，整次查询失败 → Unknown → Grace；输出上限单段 ≤512KB
     let focus_segment = collect_one(&["-t", "1", "window"], cancelled)?;
     let visibility_segment = collect_one(&["-t", "1", "window", "windows"], cancelled)?;
-    // 注意：不再共享 deadline —— 每段在 collect_one 内各自起算 QUERY_TIMEOUT
+    // 不共享 deadline：每段在 collect_one 内各自起算 QUERY_TIMEOUT
     let mut merged = Vec::with_capacity(focus_segment.len() + visibility_segment.len() + 32);
     merged.extend_from_slice(&focus_segment);
     merged.extend_from_slice(SEGMENT_MARKER);
@@ -577,13 +545,12 @@ fn collect_snapshot(cancelled: &dyn Fn() -> bool) -> io::Result<Vec<u8>> {
     Ok(merged)
 }
 
-/// 两段 dumpsys 输出之间的分隔标记：以 dumpsys 不可能产出的行形式出现，
-/// 便于 `parse_windows` 按段取字段而不会把两段混读。
+/// 两段 dumpsys 输出之间的分隔标记：以 dumpsys 不可能产出的行形式出现，便于 `parse_windows` 按段取字段而不会把两段混读
 const SEGMENT_MARKER: &[u8] = b"\n== CHIRI-DUMPSYS-SEGMENT ==\n";
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn collect_one(args: &[&str], cancelled: &dyn Fn() -> bool) -> io::Result<Vec<u8>> {
-    // 本段自己的预算：不与其他段共享，避免「第一段耗时挤掉第二段」
+    // 本段自己的预算：不与其他段共享，避免第一段耗时挤掉第二段
     let deadline = Instant::now() + QUERY_TIMEOUT;
     let mut child = Command::new("/system/bin/dumpsys")
         .args(args)
@@ -642,10 +609,8 @@ fn collect_snapshot(_cancelled: &dyn Fn() -> bool) -> io::Result<Vec<u8>> {
 }
 
 // [parse]
-/// `Window{token u0 pkg/Activity}` 的公共解析：拆出 `(token, package, activity)`。
-/// 窗口可见性判定与焦点 Activity 提取共用同一口径，避免解析逻辑分叉。
-/// 校验：恰好 3 个字段、第二字段必须是合法 `u<user>`、组件必须含 `/`。
-/// `activity` 为 `/` 后的原文（未归一），**允许为空**（`pkg/` 形式）——调用方按需拒绝。
+/// `Window{token u0 pkg/Activity}` 的公共解析：拆出 `(token, package, activity)`，窗口可见性判定与焦点 Activity 提取共用同一口径，避免解析逻辑分叉
+/// 校验恰好 3 个字段、第二字段必须是合法 `u<user>`、组件必须含 `/`；`activity` 为 `/` 后的原文未归一，**允许为空**（`pkg/` 形式），调用方按需拒绝
 fn window_component(text: &str) -> Option<(&str, &str, &str)> {
     let body = text.strip_prefix("Window{")?.split_once('}')?.0;
     let mut fields = body.split_whitespace();
@@ -665,16 +630,11 @@ fn window_identity(text: &str) -> Option<(&str, &str)> {
     Some((token, package))
 }
 
-/// 把 dumpsys 的 `pkg/Activity` 归一成**查表键短形** `pkg/.Activity`：
-/// - `.MainActivity`（同包内短形）原样；
-/// - `com.xx.MainActivity`（全限定且以包名开头）剥掉包名前缀 → `.MainActivity`；
-/// - 其余（外部包、含 `$` 的内部类、裸类名）保留原样，内部类**不剥 `$`**（同一 Activity
-///   的不同内部类语义不同）。
-/// 归一后同一 Activity 的两种写法落到同一键，用户从 `dumpsys`/`am` 复制任一形式都可用。
+/// 把 dumpsys 的 `pkg/Activity` 归一成**查表键短形** `pkg/.Activity`：`.MainActivity`（同包内短形）原样；`com.xx.MainActivity`（全限定且以包名开头）剥掉包名前缀；其余（外部包、含 `$` 的内部类、裸类名）保留原样
+/// 内部类**不剥 `$`**，同一 Activity 的不同内部类语义不同；归一后同一 Activity 的两种写法落到同一键，用户从 `dumpsys`/`am` 复制任一形式都可用
 pub fn activity_key(package: &str, activity: &str) -> String {
     let short = match activity.strip_prefix(package) {
-        // `rest.starts_with('.')` 守卫防「包名前缀相同但不是该包」的误坍缩：
-        // com.example.game + com.example.gameX.Main → rest = "X.Main"，不剥前缀、保留全串
+        // `rest.starts_with('.')` 守卫防包名前缀相同但不是该包的误坍缩：com.example.game + com.example.gameX.Main → rest = "X.Main"，不剥前缀、保留全串
         Some(rest) if rest.starts_with('.') && rest.len() > 1 => rest,
         _ => activity,
     };
@@ -686,7 +646,7 @@ pub fn activity_key(package: &str, activity: &str) -> String {
     format!("{package}/{short}")
 }
 
-/// 取一段文本里唯一的 `mCurrentFocus=` 值；0 条或多条（快照歧义）都返回 None。
+/// 取一段文本里唯一的 `mCurrentFocus=` 值；0 条或多条（快照歧义）都返回 None
 fn unique_focus(segment: &str) -> Option<&str> {
     let mut focus = segment
         .lines()
@@ -696,9 +656,8 @@ fn unique_focus(segment: &str) -> Option<&str> {
     focus.next().is_none().then_some(first)
 }
 
-/// 从 dumpsys 快照里取当前焦点窗口的 Activity 查表键；无唯一焦点或解析失败返回空
-/// （调用方按「未知」处理并回退包名级判定）。
-/// 合并快照下焦点来自 `window` 段，片段缺失时回退到整份（兼容旧快照/测试注入）。
+/// 从 dumpsys 快照里取当前焦点窗口的 Activity 查表键；无唯一焦点或解析失败返回空，调用方按未知处理并回退包名级判定
+/// 合并快照下焦点来自 `window` 段，片段缺失时回退到整份，兼容旧快照/测试注入
 fn focused_activity_key(snapshot: &str) -> Arc<str> {
     let (focus_segment, visibility_segment) = split_segments(snapshot);
     let Some(first) = unique_focus(focus_segment).or_else(|| unique_focus(visibility_segment))
@@ -725,16 +684,8 @@ fn field<'a>(block: &'a str, name: &str) -> Option<&'a str> {
     Some(value)
 }
 
-/// `u0a10457` / `10457` 两种写法都归一成同一个 Android uid。
-///
-/// AOSP 的 AID 文本形式是 `u<userId>a<appId>`，其中 uid = userId*100000 + appId。
-/// **appId 在文本里已经是最终值**（含 AID 区偏移），不要再加 10000 ——
-/// 真机同块对照证据（8550/PHB110，两次独立采样）：
-///   `mSession=Session{… u0a10231}` 与同块 `mOwnerUid=10231`  → 必须都归一到 10231；
-///   `mSession=Session{… u0a10457}` 与同块 `mOwnerUid=10457`  → 必须都归一到 10457。
-/// 旧实现多加了 10000（算成 20231/20457），与 `mOwnerUid` 侧恒不相等，
-/// 使 `window_session(&block) != Some((pid, uid))` 永远成立 → 窗口全部计入 `unknown_owned`
-/// → `owned_count == 0` → 恒返回 `Unknown`（`Focused`/`VisibleUnfocused` 都不可达）。
+/// `u0a10457` / `10457` 两种写法都归一成同一个 Android uid：AOSP 的 AID 文本形式是 `u<userId>a<appId>`，uid = userId*100000 + appId
+/// **appId 在文本里已经是最终值**（含 AID 区偏移），不要再加 10000，否则真机同块的 `u0aNNNNN` 与 `mOwnerUid=NNNNN` 恒不相等，窗口全部计入 `unknown_owned`，`owned_count == 0` 恒返回 `Unknown`
 fn android_uid(value: &str) -> Option<u32> {
     if let Ok(uid) = value.parse() {
         return Some(uid);
@@ -747,15 +698,8 @@ fn android_uid(value: &str) -> Option<u32> {
     user.checked_mul(100000)?.checked_add(app_id)
 }
 
-/// 从窗口块里取 `(pid, uid)`。
-///
-/// 旧实现要求 `mSession=Session{` 位于**行首**（`line.trim().strip_prefix(...)`），但真机
-/// （8550/PHB110）该字段是**行内**出现的：
-///   `    mDisplayId=0 taskId=851 mSession=Session{24fa3ae 5630:u0a10457} mClient=…`
-/// → 行首前缀匹配失败 → 返回 None → 该窗口被判 `unknown_owned` → `owned_count == 0`
-/// → 恒 `Unknown`（`Focused`/`VisibleUnfocused` 都不可达）。旧测试 fixture 恰好把
-/// `mSession` 写在行首，掩盖了真实形态。
-/// 现改为按**子串**定位，并保留「恰好一条 session」的歧义拒绝。
+/// 从窗口块里取 `(pid, uid)`：按**子串**定位 `mSession=Session{`，并保留恰好一条 session 的歧义拒绝
+/// 真机（8550/PHB110）该字段是行内出现的（`mDisplayId=0 taskId=851 mSession=Session{24fa3ae 5630:u0a10457} mClient=…`），按行首前缀匹配会返回 None，该窗口被判 `unknown_owned` 后恒 `Unknown`
 fn window_session(block: &str) -> Option<(u32, u32)> {
     let mut sessions = block.lines().filter_map(|line| {
         line.trim()
@@ -775,8 +719,7 @@ fn window_session(block: &str) -> Option<(u32, u32)> {
     Some((pid.parse().ok()?, android_uid(uid)?))
 }
 
-/// 按 `SEGMENT_MARKER` 把合并快照拆成两段。只有一段时（旧快照/测试注入）视为「可见性段」，
-/// 兼容原有单命令行为。
+/// 按 `SEGMENT_MARKER` 把合并快照拆成两段；只有一段时（旧快照/测试注入）视为可见性段，兼容原有单命令行为
 fn split_segments(snapshot: &str) -> (&str, &str) {
     match snapshot.split_once(SEGMENT_TEXT) {
         // 段序：先 `window`（焦点），后 `window windows`（可见性）
@@ -788,9 +731,8 @@ fn split_segments(snapshot: &str) -> (&str, &str) {
 const SEGMENT_TEXT: &str = "== CHIRI-DUMPSYS-SEGMENT ==";
 
 fn parse_windows(snapshot: &str, request: &WindowRequest, uid: u32) -> WindowVisibility {
-    // 两段来源不同：靠 `WINDOW MANAGER WINDOWS` 头是否存在判定可用性。
-    // 任一段缺少该头不直接判 Unknown —— 真机上 `window` 段实测含该头（计数 1），
-    // 但若某 ROM 两者都缺，仍应回退 Unknown 而不是误判为 Hidden。
+    // 两段来源不同：靠 `WINDOW MANAGER WINDOWS` 头是否存在判定可用性
+    // 任一段缺少该头不直接判 Unknown：真机上 `window` 段含该头，但若某 ROM 两者都缺，仍应回退 Unknown 而不是误判为 Hidden
     if !snapshot
         .lines()
         .any(|line| line.trim() == "WINDOW MANAGER WINDOWS (dumpsys window windows)")
@@ -798,31 +740,26 @@ fn parse_windows(snapshot: &str, request: &WindowRequest, uid: u32) -> WindowVis
         return WindowVisibility::Unknown;
     }
     let (focus_segment, visibility_segment) = split_segments(snapshot);
-    // 焦点**只**从 `window` 段取（`window windows` 段实测没有 mCurrentFocus；
-    // 若某 ROM 反转，则两段都能命中，见下方回退）
+    // 焦点只从 window 段取，window windows 段没有 mCurrentFocus，ROM 反转时两段都能命中，见下方回退
     let focused = unique_focus(focus_segment)
         .or_else(|| unique_focus(visibility_segment))
         .and_then(window_identity);
-    // 可见性字段（mObscured/mViewVisibility/mHasSurface/isOnScreen）从 `window windows` 段取。
-    // 该段缺失时回退到整份快照，保持旧行为。
+    // 可见性字段（mObscured/mViewVisibility/mHasSurface/isOnScreen）从 `window windows` 段取；该段缺失时回退到整份快照，保持旧行为
     let visibility_source = if visibility_segment.trim().is_empty() {
         snapshot
     } else {
         visibility_segment
     };
-    // [token] 焦点来自焦点段、窗口块来自可见性段，判据仍是 `token` 相等。
-    // 若某 ROM 两段 token 编码不一致，Focused 会不可达 —— 这**必须靠真机数据确认**
-    // （见 devimpbin/1016-001727/probe3.sh 的 C 段）。这里**不做**包名放宽：包名宽松匹配
-    // 会让「叠加窗口盖住游戏」时错判 Focused，直接破坏「有叠加画面时退出是预期行为」。
+    // [token] 焦点来自焦点段、窗口块来自可见性段，判据仍是 `token` 相等；若某 ROM 两段 token 编码不一致，Focused 会不可达，必须靠真机数据确认
+    // 这里**不做**包名放宽：包名宽松匹配会让叠加窗口盖住游戏时错判 Focused，直接破坏「有叠加画面时退出是预期行为」
     let lines = visibility_source.lines().collect::<Vec<_>>();
     let mut owned_count = 0;
     let mut unknown_owned = false;
     let mut visible = false;
     let mut obscured = false;
     for (index, line) in lines.iter().enumerate() {
-        // 兼容两种格式：`Window #0 Window{token u0 pkg/Act}`（window windows）
-        // 与 `Window #0: WindowStateAnimator{...}`（window，带冒号）。后者无组件名，
-        // 其可见性信息在 `window windows` 段里已覆盖，故解析不出组件时跳过而不计 unknown。
+        // 兼容两种格式：Window #0 Window{token u0 pkg/Act} 与 Window #0: WindowStateAnimator{...}（带冒号）
+        // 后者无组件名，其可见性信息在 `window windows` 段里已覆盖，故解析不出组件时跳过而不计 unknown
         let Some(header) = line.trim().strip_prefix("Window #") else {
             continue;
         };
@@ -872,7 +809,7 @@ fn parse_windows(snapshot: &str, request: &WindowRequest, uid: u32) -> WindowVis
                 }
                 visible = true;
             }
-            // A fully obscured game window is still visible to the window service but must not keep load-only alive.
+            // 完全被遮挡的游戏窗口对 window service 仍可见，但不得让 load-only 继续保活
             (_, Some(_), Some("true")) => obscured = true,
             (Some("false"), Some("false"), _) | (Some("true"), Some("false"), _) => {}
             _ => unknown_owned = true,
@@ -1246,8 +1183,7 @@ mod activity_tests {
         assert_eq!(focused_activity_key("nothing here").as_ref(), "");
     }
 
-    // [merged] 双查询合并快照：焦点来自 `window` 段、可见性来自 `window windows` 段。
-    // 真机依据见 HANDOFF.md 第 10.1 节（`window windows` 无 mCurrentFocus，`window` 无 mObscured）。
+    // [merged] 双查询合并快照：焦点来自 `window` 段、可见性来自 `window windows` 段（后者无 mCurrentFocus，前者无 mObscured）
     fn merged(focus_lines: &str, vis_body: &str) -> String {
         format!(
             "WINDOW MANAGER WINDOWS (dumpsys window windows)\n{focus_lines}\n== CHIRI-DUMPSYS-SEGMENT ==\nWINDOW MANAGER WINDOWS (dumpsys window windows)\n{vis_body}\n"
@@ -1256,8 +1192,8 @@ mod activity_tests {
 
     #[test]
     fn merged_snapshot_takes_focus_from_first_segment() {
-        // 第一段（window）有 mCurrentFocus 与冒号格式的 Window #；第二段（window windows）没有焦点
-        // 注意 token 必须两段一致（真实 dumpsys 是同一个 window token；不一致会正确地判为未聚焦）
+        // 第一段（window）有 mCurrentFocus 与冒号格式的 Window #，第二段（window windows）没有焦点
+        // token 必须两段一致，真实 dumpsys 是同一个 window token，不一致会正确地判为未聚焦
         let snap = merged(
             "  Window #0: WindowStateAnimator{14d9077 com.android.systemui.wallpapers.ImageWallpaper}\n  mCurrentFocus=Window{abc u0 com.example.game/.Main}",
             "  Window #0 Window{abc u0 com.example.game/.Main}:\n    mSession=Session{def 42:10042}\n    mOwnerUid=10042\n    mHasSurface=true isOnScreen=true mObscured=false",
@@ -1300,7 +1236,7 @@ mod activity_tests {
 
     #[test]
     fn single_segment_snapshot_keeps_legacy_behaviour() {
-        // 无分隔标记（旧快照/测试注入）：两段都取整份，行为与改动前一致
+        // 无分隔标记（旧快照/测试注入）：两段都取整份
         assert_eq!(
             parse_windows(&snapshot(true, true), &request(), 10042),
             WindowVisibility::Focused
@@ -1321,8 +1257,7 @@ mod activity_tests {
 
     #[test]
     fn aid_uid_form_matches_owner_uid_in_same_block() {
-        // 真机证据（8550/PHB110，两次独立采样）：同块内 `u0aNNNNN` 与 `mOwnerUid=NNNNN` 必须相等。
-        // 旧实现给 AID 形式多加 10000 → 两者恒不等 → 所有窗口落 unknown_owned → 恒 Unknown。
+        // 真机证据（8550/PHB110）：同块内 `u0aNNNNN` 与 `mOwnerUid=NNNNN` 必须相等，多加 10000 会让两者恒不等、所有窗口落 unknown_owned、恒 Unknown
         assert_eq!(android_uid("u0a10457"), Some(10457));
         assert_eq!(android_uid("u0a10231"), Some(10231));
         assert_eq!(android_uid("10457"), Some(10457));
@@ -1332,7 +1267,7 @@ mod activity_tests {
 
     #[test]
     fn real_device_window_block_proves_focused() {
-        // 用真机 D 段原文构造的块（AID 形式 uid + 无 isOnScreen= 字段，靠 isReadyForDisplay()+mViewVisibility）
+        // 用真机原文构造的块：AID 形式 uid + 无 isOnScreen= 字段，靠 isReadyForDisplay()+mViewVisibility
         let block = "WINDOW MANAGER WINDOWS (dumpsys window windows)\n  Window #18 Window{b1b876b u0 com.levelinfinite.sgameGlobal/com.levelinfinite.sgameGlobal.SGameGlobalActivity}:\n    mDisplayId=0 taskId=851 mSession=Session{24fa3ae 5630:u0a10457} mClient=android.os.BinderProxy@9f64cba\n    mOwnerUid=10457 showForAllUsers=false package=com.levelinfinite.sgameGlobal appop=NONE\n    mHasSurface=true isReadyForDisplay()=true mWindowRemovalAllowed=false\n    mViewVisibility=0x0 mHaveFrame=true mObscured=false\n  mCurrentFocus=Window{b1b876b u0 com.levelinfinite.sgameGlobal/com.levelinfinite.sgameGlobal.SGameGlobalActivity}\n";
         let req = WindowRequest {
             package: "com.levelinfinite.sgameGlobal".into(),
@@ -1340,7 +1275,7 @@ mod activity_tests {
             generation: 7,
             foreground: "".into(),
         };
-        // uid 参数这里传 10457（= android_uid("u0a10457")），必须判 Focused
+        // uid 参数传 10457（= android_uid("u0a10457")），必须判 Focused
         assert_eq!(
             parse_windows(&block, &req, android_uid("u0a10457").unwrap()),
             WindowVisibility::Focused,
@@ -1350,7 +1285,7 @@ mod activity_tests {
 
     #[test]
     fn merged_snapshot_without_header_is_unknown() {
-        // 两段都缺 `WINDOW MANAGER WINDOWS` 头 → Unknown（不误判 Hidden）
+        // 两段都缺 `WINDOW MANAGER WINDOWS` 头 → Unknown，不误判 Hidden
         let snap =
             "== CHIRI-DUMPSYS-SEGMENT ==\n  mCurrentFocus=Window{abc u0 com.example.game/.Main}\n";
         assert_eq!(
@@ -1361,7 +1296,7 @@ mod activity_tests {
 
     #[test]
     fn focused_activity_key_survives_empty_first_segment() {
-        // 第一段为空（`window` 查询失败已在上游整体失败，但防御性保留）：回退第二段
+        // 第一段为空（`window` 查询失败已在上游整体失败，防御性保留）：回退第二段
         let snap = merged("", "  mCurrentFocus=Window{abc u0 com.example.game/.Main}");
         assert_eq!(
             focused_activity_key(&snap).as_ref(),
@@ -1399,8 +1334,7 @@ mod activity_tests {
             observed_at: now,
             activity: Arc::from("com.example.game/.Main"),
         };
-        // activity 不参与 request 匹配（身份 = 包名/pid/generation/foreground），
-        // 否则每次 Activity 切换都会让窗口观测失效
+        // activity 不参与 request 匹配（身份 = 包名/pid/generation/foreground），否则每次 Activity 切换都会让窗口观测失效
         assert!(matches_observation(&observation, &request(), now));
         assert_eq!(observation.activity.as_ref(), "com.example.game/.Main");
     }
@@ -1410,7 +1344,7 @@ mod activity_tests {
         let now = Instant::now();
         // 首次请求立即允许
         assert_eq!(allowed_query_at(None, true, now), now);
-        // 同包稳态：距上次查询 3s（失败重试也走这条，不会退化成 1s）
+        // 同包稳态：距上次查询 3s，失败重试也走这条，不会退化成 1s
         assert_eq!(
             allowed_query_at(Some(now), true, now),
             now + ACTIVITY_SAMPLE_INTERVAL

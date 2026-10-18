@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Segmented.svelte: [switch] [keyboard]单选切换：radiogroup/radio 语义（互斥选择，而非 tab），补方向键导航满足键盘可达性
+  // Segmented.svelte: [switch] [keyboard] 单选切换：radiogroup/radio 语义（互斥选择，而非 tab），补方向键导航满足键盘可达性
   type SegmentedItem = { id: string; label: string }
 
   let {
@@ -12,7 +12,7 @@
     items: SegmentedItem[]
     value: string
     label?: string
-    /** 项多/窄屏时整条左右滑动（项按内容宽度排列，不再压缩）——样式见 app.css .g-segmented[data-scroll] */
+    /** 项多/窄屏时整条左右滑动（项按内容宽度排列，不压缩），样式走 .g-segmented[data-scroll] */
     scroll?: boolean
     onselect: (id: string) => void
   }>()

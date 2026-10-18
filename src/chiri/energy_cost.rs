@@ -1,32 +1,11 @@
 //! energy_cost.rs: [source] [power] [supply] [cost] [probe] [decision] [tests]
-//!
-//! FDP（前沿主导的放置内核）的能耗成本模型。**单点真相**：`mdocs/8550/sm8550-freq-power.md`
-//! §3「簇级口径」三张表 → `scripts/frontier_policy.py` → `module/config/8550/soc.yaml` 受控块
-//! `per_cluster.<簇>.power_w` → 运行期 `soc_frontier_policy()`。本模块**不手抄任何表**。
-//!
-//! ⚠️ 表是纯动态项（DPC·f·V²，不含漏电/静态功耗/idle-exit，电压借自另一批次 Odin2），**只能用于
-//! 相对排序、不做绝对功耗预测**；单线程×簇级的比较不等于图③的整机前沿（口径降级见计划 3.3（5））。
-//!
-//! **频率口径**：不做「簇总算力均摊」的过原点反解——它假设需求摊到全簇所有核，对少核簇严重低估
-//! （prime 1 核时轻需求会被钳到最低档 → `ΔP=0` → 误判 prime「免费」，与 schedutil 真实行为及
-//! 计划 P-b「单核算力需求 >2600 Mdmips 才用 prime」冲突）。改为：
-//! - **现状**：取该簇**实测** `scaling_cur_freq`（FREQ_QOS 聚合值、非 CLG 决策上限）；读不到才用模型
-//!   `freq_for_policy_util(cluster, u_now)`。现状不含模型误差。
-//! - **之后**：`Δu = d / cap_簇`（一份需求落在**一个核**上 → 该核占用率增量）；
-//!   `u_after = clamp(u_now ± Δu, 0, 1)`；`f_after = floor 对齐(f_min + u_after × (f_max − f_min))`。
-//! - `u_now` = `core_utils` 里该簇各核 util 的**最大值**（与 policy 口径一致：schedutil 的频率来自
-//!   该 policy 的 util = 最忙核占用率，不是簇总算力/平均）。
-//! - 同一份 `f` 下 `P(f)` 超线性（§2.1 算力/mW 随频率单调劣化）→ 同为 `Δu` 在高频段 `ΔP` 更大：
-//!   往已经在高位的簇塞更贵，即「注意目标核当前能效、避免迁移把目标簇能效拉劣」。
-//!
-//! 非 8550 / 前沿段未启用 → `soc_frontier_policy()` 为 `None` → 全部返回 `None`；调用方先经
-//! [`fdp_available`] 判定，缺数据时**回退原放置路径**（不是把后台 promote 整段停掉）。
+//! FDP（前沿主导的放置内核）能耗成本模型：数据链 mdocs/8550/sm8550-freq-power.md §3 → scripts/frontier_policy.py → soc.yaml 受控块 `per_cluster.<簇>.power_w` → `soc_frontier_policy()`，本模块不手抄表
 
 use crate::common::{self, CoreGroup};
 use std::sync::OnceLock;
 
 // [source]
-/// 取该簇的 (频率档 kHz, 逐档簇功耗 W)：数据源 = `soc_frontier_policy().per_cluster`。
+/// 取该簇的 (频率档 kHz, 逐档簇功耗 W)，数据源 = `soc_frontier_policy().per_cluster`
 /// 缺段 / 缺该簇表 / 空表 / `freqs.len() != powers.len()` → `None`（不齐一律回退、不动作、不 panic、不猜）
 fn cluster_energy_table(cluster: CoreGroup) -> Option<(&'static [u32], &'static [f32])> {
     let pol = common::soc_frontier_policy()?;
@@ -43,8 +22,8 @@ fn cluster_energy_table(cluster: CoreGroup) -> Option<(&'static [u32], &'static 
 }
 
 // [power]
-/// 在 (freqs, powers) 上线性插值：越界取端点（低于首档→首档功耗，高于末档→末档功耗）；
-/// 表空 / 长度不一致 → `None`。纯函数（不读全局），便于测试
+/// 在 (freqs, powers) 上线性插值：越界取端点（低于首档→首档功耗，高于末档→末档功耗）；表空 / 长度不一致 → `None`
+/// 纯函数（不读全局），便于测试
 fn interp(freqs: &[u32], powers: &[f32], freq_khz: u32) -> Option<f32> {
     if freqs.is_empty() || freqs.len() != powers.len() {
         return None;
@@ -72,7 +51,7 @@ fn interp(freqs: &[u32], powers: &[f32], freq_khz: u32) -> Option<f32> {
     powers.last().copied()
 }
 
-/// 该簇在 `freq_khz` 处的**簇功耗**（W）：查 `soc_frontier_policy()` 逐档表并线性插值，越界取端点。
+/// 该簇在 `freq_khz` 处的簇功耗（W）：查 `soc_frontier_policy()` 逐档表并线性插值，越界取端点
 /// 非 8550 / 前沿段缺失 / 表不齐 → `None`
 pub fn cluster_power_w(cluster: CoreGroup, freq_khz: u32) -> Option<f32> {
     let (freqs, powers) = cluster_energy_table(cluster)?;
@@ -80,23 +59,8 @@ pub fn cluster_power_w(cluster: CoreGroup, freq_khz: u32) -> Option<f32> {
 }
 
 // [accounting]
-/// CPU **动态**功率估计（W）：逐簇 `簇功耗表(实测频率) × 簇忙碌比` 求和。
-///
-/// 忙碌比 = 簇内各核 util 之和 ÷ 簇核数——表是「整簇满载」口径，单核满载即 1/N。
-/// util 入参是 `core_utils`（按 CPU 编号索引，0~1）。
-///
-/// ⚠️ 三处口径限制，读数前必知：
-/// 1. 表只含动态项（不含漏电 / 静态 / idle-exit），本值是模型估计，
-///    不是逐秒物理下界或实测 CPU 总功率；
-/// 2. 电压借自另一批次（见模块头），绝对量有系统偏差，相对排序也需核对适用场景；
-/// 3. 无功耗表的 SoC（当前仅 8550 有）返回 `None`，对应列写 `-`。
-///
-/// 用途：把电池端总功率里 ChiRi 能影响的那部分单独记一列，离线用「总 − 动态 = 残差」
-/// 剥掉屏幕 / modem / GPU / 静态这些调度层碰不到的外围，避免拿整机功耗直接归因调度改动。
-///
-/// **代价**：有表的 SoC 上每秒 1 次调用 = 3 次 `scaling_cur_freq` open/read（`dev_record`
-/// 关闭时也照读，因为它挂在 status 行上而不是诊断块里）。相对 `@S` 帧上千次 stat 读是小头，
-/// 同秒已有实测快照时可改用 `cpu_dynamic_power_w_with_frequencies`，省去重复频率读取。
+/// CPU 动态功率估计（W）：逐簇 `簇功耗表(实测频率) × 簇忙碌比` 求和，忙碌比 = 簇内各核 util 之和 ÷ 簇核数
+/// 无功耗表的 SoC 返回 None 对应列写 -，同秒已有频率快照时可改用 cpu_dynamic_power_w_with_frequencies
 pub fn cpu_dynamic_power_w(core_utils: &[f32]) -> Option<f32> {
     if !has_cpu_energy_table() {
         return None;
@@ -107,9 +71,8 @@ pub fn cpu_dynamic_power_w(core_utils: &[f32]) -> Option<f32> {
     sum_cpu_dynamic_power_w(core_utils, &spans, &frequencies, cluster_power_w)
 }
 
-/// CPU 动态功率估计（W）：使用同秒 `(policy ID, scaling_cur_freq kHz)` 快照。
-/// 顺序不限，policy ID 不得重复；缺失、读取失败及 0 频率均跳过，不回退模型、不额外读频率。
-/// policy 到簇的拓扑映射沿用 `read_cluster_freqs` 的一次性发现结果。
+/// CPU 动态功率估计（W）：使用同秒 `(policy ID, scaling_cur_freq kHz)` 快照，顺序不限、policy ID 不得重复
+/// 缺失、读取失败及 0 频率均跳过，不回退模型、不额外读频率；policy 到簇的拓扑映射沿用 `read_cluster_freqs` 的一次性发现结果
 pub fn cpu_dynamic_power_w_with_frequencies(
     core_utils: &[f32],
     policy_frequencies: &[(u32, Option<u32>)],
@@ -178,7 +141,7 @@ where
         if observed_core_count == 0 {
             continue;
         }
-        // 缺失 util 不当成实测零；有样本时仍按整簇核数归一化。
+        // 缺失 util 不当成零，有样本时仍按整簇核数归一化
         total_power += cluster_power * (busy_utilization / span.len() as f32).clamp(0.0, 1.0);
         has_observed_cluster = true;
     }
@@ -186,8 +149,7 @@ where
 }
 
 // [supply]
-/// 该簇的**真实频档**（kHz 升序）：优先 `soc.yaml [freq_khz]`，缺失则回退前沿受控块
-/// `per_cluster.<簇>.freq_khz`（两者同源）；都缺 → `None`
+/// 该簇的真实频档（kHz 升序）：优先 `soc.yaml [freq_khz]`，缺失则回退前沿受控块 `per_cluster.<簇>.freq_khz`（两者同源）；都缺 → `None`
 fn cluster_real_freqs(cluster: CoreGroup) -> Option<&'static [u32]> {
     if let Some(t) = common::soc_config().and_then(|c| c.freq_khz.as_ref()) {
         let v = match cluster {
@@ -213,7 +175,7 @@ fn cluster_real_freqs(cluster: CoreGroup) -> Option<&'static [u32]> {
     }
 }
 
-/// 该簇当前**最忙核**占用率（0..1）：`core_utils` 为该簇各核 util，取最大值。
+/// 该簇当前最忙核占用率（0..1）：`core_utils` 为该簇各核 util，取最大值
 /// 与 policy 口径一致（schedutil 的频率来自该 policy 的 util = 最忙核占用率，不取平均/簇总算力）
 fn cluster_now_util(cluster: CoreGroup, core_utils: &[f32]) -> f32 {
     let r = common::chiri_core_ranges();
@@ -229,9 +191,8 @@ fn cluster_now_util(cluster: CoreGroup, core_utils: &[f32]) -> f32 {
     m
 }
 
-/// schedutil 式 **util → frequency**（kHz）：线性映射 `f_min + u × (f_max − f_min)` 后
-/// **floor 对齐**到该簇真实频档（≤ raw 的最大档）。缺频表 → `None`。
-/// **不做簇总算力/过原点换算**（那会低估少核簇真实频率）。
+/// schedutil 式 util → frequency（kHz）：线性映射 `f_min + u × (f_max − f_min)` 后 floor 对齐到该簇真实频档（≤ raw 的最大档），缺频表 → `None`
+/// 不做簇总算力/过原点换算（那会低估少核簇真实频率）
 pub fn freq_for_policy_util(cluster: CoreGroup, u: f32) -> Option<u32> {
     if !u.is_finite() {
         return None;
@@ -253,8 +214,7 @@ pub fn freq_for_policy_util(cluster: CoreGroup, u: f32) -> Option<u32> {
     Some(out)
 }
 
-/// 该簇**工作频率**：优先实测 `scaling_cur_freq`（现状不含模型误差），读不到才用模型
-/// `freq_for_policy_util(cluster, u_now)`
+/// 该簇工作频率：优先读 scaling_cur_freq，读不到才用模型 freq_for_policy_util
 fn cluster_now_freq(cluster: CoreGroup, u_now: f32, cur_freq: Option<u32>) -> Option<u32> {
     match cur_freq {
         Some(f) if f > 0 => Some(f),
@@ -263,15 +223,8 @@ fn cluster_now_freq(cluster: CoreGroup, u_now: f32, cur_freq: Option<u32>) -> Op
 }
 
 // [cost]
-/// 双边净收益（W）：`net = [P_src(f_src_after) − P_src(f_src_now)] + [P_dst(f_dst_after) − P_dst(f_dst_now)]`。
-///
-/// **等价语义（写清便于审查）**：两项对应**同一份需求 d**，所以 `net < 0` ⟺ 这份算力搬到目标簇后的
-/// **边际 mW/Mdmips 比留在源簇更低**——判据本身就是「等算力下更低功耗」，不是簇名气/平均值比较。
-/// 又因同簇 `P(f)` 超线性（§2.1），同样的占用率/频率增量在高频段 `ΔP` 更大 → **往已在高位的簇塞更贵**。
-/// 源簇让出后工作点不变 → 让出收益为 0 → 默认不动（保守口径）。
-/// 参数为**频率**（kHz）：调用方必须传**单调且同底**的一对值，并保证两条不变式——
-/// `f_dst_after ≥ f_dst_now`（否则 `ΔP_dst < 0`，等于给一个簇加需求却更省电）与
-/// `f_src_after ≤ f_src_now`（否则让出收益为负）。`fdp_destination` 用保守包络构造这两对值。
+/// schedutil 式 util → frequency（kHz）：线性映射 `f_min + u × (f_max − f_min)` 后 floor 对齐到该簇真实频档（≤ raw 的最大档），缺频表 → `None`
+/// 不做簇总算力/过原点换算（那会低估少核簇真实频率）
 pub fn net_benefit_w(
     src: CoreGroup,
     f_src_now: u32,
@@ -297,9 +250,7 @@ fn cluster_slot(cluster: CoreGroup) -> usize {
     }
 }
 
-/// 簇 → cpufreq policy id 的映射，**只发现一次**：policy 目录开机后固定（热插拔只动核的 online，
-/// 不增删 policy），所以把「扫 policy 目录 + related_cpus 首核归属」这套发现过程做成一次性，
-/// 此后每轮只读 3 个 `scaling_cur_freq`。
+/// 簇 → cpufreq policy id 的映射只发现一次：policy 目录开机后固定（热插拔只动核的 online，不增删 policy），此后每轮只读 3 个 `scaling_cur_freq`
 fn cluster_policy_ids() -> &'static [Option<u32>; 3] {
     static IDS: OnceLock<[Option<u32>; 3]> = OnceLock::new();
     IDS.get_or_init(|| {
@@ -335,11 +286,8 @@ fn cluster_policy_ids() -> &'static [Option<u32>; 3] {
     })
 }
 
-/// 三簇当前实际运行频率（kHz，返回 `[little, big, prime]`）：按缓存好的 policy id 各读一个
-/// `scaling_cur_freq`，共 3 次 open。
-///
-/// **口径 = FREQ_QOS 聚合后的实际频率，不是 CLG 的决策原值/上限**；读不到的簇为 `None`
-/// （调用方回退到模型 `freq_for_policy_util`）。
+/// 三簇当前实际运行频率（kHz，返回 `[little, big, prime]`）：按缓存好的 policy id 各读一个 `scaling_cur_freq`，共 3 次 open
+/// 口径 = FREQ_QOS 聚合后的实际频率，不是 CLG 的决策原值/上限；读不到的簇为 `None`（调用方回退到模型 `freq_for_policy_util`）
 pub fn read_cluster_freqs() -> [Option<u32>; 3] {
     let ids = cluster_policy_ids();
     let mut out = [None, None, None];
@@ -372,25 +320,16 @@ pub enum FdpChoice {
 }
 
 // [probe]
-/// FDP 可用性（静态数据面）：三簇 capacity 与簇功耗表都在 = 本 SoC 支持 FDP。
-/// 缺任何一项（soc.yaml 无 capacity / frontier 段）→ 调用方回退旧的放置路径，
-/// 而不是把后台 promote 整段停掉（「不支持的 SoC 回退原逻辑」）
+/// FDP 可用性（静态数据面）：三簇 capacity 与簇功耗表都在 = 本 SoC 支持 FDP
+/// 缺任何一项（soc.yaml 无 capacity / frontier 段）→ 调用方回退旧的放置路径，而不是把后台 promote 整段停掉
 pub fn fdp_available() -> bool {
     const ALL: [CoreGroup; 3] = [CoreGroup::Little, CoreGroup::Big, CoreGroup::Prime];
     ALL.iter()
         .all(|&c| common::soc_capacity_for_group(c).is_some() && cluster_energy_table(c).is_some())
 }
 
-/// FDP：后台/批处理线程从 little 让出的**目的簇选择**（纯函数：同一输入 → 同一落点，不依赖迭代顺序）。
-///
-/// 源簇 = little（后台线程被 `pin_background` 限制在小核），线程序列需求 `d = util 比例 × little 单核 capacity`。
-/// 目的簇候选：`allow_prime == false` 时**只有 big**——prime 独核被从 rail-collapse 拉起后的静默代价、
-/// 以及 P-b「单核算力需求 >2600 Mdmips 才用 prime」门槛，本静态表（纯动态项、不含漏电/idle-exit）都判不出来，
-/// 表会系统性低估 prime 真实成本。故 prime 候选资格仍由 `Affinity.bg_promote_exclude_prime` 把关（A3 保持硬规则）：
-/// 只有显式把 `bg_promote_exclude_prime: false`，prime 才进入候选。缺省保守、零新增开关。
-///
-/// 过率条件：`net < 0 且 net ≤ −hysteresis`、迁入后 `f_dst_after ≤ ratio × 该簇最高频`、该簇本轮迁入条数未触顶；
-/// 通过后取 `net` 最小（最省）的簇。配额与频率上限是**同轮硬约束**（成本项只在跨轮生效）。
+/// FDP：后台/批处理线程从 little 让出的目的簇选择（纯函数：同一输入 → 同一落点，不依赖迭代顺序）
+/// 源簇 = little，线程序列需求 `d = util 比例 × little 单核 capacity`；`allow_prime == false` 时候选只有 big；过率条件：`net < 0 且 net ≤ −hysteresis`、迁入后 `f_dst_after ≤ ratio × 该簇最高频`、本轮迁入条数未触顶，通过后取 `net` 最小的簇
 #[allow(clippy::too_many_arguments)]
 pub fn fdp_destination(
     thread_util_pct: f32,
@@ -427,19 +366,15 @@ pub fn fdp_destination(
     let Some(f_src_after_model) = freq_for_policy_util(src, u_src_after) else {
         return FdpChoice::Skip("nodata");
     };
-    // 让出收益也取保守侧：之后频率不高于现状（`min`）——保证 `ΔP_src ≤ 0`（让出不可能更费电），
-    // 也避免源簇此刻实测偏低时「之后」被算得比现状还高、让收益反向。让出收益宁小勿大：收益虚高会推动不该有的迁移
-    // TODO: 这一对值不同底：现状取实测、之后取模型（目的簇侧已用 f_dst_now/f_dst_after 包络对齐，此处缺 f_src_now 的模型值）。
-    // 实测高于模型（QoS/热/别的线程抬频）时 `min` 仍会放大让出收益；修法 = 对称地取 f_src_now = min(实测, 模型)。
+    // 让出收益取保守侧：之后频率不高于现状，保证 ΔP_src ≤ 0，避免源簇读数偏低时收益反向
+    // TODO: 这一对值不同底，现状取实测、之后取模型，修法 = 对称地取 f_src_now = min(实测, 模型)
     let f_src_after = f_src_after_model.min(f_src_now);
 
     let max_inserts = max_inserts.max(1);
     let ratio = dst_freq_cap_ratio.clamp(0.0, 1.0);
     let dsts: &[CoreGroup] = if allow_prime { &BOTH } else { &BIG_ONLY };
     let mut best: Option<FdpMove> = None;
-    // 位 0 = quota、位 1 = freq cap/数据缺失、位 2 = 净收益不达标。多候选中不同候选被不同约束拦下会
-    // 同时置位，故出参按位组合如实回（见函数尾），不压成单一原因——否则离线只能看到一个原因、
-    // 把「同一候选被多重拦截」误记成单一约束（如把 dstfreq 记高/记漏）。
+    // 位 0 = quota、位 1 = freq cap/数据缺失、位 2 = 净收益不达标；多候选中不同候选被不同约束拦下会同时置位，故出参按位组合如实回，不压成单一原因
     let mut blocked = 0u32;
     for &dst in dsts {
         let slot = cluster_slot(dst);
@@ -466,7 +401,7 @@ pub fn fdp_destination(
             blocked |= 2;
             continue;
         };
-        // 与实测同底的模型现状：下面靠它把「现状 / 之后」锚到同一侧，避免两个不同底相减
+        // 与实测同底的模型现状，用于把「现状 / 之后」锚到同一侧
         let Some(f_dst_now_model) = freq_for_policy_util(dst, u_dst_now) else {
             blocked |= 2;
             continue;
@@ -476,15 +411,11 @@ pub fn fdp_destination(
             blocked |= 2;
             continue;
         };
-        // 承接成本取**保守包络**：现状 = 实测与模型的**小**，之后 = 模型与实测的**大**。两个作用：
-        // ① 保证 `ΔP_dst ≥ 模型边际 ≥ 0`（给一个簇加需求不可能让它更省电）。若照直用「实测现状 + 模型之后」，
-        //    当目的簇因 QoS / 热 / 别的线程尖峰此刻跑得比模型高时，会算出 `f_after < f_now`、`ΔP_dst < 0`，
-        //    把承接成本算成免费甚至收益——即「低估承接成本 → 反鼓励往满簇塞」；
-        // ② 顺带堵住「簇已经在热 ⇒ 加负载免费」的错觉：实测把差值压到 0 时，仍至少收模型那一段边际。
+        // 承接成本取保守包络：现状取两者的小、之后取两者的大，保证 ΔP_dst ≥ 0
+        // 若照直用「现状 + 模型之后」，目的簇因 QoS/热/别的线程尖峰跑得比模型高时会算出 ΔP_dst < 0，把承接成本算成收益
         let f_dst_now = f_dst_now_measured.min(f_dst_now_model);
         let f_dst_after = f_dst_after_model.max(f_dst_now_measured);
-        // 硬护栏（P-a「任何簇贴顶都不行」）：迁入后该簇工作频率不得高于 ratio × 该簇最高频。
-        // 比的是上面那个包络值（≥ 实测现状），所以「目的簇此刻就已经贴在劣化区」同样会被拦下
+        // 硬护栏：迁入后该簇工作频率不得高于 ratio × 该簇最高频，比的是上面那个包络值，目的簇已贴在劣化区同样会被拦下
         if f_dst_after as f32 > dst_top as f32 * ratio {
             blocked |= 2;
             continue;
@@ -533,9 +464,8 @@ pub fn fdp_destination(
 }
 
 // [tests]
-// 本仓库**无测试基建**（无 CI 执行 `cargo test`）——以下测试只保证编译通过、不会被执行；
-// 依赖 SoC 运行期数据（`soc_frontier_policy()` / `chiri_core_ranges()`）的断言在开发机恒为
-// None/兜底值，故只用「None 或满足不变量」的弱断言，避免误伤。
+// 本仓库无测试基建（无 CI 执行 `cargo test`），以下测试只保证编译通过、不会被执行
+// 依赖 SoC 运行期数据的断言在开发机恒为 None/兜底值，故只用「None 或满足不变量」的弱断言
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -616,10 +546,8 @@ mod tests {
 
     #[test]
     fn anchor_big_low_vs_little_high_net_negative() {
-        // §2.1/§5 锚点：同量级算力下「big 低频」比「little 高频」省
-        // （little 2016000 ≈ 0.933 W ↔ big 940800 ≈ 0.654 W）。真机 8550 有 frontier 表时，
-        // 从 little 让出（2016000→307200）、搬到 big（499200→940800）的净收益必须为负；
-        // 测试环境读不到 SoC 数据时 API 返回 None（同样不动作）——两种情况都不许 net > 0。
+        // §2.1/§5 锚点：同量级算力下「big 低频」比「little 高频」省（little 2016000 ≈ 0.933 W ↔ big 940800 ≈ 0.654 W）
+        // 真机 8550 有 frontier 表时，从 little 让出（2016000→307200）、搬到 big（499200→940800）的净收益必须为负；测试环境读不到 SoC 数据时 API 返回 None，两种情况都不许 net > 0
         let net = net_benefit_w(
             CoreGroup::Little,
             2_016_000,

@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # build-arch.sh: [meta] [menu] [dl] [deps] [pkg] [toolchain] [lint] [xtask] [pack]
-# ChiRi 本地构建脚本,供 Arch Linux 及其衍生发行版使用(pacman 系)。
-# 与 CI(.github/workflows/build.yml) 构建等效,产物一致,最后追加 zip 打包。
-# 本脚本只检查依赖,永不自动安装;缺失时交互式选「预构建拉取 / 给出包管理器命令 / 跳过」。
+# ChiRi 本地构建脚本,供 Arch Linux 及衍生发行版(pacman 系)使用,与 CI(.github/workflows/build.yml) 等效,最后追加 zip 打包
+# 只检查依赖、永不自动安装,缺失时交互式选「预构建拉取 / 给出包管理器命令 / 跳过」
 set -euo pipefail
 
 # [meta] 元信息与全局状态
@@ -23,9 +22,7 @@ c_dim()  { printf '\033[2m%s\033[0m\n' "$*"; }
 have()   { command -v "$1" >/dev/null 2>&1; }
 die()    { c_red "错误: $*" >&2; exit 1; }
 
-# [dl] 下载: 一律带进度/速度/剩余时间
-# 有 tty 时用 curl 原生进度条(自动含速率与 ETA);无 tty(重定向/日志)时退化为
-# 自绘的百分比+速度+ETA 文本进度,省得日志里刷满 \r。
+# [dl] 下载一律带进度/速度/剩余时间,有 tty 用 curl 原生进度条,无 tty 退化为自绘的百分比+速度+ETA 文本
 human_size() {  # 字节 -> 人读;numfmt 缺失时退回 awk 估算
     if have numfmt; then numfmt --to=iec --suffix=B "$1" 2>/dev/null || echo "$1 B"
     else awk -v b="$1" 'BEGIN{s=split("B KiB MiB GiB",u," ");i=1;while(b>=1024&&i<s){b/=1024;i++}printf "%.1f %s",b,u[i]}'
@@ -79,11 +76,8 @@ ask() {
     printf -v "$__var" '%s' "${opts[$((sel-1))]}"
 }
 
-# [deps] 依赖检查(不报不装)+ 预构建拉取
-#: 无网络时就地 IGNORE;NDK 可从 ANDROID_NDK_HOME 环境变量豁免: 
-
-# 与 CI 同口径: 经 GitHub API 按模式解析 release asset(不猜文件后缀 .tgz/.tar.gz/.tar.zst)
-# $1=owner/repo $2=tag $3=grep -E 模式;echo asset 名
+# [deps] 依赖检查(不报不装)+ 预构建拉取,无网络时就地 IGNORE,NDK 可从 ANDROID_NDK_HOME 豁免
+# 与 CI 同口径: 经 GitHub API 按模式解析 release asset(不猜文件后缀 .tgz/.tar.gz/.tar.zst),$1=owner/repo $2=tag $3=grep -E 模式
 gh_asset() {
     curl -fsSL -H "Accept: application/vnd.github+json" \
         "https://api.github.com/repos/$1/releases/tags/$2" 2>/dev/null \
@@ -140,7 +134,7 @@ fetch_cargo_ndk() {   # CI 同款 v4.1.2 官方预编译
 fetch_ndk() {         # google 官方 r29 zip(约 1.7GB,CI runs-on 同源)
     local dir="$CACHE_DIR/ndk" tmp="$TRASH_DIR/ndk"; mkdir -p "$dir" "$tmp"
     if [[ ! -d "$dir/android-ndk-r29" ]]; then
-        # NDK 两条路: 预构建 zip(自包含),或系统包(AUR android-ndk;官方仓库没有)
+        # NDK 两条路: 预构建 zip(自包含),或系统包(AUR android-ndk)
         local helper=""
         helper=$(aur_helper) || true
         if [[ -n "$helper" ]]; then
@@ -236,7 +230,7 @@ check_deps() {
     have zstd   || dep_missing zstd    "zstd(解 bpf-linker 预编译包)" fetch_zstd
     have curl   || { pkg_hint "curl" "下载预构建"; die "curl 缺失者请先装"; }
 
-    # rustup 侧的"缺失"都能由 rustup 自己补,属工具链组件,不算系统包
+    # rustup 侧的缺失由 rustup 自己补,属工具链组件,不算系统包
     have rustup || { pkg_hint "rustup" "Rust 工具链管理"; die "rustup 缺失者请先装"; }
     rustup toolchain list | grep -q '^nightly' \
         || dep_missing nightly "nightly 工具链(CI 同款)" fix_nightly
@@ -256,7 +250,7 @@ check_deps() {
         || [[ -d "$CACHE_DIR/ndk/android-ndk-r29" ]] \
         || [[ -n "$(find "$CACHE_DIR/ndk" -maxdepth 3 -name 'android-ndk-r*' -type d 2>/dev/null)" ]] \
         || dep_missing ndk "Android NDK(交叉链接必需;官方预编译 zip 或 AUR android-ndk)" fetch_ndk
-    # 「暂不装」时不要强行指向不存在路径(不装就不用);留给 xtask 自己报
+    # 「暂不装」时不要强行指向不存在路径,留给 xtask 自己报
     if [[ -z "${ANDROID_NDK_HOME:-}" ]]; then
         local cached_ndk
         cached_ndk=$(find "$CACHE_DIR/ndk" -maxdepth 3 -name 'android-ndk-r*' -type d 2>/dev/null | sort | tail -1)
@@ -277,16 +271,14 @@ check_deps() {
 }
 
 # [pkg] 包管理器引导: 系统包永不自动装,只给可复制命令 + 认 AUR 助手
-#   官方仓库已核实(2026-10-14 pacman -Si): zip unzip zstd nodejs npm git rustup 均在仓
-#   android-ndk 不在官方仓库,只在 AUR(283 票);故 NDK 走「预构建 zip 或 AUR」
+#   官方仓库已核实 zip unzip zstd nodejs npm git rustup 均在仓,android-ndk 只在 AUR,故 NDK 走「预构建 zip 或 AUR」
 aur_helper() {
     local h
     for h in paru yay; do have "$h" && { echo "$h"; return 0; }; done
     return 1
 }
 
-# 打印安装指引并询问是否就地执行(默认不执行)
-# $1=包名(空格分隔) $2=用途说明;官方仓库包走 pacman,AUR 包(android-ndk)走助手
+# 打印安装指引并询问是否就地执行(默认不执行),$1=包名(空格分隔) $2=用途说明
 pkg_hint() {
     local pkgs="$1" why="$2"
     local helper="" in_repo=1
@@ -327,11 +319,8 @@ fetch_zstd()  { pkg_hint "zstd"       "解 bpf-linker 的 .tar.zst"; }
 fetch_zip()   { pkg_hint "zip"        "最后打包产物"; }
 
 # [toolchain] 把 nightly 钉到 PATH 最前,等效 CI 的「rustup default = nightly」
-#   为什么必须这样: build.rs:150 会 env_remove("RUSTUP_TOOLCHAIN") 再 spawn `cargo`,
-#   所以靠环境变量(含 `cargo +nightly` 的外层)救不了最内层 eBPF 子构建: 
-#   它经 rustup shim 回落 default(stable) 后拒绝 `-Z build-std=core`。
-#   本 wrapper 让所有层级 spawn 到的 `cargo`/`rustc` 都是 nightly 真实二进制:
-#   不改 rustup 全局设置、不改仓库源码,退出即失效。
+#   build.rs:150 会 env_remove("RUSTUP_TOOLCHAIN") 再 spawn cargo,环境变量救不了最内层 eBPF 子构建
+#   本 wrapper 让所有层级 spawn 到的 cargo/rustc 都是 nightly 真实二进制,不改 rustup 全局设置、不改仓库源码,退出即失效
 TC_BIN=""
 setup_toolchain() {
     local real; real=$(rustup which cargo --toolchain nightly) || die "取 nightly cargo 路径失败"
@@ -369,11 +358,8 @@ run_lint() {
                  cargo clippy --workspace --all-targets --target aarch64-linux-android --no-deps'
 }
 
-# [strip] 注释剥离已下沉到 xtask（在 output/.temp 副本上做）：
-#   历史上本脚本用「rsync 副本 + mv module + trap EXIT 还原」实现，但那依赖 trap 执行：
-#   SIGKILL / 断电时 trap 不跑，module/ 会永久停在已剥状态（不可逆丢注释）。
-#   现由 xtask::strip_comments 在它自己创建的产物副本上剥离，
-#   module/ 全程只读，构建任意阶段中断都不污染工作区，也不再需要 perl/rsync。
+# [strip] 注释剥离已下沉到 xtask,在 output/.temp 副本上做
+#   xtask::strip_comments 在自建产物副本上剥离,module/ 全程只读,构建中断不污染工作区
 
 # [xtask] 组装(等价 CI `--no-pack`,再自行打 zip)
 run_xtask() {

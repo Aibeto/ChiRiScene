@@ -1,5 +1,5 @@
-//! tuned.rs: [restore] [governor] [init_release] [load_freq]特调执行器（TunedGovernor）：
-//! akmode / playback / daily 等模式共用同一套连续控制，参数组按模式名从 Config.tuned_profiles 分派，差异只在参数
+//! tuned.rs: [restore] [governor] [init_release] [load_freq]
+//! 特调执行器（TunedGovernor）：akmode / playback / daily 等模式共用同一套连续控制，参数组按模式名从 Config.tuned_profiles 分派，差异只在参数
 
 use crate::chiri::config::SpecialTunedConfig;
 use crate::monitor::FasSignal;
@@ -17,12 +17,10 @@ use crate::fluent_args;
 use crate::i18n::t_with_args;
 
 // [thermal_ceil]
-/// 热保护 cap 的进程级镜像（f32 bit pattern 存 `AtomicU32`，与 CLG 的 `thermal_cap` 同口径）：热保护 cap 原本只下发 CLG，
-/// tuned（playback/akmode/daily）对温度零响应——播放态占2026-09-27 会话 68% 能量却没有任何温度响应（结构缺口）热块在 cap 变化时经`set_thermal_cap` 写入，
-/// `on_load_update` 每 tick 读一次，无额外轮询
+/// 热保护 cap 的进程级镜像（f32 bit pattern 存 `AtomicU32`，与 CLG 的 `thermal_cap` 同口径）：热保护 cap 原本只下发 CLG，tuned（playback/akmode/daily）对温度零响应
+/// 热块在 cap 变化时经 `set_thermal_cap` 写入，`on_load_update` 每 tick 读一次，无额外轮询
 static THERMAL_CAP: AtomicU32 = AtomicU32::new(1.0_f32.to_bits());
-/// 热态 tuned 响应总开关与性能下限（`Thermal.tuned_resp_enabled` / `tuned_thermal_floor`）：由 `Config::load` 同步，热重载即时生效；
-/// 关闭 = 精确回到加这段之前（tuned 零温度响应）
+/// 热态 tuned 响应总开关与性能下限（`Thermal.tuned_resp_enabled` / `tuned_thermal_floor`）：由 `Config::load` 同步，热重载即时生效，关闭 = tuned 零温度响应
 static THERMAL_RESP_ENABLED: AtomicBool = AtomicBool::new(true);
 static THERMAL_FLOOR: AtomicU32 = AtomicU32::new(0.55_f32.to_bits());
 
@@ -37,17 +35,8 @@ pub fn set_thermal_response(enabled: bool, floor: f32) {
     THERMAL_FLOOR.store(floor.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
 }
 
-/// 热态有效上限 = `min(档位天花板, max(cap, floor))`
-/// - 用 `max(cap, floor)` 而非直接套 cap：硬档 0.40 直接砍到播放态有掉帧风险，且播放态的帧信号
-/// （2026-09-27 起有，但只是**离线**直方图：`event` 行 `decision=playback_fps`，见 `.cursor/commands/devimp-log-analysis.md`）
-/// **在线没有判据**——不可能拿它当本轮钳制的反馈，floor 仍把最坏情况钉在 0.55；
-/// **[有意保留]** 视频解码需要稳定档位、不接受随温阶跃（硬档 0.40 的跳变是掉帧主因），故播放态在
-/// ≥45°C 时大核可比 CLG（此时已压到 0.40）更热——这是取舍不是漏钳。代价是边充边放这类叠加发热的
-/// 场景可能整机持续升温，待真机温度曲线验证（`agentsdocs/07-todos.md` 「播放态『边充边放』温度曲线复核」），
-/// 首要嫌疑即该地板值 0.55；
-/// - `cap >= floor` 时退化为 `min(天花板, cap)`：软限 0.85 对 tuned 本就是 no-op（tuned 各簇
-/// 天花板 little 0.55 / big 0.75 / prime 0.50 全部 <= 0.85），与实测口径一致；
-/// 无压制（cap=1.0）时结果就是档位天花板本身，行为零变化
+/// 热态有效上限 = `min(档位天花板, max(cap, floor))`；用 `max(cap, floor)` 而非直接套 cap：硬档 0.40 直接砍到播放态有掉帧风险，floor 把最坏情况钉在 0.55
+/// `cap >= floor` 时退化为 `min(天花板, cap)`：软限 0.85 对 tuned 本就是 no-op（各簇天花板 little 0.55 / big 0.75 / prime 0.50）
 #[inline]
 fn thermal_ceiling(profile_ceil: f32) -> f32 {
     if !THERMAL_RESP_ENABLED.load(Ordering::Relaxed) {
@@ -82,11 +71,10 @@ struct ClusterState {
     down_target: u32,
     /// 用于决策的负载 EMA（util_smoothing < 1 时启用；-1 = 未初始化）
     ema_util: f32,
-    // [up_confirm] T11 严格升频审批：目标高于当前时需连续 N tick 才抬升（降频路径不变）
-    /// 连续升频意图计数（确认满 up_confirm_ticks 才写）。只在降频分支与「目标落入死区」分支清零，
-    /// 升频连续满足时不复位——与 CLG 的 up_rate_limit_ticks 同口径（写后不清零）
+    // [up_confirm] 严格升频审批：目标高于当前时需连续 N tick 才抬升（降频路径不变）
+    /// 连续升频意图计数（确认满 up_confirm_ticks 才写），只在降频分支与「目标落入死区」分支清零，升频连续满足时不复位——与 CLG 的 up_rate_limit_ticks 同口径
     up_wait: u32,
-    // [steady_decay] T11 稳态下探状态（只作写侧偏移，不回写已应用状态）
+    // [steady_decay] 稳态下探状态（只作写侧偏移，不回写已应用状态）
     /// 当前稳态下探量（比例，0 = 无下探）
     steady_decay: f32,
     /// 连续稳定 tick 计数（满 steady_decay_stable_ticks 才启动积分）
@@ -115,12 +103,8 @@ fn core_name_for(affected: &[usize]) -> Option<&'static str> {
     }
 }
 
-/// 明日方舟特调（akmode）控制器：独立于 CLG 的动态限频调度，**无档位**
-/// 每个负载 tick 按核心组实时负载直接计算 scaling_max_freq 目标上限：
-/// target_ratio = clamp(组内最大核心占用率 × headroom, perf_floor, 1.0)
-/// target_max   = 频率表中 ≤ ratio × 硬件最高的最大档位（floor 对齐）
-/// 升频立即执行（响应性优先）；降频须偏离超 hysteresis（绝对死区 = hw_max × hysteresis）且持续 down_hold_ms
-/// 替代原四档 core-count 阈值方案：后者在「少数线程高占用」负载下升频凑不齐、降频持续满足，max 单边下探到最低频
+/// 明日方舟特调（akmode）控制器：独立于 CLG 的动态限频调度，无档位
+/// 每个负载 tick 按核心组实时负载算 scaling_max_freq 上限：target_ratio = clamp(组内最大核心占用率 × headroom, perf_floor, 1.0)，升频立即执行，降频须偏离超 hysteresis 且持续 down_hold_ms
 // [governor]
 pub struct TunedGovernor {
     cfg: SpecialTunedConfig,
@@ -136,9 +120,8 @@ pub struct TunedGovernor {
     active: bool,
     /// 调试日志计数，每 25 tick 打一次摘要
     log_counter: u32,
-    /// 帧源信号（见 `monitor::FasSignal`）：接管 `playback` 时置位**播放态旁路采样**谓词，
-    /// 让 fps 探针在非 FAS 会话里也挂帧源做帧间隔直方图（P2-3：播放态原本零帧信号，任何播放态调参
-    /// 都无法用流畅度判定）；只置位/清零这一位，不碰 FAS 激活位（它由 FasManager 独占）
+    /// 帧源信号 `monitor::FasSignal`：接管 `playback` 时置位播放态旁路采样谓词，让 fps 探针在非 FAS 会话里也挂帧源做帧间隔直方图
+    /// 只置位/清零这一位，不碰 FAS 激活位（它由 FasManager 独占）
     fas_signal: Arc<FasSignal>,
 }
 
@@ -161,8 +144,7 @@ impl TunedGovernor {
         self.active
     }
 
-    /// 接管全部 cpufreq policy：1) 先 release 清上次状态；2) 逐 policy 读可用频率与 affected_cpus 判定核心组；
-    /// 3) 快照 governor/min/max，写默认调速器（选型见 common.rs [governor]）、min 压硬件最低（与 CLG 同构，只调 max）；4) 初始 max = 硬件最高（接管瞬间多为场景切换，先给满上限由负载回落）
+    /// 接管全部 cpufreq policy：1) 先 release 清上次状态；2) 逐 policy 读可用频率与 affected_cpus 判定核心组；3) 快照 governor/min/max，写默认调速器（common.rs [governor] 选型）、min 压硬件最低（只调 max）；4) 初始 max = 硬件最高
     /// 返回 true = 成功接管；false = 无可用 cluster（配置错误或硬件不支持）
     // [init_release]
     pub fn init_policies(&mut self, mode: &str, cfg: &SpecialTunedConfig) -> bool {
@@ -301,9 +283,8 @@ impl TunedGovernor {
                 max_freq,
             });
 
-            // 统一默认调速器（选型见 common.rs [governor]）+ min 压到硬件最低（避免设备出厂高 min 导致频率降不下去）
-            // 这里用 write_to_file（返回 Result）而非 try_write_file（恒 Ok）：节点缺失(ENOENT)时
-            // try_write_file 只打 debug，INFO 级下完全看不见接管缺了一条腿
+            // 统一默认调速器（common.rs [governor] 选型）+ min 压到硬件最低（避免设备出厂高 min 导致频率降不下去）
+            // 这里用 write_to_file（返回 Result）而非 try_write_file（恒 Ok）：节点缺失(ENOENT)时后者只打 debug，INFO 级下完全看不见接管缺了一条腿
             let mut init_writes_ok = true;
             if let Err(e) =
                 crate::utils::write_to_file(&gov_path, crate::common::cpu_governor_for_policy(pid))
@@ -333,7 +314,7 @@ impl TunedGovernor {
                 // [init_release] 接管初写 max 失败：该簇上限停留在系统原值（可能非硬件最高），
                 // 后续 tick 只在目标偏离超 hysteresis 时才动它，低负载下可长期不被纠正
                 warn!(
-                    "[Tuned] {} P{} takeover initial scaling_max_freq ({}kHz) write failed; cap stays at system value",
+                    "[Tuned] {} P{} initial scaling_max_freq ({}kHz) write failed, cap stays at system value",
                     self.mode, pid, current_max
                 );
             }
@@ -356,7 +337,7 @@ impl TunedGovernor {
                 down_since: None,
                 down_target: 0,
                 ema_util: -1.0,
-                // [up_confirm]/[steady_decay] T11 状态初值：无下探、无确认进度
+                // [up_confirm]/[steady_decay] 状态初值：无下探、无确认进度
                 up_wait: 0,
                 steady_decay: 0.0,
                 steady_streak: 0,
@@ -375,7 +356,7 @@ impl TunedGovernor {
         self.apply_migration_cost();
         if init_degraded {
             warn!(
-                "[Tuned] {} takeover incomplete: some clusters used fallback freq table or failed initial writes; cap/governor may not be followed by kernel",
+                "[Tuned] {} takeover incomplete: fallback freq table or initial writes failed",
                 self.mode
             );
         }
@@ -394,8 +375,8 @@ impl TunedGovernor {
                 )
             );
             self.ak_active.store(true, Ordering::Relaxed);
-            // 播放态帧源谓词：只有 `playback` 特调置位（akmode 是游戏、FAS 侧自有帧驱动，daily 组已移除）；
-            // 非 playback 模式恒清零——`init_policies` 开头已 `release()` 清过一次，这里按模式重设，两种模式切换不留残位
+            // 播放态帧源谓词：只有 `playback` 特调置位（akmode 是游戏、FAS 侧自有帧驱动，daily 组已移除）
+            // 非 playback 模式恒清零——`init_policies` 开头已 `release()` 清过一次，这里按模式重设，切换不留残位
             self.fas_signal.set_playback(self.mode == "playback");
         } else {
             // [init_release] 无有效集群 = 特调整条链路失效（所有调用点都会进 5 分钟冷却 + CLG 接管），
@@ -467,8 +448,7 @@ impl TunedGovernor {
         all_ok
     }
 
-    /// 接管期间按需调高 sched_migration_cost_ns：稳态负载下原值偏小会频繁跨核搬迁（省搬迁开销与 cache 失效）；原值进 migration_cost_restore，release 写回；
-    /// 写失败当未配置，不影响接管
+    /// 接管期间按需调高 sched_migration_cost_ns：稳态负载下原值偏小会频繁跨核搬迁（省搬迁开销与 cache 失效）；原值进 migration_cost_restore，release 写回，写失败当未配置
     fn apply_migration_cost(&mut self) {
         let Some(want) = self.cfg.migration_cost_ns.filter(|v| *v > 0) else {
             return;
@@ -476,15 +456,14 @@ impl TunedGovernor {
         let orig = fs::read_to_string(MIGRATION_COST_PATH)
             .ok()
             .map(|s| s.trim().to_string());
-        // [fix-1017] 原用 try_write_file(..).is_ok() 判定：该函数吞错恒返 Ok(())，`is_ok()` 恒真 →
-        // migration_cost_restore 恒置位，即便一个字节都没写下去也当「已改、退出需还原」，与注释
-        // 「写失败当未配置」相反。改用 write_to_file（真实 Result），只在真写成功时才记快照。
+        // 用 write_to_file（真实 Result）而非 try_write_file（吞错恒返 Ok），只在真写成功时才记 migration_cost_restore 快照
+        // 否则即便一个字节都没写下去也会当「已改、退出需还原」
         if crate::utils::write_to_file(MIGRATION_COST_PATH, &want.to_string()).is_ok() {
             self.migration_cost_restore = orig;
         }
     }
 
-    /// 恢复接管前的 `sched_migration_cost_ns`（只对曾经写成功的那次生效）
+    /// 恢复接管前的 sched_migration_cost_ns，只对写成功的那次生效
     fn restore_migration_cost(&mut self) {
         if let Some(orig) = self.migration_cost_restore.take() {
             let _ = crate::utils::try_write_file(MIGRATION_COST_PATH, &orig);
@@ -518,8 +497,8 @@ impl TunedGovernor {
             .unwrap_or_else(|| *freqs.first().unwrap_or(&0))
     }
 
-    // [dwell] 受控写频（与 CLG write_freq 同口径）：死区由调用方 hysteresis 保证（|target−current| 超死区才调用），
-    // 这里做「最小驻留内方向翻摆延迟」与写失败防篡改补写豁免；接管初写/恢复不走本函数。返回是否写成功：成功才前移 current_max，失败/被延迟由下一 tick 补写 target
+    // [dwell] 受控写频（与 CLG write_freq 同口径）：死区由调用方 hysteresis 保证（|target−current| 超死区才调用），这里做最小驻留内方向翻摆延迟与写失败防篡改补写豁免
+    // 接管初写/恢复不走本函数；返回是否写成功，成功才前移 current_max，失败/被延迟由下一 tick 补写 target
     fn gated_write(c: &mut ClusterState, target: u32, dwell_ms: u64) -> bool {
         let dir: i8 = if target > c.current_max { 1 } else { -1 };
         if !c.last_failed && c.last_write_dir != 0 && dir != c.last_write_dir {
@@ -542,10 +521,8 @@ impl TunedGovernor {
         ok
     }
 
-    /// 无档位动态限频入口，每个 SystemLoadUpdate（特调 40ms）触发一次
-    /// 每个核心组独立决策（语义与 CLG 对齐）：up = 目标 > 当前 max + hysteresis，立即上调；
-    /// down_wait = 目标 < 当前 max − hysteresis，保持计时中（down_hold_ms）；down = 期满把上限收到目标档位；
-    /// hold = 目标在死区内（或保持期内目标回升，取消等待）
+    /// 无档位动态限频入口，每个 SystemLoadUpdate（特调 40ms）触发一次，每个核心组独立决策（语义与 CLG 对齐）
+    /// up = 目标 > 当前 max + hysteresis 立即上调；down_wait = 目标 < 当前 max − hysteresis 保持计时（down_hold_ms）；down = 期满把上限收到目标档位；hold = 目标在死区内（或保持期内目标回升，取消等待）
     pub fn on_load_update(&mut self, core_utils: &[f32]) {
         if !self.active {
             return;
@@ -553,8 +530,7 @@ impl TunedGovernor {
 
         let ranges = crate::common::chiri_core_ranges();
         let now = Instant::now();
-        // 借用配置不克隆：SpecialTunedConfig 唯一堆字段是 per_cluster（HashMap，键为组名），每 tick 克隆要复制整张表；
-        // gated_write 是关联函数不借 &mut self，与 &self.cfg 不冲突
+        // 借用配置不克隆：SpecialTunedConfig 唯一堆字段是 per_cluster（HashMap，键为组名），每 tick 克隆要复制整张表；gated_write 是关联函数不借 &mut self，与 &self.cfg 不冲突
         let cfg = &self.cfg;
 
         // main_ tick 行数据（每个 policy 一行：policy_id / cluster / util / decision / cur_max / hw_max），只在开发记录开启时收集（关闭时零开销、零分配、零写入）
@@ -590,10 +566,8 @@ impl TunedGovernor {
             let ceil = thermal_ceiling(p.perf_ceil).max(p.perf_floor);
             let target_ratio = (util * p.headroom).clamp(p.perf_floor, ceil);
 
-            // [steady_decay] T11 稳态下探 = 对写侧比例的**限幅积分控制**（与 CLG 同构，被控量是本簇平滑 util）：
-            // 目标水位 T = up_ref × target_ratio，up_ref = 目标比例顶到 ceil 时的 util = ceil / headroom；
-            // util 高于 T 回收（步长 ×2 防过冲）、低于 T 加深、死区内保持 → 回路自带稳态，无自由累加造成的锯齿；
-            // 限幅 [0, max] = 抗积分饱和。必须用**更新前的** util 算差量
+            // [steady_decay] 稳态下探 = 对写侧比例的限幅积分控制（与 CLG 同构，被控量是本簇平滑 util）：目标水位 T = up_ref × target_ratio，up_ref = 目标比例顶到 ceil 时的 util = ceil / headroom
+            // util 高于 T 回收（步长 ×2 防过冲）、低于 T 加深、死区内保持，回路自带稳态；限幅 [0, max] 抗积分饱和；必须用更新前的 util 算差量
             let delta = util - prev_util;
             let stable = delta.abs() <= cfg.steady_decay_band;
             if !cfg.steady_decay_enabled
@@ -622,17 +596,16 @@ impl TunedGovernor {
                 c.steady_streak = 0;
             }
 
-            // 下探只改「目标档」的计算输入：tuned 没有 CLG 那种独立的决策比例，比较量就是 freq 本身，
-            // 所以减过 decay 的 target_max 同时是目标档与 up/down 的比较量 —— 这是本架构的必然（与 CLG
-            // 「下探不回写决策量」的口径不同）；hysteresis / down_hold_ms / up_wait 的判据结构不受影响。
+            // 下探只改目标档的计算输入：tuned 没有 CLG 那种独立的决策比例，比较量就是 freq 本身，所以减过 decay 的 target_max 同时是目标档与 up/down 的比较量
+            // 这是本架构的必然（与 CLG「下探不回写决策量」不同）；hysteresis / down_hold_ms / up_wait 的判据结构不受影响
             let write_ratio = (target_ratio - c.steady_decay).max(p.perf_floor);
             let target_max = Self::freq_for_ratio(&c.available_freqs, write_ratio);
             let hyst_freq = (hw_max as f32 * p.hysteresis) as u32;
 
             let decision;
             if target_max > c.current_max + hyst_freq {
-                // 升频：[up_confirm] 严格审批——目标比当前更高须连续 up_confirm_ticks tick 满足才抬升（0/1 = 关闭确认）；
-                // 写成功才前移状态，失败时下一 tick target 仍超死区 → 重试（与 CLG 对齐）[dwell] 经写频滞回（同 CLG）
+                // 升频：[up_confirm] 严格审批——目标比当前更高须连续 up_confirm_ticks tick 满足才抬升（0/1 = 关闭确认），写成功才前移状态，失败时下一 tick target 仍超死区 → 重试
+                // [dwell] 经写频滞回（同 CLG）
                 c.down_since = None;
                 c.up_wait = c.up_wait.saturating_add(1);
                 if c.up_wait >= cfg.up_confirm_ticks {
@@ -691,7 +664,7 @@ impl TunedGovernor {
             }
         }
 
-        // main_ tick 行（开发记录开启时才有 IO）：cur_freq_khz 写当前动态 max、max_freq_khz 写硬件最高（kHz），over/under 无档位语义恒 0；
+        // main_ tick 行（开发记录开启时才有 IO）：cur_freq_khz 写当前动态 max、max_freq_khz 写硬件最高（kHz），over/under 无档位语义恒 0
         // util 列写决策用负载（util_smoothing < 1 时为 EMA 后的值），离线回放该列时不能当原始 util 二次平滑
         if diag {
             for (policy_id, name, util, decision, cur_max, hw_max) in &main_rows {

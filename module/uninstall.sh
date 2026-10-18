@@ -1,8 +1,7 @@
 #!/system/bin/sh
 # uninstall.sh: [stop-daemon] [restore-freq] [restore-vendor]
 
-# [stop-daemon]
-# 先写卸载标记让看门狗自行退出、不再拉起主进程，随后强杀主进程与看门狗自身，确保不残留、不继续锁频
+# [stop-daemon] 先写卸载标记让看门狗退出，再强杀主进程与看门狗
 [ -z "$MODDIR" ] && MODDIR=${0%/*}
 touch "$MODDIR/.uninstalling"
 [ -f "$MODDIR/logs/watchdog.pid" ] && kill "$(cat "$MODDIR/logs/watchdog.pid" 2>/dev/null)" 2>/dev/null
@@ -10,7 +9,7 @@ killall -9 chiri > /dev/null 2>&1
 rm -f "$MODDIR/logs/watchdog.pid" "$MODDIR/.uninstalling"
 sleep 1
 
-# [restore-freq] 强杀时 governor 可能卡在 performance 锁频：恢复到硬件全档并退回 schedutil
+# [restore-freq] 强杀后 governor 可能卡在 performance，恢复到硬件全档并退回 schedutil
 for d in /sys/devices/system/cpu/cpufreq/policy*; do
  [ -f "$d/scaling_available_frequencies" ] || continue
   max_f=$(tr ' ' '\n' < "$d/scaling_available_frequencies" | sort -n | tail -1)

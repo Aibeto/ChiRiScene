@@ -10,7 +10,7 @@ export default {
   'nav.logs': 'Logs',
   'nav.main': 'Main navigation',
 
-  // commented out: manual refresh buttons removed 'action.refresh': 'Refresh',
+  // 'action.refresh': 'Refresh',
   'action.toBottom': 'Back to bottom',
   'action.cancel': 'Cancel',
   'action.confirm': 'Confirm',
@@ -136,7 +136,7 @@ export default {
   'config.advanced.back': 'Back to config',
   'config.down': 'DOWN mode',
   'config.down.hint': 'Operate under developer guidance',
-  // Non-ChiRi device: daemon never takes over scheduling, halt is permanent; toggle is disabled (see AdvancedView downFixed)
+  // Non-ChiRi device: daemon never takes over scheduling, halt is permanent, toggle disabled
   'config.down.hint.unsupported': 'SoC not in the ChiRi list: no scheduling takeover, permanently halted',
   'config.down.on': 'DOWN enabled',
   'config.down.off': 'Normal scheduling',
@@ -168,7 +168,7 @@ export default {
   'config.screenoff.hint': 'Set the screen-off detection value',
   'config.screenoff.saved': 'Screen-off value saved',
 
-  // Notification test: fixed tag ChiRi-Test, prefilled editable title/body; shows raw script output
+  // Notification test: fixed tag ChiRi-Test, prefilled editable title/body, shows raw script output
   // (printing only "sent" would hide a real failure)
   'config.notifyTest': 'Notification test',
   'config.notifyTest.hint': 'title and body are editable',
@@ -248,7 +248,7 @@ export default {
   'logs.source': 'Source',
   'logs.source.daemon': 'Daemon log',
   'logs.source.status': 'Status snapshot',
-  // commented out: log panel subtitle hidden per request 'logs.window':
+  // 'logs.window':
   // 'Showing the most recent window only (fixed byte window, never the whole file)',
   'logs.archive': 'History logs are packed into logd/; view them from the archives',
   'logs.devimp': 'Diagnostic logs',
@@ -262,14 +262,14 @@ export default {
   'logs.status.power': 'Power',
   'logs.status.charge': 'Power state',
   'logs.status.times': 'Time',
-  // Charge states (fixed short words from the status.csv `charge` column;unknown/missing shown as —)
+  // Charge states (fixed short words from the status.csv `charge` column; unknown/missing shown as —)
   'logs.charge.charging': 'Charging',
   'logs.charge.discharging': 'Discharging',
   'logs.charge.full': 'Full',
   'logs.charge.not_charging': 'Not charging',
 
-  // CLG four gears: label equals the id, same in every locale;all mode.*
-  // desc keys are commented out (card shows family + mode only, descriptions hidden)
+  // CLG four gears: label equals the id, same in every locale
+  // all mode.* desc keys are commented out (card shows family + mode only)
   'mode.reduce': 'reduce',
   // 'mode.reduce.desc': 'Capped ceiling, battery first',
   'mode.default': 'default',
@@ -287,7 +287,7 @@ export default {
   'mode.down': 'down',
   // 'mode.down.desc': 'Scheduling halted; collection and logs only',
   'mode.scenemode': 'Screen-off scene',
-  // PowerBase (Stardust family): replaces the CLG governor when ChiRi PB is on;
+  // PowerBase (Stardust family): replaces the CLG governor when ChiRi PB is on
   // current_mode still holds the CLG slot name, the status card swaps the label
   'mode.powerbase': 'PowerBase',
   // 'mode.scenemode.desc':
@@ -301,7 +301,7 @@ export default {
   'mode.unknown.missing': 'No mode recorded yet',
   'mode.unknown.stopped': 'Scheduler not running',
   'mode.family.clg': 'CLG',
-  // CLG family label when the Pareto-frontier landing is enabled (pf.chr = 1, 8550 only):
+  // CLG family label when the Pareto-frontier landing is enabled (pf.chr = 1, 8550 only)
   // same wording as the daemon log prefix [CLG-PF]
   'mode.family.clgpf': 'CLG-PF',
   'mode.family.special': 'Special',

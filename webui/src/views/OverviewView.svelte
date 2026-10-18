@@ -16,8 +16,8 @@
   );
   // 调度未运行时不把 current_mode.chr 的陈旧值当「当前模式」，卡片只陈述「调度未运行」；文件缺失同口径显示「尚未产生模式记录」
   const modeIdle = $derived(app.daemonState === "stopped");
-  // PowerBase 接管 CLG 时只换「谁在调频」：家族/模式名显示 Stardust / PowerBase，原始 id 保留展示daemon 只在亮屏 + CLG 档生效（见 mod.rs 兜底纠正块），
-  // 这里以 kind==='clg' 近似，实验室 vector 不受影响
+  // PowerBase 接管 CLG 时只换「谁在调频」：家族/模式名显示 Stardust / PowerBase，原始 id 保留展示
+  // daemon 只在亮屏 + CLG 档生效，这里以 kind==='clg' 近似，实验室 vector 不受影响
   const pbTakesClg = $derived(
     !modeIdle && !app.modeMissing && app.powerbaseEnabled && app.modeInfo.kind === "clg",
   );
@@ -28,8 +28,7 @@
     : t(app.modeInfo.labelKey),
   );
   // 模式家族（CLG/特调/实验室/停摆/FAS），与详细模式分开显示；未运行/无记录时不显示
-  // 本机启用帕累托前沿落点（daemon 写的 pf.chr）时 CLG 家族名显示 CLG-PF，与 daemon 日志前缀同口径；
-  // PowerBase 接管时家族名仍是 Stardust——PF 是 CLG 内部的落点，不改变「谁在调频」
+  // 本机启用帕累托前沿落点（daemon 写的 pf.chr）时 CLG 家族名显示 CLG-PF，与 daemon 日志前缀同口径；PowerBase 接管时家族名仍是 Stardust
   const familyLabel = $derived(
     modeIdle || app.modeMissing ? ""
     : pbTakesClg ? t("mode.family.stardust")
@@ -39,12 +38,8 @@
   const modeId = $derived(
     modeIdle || app.modeMissing ? "—" : app.modeInfo.id || "—",
   );
-  // 三层信息（家族 / 模式名 / 原始 id）逐级去重，同一个词只说一次：
-  // ① 家族行只在名字看不出家族时显示——clg/lab/stardust 的成员名（default / vector /
-  // 息屏场景）不体现家族；fas / down / 特调 / 未知的名字本身就是家族（mode.fas = 'FAS'
-  // = mode.family.fas），再列一行等于重复；
-  // ② id 行只在它与模式名不是同一个词时显示——CLG 与实验室档的 mode.* 值就是 id 本身
-  // （mode.default = 'default' = id），否则「子模式」会在卡片上出现两次（用户反馈）
+  // 三层信息（家族 / 模式名 / 原始 id）逐级去重，同一个词只说一次
+  // 家族行只在 clg/lab/stardust 这类名字看不出家族的成员上显示；id 行只在它与模式名不是同一个词时显示
   const FAMILY_KINDS = new Set(["clg", "lab", "stardust"]);
   const showFamily = $derived(
     familyLabel !== "" && FAMILY_KINDS.has(app.modeInfo.kind),
@@ -148,8 +143,7 @@
             : `${app.powerAvgWatt.toFixed(2)} ${t("unit.watt")}`}
           </p>
           <!-- g-progress 结构：--progress-signal 与 --progress-width 的默认值都声明在 .g-progress 根上，
-               fill 的宽度与颜色全部由变量驱动此前裸用track/fill 时 fill 取不到 signal 变量 → background 透明，条看着是空的（此前两次修宽度方向都错了，
-               宽度早就画上了）壳层由 .power__bar 剥掉 -->
+               fill 的宽度与颜色全部由变量驱动；壳层由 .power__bar 剥掉 -->
           <div
             class="g-progress power__bar"
             role="progressbar"
@@ -173,8 +167,7 @@
       {/if}
     </div>
     {#if app.powerAvgMissing || app.powerStaleReason}
-      <!-- 文件缺失是「调度没跑过」的正常形态，不是错误 → 次要色说明，不用危险色有具体原因（未取样：非放电 / 平均模式息屏 / 读数不可用）时优先显示它，说不清才回退到 overview.power
-           missing 那句兜底 -->
+      <!-- 文件缺失是「调度没跑过」的正常形态，不是错误 → 次要色说明；有具体原因（未取样：非放电 / 平均模式息屏 / 读数不可用）时优先显示它 -->
       <p class="u-note u-mt-2">
         {app.powerStaleReason || t("overview.power.missing")}
       </p>
@@ -319,7 +312,7 @@
       : t("overview.export.action")}
     </button>
     {#if app.exportPhase === "running"}
-      <!-- 进度区整块用 g-progress（标题行 + 刻度轨道）；填充宽度由下方 .g-progress__fill 的内联 width 决定，不再依赖 --progress-width 继承 -->
+      <!-- 进度区整块用 g-progress（标题行 + 刻度轨道）；填充宽度由下方 .g-progress__fill 的内联 width 决定 -->
       <div class="g-progress u-mt-3">
         <div class="g-progress__header">
           <span>
@@ -345,8 +338,7 @@
       </div>
     {/if}
 
-    <!-- 历史归档清理：导出之外的另一半，只删 logd/（devimp/ 是当前诊断现场，保留）。打包期间一并置灰：
-         导出正在 tar logd/，此时 rm 会把半删的目录打进归档 -->
+    <!-- 历史归档清理：导出之外的另一半，只删 logd/（devimp/ 是当前诊断现场，保留）；打包期间一并置灰（导出正在 tar logd/，此时 rm 会把半删的目录打进归档） -->
     <button
       type="button"
       class="g-btn g-btn--danger g-btn--block u-mt-3"
@@ -424,7 +416,7 @@
     min-width: 0;
   }
 
-  /* 耗电读数：口径标签 + 数值 + 量程条，右栏紧凑排列（替代原八角仪表盘） */
+  /* 耗电读数：口径标签 + 数值 + 量程条，右栏紧凑排列 */
   .power {
     display: grid;
     justify-items: end;
@@ -468,7 +460,7 @@
     gap: var(--space-2);
   }
 
-  /* 家族名：小字上标（与 .mode__id 同档）。此前无规则 → `<p>` 的默认外边距会顶开 .mode__main 的 0.2rem 行距，三行看起来是散的 */
+  /* 家族名：小字上标（与 .mode__id 同档）；无规则时 <p> 的默认外边距会顶开 .mode__main 的 0.2rem 行距 */
   .mode__family {
     margin: 0;
     color: var(--text-muted);

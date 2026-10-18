@@ -15,14 +15,8 @@ use crate::common::DaemonEvent;
 use crate::fluent_args;
 use crate::i18n::{t, t_with_args};
 
-// [update]
-/// 更新共享屏幕状态，返回是否发生状态变化变化转发：uevent 线程直推 DaemonEvent::ScreenStateChange （零轮询延迟），verify 自愈路径的变化由 app_detect 主循环兜底转发
-/// [PAUSED] 原「亮→息翻转先全节点投票（多数票）再确认」的仲裁已暂停，现役判定源是 debug.tracing.screen_state 属性（见 [prop]）；
-/// 恢复投票 = 解开 [source]/[select]/[read] 区块并还原本函数投票块与 VETO_WARNED
-/// 两次状态翻转之间的最小间隔：任何来源（属性轮询 / verify 自愈 / 未来的 uevent）在此时长内提出的
-/// 第二次翻转一律**延后**（不是丢弃——下一次轮询/verify 会再次尝试）。人手按电源键不可能快于 200ms，
-/// 故真实操作不受影响，但能吃掉「同一秒内息屏→亮屏」这类抖动（每次抖动都要走一整轮 doze 切换 +
-/// CLG 重建）。2026-09-28 加：属性轮询线程的去抖挡不住 verify 路径（它每秒独立采样并直写共享状态）
+// [update] 更新共享屏幕状态，返回是否发生状态变化，uevent 直推 DaemonEvent::ScreenStateChange，verify 路径由 app_detect 兜底转发
+/// 两次状态翻转的最小间隔：此时长内的第二次翻转一律延后，能吃掉同一秒内息屏→亮屏这类抖动，真实操作不受影响
 const SCREEN_MIN_FLIP_INTERVAL: Duration = Duration::from_millis(200);
 static LAST_FLIP_AT: Mutex<Option<Instant>> = Mutex::new(None);
 
@@ -31,16 +25,15 @@ fn update_state_if_changed(state_arc: &Arc<Mutex<bool>>, new_state: bool, source
     if *state_lock == new_state {
         return false;
     }
-    // 锁序：state_arc → LAST_FLIP_AT（全仓只有此处同时持两把，无反向嵌套）
+    // 锁序：state_arc → LAST_FLIP_AT，全仓只有此处同时持两把，无反向嵌套
     {
         let mut last = LAST_FLIP_AT.lock().unwrap_or_else(|e| e.into_inner());
         if last
             .map(|t| t.elapsed() < SCREEN_MIN_FLIP_INTERVAL)
             .unwrap_or(false)
         {
-            // 去抖挡下的翻转原本零痕迹：共享状态保持旧值、等下一轮再来（不是丢弃）。
-            // 排障要能区分「去抖顺延」与「判定源读失败沿用旧值」——两者在共享状态上完全同形。
-            // 本函数被属性轮询（150ms）+ verify 自愈（主循环）高频调用，按高频路径口径 debug + 门控
+            // 去抖挡下的翻转零痕迹：共享状态保持旧值、等下一轮再来（不是丢弃）
+            // 排障要能区分去抖顺延与判定源读失败沿用旧值，两者在共享状态上完全同形；本函数被属性轮询（150ms）+ verify 自愈高频调用，按高频路径 debug + 门控
             if log::log_enabled!(log::Level::Debug) {
                 debug!(
                     "screen-detect: flip deferred by min-flip-interval ({}ms); src={} requested={}",
@@ -83,11 +76,9 @@ fn update_state_if_changed(state_arc: &Arc<Mutex<bool>>, new_state: bool, source
     true
 }
 
-/* [PAUSED] sysfs 节点投票检测整体暂停：亮灭屏判定改用 debug.tracing.screen_state 属性（见 [prop]）
-恢复 = 移除本块注释开头标记与 [read] 末尾配对结束标记，再还原 [update]/[uevent] 的 [PAUSED] 投票块与屏幕分支
+/* [PAUSED] sysfs 节点投票检测整体暂停：亮灭屏判定改用 debug.tracing.screen_state 属性（[prop]）
 // [source]
-/// 屏幕状态检测源类别：不同机型暴露的屏幕状态节点不同（QCOM/通用走 backlight class、MTK 走 leds、
-/// 老内核 fbdev blank、三星/海思部分仅 LCD class lcd_power），按可靠性优先级依次探测，找到第一个可用源即锁定缓存
+/// 屏幕状态检测源类别：不同机型暴露的节点不同（backlight class / leds / fbdev blank / LCD lcd_power），按可靠性优先级探测并锁定首个可用源
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ScreenSourceKind {
 /// backlight class：bl_power/actual_brightness/brightness 判定
@@ -115,11 +106,10 @@ ScreenSourceKind::DrmDpms => "drm-dpms",
 }
 }
 }
-/// leds class 背光节点名关键字：厂商命名差异极大（MTK/海思 `lcd-backlight`、高通 `panel-backlight`、
-/// Awinic `aw22xxx-backlight`、展锐 `sprd-backlight`、wled/`disp-backlight 等），只认命中关键字的亮度节点
+/// leds class 背光节点名关键字：厂商命名差异极大（MTK/海思 `lcd-backlight`、高通 `panel-backlight`、Awinic `aw22xxx-backlight`、展锐 `sprd-backlight`、wled/`disp-backlight` 等），只认命中关键字的亮度节点
 const BACKLIGHT_LED_KEYWORDS: [&str; 5] = ["backlight", "lcd", "panel", "wled", "disp"];
-/// 非面板 LED 关键字豁免：键盘背光/按键灯/充电/通知灯/闪光灯/RGB 灯即便含上表关键字也不是屏幕背光，
-/// 这类灯随充电/通知亮灭，计入息屏仲裁会持续投亮屏票（永远进不了息屏）
+/// 非面板 LED 关键字豁免：键盘背光/按键灯/充电/通知灯/闪光灯/RGB 灯即便含上表关键字也不是屏幕背光
+/// 这类灯随充电/通知亮灭，计入息屏仲裁会持续投亮屏票，永远进不了息屏
 const NON_PANEL_LED_KEYWORDS: [&str; 14] = [
 "keyboard",
 "keypad",
@@ -136,8 +126,7 @@ const NON_PANEL_LED_KEYWORDS: [&str; 14] = [
 "breath",
 "rgb",
 ];
-/// 判断 leds 节点名是否屏幕背光：命中背光关键字且不命中非面板关键字枚举与 uevent 两路共用
-/// （uevent 收到通知灯/按键灯事件时不按背光处理）
+/// 判断 leds 节点名是否屏幕背光：命中背光关键字且不命中非面板关键字，枚举与 uevent 两路共用
 fn is_backlight_led_name(name: &str) -> bool {
 let n = name.to_lowercase();
 if !BACKLIGHT_LED_KEYWORDS.iter().any(|k| n.contains(k)) {
@@ -151,18 +140,14 @@ static NO_SOURCE_LOGGED: AtomicBool = AtomicBool::new(false);
 /// 亮屏否决告警去重：一次被否决的息屏 episode 只 warn 一条，ON 读数到达后复位（防每轮 verify 刷屏）
 static VETO_WARNED: AtomicBool = AtomicBool::new(false);
 // [select]
-/// 候选节点清单缓存：候选由内核/驱动启动期创建、拓扑运行期基本不变，而自愈校验每轮全量枚举
-/// （最多 5 次 read_dir + 每候选 1~3 次 Path::exists()），故缓存清单而非屏幕状态——每轮仍逐节点
-/// 新鲜读，投票口径不变两条刷新路径：1) TTL 到期（SCREEN_NODES_TTL，10 分钟）：开机早期残缺
-/// 清单最迟 10 分钟补全；2) 全不可读即失效（invalidate_screen_nodes）：可能权限变化/模块加载
-/// 枚举为空不写缓存（无源机型每轮重试）；TTL 判定惰性，只在取清单调用点顺带判，无独立刷新线程
+/// 候选节点清单缓存：候选由内核/驱动启动期创建、拓扑运行期基本不变，而自愈校验每轮全量枚举（最多 5 次 read_dir + 每候选 1~3 次 Path::exists()），故缓存清单而非屏幕状态，每轮仍逐节点新鲜读
+/// 两条刷新路径：TTL 到期（SCREEN_NODES_TTL，10 分钟）补全开机早期残缺清单；全不可读即失效（invalidate_screen_nodes）；枚举为空不写缓存，无源机型每轮重试
 static SCREEN_NODES: LazyLock<Mutex<Option<(Instant, Arc<Vec<(PathBuf, ScreenSourceKind)>>)>>> =
 LazyLock::new(|| Mutex::new(None));
 /// 节点清单缓存 TTL = 10 分钟：拓扑变化集中在开机早期（驱动加载/模块开关），足够稀疏又能及时补全残缺清单
 const SCREEN_NODES_TTL: Duration = Duration::from_secs(600);
-/// 取候选节点清单（TTL 内命中缓存只做一次引用计数递增 + 一次 `Instant` 时钟读取，零分配零 syscall）
-/// 返回 `Arc` 快照并立刻释放缓存锁：投票要逐个读节点文件，持锁会把 uevent 线程的翻转投票堵在锁上
-/// TTL 到期当作未命中：重新枚举并刷新创建时刻（判定就在本调用点顺带做，无独立刷新线程）
+/// 取候选节点清单，TTL 内命中缓存只做一次引用计数递增 + 一次 `Instant` 时钟读取，零分配零 syscall
+/// 返回 `Arc` 快照并立刻释放缓存锁：投票要逐个读节点文件，持锁会把 uevent 线程的翻转投票堵在锁上；TTL 到期当作未命中，重新枚举并刷新创建时刻
 fn screen_nodes() -> Arc<Vec<(PathBuf, ScreenSourceKind)>> {
 {
 let guard = SCREEN_NODES.lock().unwrap();
@@ -183,19 +168,14 @@ nodes
 fn invalidate_screen_nodes() {
 SCREEN_NODES.lock().unwrap() = None;
 }
-/// 按可靠性优先级枚举全部候选屏幕状态节点（有序）：
-/// 1. `/sys/class/backlight`：具备 bl_power/actual_brightness/brightness 的设备（QCOM/通用内核）；
-/// 2. `/sys/class/leds` 背光节点（MTK lcd-backlight、panel/wled/aw22xxx/sprd-backlight 等）——backlight
-///    缺失机型的主要修复路径（非面板 LED 不计，见 is_backlight_led_name）；
-/// 3. `/sys/class/graphics/fb<编号>/blank`（fbdev 旧接口兜底，fb0/fb1/… 全部计入）；
-/// 4. `/sys/class/lcd/<设备>/lcd_power`（LCD class，三星 Exynos `panel/lcd_power` 等唯一可用节点，FB_BLANK 口径）；
-/// 5. `/sys/class/drm` 内屏 connector（dsi/edp/lvds）的 `enabled` 节点，缺 enabled 退 dpms——backlight/leds 全缺机型的兜底
+/// 按可靠性优先级枚举全部候选屏幕状态节点（有序）：`/sys/class/backlight`（bl_power/actual_brightness/brightness）、`/sys/class/leds` 背光节点（backlight 缺失机型的主路径，非面板 LED 不计）、`/sys/class/graphics/fb<编号>/blank`（fbdev 旧接口兜底，fb0/fb1/… 全部计入）
+/// 以及 `/sys/class/lcd/<设备>/lcd_power`（FB_BLANK 口径）、`/sys/class/drm` 内屏 connector（dsi/edp/lvds）的 `enabled`，缺 enabled 退 dpms，兜底 backlight/leds 全缺机型
 fn enumerate_screen_nodes() -> Vec<(PathBuf, ScreenSourceKind)> {
 let mut nodes = Vec::new();
 if let Ok(entries) = fs::read_dir("/sys/class/backlight") {
 for entry in entries.flatten() {
 let dev = entry.path();
-// brightness 兜底：部分驱动未实现 get_brightness（actual_brightness 读不到）、也无 bl_power，只能看驱动存的亮度值
+// brightness 兜底：部分驱动未实现 get_brightness、也无 bl_power，只能看驱动存的亮度值
 if dev.join("bl_power").exists()
 || dev.join("actual_brightness").exists()
 || dev.join("brightness").exists()
@@ -227,7 +207,7 @@ nodes.push((dev, ScreenSourceKind::FbBlank));
 if let Ok(entries) = fs::read_dir("/sys/class/lcd") {
 for entry in entries.flatten() {
 let dev = entry.path();
-// 内核 LCD class 属性为 lcd_power（FB_BLANK_*）；`power` 是每个设备都有的运行时 PM 目录，故用 is_file 判定真正的属性文件
+// 内核 LCD class 属性为 lcd_power（FB_BLANK_*）；`power` 是每个设备都有的运行时 PM 目录，用 is_file 判定真正的属性文件
 if dev.join("lcd_power").exists() || dev.join("power").is_file() {
 nodes.push((dev, ScreenSourceKind::LcdPower));
 }
@@ -236,7 +216,7 @@ nodes.push((dev, ScreenSourceKind::LcdPower));
 if let Ok(entries) = fs::read_dir("/sys/class/drm") {
 for entry in entries.flatten() {
 let name = entry.file_name();
-// 只认内屏 connector（DSI/eDP/LVDS），跳过 HDMI/DP 外接屏——外接屏亮灭与本机面板息屏无关，误计票会干扰息屏仲裁
+// 只认内屏 connector（DSI/eDP/LVDS），跳过 HDMI/DP 外接屏：外接屏亮灭与本机面板息屏无关，误计票会干扰息屏仲裁
 let name = name.to_string_lossy().to_lowercase();
 if !(name.contains("dsi") || name.contains("edp") || name.contains("lvds")) {
 continue;
@@ -252,15 +232,15 @@ nodes.push((dev, ScreenSourceKind::DrmDpms));
 nodes
 }
 // [read]
-/// 息屏仲裁票数：只统计**有效读数**。读不到、不存在的节点不计票，也不否决
+/// 息屏仲裁票数：只统计**有效读数**，读不到、不存在的节点不计票，也不否决
 struct ScreenVotes {
 off: usize,
 on: usize,
 /// 第一个报 ON 的节点：打点用，说明为什么没确认息屏
 on_node: Option<String>,
 }
-/// 全节点投票：对候选清单逐个用 read_screen_state 读（各源读取口径只此一处，避免两套逻辑漂移），
-/// 不可读的直接跳过；清单由 screen_nodes 提供（缓存枚举结果），本函数不做任何枚举
+/// 全节点投票：对候选清单逐个用 read_screen_state 读，各源读取口径只此一处，避免两套逻辑漂移，不可读的直接跳过
+/// 清单由 screen_nodes 提供（缓存枚举结果），本函数不做任何枚举
 fn tally_screen_nodes(nodes: &[(PathBuf, ScreenSourceKind)]) -> ScreenVotes {
 let mut votes = ScreenVotes {
 off: 0,
@@ -282,7 +262,7 @@ None => debug!("screen-detect: node unreadable, skipped: {}", dev.display()),
 debug!("screen-detect: votes off={} on={}", votes.off, votes.on);
 votes
 }
-/// 是否确认息屏：OFF 票超过有效票数一半（多数票）；单节点机型仍按那 1 票算；无任何有效读数不确认——没有证据就不改判
+/// 是否确认息屏：OFF 票超过有效票数一半（多数票），单节点机型仍按那 1 票算；无任何有效读数不确认，没有证据就不改判
 fn screen_off_confirmed(votes: &ScreenVotes) -> bool {
 let valid = votes.off + votes.on;
 valid > 0 && votes.off * 2 > valid
@@ -327,10 +307,8 @@ _ => None,
 }
 }
 }
-/// 读取 backlight class 设备的屏幕开关状态：`bl_power == 0` → 亮（权威信号）；`bl_power != 0` → 不可信
-/// （部分 DRM 面板驱动息屏写 FB_BLANK 后亮屏路径不清零，当权威信号会让 verify 把状态钉死在 false），
-/// 以 `actual_brightness` 为准（Android 息屏背光写 0，>0 即面板在发光）；`bl_power` 不可读 → 回退
-/// `actual_brightness` > 0，也不可读 → 回退 `brightness > 0`（驱动存的目标亮度）；全部不可读 → None
+/// 读取 backlight class 设备的屏幕开关状态：`bl_power == 0` → 亮（权威信号），`bl_power != 0` 不可信（部分 DRM 面板驱动息屏写 FB_BLANK 后亮屏路径不清零，会让 verify 把状态钉死在 false）
+/// 此时以 `actual_brightness` 为准（Android 息屏背光写 0，>0 即面板在发光），不可读回退 `brightness > 0`（驱动存的目标亮度），全部不可读 → None
 fn read_backlight_state(dev: &Path) -> Option<bool> {
 let bl_power = dev.join("bl_power");
 let actual = dev.join("actual_brightness");
@@ -350,10 +328,7 @@ match (bl, act, tgt) {
 } */
 
 // [prop]
-/// 屏幕状态检测（现役）：读 Android 系统属性 debug.tracing.screen_state（框架亮/灭屏时写 0/1）
-/// 判定口径（用户定）：当前值 == 息屏判定值即息屏，其余一切值（含缺失/异常）一律亮屏；息屏判定值 =
-/// common::screen_off_value（meta.yaml `screen_off_value`，缺省 1）每次读数打 trace 日志
-/// 属性缺失告警去重：个别 ROM 不写该属性时恒判亮屏，warn 一条留痕，读到有效值即复位
+/// 屏幕状态检测（现役）：读 debug.tracing.screen_state，当前值 == 息屏判定值（common::screen_off_value，meta.yaml `screen_off_value`，缺省 1）即息屏，其余一切值含缺失/异常一律亮屏；属性缺失时 warn 一条留痕
 /// TODO: 恢复 sysfs 投票检测（[source]/[select]/[read]）后移除属性轮询路径
 static PROP_MISSING_LOGGED: AtomicBool = AtomicBool::new(false);
 
@@ -398,28 +373,22 @@ fn read_screen_prop() -> bool {
     state
 }
 
-/// 属性轮询周期：单次属性读是 bionic 共享内存读（`libc::__system_property_get`，µs 级、不起子进程），
-/// 故压到 150ms——**亮屏→退出 scenemode（恢复在线核 + 恢复 CLG 配置）的感知延迟 ≤450ms**
-/// （最坏：150ms 轮询 × 2 次去抖确认 + 被 `SCREEN_MIN_FLIP_INTERVAL` 再挡一轮 150ms；2026-09-28
-/// 加快退出速度。原 500ms 时点亮屏幕最长要等半秒才恢复，手感上就是「亮屏后性能恢复慢」）
+/// 属性轮询周期：单次属性读是 bionic 共享内存读（`libc::__system_property_get`，µs 级、不起子进程），故压到 150ms
+/// 亮屏→退出 scenemode（恢复在线核 + 恢复 CLG 配置）的感知延迟 ≤450ms（最坏：150ms × 2 次去抖确认 + 被 `SCREEN_MIN_FLIP_INTERVAL` 再挡一轮 150ms）
 const SCREEN_PROP_POLL_MS: u64 = 150;
 
-/// 去抖：同一新状态需连续读到该次数（150ms × 2 ≈ 300ms 稳定窗口）才上报。
-/// 必要性：抬手亮屏/通知会写出「息屏 → 1s 后亮屏」这类秒级抖动对（0927 包实测多处），每次抖动都会走
-/// 一整轮 doze 切换 + CLG 重建；周期缩短后更容易抓到瞬时值，单靠缩短周期反而会放大抖动代价。
-/// 副作用（正向）：属性单次读失败（缺失→按亮屏）不再能翻转状态
+/// 去抖：同一新状态需连续读到该次数（150ms × 2 ≈ 300ms 稳定窗口）才上报
+/// 抬手亮屏/通知会写出「息屏 → 1s 后亮屏」这类秒级抖动对，每次抖动都要走一整轮 doze 切换 + CLG 重建；副作用是属性单次读失败（缺失→按亮屏）不再能翻转状态
 const SCREEN_PROP_DEBOUNCE: u32 = 2;
 
-/// 屏幕状态属性轮询线程（现役）：每 `SCREEN_PROP_POLL_MS` 读一次 debug.tracing.screen_state，
-/// 变化**且稳定 `SCREEN_PROP_DEBOUNCE` 个周期**才更新共享状态并直推 `ScreenStateChange` 事件
-/// （与原 uevent 直推同管道）
+/// 屏幕状态属性轮询线程（现役）：每 `SCREEN_PROP_POLL_MS` 读一次 debug.tracing.screen_state，变化且稳定 `SCREEN_PROP_DEBOUNCE` 个周期才更新共享状态并直推 `ScreenStateChange` 事件
 pub fn monitor_screen_state_property(state_arc: Arc<Mutex<bool>>, tx: SyncSender<DaemonEvent>) {
     let mut candidate = *state_arc.lock().unwrap();
     let mut hits = 0u32;
     loop {
         thread::sleep(Duration::from_millis(SCREEN_PROP_POLL_MS));
         let state = read_screen_prop();
-        // 以共享状态为比较基准（verify 自愈路径与 uevent 也会写它），避免去抖计数与真实状态错位
+        // 以共享状态为比较基准（verify 自愈与 uevent 也会写它），避免去抖计数与真实状态错位
         let current = *state_arc.lock().unwrap();
         if state == current {
             candidate = state;
@@ -443,7 +412,7 @@ pub fn monitor_screen_state_property(state_arc: Arc<Mutex<bool>>, tx: SyncSender
 }
 
 // [verify]
-/// 屏幕状态自愈校验：app_detect 主循环每轮调用，读属性校正共享状态——覆盖轮询线程启动早期（首次读数前）与线程意外停滞的情况；事件由主循环兜底转发
+/// 屏幕状态自愈校验：app_detect 主循环每轮调用，读属性校正共享状态，覆盖轮询线程启动早期（首次读数前）与线程意外停滞的情况，事件由主循环兜底转发
 /// [PAUSED] 原 sysfs 全节点投票口径见 [source]/[select]/[read]
 pub fn verify_screen_state(state_arc: &Arc<Mutex<bool>>) {
     update_state_if_changed(state_arc, read_screen_prop(), "verify");
@@ -451,7 +420,7 @@ pub fn verify_screen_state(state_arc: &Arc<Mutex<bool>>) {
 
 // [uevent]
 pub fn monitor_screen_state_uevent(
-    // [PAUSED] 屏幕分支暂停后本函数不再消费这两项；恢复屏幕分支时去掉下划线
+    // [PAUSED] 屏幕分支暂停后本函数不再消费这两项，去掉下划线
     _state_arc: Arc<Mutex<bool>>,
     _tx: SyncSender<DaemonEvent>,
 ) -> Result<(), Box<dyn Error>> {
@@ -475,12 +444,12 @@ pub fn monitor_screen_state_uevent(
                             )
                         )
                     );
-                    // [PAUSED] power 屏幕分支暂停（属性轮询见 [prop]）；恢复 = 还原本分支及下方 backlight/leds 分支
+                    // [PAUSED] power 屏幕分支暂停，属性轮询见 [prop]
                     if event.subsystem == "cpu" {
                         // CPU hotplug（cpuN/online 变更）：只置脏标记，下一轮 affinity 立即刷新在线核位图（≤2s），事件风暴也只是次原子写
                         crate::monitor::CPU_HOTPLUG_DIRTY.store(true, Ordering::Relaxed);
                     }
-                    /* [PAUSED] backlight/leds 屏幕分支暂停（属性轮询见 [prop]）：恢复 = 还原两个分支体，并在导入处补回 kobject_uevent::ActionType。 */
+                    /* [PAUSED] backlight/leds 屏幕分支暂停，属性轮询见 [prop] */
 
                     /* thread::sleep(Duration::from_millis(100));
                     // 与 verify 自愈同口径（read_backlight_state）：bl_power==0 → 亮；非 0（含亮屏
@@ -556,10 +525,8 @@ pub fn monitor_screen_state_uevent(
                 }
             }
             Err(e) => {
-                // netlink 接收失败原本只 sleep 1s 重试、零痕迹：套接字一旦持续报错（缓冲区/权限问题），
-                // uevent 侧（CPU hotplug 脏标记）就永久失效，而日志上与「安静无事件」完全同形。
-                // 可自愈（下轮重试）→ debug；本分支紧邻 `thread::sleep(1s)`，天然限频，门控只为省分配。
-                // 文案走既有 key `screen-uevent-recv-failed`（ftl 已声明，此前是死 key 未被引用）
+                // netlink 接收失败若只 sleep 1s 重试则零痕迹：套接字持续报错（缓冲区/权限问题）时 uevent 侧（CPU hotplug 脏标记）永久失效，日志上与安静无事件完全同形
+                // 可自愈（下轮重试），按 debug；本分支紧邻 `thread::sleep(1s)`，天然限频，门控只为省分配；文案走既有 key `screen-uevent-recv-failed`
                 if log::log_enabled!(log::Level::Debug) {
                     debug!(
                         "{}",

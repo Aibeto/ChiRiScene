@@ -1,7 +1,5 @@
-//! gpu.rs: [detect] [types] [lock] [release]GPU 频率锁（contingency 使用）：启动时探测一次 devfreq 节点，能确定硬件最高频的才收录；
-//! lock 时快照当前min/max 并锁 min=max=硬件最高频，release 按快照恢复；探测不到任何可用节点保持空表、lock 为 no-op（只打一次 warn）——GPU 节点各 SoC 差异很大，
-//! 宁可不管也不乱写。节点覆盖：-高通 Adreno /sys/class/kgsl/kgsl-3d0/`（硬件上限 `max_gpu_clk`，写入走同名 devfreq）
-//! + 通用 devfreq /sys/class/devfreq/` 下名字含 gpu / kgsl / mali 的设备
+//! gpu.rs: [detect] [types] [lock] [release]
+//! GPU 频率锁（contingency）：启动探测一次 devfreq 节点，能确定硬件最高频的才收录；lock 快照 min/max 并锁 min=max=硬件最高频，release 按快照恢复；探测不到可用节点则空表、lock 为 no-op（只打一次 warn）
 use crate::utils::FastWriter;
 use log::{debug, error, info, warn};
 use std::fs;
@@ -34,8 +32,7 @@ fn read_freq_range(dir: &str) -> Option<(u32, u32)> {
 static SNAPSHOT_EMPTY_LOGGED: AtomicBool = AtomicBool::new(false);
 
 // [detect]
-// 「有 GPU 目录却全部被拒」是最需要看见的失效态。探测在进程内只跑一次（GpuGuard::new 仅 mod 一处调用），
-// 候选目录有限、逐条如实报不会刷屏，故不做去重
+// 「有 GPU 目录却全部被拒」是最需要看见的失效态；探测在进程内只跑一次（GpuGuard::new 仅 mod 一处调用），候选目录有限，故不做去重
 /// 排除某个候选目录并记录原因（逐目录逐原因各报一条）
 fn reject(dir: &str, reason: String) {
     warn!(
@@ -77,7 +74,7 @@ fn probe_devfreq(dir: &str, out: &mut Vec<GpuNode>) {
     let max_writer = FastWriter::new(format!("{dir}/max_freq"));
     let min_writer = FastWriter::new(format!("{dir}/min_freq"));
     if !max_writer.is_valid() {
-        reject(dir, format!("{dir}/max_freq 不可写（含卸载重试）"));
+        reject(dir, format!("{dir}/max_freq 不可写"));
         return;
     }
     let min_writer = min_writer.is_valid().then_some(min_writer);
@@ -126,9 +123,8 @@ pub struct GpuGuard {
     active: bool,
 }
 
-/// devimp snap 行用：GPU 各节点的**实际**当前频率 / 上下限 / 调速器。多节点以 `;` 分隔，每项 `<设备名>:<值>`，读不到写 `-`
-/// **只在 devimp 开启时调用**（每秒一次 sysfs 读），故不做缓存——值会被内核 devfreq 与其它进程改动节点口径与探测一致（Adreno kgsl-3d0) + 通用 devfreq gpu/kgsl/mali）
-/// **当前未被调用**：`chiri/mod.rs` 的 `GPU_SNAPSHOT_ENABLED` 默认 false——读 GPU 节点会拉起 GPU 出低功耗（8550 实测同场景功耗 +47%），保留实现待该问题有解或确需数据时再开
+/// devimp snap 行用：GPU 各节点的实际当前频率 / 上下限 / 调速器，多节点以 `;` 分隔，每项 `<设备名>:<值>`，读不到写 `-`
+/// 只在 devimp 开启时调用（每秒一次 sysfs 读），故不做缓存；当前未被调用，`GPU_SNAPSHOT_ENABLED` 默认 false——读 GPU 节点会拉起 GPU 出低功耗（8550 功耗 +47%）
 #[allow(dead_code)]
 pub fn devfreq_snapshot() -> (String, String, String, String) {
     // 目录按**设备名**去重且标准 devfreq 优先：kgsl-3d0 会同时出现在 /sys/class/devfreq/ 与 /sys/class/kgsl/ 下，
@@ -156,9 +152,8 @@ pub fn devfreq_snapshot() -> (String, String, String, String) {
         }
     }
 
-    // 读频率并**统一成 kHz**：devfreq 的 cur_freq 与 Adreno 的 gpuclk 都以 Hz 计，直接写日志会得到荒谬值（与 CPU 的 kHz 口径也对不上）；
-    // 已是 kHz 的厂商节点（数值小）保持原样
-    // 返回 None 表示**该字段在本机型上读不到**（与「读到了但值是空」区分开）：外层靠它区分「节点缺失」与「GPU 空闲」
+    // 读频率并统一成 kHz：devfreq 的 cur_freq 与 Adreno 的 gpuclk 都以 Hz 计，已是 kHz 的厂商节点（数值小）保持原样
+    // 返回 None 表示该字段在本机型上读不到（与「读到了但值是空」区分开），外层靠它区分「节点缺失」与「GPU 空闲」
     let read_freq = |dir: &str, names: &[&str]| -> Option<String> {
         for n in names {
             if let Ok(s) = fs::read_to_string(format!("{dir}/{n}")) {
@@ -217,8 +212,7 @@ pub fn devfreq_snapshot() -> (String, String, String, String) {
         push(&mut min, mn);
         push(&mut gov, read_gov(&dir, is_devfreq));
     }
-    // [critical] 同形防护：读不到就写 "-"，于是「GPU 节点不存在 / 全部读失败」与「GPU 空闲或快照未开启」
-    // 在 devimp 上完全同形，真机排查无法区分。只报一次（有无节点是硬件事实，不会变）
+    // [critical] 同形防护：读不到就写 "-"，于是「GPU 节点不存在 / 全部读失败」与「GPU 空闲或快照未开启」在 devimp 上完全同形；只报一次（有无节点是硬件事实，不会变）
     if !any_ok && !SNAPSHOT_EMPTY_LOGGED.swap(true, Ordering::Relaxed) {
         warn!("{}", t("gpu-snapshot-unavailable"));
     }
@@ -308,7 +302,7 @@ impl GpuGuard {
     }
 
     // [release]
-    /// 按快照恢复原 min/max。先降 min 再降 max（避免 max<min 被内核拒绝）
+    /// 按快照恢复原 min/max，先降 min 再降 max（避免 max<min 被内核拒绝）
     pub fn release(&mut self) {
         if !self.active {
             return;
@@ -334,8 +328,7 @@ impl GpuGuard {
         }
         // 写失败细节由 FastWriter 自己按 errno 分级打；这里只报恢复不完整的**后果**
         if max_failed > 0 {
-            // [critical] 写入本身可能只是瞬态失败，但 release 是唯一一次机会：下面 active 已置 false，
-            // 之后 release 直接 return，再无人重试写回。状态卡在 min=max=hw_max（耗电/发热）且无任何标志反映——必须 error
+            // [critical] 写入可能只是瞬态失败，但 release 是唯一一次机会：下面 active 已置 false，之后 release 直接 return 再无人重试，状态卡在 min=max=hw_max（耗电/发热）且无任何标志反映——必须 error
             error_critical_once(
                 &RELEASE_STUCK_LOGGED,
                 "gpu-release-max-stuck",

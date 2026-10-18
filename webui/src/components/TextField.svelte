@@ -1,6 +1,6 @@
 <script lang="ts">
-  // TextField.svelte: [state] [input]文本输入：与 NumberField 同款结构（.g-field + .g-switch__text），
-  // 但值恒为字符串、不做提交时机约束——由调用方决定何时读取（通知测试里是点按钮时才用）
+  // TextField.svelte: [state] [input] 文本输入：与 NumberField 同款结构（.g-field + .g-switch__text），但值恒为字符串、不做提交时机约束
+  // 何时读取由调用方决定（通知测试里是点按钮时才用）
   let {
     label,
     hint = '',

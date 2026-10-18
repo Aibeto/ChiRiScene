@@ -11,12 +11,11 @@ use std::time::{Duration, Instant};
 /// 频率校验的最小等待：内核调频异步，过早读 scaling_cur_freq 得到的是旧档
 const VERIFY_SETTLE: Duration = Duration::from_millis(200);
 
-/// QoS 钳制长窗口：qos_clamped 持续超过该时长才打 warnthermal cdev 降频恢复为秒级~分钟级，300s 已覆盖绝大多数单次热事件；超过则视为 thermal 近乎永久钳死，
-/// 提醒用户锁频长期未生效
+/// QoS 钳制长窗口：qos_clamped 持续超过该时长才打 warn
+/// thermal cdev 降频恢复为秒级~分钟级，300s 已覆盖绝大多数单次热事件，超过视为 thermal 近乎永久钳死
 const QOS_CLAMP_WARN_WINDOW: Duration = Duration::from_secs(300);
 
-// [struct]
-// 单 policy 频率控制器状态
+// [struct] 单 policy 频率控制器状态
 pub struct PolicyController {
     pub max_writer: FastWriter,
     pub min_writer: FastWriter,
@@ -32,27 +31,27 @@ pub struct PolicyController {
 
     verify_freq: Option<u32>,
     verify_timer: Instant,
-    /// 目标值最后一次变化的时刻，用于等待目标稳定后再校验；None = 尚未写过
+    /// 目标值最后一次变化时刻，用于等待目标稳定后再校验；None = 尚未写过
     verify_at: Option<Instant>,
     /// 写频后校验间隔（来自 FasRulesConfig::verify_freq_interval_secs）
     verify_interval: Duration,
 
-    /// QoS 钳制状态：读回 scaling_max_freq < 上次写入值时进入。写 scaling_max_freq 只是追加一条 FREQ_QOS_MAX 请求（thermal
-    /// cooling/msm_performance/input-boost 各持一条，聚合取min），热压期内核请求更低、读回偏小是合法态不是篡改；重写改不了聚合 min，只会死循环白写
+    /// QoS 钳制状态：读回 scaling_max_freq < 上次写入值时进入
+    /// 写 scaling_max_freq 只是追加一条 FREQ_QOS_MAX 请求（thermal cooling/msm_performance/input-boost 各持一条，聚合取 min），热压期读回偏小是合法态不是篡改，重写改不了聚合 min 只会白写
     qos_clamped: bool,
-    /// 进入钳制的时刻，用于长窗口告警与退出时报告持续时长
+    /// 进入钳制时刻，用于长窗口告警与退出时报告持续时长
     qos_clamped_since: Option<Instant>,
     /// 长窗口告警只打一次的标记，退出钳制时复位
     qos_clamp_warned: bool,
 
-    /// 校验读回失败只报一次的标记：scaling_max_freq 读不到时「写入有没有生效」不可判定，
-    /// 校验链路断供但对外表现与正常态同形，故进失效态报一次，读回恢复时复位（允许下次再报）
+    /// 校验读回失败只报一次的标记：scaling_max_freq 读不到时写入是否生效不可判定
+    /// 校验链路断供但对外表现与正常态同形，故进失效态报一次，读回恢复时复位允许再报
     verify_read_failed: bool,
 
     pub ignore_write: bool,
 
-    /// 接管前该 policy 的原始 governor（load_policies 快照）。FAS 接管期间把 governor 改写为 performance 配合 min=max 锁频，退出必须恢复，
-    /// 否则性能模式泄漏到 CLG/akmode/系统调频
+    /// 接管前该 policy 的原始 governor（load_policies 快照）
+    /// FAS 接管期间改写为 performance 配合 min=max 锁频，退出必须恢复，否则性能模式泄漏到 CLG/akmode/系统调频
     orig_governor: Option<String>,
 }
 
@@ -141,7 +140,7 @@ impl PolicyController {
         if self.ignore_write {
             return;
         }
-        // 必须在本次写入前校验上一次写入：内核调频异步，写完立刻读 scaling_cur_freq 拿到的是旧档会假性判成「被改写」；且要求目标已稳定 ≥ VERIFY_SETTLE，频繁改频期间跳过
+        // 必须在本次写入前校验上一次写入：内核调频异步，写完立刻读 scaling_cur_freq 是旧档会假性判成被改写；且要求目标已稳定 ≥ VERIFY_SETTLE，频繁改频期间跳过
         self.verify_prev_freq();
         if target_freq >= self.current_freq {
             self.max_writer.write_value_force(target_freq);
@@ -160,16 +159,9 @@ impl PolicyController {
         }
     }
 
-    /// 校验上一次写入的目标频率（apply 入口调用；要求目标稳定 ≥ [`VERIFY_SETTLE`]，
-    /// 且距上次校验 ≥ verify_freq_interval_secs，默认 1s）TODO: 只校验 scaling_max_freq
-    /// 不校验 scaling_min；写失败与 QoS 钳制在读回偏低时不可区分（按合法钳制处理）
-    /// 按读回 scaling_max_freq（= FREQ_QOS_MAX 聚合结果）分三级判定：
-    /// - `== 写入值`：正常；若此前处于 [`Self::qos_clamped`] 则退出钳制态；
-    /// - `< 写入值`：QoS 钳制（thermal cooling/msm_performance/input-boost 各持
-    /// FREQ_QOS_MAX 请求聚合取 min，读回偏小是合法态不是篡改）——不重写不告警
-    /// （降 debug），持续超过 [`QOS_CLAMP_WARN_WINDOW`] 才打 warn硬件热压
-    /// （LMh/DCVS）不碰 policy->max，佐证节点 dcvsh_freq_limit 仅 debug 记录；
-    /// - `> 写入值`：锁频被异常改写（残留旧模块/手动调试/内核异常），告警 + 重写收敛
+    /// 校验上一次写入的目标频率：要求目标稳定 ≥ [`VERIFY_SETTLE`] 且距上次校验 ≥ verify_freq_interval_secs（默认 1s）
+    /// 按读回 scaling_max_freq（FREQ_QOS_MAX 聚合结果）三级判定：== 写入值退出钳制；< 写入值属 QoS 钳制不重写不告警，超 [`QOS_CLAMP_WARN_WINDOW`] 才 warn；> 写入值属锁频被改写，告警 + 重写收敛
+    /// TODO: 只校验 scaling_max_freq 不校验 scaling_min，写失败与 QoS 钳制在读回偏低时不可区分，按合法钳制处理
     fn verify_prev_freq(&mut self) {
         let (Some(expected), Some(at)) = (self.verify_freq, self.verify_at) else {
             return;
@@ -179,8 +171,8 @@ impl PolicyController {
         }
         self.verify_timer = Instant::now();
         let Some(actual) = self.read_scaling_max_freq() else {
-            // [verify-read-failed] 读回失败 = 「写入有没有生效」不可判定，校验链路断供，但对外
-            // 与正常态同形（既不报警也不钳制）。进失效态报一次，读回恢复时复位允许再报
+            // [verify-read-failed] 读回失败 = 写入是否生效不可判定，校验链路断供但对外与正常态同形
+            // 进失效态报一次，读回恢复时复位允许再报
             if !self.verify_read_failed {
                 self.verify_read_failed = true;
                 warn!(
@@ -228,7 +220,7 @@ impl PolicyController {
             return;
         }
         if actual < expected {
-            // 合法 QoS 聚合态：不重写、不告警dcvsh_freq_limit 仅 debug 记录，低于硬件 max 说明另有硬件级限频叠加
+            // 合法 QoS 聚合态：不重写不告警；dcvsh_freq_limit 仅 debug 记录，低于硬件 max 说明另有硬件级限频叠加
             if !self.qos_clamped {
                 self.qos_clamped = true;
                 self.qos_clamped_since = Some(Instant::now());
@@ -263,8 +255,8 @@ impl PolicyController {
                                 )
                             )
                         );
-                        // [qos_clamp] 钳制与「外部把 max 改小」读回签名相同不可区分，故附带一次重写试探：若属篡改，下次 verify 读回复原即退出钳制；若属真 QoS 聚合，
-                        // 取 min 不受影响，仅多一次幂等写
+                        // [qos_clamp] 钳制与外部把 max 改小的读回签名相同不可区分，故附带一次重写试探
+                        // 若属篡改，下次 verify 读回复原即退出钳制；若属真 QoS 聚合，取 min 不受影响，仅多一次幂等写
                         self.qos_clamp_warned = true;
                         self.max_writer.write_value_force(expected);
                         self.min_writer.write_value_force(expected);
@@ -310,14 +302,7 @@ impl PolicyController {
 
     // [reset]
     /// 防篡改重写：目标值不变，把当前锁频值再写一遍，收敛被异常改写的节点
-    /// （ChiRi 是全局唯一调度程序，被改写属异常态，本机制是兜底不是常态对抗）
-    /// 原先的两次 `FastWriter::re_unmount()` 已删：它只 umount2(MNT_DETACH) 不重开 fd，
-    /// 对收敛零贡献（真正换节点的是 unmount_and_reopen），且 scaling_max/min_freq 不是
-    /// 挂载点必返回 EINVALverify_prev_freq 里那次 unmount 保留（兜底路径，受
-    /// verify_freq_interval_secs 限频，代价可忽略）`qos_clamped` 期间跳过：
-    /// 读回偏小是 FREQ_QOS_MAX 聚合的合法结果，重写改不了聚合 min，只会白写 sysfs
-    /// `qos_clamped` 期间直接跳过：读回偏小是 FREQ_QOS_MAX 聚合的合法结果
-    /// （thermal 等内核持有更低请求），此时重写改变不了聚合 min，只会白写 sysfs
+    /// ChiRi 是全局唯一调度程序，被改写属异常态，本机制是兜底不是常态对抗；`qos_clamped` 期间跳过，读回偏小是 FREQ_QOS_MAX 聚合的合法结果，重写改不了聚合 min 只会白写 sysfs
     pub fn force_reapply(&mut self) {
         if self.ignore_write || self.qos_clamped {
             return;
@@ -338,7 +323,7 @@ impl PolicyController {
         self.qos_clamped_since = None;
         self.qos_clamp_warned = false;
         self.verify_read_failed = false;
-        // 恢复接管前的 governor：performance 泄漏到 CLG/akmode/系统调频会让功耗停在「性能拉满」档
+        // 恢复接管前的 governor：performance 泄漏到 CLG/akmode/系统调频会让功耗停在性能拉满档
         if let Some(gov) = self.orig_governor.clone() {
             let _ = crate::utils::write_sysfs(
                 &format!(

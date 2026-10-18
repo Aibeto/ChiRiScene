@@ -1,22 +1,5 @@
 //! diag_cost.rs: [clock] [buckets] [stats] [summary]
-//! @S 快照同步成本的线程局部累计器：墙钟与线程 CPU 时钟、固定直方图、会话窗口摘要。
-//!
-//! **归因边界（写清便于审查）**：三个 `Block` 是**互不重叠**的分段，各自独立记账：
-//! - `Build`  = build 段（`before_build` → `after_build`）；
-//! - `Write`  = write 段（`after_build` → `after_write`）；
-//! - `Summary`= 摘要写入段（`after_write` → `after_summary`，独立记账，不与前两段重叠）。
-//!
-//! **CPU 口径**：`thread_cpu_ns` 读的是**当前线程** `CLOCK_THREAD_CPUTIME_ID` 的绝对读数，
-//! 调用方在段两端各取一次做差分。读取失败返回 `None`——**不兜底为 0 或进程时间**；
-//! `record` 收到 `cpu_ns == None` 时仍计 `count`/墙钟/桶，只是**不计入 CPU 分母**
-//! （CPU 均值 = `cpu_ns_sum / cpu_valid_count`，`cpu_valid_count == 0` 时该块 CPU 不可得）。
-//!
-//! **并发语义**：本结构**无内部锁**，由调用方（同步采集线程）以 `&mut self` **独占**持有。
-//! 将来若需跨线程，另设计——本版不引入全局锁累计。
-//!
-//! **读端口径提示**：`summary_line` 在 `cpu_valid_count == 0` 时仍输出 `cpu_ns_sum=0`
-//! （字段位置/数量固定，不因缺失而增删），读端须按 `cpu_valid_count=0 → CPU unavailable` 判读，
-//! **不可**把 `cpu_ns_sum=0` 当成「CPU 耗时为 0」。
+//! @S 快照同步成本的线程局部累计器：Build/Write/Summary 三段互不重叠，线程 CPU 时钟两端差分、固定直方图与会话窗口摘要，无内部锁、由调用方以 `&mut self` 独占
 
 pub const SCHEMA: &str = "selfcost/1";
 /// 墙钟直方图桶上界（ms，含上界）；另有第 9 个「超界」桶
@@ -25,7 +8,7 @@ pub const WALL_BUCKET_COUNT: usize = 9;
 /// 慢调用阈值：只用于节流告警，不影响入账
 pub const SLOW_NS: u64 = 50_000_000;
 
-/// 同步成本分块标识（见模块头：三段互不重叠）
+/// 同步成本分块标识，三段互不重叠
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Block {
     Build,
@@ -56,8 +39,7 @@ impl Block {
 }
 
 // [stats]
-/// 单个 `Block` 的累计量：次数、CPU 有效分母、墙钟和/最大值、CPU 和、
-/// ≥`SLOW_NS` 次数，以及固定桶直方图（长度 = [`WALL_BUCKET_COUNT`]）
+/// 单个 `Block` 的累计量：次数、CPU 有效分母、墙钟和/最大值、CPU 和、≥`SLOW_NS` 次数、固定桶直方图（长度 = [`WALL_BUCKET_COUNT`]）
 #[derive(Clone, Debug, Default)]
 pub struct BlockStats {
     pub count: u64,
@@ -70,8 +52,7 @@ pub struct BlockStats {
 }
 
 // [stats]
-/// `@S` 快照同步成本的线程局部累计器：三个 [`BlockStats`] + 两类错误计数。
-/// 由调用方独占持有（`&mut self`），无内部锁。
+/// `@S` 快照同步成本的线程局部累计器：三个 [`BlockStats`] + 两类错误计数，由调用方独占持有（`&mut self`），无内部锁
 #[derive(Debug, Default)]
 pub struct CostStats {
     blocks: [BlockStats; 3],
@@ -84,8 +65,7 @@ impl CostStats {
         Self::default()
     }
 
-    /// 记一次分块调用：`wall_ns` 必给；`cpu_ns == None` 表示 CPU 读取无效（仍计 wall/count，
-    /// cpu 分母不计）。墙钟和用 `saturating_add`，不因极端输入 panic 或回绕。
+    /// 记一次分块调用：`wall_ns` 必给，`cpu_ns == None` 表示 CPU 读取无效（仍计 wall/count，只不计 cpu 分母），墙钟和用 `saturating_add` 不回绕
     pub fn record(&mut self, block: Block, wall_ns: u64, cpu_ns: Option<u64>) {
         let stats = &mut self.blocks[block.slot()];
         stats.count += 1;
@@ -103,8 +83,7 @@ impl CostStats {
         }
     }
 
-    /// 把一个已聚合的 [`BlockStats`] 并入指定 block（逐字段相加；`wall_ns_max` 取较大者；
-    /// 直方图桶逐桶相加）。供「延后报出的 summary 成本按其自身窗口归属并入」使用。
+    /// 把一个已聚合的 [`BlockStats`] 并入指定 block：逐字段相加、`wall_ns_max` 取大、直方图桶逐桶相加
     pub fn absorb(&mut self, block: Block, other: &BlockStats) {
         let stats = &mut self.blocks[block.slot()];
         stats.count = stats.count.saturating_add(other.count);
@@ -147,36 +126,27 @@ impl CostStats {
     }
 
     // [stats]
-    /// 发送端：窗口级复位——只清三个 [`BlockStats`]（`count` / `cpu_valid_count` /
-    /// `wall_ns_sum` / `wall_ns_max` / `cpu_ns_sum` / `slow_count` / `wall_buckets` 全归零），
-    /// **保留** `clock_errors` 与 `write_errors`。
-    ///
-    /// 保留错误计数是为了让「写失败」的窗口仍能在**下一个窗口**的结构化摘要行里以非零
-    /// `write_errors` / `clock_errors` 报出——失败事实不因本窗口复位而丢失，可离线复算。
-    /// 需要连错误计数一并清零（整会话清空）请用 [`reset_session`](Self::reset_session)。
+    /// 窗口级复位：三个 [`BlockStats`] 的 count/cpu_valid_count/wall_ns_sum/wall_ns_max/cpu_ns_sum/slow_count/wall_buckets 归零
+    /// 保留 `clock_errors` 与 `write_errors`，失败事实在下一个窗口摘要行里仍以非零报出；整会话清空用 [`reset_session`](Self::reset_session)
     pub fn reset(&mut self) {
         for stats in &mut self.blocks {
             *stats = BlockStats::default();
         }
     }
 
-    /// 会话级复位：清零一切，**含** `clock_errors` 与 `write_errors`。用于新会话开始。
+    /// 会话级复位：清零一切，含 `clock_errors` 与 `write_errors`，用于新会话开始
     pub fn reset_session(&mut self) {
         *self = Self::default();
     }
 
-    /// 是否还有待结算的窗口数据：任一 block 的 `count > 0` 即为 `true`。
-    /// 供会话结束的尾窗排空判断使用。
+    /// 是否还有待结算的窗口数据：任一 block 的 `count > 0` 即为 `true`，供会话结束的尾窗排空判断
     pub fn has_pending(&self) -> bool {
         self.blocks.iter().any(|stats| stats.count > 0)
     }
 
     // [summary]
-    /// 一行摘要（每个 block 一行）：固定字段顺序
-    /// `schema session window_start window_end block count cpu_valid_count
-    /// wall_ns_sum wall_ns_max cpu_ns_sum wall_buckets slow_count clock_errors write_errors`，
-    /// 空格分隔 `key=value`，`block` 为小写；`wall_buckets` 为 9 个逗号分隔计数。
-    /// `cpu_valid_count == 0` 时 `cpu_ns_sum` 仍写 0——读端须按 `cpu_valid_count=0 → unavailable` 判读。
+    /// 一行摘要（每个 block 一行），空格分隔 `key=value`：`schema session window_start window_end block count cpu_valid_count wall_ns_sum wall_ns_max cpu_ns_sum wall_buckets slow_count clock_errors write_errors`
+    /// `block` 小写，`wall_buckets` 为 9 个逗号分隔计数；`cpu_valid_count == 0` 时 `cpu_ns_sum` 仍写 0，读端按 `cpu_valid_count=0` 判不可得
     pub fn summary_line(
         &self,
         session: &str,
@@ -214,9 +184,8 @@ impl CostStats {
 }
 
 // [buckets]
-/// 墙钟纳秒 → 桶下标：落到第一个 `wall_ns <= 上界` 的桶（**上界含**）。
-/// 比较在 **ns 精度**完成（上界 ms × 1e6 = 上界 ns），**不做 ms 向下取整**——
-/// 故 1.999ms 落 ≤2ms 桶、100.999ms 落超界桶；全部超过则落第 9 个超界桶。
+/// 墙钟纳秒 → 桶下标：落到第一个 `wall_ns <= 上界` 的桶（上界含），比较在 ns 精度完成、不做 ms 向下取整
+/// 故 1.999ms 落 ≤2ms 桶、100.999ms 落超界桶，全部超过则落第 9 个超界桶
 fn bucket_index(wall_ns: u64) -> usize {
     for (index, &upper_ms) in WALL_BUCKETS_MS.iter().enumerate() {
         if wall_ns <= upper_ms.saturating_mul(1_000_000) {
@@ -227,9 +196,8 @@ fn bucket_index(wall_ns: u64) -> usize {
 }
 
 // [clock]
-/// 当前线程 CPU 时钟绝对读数（ns）：`CLOCK_THREAD_CPUTIME_ID` 的 `tv_sec * 1e9 + tv_nsec`。
-/// `clock_gettime` 返回非 0 时返回 `None`——**不兜底为 0 或进程时间**；
-/// 数值转换用 `saturating`/`try_from` 防溢出与负值，读端用两端差分。
+/// 当前线程 CPU 时钟绝对读数（ns）：`CLOCK_THREAD_CPUTIME_ID` 的 `tv_sec * 1e9 + tv_nsec`
+/// `clock_gettime` 返回非 0 时返回 `None` 不兜底为 0 或进程时间，数值转换用 `saturating`/`try_from` 防溢出与负值
 pub fn thread_cpu_ns() -> Option<u64> {
     let mut ts: libc::timespec = unsafe { std::mem::zeroed() };
     let ret = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
@@ -242,7 +210,7 @@ pub fn thread_cpu_ns() -> Option<u64> {
 }
 
 // [tests]
-// 本仓库无 CI 执行 `cargo test`，以下测试只保证编译通过（真机/CI 恢复后可作为聚焦用例）。
+// 本仓库无 CI 执行 `cargo test`，以下测试只保证编译通过
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,8 +246,7 @@ mod tests {
 
     #[test]
     fn bucket_compares_upper_bound_at_ns_precision() {
-        // 上界比较在 ns 精度完成（不做 ms 向下取整）：亚毫秒不落入更低的桶，
-        // 恰好等于上界的入该桶（含上界），略超上界的落下一个桶（或超界桶）。
+        // 上界比较在 ns 精度完成：恰好等于上界入该桶，略超上界落下一个桶或超界桶
         let cases: [(u64, usize); 11] = [
             (0, 0),           // 0ns → ≤1ms
             (999_999, 0),     // 0.999ms → ≤1ms

@@ -1,10 +1,6 @@
-//! down.rs: [consts] [state] [flag] [unsupported] [watch]
-//! DOWN 模式（调度停摆）：模块根 `down.chr` 写着保留字 `down` 时，调度关停**全部**调度功能，
-//! 只留采集与日志（eBPF、status.csv、daemon.log、devimp 照常），便于与接管时对比
-//! 与 `rhine.chr` 同款：对外暴露、可手改、内容即状态；文件在磁盘上，**重启后仍保持停摆**、只能改文件解除
-//! 判据只认 `down.chr`；`current_mode.chr` 的 `down` 是对外投影——停摆期调度线程不覆盖它，免得外部工具误判「已恢复」
-//! 唯一例外：非 ChiRi SoC 不起调度线程、本就不接管任何 CPU，开机直接写一次投影，见 `project_unsupported`
-//! 释放/恢复动作在调度循环里（governor 为该线程独占），这里只提供「当前该不该停摆」这一事实
+//! down.rs: [consts] [state] [flag] [unsupported] [watch] DOWN 模式（调度停摆）
+//! 模块根 down.chr 写着 down 时关停全部调度，只留采集与日志，重启后仍保持，只能改文件解除
+//! 判据只认 down.chr，current_mode.chr 的 down 只是对外投影；释放/恢复动作在调度循环里，这里只回答该不该停摆
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -24,24 +20,20 @@ use crate::utils;
 pub const DOWN_CHR: &str = "down.chr";
 /// 停摆期间写进 `current_mode.chr` 的模式值
 pub const DOWN_MODE: &str = "down";
-/// 随模块下发的内容模板，同时是「文件缺失」时补建的内容（只有注释 = 正常调度）
+/// 随模块下发的内容模板，也是文件缺失时补建的内容（只有注释 = 正常调度）
 pub const DOWN_DEFAULT_CHR: &str = include_str!("../module/down.chr");
 /// 监听异常后的重建间隔（与另外两套 watcher 同口径）
 const WATCH_RETRY_BACKOFF: Duration = Duration::from_secs(2);
 
 // [state]
-/// 解析 `down.chr`：写了保留字 `down`（忽略大小写、允许成对引号）= 停摆；空/注释/其它 = 正常；缺失就地补建模板
-/// 只读判定「down.chr 是否要求停摆」。`pub(crate)` 是给 `main.rs` 的启动通知用的：
-/// 那时调度线程可能还没跑到 `on_startup`（`is_down()` 全局标志尚未置位），
-/// 只能直接读磁盘，否则「以 DOWN 模式启动」会被判成普通启动
+/// 解析 `down.chr`：保留字 `down`（忽略大小写、允许成对引号）= 停摆；空/注释/其它 = 正常；缺失就地补建模板
+/// 直接读磁盘而非 `is_down()`，供 `main.rs` 启动通知在调度线程 on_startup 之前判定 DOWN 启动
 pub(crate) fn read_down(root: &Path) -> bool {
     let path = root.join(DOWN_CHR);
     let text = match fs::read_to_string(&path) {
         Ok(text) => text,
         Err(e) => {
-            // [level] 读不到原本全程静默：「状态文件读不了、按不停摆继续」与「用户写了空内容、正常调度」
-            // 在日志上完全同形，真机排查时无从判断调度为什么没停摆。补打点，两条按性质分级别——
-            // 文件缺失补建属正常首装（info），其余读错误是异常但可降级（warn，不停摆处理）
+            // [level] 读不到原本全程静默，与「写了空内容」同形；文件缺失补建属首装（info），其余读错误 warn 且不停摆
             let not_found = e.kind() == std::io::ErrorKind::NotFound;
             if !not_found {
                 warn!(
@@ -52,7 +44,7 @@ pub(crate) fn read_down(root: &Path) -> bool {
                     )
                 );
             }
-            // 就地补建模板：失败也要留痕——文件一直缺失则只能靠监听感知，重启后可能停在停摆
+            // 就地补建模板，失败也留痕
             if common::write_file_no_panic(&path, DOWN_DEFAULT_CHR.as_bytes()) {
                 if not_found {
                     info!("{}", t("down-chr-created"));
@@ -60,7 +52,7 @@ pub(crate) fn read_down(root: &Path) -> bool {
             } else {
                 warn!("{}", t("down-chr-recreate-failed"));
             }
-            // 读不到按「不停摆」处理——绝不因为一个状态文件异常就让调度自己关掉
+            // 读不到按「不停摆」处理，绝不因状态文件异常让调度自己关掉
             return false;
         }
     };
@@ -78,7 +70,7 @@ pub(crate) fn read_down(root: &Path) -> bool {
 }
 
 // [flag]
-/// 停摆中。调度循环高频读它，那里不许再去读文件
+/// 停摆中；调度循环高频读它，那里不许再读文件
 static DOWN_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// 当前是否处于 DOWN 停摆（进程级，读原子量）
@@ -87,29 +79,27 @@ pub fn is_down() -> bool {
 }
 
 // [unsupported]
-/// 非 ChiRi SoC：该分支不启动调度、不接管任何 CPU，与停摆本就同态，所以把对外状态对齐——只写一次
-/// `current_mode.chr`（外部工具 / WebUI 据此显示 DOWN），**不写 `down.chr`**：那是「用户意图」的
-/// 输入文件，本机没有可释放的接管，写它等于伪装成用户设过；进程级标志一并置真，与其它路径同口径。
-/// 由 main.rs 在「调度器未启动」分支调用一次（该分支无监听线程，写入后不再变更）
+/// 非 ChiRi SoC：不启动调度、不接管 CPU，与停摆同态，故只写一次 `current_mode.chr` 对齐对外状态
+/// 不写 `down.chr`（那是用户意图输入文件），进程级标志一并置真；由 main.rs 在「调度器未启动」分支调用
 pub fn project_unsupported(root: &Path) {
     DOWN_ACTIVE.store(true, Ordering::Release);
     let _ = utils::try_write_file(root.join("current_mode.chr"), DOWN_MODE.as_bytes());
 }
 
 // [watch]
-/// 启动期读取一次。必须在调度线程起循环之前调用（ChiRi 专属）
+/// 启动期读取一次，必须在调度线程起循环之前调用（ChiRi 专属）
 pub fn on_startup(root: &Path) -> bool {
     let v = read_down(root);
     DOWN_ACTIVE.store(v, Ordering::Release);
     v
 }
 
-/// 盯模块根的 `down.chr`：写入或删除即生效，与 meta.yaml、rhine.chr 同语义，不用重启调度
+/// 盯模块根的 `down.chr`：写入或删除即生效，不用重启调度
 pub fn watch_loop(root: PathBuf) {
     let mut watcher: Option<utils::DirWatcher> = None;
     loop {
         if watcher.is_none() {
-            // 比默认多一个 DELETE：这个文件的**删除**同样表示解除停摆，默认掩码只认 CLOSE_WRITE / MOVED_TO、删掉不会醒
+            // 比默认多一个 DELETE：删除同样表示解除停摆，默认掩码只认 CLOSE_WRITE / MOVED_TO
             match utils::DirWatcher::new_with_mask(
                 &root,
                 WatchMask::CLOSE_WRITE | WatchMask::MOVED_TO | WatchMask::DELETE,

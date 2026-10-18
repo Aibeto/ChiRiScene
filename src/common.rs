@@ -239,7 +239,7 @@ pub fn core_group_of(cpu: u32) -> Option<CoreGroup> {
 
 /// SoC 硬件基线（{soc}/soc.yaml，随 module/config 编译期嵌入、磁盘不落盘）：运行时 sysfs 探测的兜底与校准基准，不是调优输入
 /// 全部字段可缺省（缺段 = None → 调用方走原有回退路径）；新增 SoC = 加 config/{片段}/soc.yaml + 片段进 CHIRI_SOC_HINTS
-/// 注意：serde 无 deny_unknown_fields，未知键被静默忽略，键名拼错只会整段变 None 走兜底，排障留意 warn 日志
+/// serde 无 deny_unknown_fields，未知键被静默忽略，键名拼错只会整段变 None 走兜底
 #[derive(Debug, Clone, Deserialize)]
 pub struct SocConfig {
     /// 核心组 CPU ID 区间（[chiri_core_ranges] 的数据源）
@@ -323,13 +323,11 @@ pub struct SocIdleUs {
     pub cluster_exit_latency: Vec<u32>,
 }
 
-// [frontier] 帕累托前沿策略段（8550 专用，soc.yaml 内受控生成块；scripts/frontier_policy.py 产出）
-// 运行期消费方：CLG 的 PF 落点（cpu_load_governor.rs [frontier_pf]，只允许下调；查表经 [frontier_table]
-// 摊平成进程级表，勿在 tick 路径直接扫 demand_buckets）与 FDP 的逐档功耗（chiri/energy_cost.rs）。
-// 字段名与生成脚本 / 定稿 schema 逐字对齐（唯一例外：soc.yaml 桶里的 margin_mdmips_per_w 本版不消费，
-// 靠 serde 忽略未知键通过）；解析失败由 [frontier_lenient] 兜底为 None（不回退他人逻辑、不 panic）。
+// [frontier] 帕累托前沿策略段，8550 专用，由 scripts/frontier_policy.py 生成到 soc.yaml
+// 消费方是 CLG 的 PF 落点（只允许下调，查表经 [frontier_table] 摊平成进程级表）与 FDP 的逐档功耗
+// 字段名与生成脚本逐字对齐，解析失败由 [frontier_lenient] 兜底为 None
 
-/// 前沿策略段。段缺失或 `enabled` 非 true → `soc_frontier_policy()` 返回 None → 原比例路径
+/// 前沿策略段，段缺失或 `enabled` 非 true → `soc_frontier_policy()` 返回 None → 原比例路径
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct FrontierPolicy {
     /// 运行期开关（在块内）：false / 缺失 = 不启用
@@ -566,7 +564,7 @@ static FRONTIER_ALIGNED: OnceLock<Mutex<HashMap<CoreGroup, Vec<FrontierAlignedEn
     OnceLock::new();
 
 /// 该簇的逐桶落点：索引 = 需求桶（与 [`frontier_table`] 桶序一致），值 = 频率表中 `<= 表给目标` 的最大档 kHz，
-/// 0 = 该桶该簇无目标 → 调用方回退比例路径。非 PF SoC（无查表）同样 None（调用方静默走比例路径）
+/// 0 = 该桶该簇无目标 → 调用方回退比例路径，非 PF SoC（无查表）同样 None（调用方静默走比例路径）
 pub fn frontier_aligned(group: CoreGroup, available_freqs: &[u32]) -> Option<Arc<Vec<u32>>> {
     let targets = frontier_table()?.targets(group);
     let mut cache = FRONTIER_ALIGNED
@@ -692,7 +690,7 @@ pub(crate) fn soc_freq_fallback_for_policy(policy_id: i32) -> Option<Vec<u32>> {
 /// 兜底调速器：soc.yaml 无 [cpu_governors] / 该 policy 一个都没匹配上时沿用（与历史写死值同）
 const DEFAULT_CPU_GOVERNOR: &str = "schedutil";
 
-/// 各 policy 选定的调速器：启动时 [`select_cpu_governors`] 批量算定，此后只读。
+/// 各 policy 选定的调速器：启动时 [`select_cpu_governors`] 批量算定，此后只读
 /// 用 Mutex 而非纯 OnceLock 是为了**缺谁补谁**：批量算定跑在 `force_online_all` 之前，
 /// 启动期离线的簇那时还没有 cpufreq 目录、进不了表，取值时按同一口径补算（此时核已上线）
 static POLICY_GOVERNORS: OnceLock<Mutex<HashMap<i32, String>>> = OnceLock::new();
@@ -730,8 +728,8 @@ fn pick_governor(policy_id: i32, prefs: &[String]) -> String {
         .unwrap_or_else(|| DEFAULT_CPU_GOVERNOR.to_string())
 }
 
-/// 调度启动（及每次热重载）时调用：批量算定当前可见的 policy 并回填表，返回全表副本（供日志）。
-/// 已在表内则不重复读 sysfs。所有「默认调速器」写入点（CLG / 特调 / PowerBase / FastLock /
+/// 调度启动（及每次热重载）时调用：批量算定当前可见的 policy 并回填表，返回全表副本（供日志）
+/// 已在表内则不重复读 sysfs，所有「默认调速器」写入点（CLG / 特调 / PowerBase / FastLock /
 /// 残留清理）都按这里的值写，不再各自写死 schedutil
 pub fn select_cpu_governors() -> HashMap<i32, String> {
     let mut m = governor_map().lock().unwrap_or_else(|e| e.into_inner());
@@ -744,7 +742,7 @@ pub fn select_cpu_governors() -> HashMap<i32, String> {
     m.clone()
 }
 
-/// 该 policy 应写入的默认调速器。表里没有的（批量算定时该簇离线、或选型被 DOWN 跳过）
+/// 该 policy 应写入的默认调速器，表里没有的（批量算定时该簇离线、或选型被 DOWN 跳过）
 /// 当场按同一口径补算一次并回填；补算结果不进 `governor-selected` 日志
 pub fn cpu_governor_for_policy(policy_id: i32) -> String {
     let mut m = governor_map().lock().unwrap_or_else(|e| e.into_inner());
@@ -821,7 +819,7 @@ pub fn screen_on() -> bool {
     SCREEN_ON.load(Ordering::Acquire)
 }
 
-/// 息屏判定值（screen_off_value`，缺省 1）：debug.tracing.screen_state 等于该值视为息屏，其余数字视为亮屏。Config::load 同步原子量，
+/// 息屏判定值（screen_off_value`，缺省 1）：debug.tracing.screen_state 等于该值视为息屏，其余数字视为亮屏，Config::load 同步原子量，
 /// 屏幕检测（monitor/screen_detect.rs [prop]）只读原子量，不在 tick 内读磁盘
 static SCREEN_OFF_VALUE: AtomicU32 = AtomicU32::new(1);
 
@@ -927,7 +925,7 @@ fn parse_special_tuned(text: &str) -> Vec<SpecialTunedEntry> {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        // 注意：先摘 "re:" 前缀再切分——直接整行 splitn(3,':') 会让包名变字面量 "re" 永不命中并混入假模式名（正则体按 yaml 约定不含冒号）
+        // 先摘 "re:" 前缀再切分，直接整行 splitn(3,':') 会让包名变字面量 "re" 永不命中
         let (is_regex, body) = match line.strip_prefix("re:") {
             Some(rest) => (true, rest),
             None => (false, line),
@@ -1047,7 +1045,7 @@ pub fn is_special_mode_allowed(pkg: &str, mode: &str) -> bool {
 
 // 白名单与每应用配置（normal/fas.yaml 与 normal/fas/<配置名>.yaml）随 module/config 整体构建期嵌入（见 [embedded]），不在此逐文件硬编码
 
-/// 按配置名返回嵌入 FAS 配置文本（构建期自动收录 normal/fas/*.yaml）。新增 FAS 游戏：fas.yaml 白名单加一行 + 新建 normal/fas/<配置名>.yaml，无需改 .rs
+/// 按配置名返回嵌入 FAS 配置文本（构建期自动收录 normal/fas/*.yaml），新增 FAS 游戏：fas.yaml 白名单加一行 + 新建 normal/fas/<配置名>.yaml，无需改 .rs
 pub fn embedded_fas_app_str(name: &str) -> Option<&'static str> {
     embedded_config_file(&format!("normal/fas/{name}.yaml"))
 }
@@ -1194,7 +1192,7 @@ pub fn affinity_blacklist_entries() -> &'static [AffinityBlacklistEntry] {
     AFFINITY_BLACKLIST.get_or_init(|| parse_affinity_blacklist(AFFINITY_BLACKLIST_TEXT))
 }
 
-/// 进程 cmdline（或线程 comm）是否命中亲和黑名单。另含两条内置兜底（不经文件、不可关闭）：空 cmdline = 内核线程 → 黑名单；'/' 开头 = native 二进制路径 → 黑名单
+/// 进程 cmdline（或线程 comm）是否命中亲和黑名单，另含两条内置兜底（不经文件、不可关闭）：空 cmdline = 内核线程 → 黑名单；'/' 开头 = native 二进制路径 → 黑名单
 pub fn is_affinity_blacklisted(cmdline: &str) -> bool {
     if cmdline.is_empty() || cmdline.starts_with('/') {
         return true;
@@ -1204,10 +1202,9 @@ pub fn is_affinity_blacklisted(cmdline: &str) -> bool {
         .any(|e| e.matches(cmdline))
 }
 
-// 编译期嵌入的配置（module/config 整目录 include_dir!，防篡改）原 config.yaml 已拆分为 meta.yaml（用户可修改抬头）+ feature.yaml（不可修改调优段），各 SoC 目录与默认 config/ 下各一份
-// 二者仅存于二进制，磁盘不落盘（feature 无外部读取方；meta 磁盘副本由 sync_meta_snapshot 自愈）
-// 目录整体构建期嵌入：新增/删除 yaml 无需改 .rs；必需文件缺失由 build.rs 断言编译失败；文件改动由 include_bytes! 依赖跟踪、目录增删由 rerun-if-changed=module/config 触发重编译
-// ***-example.yaml 参考文件不放本目录（会随之嵌入二进制），一律放 mdocs/
+// 编译期嵌入 module/config 整目录（防篡改），原 config.yaml 拆成 meta.yaml（用户可改）+ feature.yaml（不可改调优段）
+// 二者只存于二进制不落盘，目录整体嵌入，新增 yaml 无需改 .rs，缺文件由 build.rs 断言编译失败
+// ***-example.yaml 参考文件不放本目录，一律放 mdocs/
 
 // [embedded]
 static CONFIG_DIR: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/module/config");
@@ -1223,7 +1220,7 @@ pub fn embedded_meta_str() -> &'static str {
         match embedded_config_file(&format!("{soc}/meta.yaml")) {
             Some(text) => return text,
             // [silent-fallback] 命中 SoC 却没有它的 meta.yaml：静默回退根文件后，该机型会拿到
-            // 通用默认（如 power_max_w / 日志级别基准），与「SoC 专属默认正常生效」完全同形。
+            // 通用默认（如 power_max_w / 日志级别基准），与「SoC 专属默认正常生效」完全同形
             // 编译期嵌入，运行时只可能打包缺文件 → 一次性告警（本函数仅启动期少量调用）
             None => log::warn!(
                 "[Meta] SoC '{}' 命中但无专属 meta.yaml，回退根默认（该机型默认值可能不符）",
@@ -1234,10 +1231,8 @@ pub fn embedded_meta_str() -> &'static str {
     embedded_config_file("meta.yaml").unwrap_or_default()
 }
 
-/// 嵌入的 feature.yaml（不可修改调优段）：以根 `feature.yaml` 为**基底**，用命中处理器的
-/// `{soc}/feature.yaml` **按字段深合并覆盖**——map 递归合并（SoC 少写的字段继承根值），
-/// 标量/序列整体替换（不拼接）。未命中处理器时即根文件本身。仅存于二进制，磁盘不落盘、不监听。
-/// ⚠️ 全量合并意味着 SoC 未写的**整段**也会从根继承（如 8550/8998 无 `vector` 段 → 继承根的 vector）。
+/// 嵌入的 feature.yaml：以根文件为基底，按字段深合并命中处理器的 {soc}/feature.yaml，map 递归合并、标量与序列整体替换
+/// 未命中处理器时即根文件本身，SoC 未写的整段也会从根继承（如 8550/8998 无 vector 段）
 fn merge_yaml(base: &mut serde_yaml::Value, over: &serde_yaml::Value) {
     if let (serde_yaml::Value::Mapping(b), serde_yaml::Value::Mapping(o)) = (&mut *base, over) {
         for (k, v) in o {
@@ -1316,10 +1311,8 @@ pub fn embedded_ftl_str(lang: &str) -> &'static str {
     embedded_config_file(rel).unwrap_or_default()
 }
 
-/// 磁盘 meta.yaml 的严格结构：字段全部可选（缺省 = 沿用内嵌默认，见 ExternalMetaOverrides 的 None = 不变更语义）、拒绝未知字段后加字段一律设计成可选（serde default），
-/// 老文件缺行仍合法；出现即校验：类型不符 / 取值不在白名单 / 未知键 → 整文件判非法，由 sync_meta_snapshot 用内嵌默认整体覆盖（缺字段不算非法）注意：
-/// 新增字段四处必须同步——本结构 + ExternalMetaOverrides、chiri::config::Meta 与 Config::load 合并、四个 meta.yaml 模板、
-/// WebUI META_FIELDS/WRITABLE_FIELDS（含布尔校验列表），漏改会让新键被判未知字段整体重置
+/// 磁盘 meta.yaml 的严格结构：字段全部可选，类型不符或未知键即整文件判非法，由 sync_meta_snapshot 用内嵌默认覆盖
+/// 新增字段四处必须同步：本结构与 ExternalMetaOverrides、chiri::config::Meta 与 Config::load、四个 meta.yaml 模板、WebUI META_FIELDS
 // [external_meta]
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1329,19 +1322,19 @@ struct MetaYamlFile {
     language: Option<String>,
     loglevel: Option<String>,
     dev_record: Option<bool>,
-    /// aff `@S` 每秒快照帧的 top-N 进程数（手改字段，WebUI 无开关），详见 ExternalMetaOverrides 同名字段
+    /// aff `@S` 每秒快照帧的 top-N 进程数（手改字段，WebUI 无开关），见 ExternalMetaOverrides 同名字段
     devimp_top_n: Option<usize>,
-    /// aff `@S` 快照帧的采样间隔秒数（手改字段，WebUI 无开关），详见 ExternalMetaOverrides 同名字段
+    /// aff `@S` 快照帧的采样间隔秒数（手改字段，WebUI 无开关），见 ExternalMetaOverrides 同名字段
     devimp_aff_secs: Option<usize>,
     fas_enabled: Option<bool>,
     scenemode_enabled: Option<bool>,
-    /// 线程摆放总开关（affinity + core_ctl），详见 ExternalMetaOverrides
+    /// 线程摆放总开关（affinity + core_ctl），见 ExternalMetaOverrides
     thread_bind: Option<bool>,
     /// PowerBase 总开关（缺省 false）必须与本结构同步注册：deny_unknown_fields 下 WebUI 直写键不在这里会让整个 meta.yaml 被判非法并整体重置
     powerbase_enabled: Option<bool>,
-    /// 功耗口径开关（PowerAVG.chr），详见 ExternalMetaOverrides（缺省 false）
+    /// 功耗口径开关（PowerAVG.chr），见 ExternalMetaOverrides（缺省 false）
     power_avg: Option<bool>,
-    /// 常驻状态通知开关，详见 ExternalMetaOverrides（缺省 true）
+    /// 常驻状态通知开关，见 ExternalMetaOverrides（缺省 true）
     notify: Option<bool>,
     /// 电池读数：OPlus 私有节点 / 双电芯 / 倍电压 / 倍电流 / 单位校准，缺省见结构注释
     oplus_chg: Option<bool>,
@@ -1352,11 +1345,11 @@ struct MetaYamlFile {
     current_divisor: Option<f32>,
     /// 旧键（曾把电压/电流校准合成一个）：仍接收，等价于只设电压校准
     unit_divisor: Option<f32>,
-    /// 「不改」开关（模板不写）：详见 ExternalMetaOverrides
+    /// 「不改」开关（模板不写），见 ExternalMetaOverrides
     nofix: Option<bool>,
-    /// 耗电读数满量程 W（缺省 12）：详见 ExternalMetaOverrides
+    /// 耗电读数满量程 W（缺省 12），见 ExternalMetaOverrides
     power_max_w: Option<f32>,
-    /// 息屏判定值（0/1，缺省 1）：详见 ExternalMetaOverrides
+    /// 息屏判定值（0/1，缺省 1），见 ExternalMetaOverrides
     screen_off_value: Option<u32>,
 }
 
@@ -1370,12 +1363,12 @@ pub struct ExternalMetaOverrides {
     /// aff @S 每秒快照 top-N 进程数（缺省 10）：每秒按 util 降序落盘前 N 个进程；前台树与被管进程不受 N 截断、恒定落盘消费点：Config::load 合并后由 Meta::
     /// normalize 钳到 1..=64（超限 clamp，不判文件非法）
     pub devimp_top_n: Option<usize>,
-    /// aff @S 快照帧采样间隔秒数（缺省 1）：每 N 秒采一帧，息屏再乘 `AFF_SNAP_OFFSCREEN_FACTOR`。
+    /// aff @S 快照帧采样间隔秒数（缺省 1）：每 N 秒采一帧，息屏再乘 `AFF_SNAP_OFFSCREEN_FACTOR`
     /// 调大即线性减少 stat 采样与写盘——守护进程自身的常驻开销主要就花在前台线程逐帧下钻上
     pub devimp_aff_secs: Option<usize>,
     pub fas_enabled: Option<bool>,
     pub scenemode_enabled: Option<bool>,
-    /// 线程摆放总闸（`thread_bind`）：实验室 frozen 专用机制——用户侧开关已移除，仅 frozen 模式写 false 交还线程亲和/绑核与 core_ctl。 与机型内嵌 feature
+    /// 线程摆放总闸（`thread_bind`）：实验室 frozen 专用机制——用户侧开关已移除，仅 frozen 模式写 false 交还线程亲和/绑核与 core_ctl， 与机型内嵌 feature
     /// yaml 的两个子开关取「与」，见 chiri/config.rs::Config::load
     pub thread_bind: Option<bool>,
     /// PowerBase 总开关（缺省 false）：开启后原由 CLG 接管的亮屏日常场合改由 PowerBase 接管（以放电功耗为指标）消费点：Config::
@@ -1385,11 +1378,11 @@ pub struct ExternalMetaOverrides {
     /// 仅 ChiRi 1s 状态采样消费；写侧走单次读-改-写顶层行替换，见 WebUI contract/meta.ts
     pub power_avg: Option<bool>,
     /// 【已废弃/遗留】常驻状态通知开关（notify）：原属「每 5s 写常驻调度通知」子系统，该子系统已随
-    /// `notify.rs` 重构删除，daemon 内**无读取点**；仅存字段供 meta.yaml 兼容与 WebUI 读写契约。
+    /// `notify.rs` 重构删除，daemon 内**无读取点**；仅存字段供 meta.yaml 兼容与 WebUI 读写契约
     /// 5 个机型 meta.yaml 均写 `notify: false`，将来要复用须先移除那些行
     pub notify: Option<bool>,
     /// OPlus 私有电压/电流节点（`oplus_chg`，默认 false）：true = 优先读 `/sys/class/oplus_chg/battery/bcc_parms`（下标 6 电芯电压0、8 电流、11 电芯电压1，
-    /// mV/mA），读不到回退标准 power_supply 节点。仅 OPlus 机型有意义
+    /// mV/mA），读不到回退标准 power_supply 节点，仅 OPlus 机型有意义
     pub oplus_chg: Option<bool>,
     /// OPlus 双电芯（默认 false）：私有节点按两节并联读——电压取两节平均（下标 6 与 11）、电流 ×2（下标 8 为单节支路）；仅在 oplus_chg 打开时生效
     pub oplus_dual_cell: Option<bool>,
@@ -1409,14 +1402,14 @@ pub struct ExternalMetaOverrides {
     /// 耗电读数满量程 W（power_max_w，缺省 12）：只影响 WebUI 状态页仪表盘进度换算，不参与任何调度决策
     pub power_max_w: Option<f32>,
     /// 息屏判定值（screen_off_value，缺省 1）：debug.tracing.screen_state 等于该值视为息屏；取值仅 0/1，其它值在 parse_disk_meta 回退默认（不判整文件非法）消费点：
-    /// Config::load 合并后 set_screen_off_value 同步原子量；customize.sh [screen-detect] 安装期按属性实测值翻转该字段
+    /// Config::load 合并后 set_screen_off_value 同步原子量，customize.sh [screen-detect] 安装期按属性值翻转该字段
     pub screen_off_value: Option<u32>,
 }
 
 /// 读磁盘 meta.yaml（先经 sync_meta_snapshot 校验/纠正）：文件缺失或仍非法返回 None，调用方沿用嵌入默认——绝不 panic，不让坏文件拖垮配置加载
 pub fn read_external_meta(path: &Path) -> Option<ExternalMetaOverrides> {
-    // [silent-fallback] 读不到与「读到了但解析/校验判非法」此前都返回 None、调用方无从区分：
-    // 前者是首装常态，后者是用户配置被整体丢弃（回退内嵌默认）。debug 下按原因分开留痕
+    // [silent-fallback] 读不到与「读到了但解析/校验判非法」都返回 None、调用方无从区分
+    // 前者是首装常态，后者是用户配置被整体丢弃（回退内嵌默认），debug 下按原因分开留痕
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) => {
@@ -1429,7 +1422,7 @@ pub fn read_external_meta(path: &Path) -> Option<ExternalMetaOverrides> {
     let parsed = parse_disk_meta(&text);
     if parsed.is_none() && log::log_enabled!(log::Level::Debug) {
         log::debug!(
-            "[Meta] {} parsed but rejected (invalid fields / unknown keys), caller falls back to embedded defaults",
+            "[Meta] {} rejected (invalid or unknown keys), using embedded defaults",
             path.display()
         );
     }
@@ -1603,7 +1596,7 @@ pub fn sync_rules_snapshot(path: &Path) -> bool {
     }
     // 重写仍无效：跳过（磁盘副本保持原样），绝不 panic
     log::warn!(
-        "[Rules] Snapshot write failed, skip (embedded content stays authoritative): {}",
+        "[Rules] Snapshot write failed, skip, embedded content stays authoritative: {}",
         path.display()
     );
     false
@@ -1623,11 +1616,9 @@ pub(crate) fn write_file_no_panic(path: &Path, bytes: &[u8]) -> bool {
         return true;
     }
     let _ = std::fs::remove_file(&tmp_path);
-    // [silent-fallback] 原子写失败后回退直写：两条路都失败才返回 false，但**调用方普遍丢弃返回值**
-    // （`let _ = write_file_no_panic(...)`）——磁盘留旧值、日志零痕迹，与「根本没写」在 WebUI 上同形。
-    // 这里在最终失败点兜底留痕（debug 级：本函数是通用写入口，成功路径绝不能刷屏）
-    // [fix-1017-c2] 判定成败必须用真实返回 Result 的原语：try_write_file 恒 Ok(())，.is_ok() 恒真会把
-    // 「两条路全失败」误报成「兜底直写成功」，本函数的 false 从此不可达、调用方失败分支全成死代码。
+    // [silent-fallback] 原子写失败后回退直写，两条路都失败才返回 false，但调用方普遍丢弃返回值
+    // 这里在最终失败点兜底留痕（debug 级，成功路径绝不能刷屏）
+    // [fix-1017-c2] 判定成败必须用真实返回 Result 的原语，try_write_file 恒 Ok(())，用它会让 false 不可达
     if crate::utils::write_to_file(path, bytes).is_ok() {
         return true;
     }
@@ -1678,7 +1669,7 @@ pub(crate) fn replace_top_level_bool(content: &str, field: &str, value: bool) ->
     None
 }
 
-/// 一次写盘改掉 meta.yaml 的总开关（None = 该项不动；thread_bind 仅实验室使用）。返回 false 表示文件没被改到期望状态（字段缺失 / 读写失败），调用方放弃本次实验室套用
+/// 一次写盘改掉 meta.yaml 的总开关（None = 该项不动；thread_bind 仅实验室使用），返回 false 表示文件没被改到期望状态（字段缺失 / 读写失败），调用方放弃本次实验室套用
 /// 多个开关必须一次写完：分两次写会触发两轮 config_watcher 热重载，中间态会被 apply_system_tweaks 真的执行一遍
 pub(crate) fn rewrite_meta_toggles(
     path: &Path,

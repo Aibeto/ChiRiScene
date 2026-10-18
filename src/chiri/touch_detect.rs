@@ -20,11 +20,8 @@ const ABS_MT_TRACKING_ID: u16 = 0x39; // 57
 const INPUT_EVENT_SIZE: usize = 24;
 
 // [exit_guard]
-/// 探测线程退出的留痕哨兵：`monitor_touch` 的外层是无限 `loop`，唯一退出方式是 panic
-/// （遍历设备/解析事件里的越界、sysfs 异常等），而 panic 只打到 stderr（默认 hook），
-/// 守护进程的结构化日志里一行都没有——线程死后触摸升频彻底不生效，但对外与「用户没碰
-/// 屏幕」完全同形。用 Drop 保证**任何**退出路径（含 panic 展开）都落一条 error。
-/// 这是纯观测：不改任何控制流，也不吞掉 panic（unwrap 的 abort/unwind 语义照旧）
+/// 探测线程退出留痕哨兵：`monitor_touch` 外层是无限 `loop`，唯一退出方式是 panic（遍历设备/解析事件越界、sysfs 异常等），而 panic 只打到 stderr，结构化日志里一行都没有
+/// 用 Drop 保证任何退出路径（含 panic 展开）都落一条 error；纯观测，不改控制流、不吞 panic
 struct ExitGuard;
 
 impl Drop for ExitGuard {
@@ -35,11 +32,10 @@ impl Drop for ExitGuard {
 }
 
 // [monitor]
-/// 触摸检测线程：读取全部 /dev/input/event* 输入设备，检测触摸按下事件，并把触摸事件通过 `tx` 发给 scheduler_ipc（事件驱动，即时触发 CLG 大核升频）
+/// 触摸检测线程：读取全部 /dev/input/event* 输入设备检测触摸按下，并把事件通过 `tx` 发给 scheduler_ipc（事件驱动，即时触发 CLG 大核升频）
 /// 阻塞运行（poll + 阻塞 read），随守护进程退出消亡
 pub fn monitor_touch(tx: SyncSender<()>) {
-    // 线程退出留痕（含 panic 展开）：线程一死触摸升频即永久失效，必须留下与
-    // 「用户没碰屏幕」可区分的痕
+    // 线程退出留痕（含 panic 展开）：线程一死触摸升频即永久失效，必须留下与「用户没碰屏幕」可区分的痕
     let _exit_guard = ExitGuard;
 
     info!("{}", t("touch-detect-started"));
@@ -47,8 +43,7 @@ pub fn monitor_touch(tx: SyncSender<()>) {
     // 外层循环：枚举设备；设备增删/读取异常时重新枚举
     loop {
         let mut devices: Vec<std::fs::File> = Vec::new();
-        // [silent-fail] 单个 event 节点打不开此前静默丢弃：失效表现是「触摸升频不生效」，
-        // 与「用户没碰屏幕」在输出上完全同形。仅在重新枚举时走一次（低频），按 warn
+        // [silent-fail] 单个 event 节点打不开会让触摸升频静默失效，与「用户没碰屏幕」同形，仅在重新枚举时走一次
         let mut open_failed: Vec<String> = Vec::new();
         if let Ok(entries) = fs::read_dir("/dev/input") {
             for entry in entries.flatten() {
@@ -95,12 +90,10 @@ pub fn monitor_touch(tx: SyncSender<()>) {
                 })
                 .collect();
 
-            // [poll_wait] 超时 -1 = 无限期阻塞。旧 200ms 超时分支（ret==0 → continue）不改任何状态、只是每秒 5 次空唤醒，删掉与保留等价；事件处理与重枚举时机不变
+            // [poll_wait] 超时 -1 = 无限期阻塞，无事件零唤醒；事件处理与重枚举时机不变
             let ret = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) };
             if ret < 0 {
-                // [level] poll 失败原为 debug：它意味着本次探测整体停摆（触摸升频不生效），
-                // 与「用户没碰屏」同形，却只在 debug 下可见。异常但可自愈（退避后重新枚举、
-                // 设备恢复即恢复）→ 按契约升到 warn。退避 500ms 限制了刷屏速率
+                // [level] poll 失败意味着本次探测整体停摆（触摸升频不生效），与「用户没碰屏」同形，故按契约报 warn；可自愈（退避后重新枚举、设备恢复即恢复），500ms 退避限制刷屏
                 warn!(
                     "{}",
                     t_with_args(
@@ -114,9 +107,9 @@ pub fn monitor_touch(tx: SyncSender<()>) {
 
             let mut buf = [0u8; INPUT_EVENT_SIZE];
             for (i, pfd) in fds.iter().enumerate() {
-                // 挂断/错误/无效描述符（部分内核在设备断开时上报）：与读错误同路重新枚举。阻塞等待后没有超时兜底，这类 revents 必须显式处理，否则 poll 立即返回却无事可做，会原地空转
+                // 挂断/错误/无效描述符（部分内核在设备断开时上报）：与读错误同路重新枚举；阻塞等待后没有超时兜底，这类 revents 必须显式处理，否则 poll 立即返回却无事可做会原地空转
                 if pfd.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
-                    // [poll_backoff] 异常 revents 多为电平触发，重枚举后 poll 会立即返回；退避 500ms（与 poll 出错路径同款）防持续异常时紧循环空转
+                    // [poll_backoff] 异常 revents 多为电平触发，重枚举后 poll 会立即返回，退避 500ms（与 poll 出错路径同款）防持续异常时紧循环空转
                     // [silent-fail] 设备挂断导致本轮重枚举：若不留痕，「触摸升频失效」与「用户没碰屏」同形
                     warn!(
                         "{}",
@@ -135,11 +128,9 @@ pub fn monitor_touch(tx: SyncSender<()>) {
                     continue;
                 }
                 match devices[i].read(&mut buf) {
-                    // 读到 0 字节或读取失败 = 设备断开/异常，重新枚举[poll_backoff] 读失败多为驱动持续异常（POLLIN 电平触发但 read 恒败），
-                    // 与异常 revents 同款退避 500ms，防重枚举后立即再失败的紧循环
+                    // 读到 0 字节或读取失败 = 设备断开/异常，重新枚举；读失败多为驱动持续异常（POLLIN 电平触发但 read 恒败），与异常 revents 同款退避 500ms 防紧循环
                     Ok(0) | Err(_) => {
-                        // [silent-fail] 设备读失败/断开是本轮重枚举的**唯一入口**，静默时与「一切正常但
-                        // 用户没碰屏」不可分；这里带上设备下标（与打开的 devices[i] 对应）
+                        // [silent-fail] 设备读失败/断开是本轮重枚举的唯一入口，静默时与「一切正常但用户没碰屏」不可分，这里带上设备下标
                         warn!(
                             "{}",
                             t_with_args(
@@ -166,16 +157,14 @@ pub fn monitor_touch(tx: SyncSender<()>) {
                             let touched = (etype == EV_KEY && code == BTN_TOUCH && value == 1)
                                 || (etype == EV_ABS && code == ABS_MT_TRACKING_ID && value >= 0);
                             if touched {
-                                // 事件驱动：向 scheduler_ipc 发送触摸事件（非阻塞，通道满时丢弃，多余的触摸事件丢了不碍事）
-                                // [silent-drop] 接收端已退出时 try_send 恒失败且被 `let _ =` 吞掉：触摸事件
-                                // **全部**丢失 = 触摸升频彻底不生效，但日志一行不留、与「没触摸」同形。
-                                // 触摸是高频路径，故 debug + 门控；Full 是正常背压不报，只报接收端断开
+                                // 事件驱动：向 scheduler_ipc 非阻塞发送触摸事件，通道满时丢弃
+                                // [silent-drop] 接收端已退出时 try_send 恒失败且被 `let _ =` 吞掉，触摸事件全部丢失但日志一行不留；触摸是高频路径，故 debug + 门控，Full 是正常背压不报，只报接收端断开
                                 if let Err(std::sync::mpsc::TrySendError::Disconnected(_)) =
                                     tx.try_send(())
                                 {
                                     if log::log_enabled!(log::Level::Debug) {
                                         debug!(
-                                            "[Touch] 触摸事件通道已断开，升频信号不再送达（触摸升频失效）"
+                                            "[Touch] 触摸事件通道已断开，升频信号不再送达，触摸升频失效"
                                         );
                                     }
                                 }
