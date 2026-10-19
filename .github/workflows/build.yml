@@ -111,7 +111,7 @@ jobs:
       #    build.rs 检测到 PATH 中已有 bpf-linker 后会跳过其内置安装逻辑。
       - name: Cache bpf-linker
         id: cache-bpf-linker
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: /usr/local/bin/bpf-linker
           key: ${{ runner.os }}-${{ runner.arch }}-bpf-linker-v0.11.0
@@ -153,7 +153,7 @@ jobs:
       #    注意该二进制只认 `cargo ndk` 调用方式，不能直接执行做 --version。
       - name: Cache cargo-ndk
         id: cache-cargo-ndk
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: /usr/local/bin/cargo-ndk
           key: ${{ runner.os }}-${{ runner.arch }}-cargo-ndk-v4.1.2
