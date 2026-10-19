@@ -32,10 +32,10 @@
 
 - 拓扑 **4+3+1 三 policy**（与高通的 2+3+2+1 不同，勿混）：policy0 CPU0-3（A520）、policy4 CPU4-6（A720）、policy7 CPU7（X4）。真机频率范围（MHz）：little 820–1950、big 357–2600、prime 700–3105（min 是厂商动态的，非硬件下限）。
 - cpufreq 调速器真机值 = **`sched_pixel`**（Google 自家调速器），不是 uag/walt。
-- capacity：DT 只有 `capacity-dmips-mhz`（cpu0-3 = 193、cpu4-6 = 927、cpu7 = 1024），它与 sysfs `cpu_capacity` **不同量纲**——后者是「dmips × policy 最高频」折算后归一化到 1024。本机 arch_topology 的折算口径未确认，**勿把 DT 值直接当 sysfs 值填进 soc.yaml**；真机 `cpu_capacity` 待采样（FAS 算力权重日志或 sysfs）。
+- capacity：**原记录 193 / 927 / 1024 是 Tensor G3 的数，已作废**（那三个值一字不差地出现在 `zuma-cpu.dtsi`，不是本机）。zumapro 本机 DT（`zumapro-cpu.dtsi:52,88,115`）是 `capacity-dmips-mhz` little 449 / big 850 / prime 1024，按「dmips × f_max」归一到 1024 得 **282 / 712 / 1024**；freqbench 实测路径得 **283 / 714 / 1024**，两条独立路径差 0.4%。已写进 `module/config/zumapro/soc.yaml [capacity]` 作 sysfs 兜底。DT 的 `capacity-dmips-mhz` 与 sysfs `cpu_capacity` 仍不是同一量纲，**勿直接把 DT 值填进 soc.yaml**；真机 `cpu_capacity` 待采样（FAS 算力权重日志或 sysfs）后与本兜底值对账。
 - idle（µs，residency/exit）：`cpu-idle-states` 逐核绑定 little→hayes 2000/160、big→hunter 2500/190、prime→hunterelp 3500/220。
-- dpc：little 70 / big 513 / prime 757。
-- **DT 没有 CPU OPP**（无 `opp-hz`，只有 `cpufreq_domain0-2` 与外围设备的 `freq-table-hz`）→ 频表来自驱动/固件，只能取真机 `scaling_available_frequencies`。
+- dpc：little 176 / big 325 / prime 748（`zumapro-cpu.dtsi` 逐核属性）。**原记录 70 / 513 / 757 是 Tensor G3 的数，已作废。** 校准基准，本期无运行时消费方。
+- **DT 没有 CPU OPP**（无 `opp-hz`，只有 `cpufreq_domain0-2` 与外围设备的 `freq-table-hz`）→ 频表来自驱动/固件，只能取真机 `scaling_available_frequencies`。已取到：freqbench 逐档实测 little 10 档 820000-1950000 / big 17 档 357000-2600000 / prime 18 档 700000-3105000，与 DT `dsu-bci-constraint-table`（`zumapro-cpu.dtsi:260-269`）的 little 十档逐字节一致。**prime 起始档是 700000，不是 `cpufreq_domain2` 声明的 `min-freq 500000`**（500 MHz 固件未暴露）。
 - 本机 GPU 利用率候选节点全部不存在（非 Adreno/GED）→ devimp 的 gpu 列恒 `-`；`debug.tracing.screen_state` 同样缺失（只让 `screen_prop` 列写 `-`，息屏判定走 uevent 路径不受影响）。
 - `/proc/sys/kernel/sched_*` 真机清单与 8650 **逐项相同**（12 个，无 `sched_migration_cost_ns` / `sched_nr_migrate`）→ `Sched` 段关段与 FAS/tuned 的 `migration_cost_ns` 空转，两台机同口径。
 

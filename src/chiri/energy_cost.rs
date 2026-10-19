@@ -52,7 +52,7 @@ fn interp(freqs: &[u32], powers: &[f32], freq_khz: u32) -> Option<f32> {
 }
 
 /// 该簇在 `freq_khz` 处的簇功耗（W）：查 `soc_frontier_policy()` 逐档表并线性插值，越界取端点
-/// 非 8550 / 前沿段缺失 / 表不齐 → `None`
+/// 无 frontier_policy 段 / 表不齐 → `None`（8550 与 zumapro 都有该段）
 pub fn cluster_power_w(cluster: CoreGroup, freq_khz: u32) -> Option<f32> {
     let (freqs, powers) = cluster_energy_table(cluster)?;
     interp(freqs, powers, freq_khz)

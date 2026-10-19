@@ -119,7 +119,7 @@ fn main() -> Result<()> {
     ) {
         deferred_write_fails.push(("active_config.chr", e.to_string()));
     }
-    // [pf_chr] 写本机 CLG 是否启用帕累托前沿（`1` 启用，仅 8550；`0` 未启用）：静态资产，启动写一次，只作 WebUI 只读接触点
+    // [pf_chr] 写本机 CLG 是否启用帕累托前沿（`1` 启用，当前 8550 与 zumapro；`0` 未启用）：静态资产，启动写一次，只作 WebUI 只读接触点
     if let Err(e) = utils::write_to_file(
         root.join("pf.chr"),
         if common::soc_frontier_policy().is_some() {

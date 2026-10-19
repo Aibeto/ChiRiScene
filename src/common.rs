@@ -260,7 +260,7 @@ pub struct SocConfig {
     #[serde(default)]
     #[allow(dead_code)]
     pub dpc: Option<SocTriValues>,
-    /// 帕累托前沿查表段（仅 8550 具备采用条件；其它 SoC 的 soc.yaml 无本段 → 天然 None → 走原比例路径）
+    /// 帕累托前沿查表段（8550 / zumapro 已具备；无本段的 SoC → 天然 None → 走原比例路径）
     /// [frontier_lenient] 用宽松反序列化：本段损坏不得拖垮整份 soc.yaml（topology/capacity/freq 兜底是更贵的资产）
     #[serde(default, deserialize_with = "deserialize_frontier_lenient")]
     pub frontier_policy: Option<FrontierPolicy>,
@@ -323,7 +323,7 @@ pub struct SocIdleUs {
     pub cluster_exit_latency: Vec<u32>,
 }
 
-// [frontier] 帕累托前沿策略段，8550 专用，由 scripts/frontier_policy.py 生成到 soc.yaml
+// [frontier] 帕累托前沿策略段，由 scripts/frontier_policy.py --soc <机型> 生成到对应 soc.yaml
 // 消费方是 CLG 的 PF 落点（只允许下调，查表经 [frontier_table] 摊平成进程级表）与 FDP 的逐档功耗
 // 字段名与生成脚本逐字对齐，解析失败由 [frontier_lenient] 兜底为 None
 
