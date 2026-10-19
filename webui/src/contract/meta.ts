@@ -1,5 +1,5 @@
 // meta.ts: [fields] [active] [read] [validate] [write] meta.yaml 是唯一可写配置
-// daemon 侧规则（src/common.rs::parse_disk_meta + sync_meta_snapshot）：字段全部可选（缺省 = 沿用二进制内嵌默认，与 rhine 影响项同语义）、拒绝未知键、出现即校验类型，任一异常 → 整个文件被内嵌默认覆盖；写入是单次读-改-写 + 顶层行替换，只动目标字段、保留注释与其他键
+// daemon 侧规则（src/common.rs::parse_disk_meta + sync_meta_snapshot，2026-10-20 口径更新）：字段全部可选（缺省 = 沿用二进制内嵌默认，与 rhine 影响项同语义）、拒绝未知键、出现即校验类型，非法时**只把该字段那一行恢复为内嵌默认**（合法字段与用户注释逐字保留，并追加一行警告注释）；整份覆盖只在 YAML 结构都读不出（语法错）时才发生。写入是单次读-改-写 + 顶层行替换，只动目标字段、保留注释与其他键
 import { load as loadYaml } from 'js-yaml'
 import { configAbs, absOf, isSafeConfigRel, shQuote } from './paths'
 import { isLive, run } from '@/kernel/shell'

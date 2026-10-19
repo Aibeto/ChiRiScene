@@ -34,7 +34,7 @@
 	path = freqbench
 	url = https://github.com/kdrag0n/freqbench.git
 	branch = master
-[submodule "freqbench"]
+[submodule "freqbench_tensor"]
 	path = freqbench_tensor
 	url = https://github.com/kerneltoast/freqbench.git
 	branch = tensor

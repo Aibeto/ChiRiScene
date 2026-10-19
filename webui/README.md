@@ -49,7 +49,7 @@ npm run verify       # style-check + type-check + test + build 一把过
   超容差（20s）判「已停止」，文件缺失同判；读取失败/内容非法才报「无法判定」。
   差值按 1 小时取模。daemon.lock 仍由 daemon 自持（单实例），WebUI 不再读写它。
 - **只读接触点**：`active_config.chr`、`current_mode.chr`、`pf.chr`（CLG 是否启用帕累托前沿落点：
-  `1` = 启用，仅 8550；家族名据此显示 `CLG-PF`）、`rhine-back.chr`、`PowerAVG.chr`、`LiveTime.chr`、
+  `1` = 启用；家族名据此显示 `CLG-PF`）、`rhine-back.chr`、`PowerAVG.chr`、`LiveTime.chr`、
   `rules.yaml`、`special_tuned.yaml`、`fas_whitelist.yaml`、`module.prop`、`logs/**`。
 - **可写接触点**：`meta.yaml`（写入口 = `contract/meta.ts::WRITABLE_FIELDS`，当前 15 项：language /
   loglevel / dev_record / fas_enabled / scenemode_enabled / power_avg / notify /

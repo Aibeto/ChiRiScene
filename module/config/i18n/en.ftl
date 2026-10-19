@@ -266,6 +266,7 @@ fas-downgrade-deferred-dwell = [FAS] downgrade deferred by dwell: { $dwell } fra
 fas-extreme-jank-fasttrack = [FAS] extreme jank fast-track: avg:{ $avg } far below target { $target }fps (stddev:{ $stddev })
 fas-no-policies = [FAS] no cpufreq policy found, FAS takeover failed
 fas-governor-write-failed = [FAS] P{ $pid } failed to write performance governor: { $error }
+fas-governor-reset-performance = [FAS] P{ $pid } pre-takeover snapshot was already performance (snapshot taken after switch); falling back to default governor { $governor }
 fas-freq-table-unavailable = [FAS] P{ $pid } frequency table unavailable and no soc.yaml fallback ({ $path }), policy skipped
 fas-policy-none-taken = [FAS] all policies skipped, no cluster taken over
 fas-freq-hold-skip = [FAS] P{ $pid } freq hold { $frames } frames left, write skipped

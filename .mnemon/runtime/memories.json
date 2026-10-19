@@ -84,6 +84,13 @@
       "updated_at": "2026-10-17T21:19:02.079Z",
       "target": "memory",
       "importance": "normal"
+    },
+    {
+      "content": "ChiRi 日志换数据库已评估（2026-10-20，只评估未改码）：结论负收益。存储写入仅占单核 0.009%/daemon 自耗 0.26%，而 @S 帧 /proc 采样占 14.5%（25.16ms×9888帧）；逐行提交 SQLite 比文件慢 7.3×（WAL/NORMAL）~1903×（DELETE/FULL）；归档 zstd-2 后 +54%(devimp)/+90%(status)；读端 4~393× 快但全链 dvrun 5m07s 中收益有限（导入 26µs/行）。破坏 11 条不变量、Python 必改 4440 LOC、本机 sqlite crate 零缓存致离线 Android 构建不可能。报告 .dsh/docs/2026-10-20-日志换数据库性能评估.md，明细 devimpbin/_dbcost/{report.md,inventory/,bench/}。再提此议题先读该报告。",
+      "created_at": "2026-10-19T19:57:07.958Z",
+      "updated_at": "2026-10-19T19:57:07.958Z",
+      "target": "memory",
+      "importance": "normal"
     }
   ]
 }

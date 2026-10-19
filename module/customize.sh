@@ -39,6 +39,7 @@ MSG_SERVICE_FAIL="Restart process failed, please try again or choose normal inst
 MSG_HOT_UPDATE_HINT="If you encounter any errors at the end, please ignore them. Run Action manually, or the scheduler will stop once the manager closes."
 MSG_INSTALL_CANCELLED="Installation cancelled"
 MSG_HOT_UPDATE_ABORT="Hot update done. Please run Action manually, or the scheduler will stop once the manager closes."
+MSG_HOT_UPDATE_NOTIFY="ChiRi installed"
 MSG_KEEP_CONFIG_ASK="Keep the existing module configuration?"
 MSG_KEEP_CONFIG_UP="[Volume UP] Keep existing configuration (not recommended)"
 MSG_KEEP_CONFIG_DOWN="[Volume DOWN] Overwrite the existing configuration with the defaults"
@@ -77,6 +78,7 @@ if echo "$CURRENT_LOCALE" | $BUSYBOX grep -qi "zh"; then
   MSG_HOT_UPDATE_HINT="如有报错请忽略。调度未启动，需要手动执行一次Action"
   MSG_INSTALL_CANCELLED="安装已取消"
   MSG_HOT_UPDATE_ABORT="热更新已完成，如有报错请忽略。调度未启动，需要手动执行一次Action"
+  MSG_HOT_UPDATE_NOTIFY="ChiRi 已安装"
   MSG_KEEP_CONFIG_ASK="是否保留模块内已有的配置？"
   MSG_KEEP_CONFIG_UP="[ 音量 + ] 保留现有配置（不建议）"
   MSG_KEEP_CONFIG_DOWN="[ 音量 - ] 使用默认配置覆盖现有配置"
@@ -500,8 +502,9 @@ if [ "$HOT_UPDATE_AVAILABLE" = "true" ]; then
         # 3.【已取消】重启调度服务，安装器环境里 setsid/nohup 拉起的 service.sh 生命周期不可控，改为要求用户手动执行 Action 启动
         ui_print " "
         ui_print "$MSG_HOT_UPDATE_ABORT"
-        cmd notification post -t "ChiRi 已安装" "ChiRi-HotUpdate" "手动运行 Action 以启动 ChiRi 调度"
-        
+        # 通知必须走 scripts/notify.sh：root 直投会被 NMS 丢掉（callingPackage="root" → NameNotFoundException），
+        # 脚本内按 su 形式 × 旗标档阶梯换到 uid 2000 投递，并以输出判定是否真落地
+        sh "$MODDIR/scripts/notify.sh" "$MSG_HOT_UPDATE_NOTIFY" "ChiRi-HotUpdate" "$MSG_HOT_UPDATE_ABORT" 2>/dev/null
         # 5. 清理安装暂存并以官方失败路径结束安装
         # 热更新已把文件热替换到 live，若让安装成功，管理器会按 modules_update 暂存显示需要重启更新并屏蔽 Action/WebUI
         # 不能用 exit，exit 跳过安装器收尾清理，暂存残留后每次热更新都无法解除

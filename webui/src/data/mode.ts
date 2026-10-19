@@ -123,7 +123,7 @@ export function describeMode(id: string, specialModes?: ReadonlySet<string>): Mo
   }
 }
 
-/** CLG 家族名 i18n 键：本机启用帕累托前沿落点（daemon 启动写的 pf.chr = 1，当前仅 8550）时显示 CLG-PF，与 daemon 日志前缀同口径；PF 是 CLG 内部的落点机制（且只在稳态生效），不改变家族归属，故不新增 ModeKind */
+/** CLG 家族名 i18n 键：本机启用帕累托前沿落点（daemon 启动写的 pf.chr = 1）时显示 CLG-PF，与 daemon 日志前缀同口径；PF 是 CLG 内部的落点机制（且只在稳态生效），不改变家族归属，故不新增 ModeKind */
 export function clgFamilyKey(pfEnabled: boolean): string {
   return pfEnabled ? 'mode.family.clgpf' : 'mode.family.clg'
 }

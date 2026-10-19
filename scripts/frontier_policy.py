@@ -201,7 +201,8 @@ def parse_soc(path: Path):
 # [frontier] ----------------------------------------------------------------
 
 def enumerate_frontier(tables):
-    """6720 组合枚举 → 每个总算力档位取最小总功耗"""
+    """三簇档位全组合枚举（档数×档数×档数，随 soc.yaml 频表变化，8550 现为 6358、zumapro 为 3051）
+    → 每个总算力档位取最小总功耗"""
     little, big, prime = (tables[c] for c in CLUSTERS)
     best = {}
     for fl, pl, cl in little:
@@ -360,7 +361,9 @@ def fingerprint(tables, cap, freqs):
     return h.hexdigest()[:16]
 
 
-def render_block(tables, cap, freqs, cores, hull, buckets, modes, enabled, prof):
+def render_block(tables, cap, freqs, hull, buckets, modes, enabled, prof):
+    # cores 未入参：本块只渲染 per_cluster 的 capacity/freq/power 与前沿/桶表，核数已折算进
+    # combo_units（build_buckets 阶段），落块不需要它（a818354 曾传入但函数体内未使用）
     fp = fingerprint(tables, cap, freqs)
     L = []
     L.append(BLOCK_BEGIN)
@@ -547,7 +550,7 @@ def main(argv=None):
     if args.reserve is not None:
         reserve = {k: args.reserve for k in reserve}
     modes = build_modes(buckets, args.lead_frac, reserve)
-    block = render_block(tables, cap, freqs, cores, hull, buckets, modes, not args.disable, prof)
+    block = render_block(tables, cap, freqs, hull, buckets, modes, not args.disable, prof)
 
     print(f"SoC: {args.soc}")
     print(f"输入: {prof['doc'].relative_to(ROOT)} / {prof['soc'].relative_to(ROOT)}")

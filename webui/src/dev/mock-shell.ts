@@ -216,7 +216,7 @@ function seed(): void {
   if (empty) return
 
   put('current_mode.chr', 'default')
-  // daemon 启动写一次（1 = 启用帕累托前沿落点，仅 8550）：非 ChiRi 与 ?pf=0 都写 0
+  // daemon 启动写一次（1 = 启用帕累托前沿落点）：非 ChiRi 与 ?pf=0 都写 0
   put('pf.chr', isChiri && pfEnabled ? '1' : '0')
   // 心跳只为「文件存在」播种，内容在读取时动态生成
   put('LiveTime.chr', '')

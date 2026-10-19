@@ -325,6 +325,24 @@ impl PolicyController {
         self.verify_read_failed = false;
         // 恢复接管前的 governor：performance 泄漏到 CLG/akmode/系统调频会让功耗停在性能拉满档
         if let Some(gov) = self.orig_governor.clone() {
+            // 快照本身是 performance 说明它取自 GovernorGuard 已切 performance 之后（快照必须早于
+            // load_policies），照写回去等于把 performance 泄漏持久化：改为回落到该 policy 的默认选型
+            let gov = if gov.trim() == "performance" {
+                let fallback = crate::common::cpu_governor_for_policy(self.policy_id as i32);
+                warn!(
+                    "{}",
+                    t_with_args(
+                        "fas-governor-reset-performance",
+                        &fluent_args!(
+                            "pid" => self.policy_id.to_string(),
+                            "governor" => fallback.clone()
+                        )
+                    )
+                );
+                fallback
+            } else {
+                gov
+            };
             let _ = crate::utils::write_sysfs(
                 &format!(
                     "/sys/devices/system/cpu/cpufreq/policy{}/scaling_governor",

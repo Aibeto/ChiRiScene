@@ -29,6 +29,14 @@
 >   **各环境 `memory/MEMORY.md` 长期事实索引、`.codebuddy/memory/feedback_*.md` 生效约定、
 >   `.cursor/commands|rules|skills/`、`.trae/rules/`、两份仍活跃的 `.cursor/plans/` 计划保留原位**，
 >   归档/保留完整清单见 05 的「沉淀与归档」。
+> - **文件名含日期的 md 是历史快照，不回改**：`.cursor/plans/YYYY-MM-DD-*.md`、各环境 `memory/YYYY-MM-DD.md`、
+>   `.mnemon/documents/**/*YYYY-MM-DD-*.md`、报告/分析类归档件都属于「当时定格」——代码或契约变更后
+>   **不回头改写它们的内容**（改了就是在伪造历史），其中的失效信息（如已删除文件的路径引用、已作废的
+>   计划条目）靠**新增**一条订正记录处理，订正落在 `agentsdocs/07-todos.md`（TODO 唯一权威）或
+>   `agentsdocs/` 对应子块；判断「这算历史快照还是要跟进的活文档」的依据是本文件区块索引：
+>   只有 `agentsdocs/01~07` 是活文档。
+> - **删记录性 md 必须先在 `.archive/` 留镜像**：上述归档约定是单向的——只归档不删除；确需清理时先
+>   `git show <commit>:<path>` 取回落到 `.archive/<原相对路径>` 再删，禁止直接 `git rm` 让内容只存在于历史里。
 
 ## 区块索引
 

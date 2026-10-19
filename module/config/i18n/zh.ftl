@@ -266,6 +266,7 @@ fas-downgrade-deferred-dwell = [FAS] 降档被驻留期暂缓: 剩余 { $dwell }
 fas-extreme-jank-fasttrack = [FAS] 极端卡顿快车道: 平均帧:{ $avg } 远低于目标 { $target }fps (标准差:{ $stddev })
 fas-no-policies = [FAS] 未发现任何 cpufreq policy，FAS 接管失败
 fas-governor-write-failed = [FAS] P{ $pid } 写入 performance governor 失败: { $error }
+fas-governor-reset-performance = [FAS] P{ $pid } 接管前快照即 performance（快照晚于切档），改用默认调速器 { $governor } 回落
 fas-freq-table-unavailable = [FAS] P{ $pid } 频率表不可用且无 soc.yaml 兜底 ({ $path })，该 policy 已跳过
 fas-policy-none-taken = [FAS] 所有 policy 均被跳过，未接管任何集群
 fas-freq-hold-skip = [FAS] P{ $pid } 频率保持期剩余 { $frames } 帧，跳过本次写入

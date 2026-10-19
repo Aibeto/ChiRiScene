@@ -1279,7 +1279,7 @@ pub fn embedded_ftl_str(lang: &str) -> &'static str {
 }
 
 /// 磁盘 meta.yaml 的严格结构：字段全部可选，类型不符或未知键即整文件判非法，由 sync_meta_snapshot 逐字段恢复（仅 YAML 读不出时整体重建）
-/// 新增字段四处必须同步：本结构与 ExternalMetaOverrides、chiri::config::Meta 与 Config::load、六个 meta.yaml 模板、WebUI META_FIELDS
+/// 新增字段五处必须同步：本结构、ExternalMetaOverrides、chiri::config::Meta 与 Config::load、六个 meta.yaml 模板、WebUI META_FIELDS
 // [external_meta]
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1510,6 +1510,21 @@ fn parse_disk_meta(text: &str) -> Option<ExternalMetaOverrides> {
 /// 自愈追加在文件末尾的警告注释（固定文案，用于「削掉上一轮同名行再补本轮」，避免多轮自愈累积多行）
 const META_HEAL_NOTE: &str =
     "# 上一次修改存在非法字段，仅该字段已恢复为默认值；详情见 logs/daemon.log";
+/// 整份重建分支的警告注释：与逐字段自愈是两条不同路径，文案刻意不同（前者只动一行、后者整份重置），
+/// 但幂等削行必须同时认这两条——否则「先整份重建、后逐字段自愈」会在文件末尾留下两行且每轮再叠
+const META_HEAL_NOTE_WHOLE: &str =
+    "# 上一次修改存在非法字段，已整体恢复为默认值；详情见 logs/daemon.log";
+
+/// 削掉上一轮自愈留在末尾的警告注释（两条文案都认），返回不含它的正文
+fn strip_heal_note(body: &str) -> &str {
+    let body = body.trim_end();
+    for note in [META_HEAL_NOTE, META_HEAL_NOTE_WHOLE] {
+        if let Some(stripped) = body.strip_suffix(note) {
+            return stripped.trim_end();
+        }
+    }
+    body
+}
 
 enum MetaHeal {
     Unlocalizable,
@@ -1613,9 +1628,8 @@ pub fn sync_meta_snapshot(meta_path: &Path) -> bool {
                         "[Meta] meta.yaml has invalid fields, restored those lines to defaults (rest kept): {}",
                         meta_path.display()
                     );
-                    // 幂等追加：先削掉上一轮留下的同款注释行，再补本轮（否则多轮自愈会累积多行）
-                    let body = fixed.trim_end();
-                    let body = body.strip_suffix(META_HEAL_NOTE).unwrap_or(body).trim_end();
+                    // 幂等追加：先削掉上一轮留下的注释行（逐字段与整份重建两种文案都削），再补本轮
+                    let body = strip_heal_note(fixed.trim_end());
                     format!("{body}\n{META_HEAL_NOTE}\n")
                 }
                 MetaHeal::Unlocalizable => {
@@ -1623,9 +1637,7 @@ pub fn sync_meta_snapshot(meta_path: &Path) -> bool {
                         "[Meta] meta.yaml unreadable as YAML or still invalid after per-field repair, reset to embedded defaults: {}",
                         meta_path.display()
                     );
-                    format!(
-                        "{embedded}\n# 上一次修改存在非法字段，已整体恢复为默认值；详情见 logs/daemon.log\n"
-                    )
+                    format!("{embedded}\n{META_HEAL_NOTE_WHOLE}\n")
                 }
             }
         }
@@ -1933,136 +1945,90 @@ mod meta_heal_tests {
         assert!(!out.contains("\"true\""), "bad value kept: {out}");
         assert!(parse_disk_meta(&out).is_some(), "still invalid: {out}");
     }
-}
 
-// 端到端：跑真实文件路径的 sync_meta_snapshot，验证 stale_powerbase_key
-#[test]
-fn e2e_stale_powerbase_key() {
-    let dir = std::env::temp_dir().join("chiri_heal_stale_powerbase_key");
-    let _ = std::fs::create_dir_all(&dir);
-    let f = dir.join("meta.yaml");
-    let src: &str = match "stale_powerbase_key" {
-        "stale_powerbase_key" => {
-            "# 用户注释\nname: \"mine\"\nloglevel: \"DEBUG\"\npowerbase_enabled: false\npower_avg: false\n"
-        }
-        "bad_loglevel_keeps_rest" => {
-            "# 用户注释\nname: \"mine\"\nloglevel: NOPE\npower_avg: false\n"
-        }
-        _ => "name: x\n\tdev_record: true\n",
-    };
-    std::fs::write(&f, src).unwrap();
-    sync_meta_snapshot(&f);
-    let after = std::fs::read_to_string(&f).unwrap();
-    println!("===== stale_powerbase_key =====\n{after}");
-    match "stale_powerbase_key" {
-        "stale_powerbase_key" => {
-            assert!(!after.contains("powerbase_enabled"), "stale key kept");
-            assert!(after.contains("name: \"mine\""), "user name kept");
-            assert!(after.contains("loglevel: \"DEBUG\""), "user loglevel kept");
-            assert!(after.contains("power_avg: false"), "user switch kept");
-            assert!(after.contains("# 用户注释"), "comment kept");
-        }
-        "bad_loglevel_keeps_rest" => {
-            assert!(!after.contains("NOPE"), "bad kept");
-            assert!(after.contains("name: \"mine\""), "user name lost");
-            assert!(after.contains("power_avg: false"), "user switch lost");
-            assert!(after.contains("# 用户注释"), "comment lost");
-            assert!(after.contains("loglevel:"), "key lost");
-        }
-        _ => {
-            assert!(
-                after.contains("default_config"),
-                "should be embedded rebuild"
-            );
-            assert!(!after.contains("\t"), "tab still present");
-        }
+    // 端到端（仍属 meta_heal_tests）：走真实文件路径的 sync_meta_snapshot，验证落盘结果
+    // 每个用例只保留自己那一臂——原先写成 match "字面量" 会留下 2/3 恒不可达分支
+
+    #[test]
+    fn e2e_stale_powerbase_key() {
+        let dir = std::env::temp_dir().join("chiri_heal_stale_powerbase_key");
+        let _ = std::fs::create_dir_all(&dir);
+        let f = dir.join("meta.yaml");
+        std::fs::write(
+            &f,
+            "# 用户注释\nname: \"mine\"\nloglevel: \"DEBUG\"\npowerbase_enabled: false\npower_avg: false\n",
+        )
+        .unwrap();
+        sync_meta_snapshot(&f);
+        let after = std::fs::read_to_string(&f).unwrap();
+        assert!(!after.contains("powerbase_enabled"), "stale key kept");
+        assert!(after.contains("name: \"mine\""), "user name kept");
+        assert!(after.contains("loglevel: \"DEBUG\""), "user loglevel kept");
+        assert!(after.contains("power_avg: false"), "user switch kept");
+        assert!(after.contains("# 用户注释"), "comment kept");
+        let _ = std::fs::remove_dir_all(&dir);
     }
-}
 
-// 端到端：跑真实文件路径的 sync_meta_snapshot，验证 bad_loglevel_keeps_rest
-#[test]
-fn e2e_bad_loglevel_keeps_rest() {
-    let dir = std::env::temp_dir().join("chiri_heal_bad_loglevel_keeps_rest");
-    let _ = std::fs::create_dir_all(&dir);
-    let f = dir.join("meta.yaml");
-    let src: &str = match "bad_loglevel_keeps_rest" {
-        "stale_powerbase_key" => {
-            "# 用户注释\nname: \"mine\"\nloglevel: \"DEBUG\"\npowerbase_enabled: false\npower_avg: false\n"
-        }
-        "bad_loglevel_keeps_rest" => {
-            "# 用户注释\nname: \"mine\"\nloglevel: NOPE\npower_avg: false\n"
-        }
-        _ => "name: x\n\tdev_record: true\n",
-    };
-    std::fs::write(&f, src).unwrap();
-    sync_meta_snapshot(&f);
-    let after = std::fs::read_to_string(&f).unwrap();
-    println!("===== bad_loglevel_keeps_rest =====\n{after}");
-    match "bad_loglevel_keeps_rest" {
-        "stale_powerbase_key" => {
-            assert!(!after.contains("powerbase_enabled"), "stale key kept");
-            assert!(after.contains("name: \"mine\""), "user name kept");
-            assert!(after.contains("loglevel: \"DEBUG\""), "user loglevel kept");
-            assert!(after.contains("power_avg: false"), "user switch kept");
-            assert!(after.contains("# 用户注释"), "comment kept");
-        }
-        "bad_loglevel_keeps_rest" => {
-            assert!(!after.contains("NOPE"), "bad kept");
-            assert!(after.contains("name: \"mine\""), "user name lost");
-            assert!(after.contains("power_avg: false"), "user switch lost");
-            assert!(after.contains("# 用户注释"), "comment lost");
-            assert!(after.contains("loglevel:"), "key lost");
-        }
-        _ => {
-            assert!(
-                after.contains("default_config"),
-                "should be embedded rebuild"
-            );
-            assert!(!after.contains("\t"), "tab still present");
-        }
+    #[test]
+    fn e2e_bad_loglevel_keeps_rest() {
+        let dir = std::env::temp_dir().join("chiri_heal_bad_loglevel_keeps_rest");
+        let _ = std::fs::create_dir_all(&dir);
+        let f = dir.join("meta.yaml");
+        std::fs::write(
+            &f,
+            "# 用户注释\nname: \"mine\"\nloglevel: NOPE\npower_avg: false\n",
+        )
+        .unwrap();
+        sync_meta_snapshot(&f);
+        let after = std::fs::read_to_string(&f).unwrap();
+        assert!(!after.contains("NOPE"), "bad kept");
+        assert!(after.contains("name: \"mine\""), "user name lost");
+        assert!(after.contains("power_avg: false"), "user switch lost");
+        assert!(after.contains("# 用户注释"), "comment lost");
+        assert!(after.contains("loglevel:"), "key lost");
+        let _ = std::fs::remove_dir_all(&dir);
     }
-}
 
-// 端到端：跑真实文件路径的 sync_meta_snapshot，验证 syntax_error_whole_rebuild
-#[test]
-fn e2e_syntax_error_whole_rebuild() {
-    let dir = std::env::temp_dir().join("chiri_heal_syntax_error_whole_rebuild");
-    let _ = std::fs::create_dir_all(&dir);
-    let f = dir.join("meta.yaml");
-    let src: &str = match "syntax_error_whole_rebuild" {
-        "stale_powerbase_key" => {
-            "# 用户注释\nname: \"mine\"\nloglevel: \"DEBUG\"\npowerbase_enabled: false\npower_avg: false\n"
-        }
-        "bad_loglevel_keeps_rest" => {
-            "# 用户注释\nname: \"mine\"\nloglevel: NOPE\npower_avg: false\n"
-        }
-        _ => "name: x\n\tdev_record: true\n",
-    };
-    std::fs::write(&f, src).unwrap();
-    sync_meta_snapshot(&f);
-    let after = std::fs::read_to_string(&f).unwrap();
-    println!("===== syntax_error_whole_rebuild =====\n{after}");
-    match "syntax_error_whole_rebuild" {
-        "stale_powerbase_key" => {
-            assert!(!after.contains("powerbase_enabled"), "stale key kept");
-            assert!(after.contains("name: \"mine\""), "user name kept");
-            assert!(after.contains("loglevel: \"DEBUG\""), "user loglevel kept");
-            assert!(after.contains("power_avg: false"), "user switch kept");
-            assert!(after.contains("# 用户注释"), "comment kept");
-        }
-        "bad_loglevel_keeps_rest" => {
-            assert!(!after.contains("NOPE"), "bad kept");
-            assert!(after.contains("name: \"mine\""), "user name lost");
-            assert!(after.contains("power_avg: false"), "user switch lost");
-            assert!(after.contains("# 用户注释"), "comment lost");
-            assert!(after.contains("loglevel:"), "key lost");
-        }
-        _ => {
-            assert!(
-                after.contains("default_config"),
-                "should be embedded rebuild"
-            );
-            assert!(!after.contains("\t"), "tab still present");
-        }
+    #[test]
+    fn e2e_syntax_error_whole_rebuild() {
+        let dir = std::env::temp_dir().join("chiri_heal_syntax_error_whole_rebuild");
+        let _ = std::fs::create_dir_all(&dir);
+        let f = dir.join("meta.yaml");
+        std::fs::write(&f, "name: x\n\tdev_record: true\n").unwrap();
+        sync_meta_snapshot(&f);
+        let after = std::fs::read_to_string(&f).unwrap();
+        assert!(
+            after.contains("default_config"),
+            "should be embedded rebuild"
+        );
+        assert!(!after.contains("\t"), "tab still present");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // 幂等：连续两轮自愈后末尾只能留一行警告注释（整份重建的文案也要能被削掉）
+    #[test]
+    fn e2e_heal_note_not_duplicated() {
+        let dir = std::env::temp_dir().join("chiri_heal_note_idempotent");
+        let _ = std::fs::create_dir_all(&dir);
+        let f = dir.join("meta.yaml");
+        std::fs::write(&f, "name: x\n\tdev_record: true\n").unwrap();
+        sync_meta_snapshot(&f);
+        std::fs::write(
+            &f,
+            "# 用户注释\nname: \"mine\"\nloglevel: NOPE\npower_avg: false\n",
+        )
+        .unwrap();
+        sync_meta_snapshot(&f);
+        let after = std::fs::read_to_string(&f).unwrap();
+        assert_eq!(
+            after.matches(META_HEAL_NOTE).count(),
+            1,
+            "heal note duplicated: {after}"
+        );
+        assert!(
+            !after.contains(META_HEAL_NOTE_WHOLE),
+            "stale whole-rebuild note kept: {after}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

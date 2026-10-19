@@ -256,7 +256,7 @@ python scripts\devimp-analyze.py <解压目录> [--since MMDD-HHMMSS] [--min-n 3
   `[3]` 分别扣基线后报告总增量、模型动态增量与未解释增量，不能全归因于调度；`[4]` 的低 R² 也可能来自混杂或采样不同步。
   两列只在有功耗表的 SoC（当前仅 8550）有值，其余恒 `-`；充电行的 `resid_w` 无意义
 - 模式语义：`clg_active=1` = CLG 在接管；`mode=fas` = FAS 接管；特调模式（playback/akmode）= tuned 接管；
-  PowerBase 开启时替换 CLG（日志有 powerbase-activated）
+  ~~PowerBase 开启时替换 CLG~~（PowerBase 已于 2026-10-20 整体移除，日志不再有 powerbase-activated）
 - `freq_trans` 恒 0 而非 `-` = 内核无 cpufreq tracepoint（探针没挂上），不是「频率从未切换」
 - **FAS「频率不匹配」判据**（`scheduler/fas/policy_controller.rs`）：只校验下沿——
   `actual < 可用频表中 <= 预期 的最大值` 才告警。**2026-09-23 起该告警多为自噪声**：
