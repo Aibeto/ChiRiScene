@@ -1,5 +1,5 @@
 <script lang="ts">
-  // AdvancedView.svelte: [bar] [fields] [notify-test] 高级设置二级页：DOWN 停摆、PowerBase、息屏判定值，与电池读数页同一套二级页逻辑
+  // AdvancedView.svelte: [bar] [fields] [notify-test] 高级设置二级页：DOWN 停摆、息屏判定值，与电池读数页同一套二级页逻辑
   // 直写状态文件 / meta.yaml（不走草稿，写后回读），与 daemon 热重载对齐；末组是通知测试（经 module 根目录 notify.sh 投递，tag 固定 ChiRi-Test）
   import NumberField from "@/components/NumberField.svelte";
   import Panel from "@/components/Panel.svelte";
@@ -63,13 +63,6 @@
       {#if app.downError}
         <p class="u-note u-danger u-mt-2">{app.downError}</p>
       {/if}
-      <!-- PowerBase：以放电功耗替换 CLG 调频（模式名与外部接口不变），直写 meta.yaml 的 powerbase_enabled，热重载即时生效 -->
-      <ToggleField
-        label={t("config.powerbase")}
-        hint={t("config.powerbase.hint")}
-        checked={app.powerbaseEnabled}
-        onchange={(next) => app.setPowerbase(next)}
-      />
       <!-- 息屏判定值：debug.tracing.screen_state 等于该值视为息屏（默认 1，安装时校正）；失焦/回车提交，直写 screen_off_value -->
       <NumberField
         label={t("config.screenoff")}

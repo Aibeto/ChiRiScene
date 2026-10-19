@@ -1,7 +1,7 @@
 # 8475/feature.yaml: [function] [io-settings] [cpu-idle] [affinity] [corectl] [thermal] [sched]
-#                    [reduce] [default] [boost] [vector] [powerbase]
+#                    [reduce] [default] [boost] [vector]
 # 2026-09-22 合并：`config/8745/`（目录名误写，5e94ee1 引入、SoC 检测永不命中）里更新的
-# 调优（reduce/default/boost 全套、[vector]、[powerbase]、function/IO/cpu-idle 调整）按
+# 调优（reduce/default/boost 全套、[vector]、function/IO/cpu-idle 调整）按
 # 修改时间取新并入；affinity/corectl/thermal/sched 为 8475 独有段保留；touch_boost 三档
 # 为 8475 原值（8745 版 default 注释引用了 touch_boost 却漏写参数，本合并补回）。
 
@@ -183,21 +183,3 @@ vector:
     down_fast_threshold: 0.10
     spike_jump_threshold: 0.35
     spike_decay: 0.30
-
-# [powerbase]
-# PowerBase（Stardust 家族）：以**功耗**为指标的调频器。开关在 meta.yaml
-# （`powerbase_enabled`，高级设置，默认关闭）；开启后接管原本由 CLG 接管的场合
-# （reduce/default/boost），FAS / 特调 / DOWN 停摆 / 实验室的启停判据一律不受影响。
-#   target_power_w      放电状态下的目标功耗（W）——各 SoC 在自己的 feature.yaml 覆盖
-#   up_headroom_below   功耗**低于**目标时的升频宽松度（>1 = 放宽）
-#   down_scale          降频激进度：目标性能乘以它（越小降得越狠；与功耗无关，恒生效）
-#   overload_cores_pct  功耗已达上限时仍允许升频的门槛：满占用（100%）核心占比 %
-#   overload_hold_ms    且需持续这么久才放行升频
-#   touch_break_ms      触摸事件时允许短暂突破功率上限的窗口
-powerbase:
-  target_power_w: 3.5
-  up_headroom_below: 1.15
-  down_scale: 0.5
-  overload_cores_pct: 50
-  overload_hold_ms: 3000
-  touch_break_ms: 400

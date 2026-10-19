@@ -184,7 +184,6 @@ pub mod fas_manager;
 pub mod fast;
 pub mod governor;
 pub mod gpu;
-pub mod power_base;
 pub mod touch_detect;
 pub mod tuned;
 
@@ -865,7 +864,7 @@ fn apply_mode_takeover(
         ak_governor.release();
         fast_lock.release();
         let clg_cfg = clg_cfg_for(config, mode);
-        // CLG 角色的接管交给它自己：内部会在 Worker 与 PowerBase 之间二选一，这里不再替它决定谁来接管
+        // CLG 角色的接管交给它自己：内部决定接管者，这里不再替它决定
         if clg_cfg.enabled {
             if cpu_governor.is_active() {
                 cpu_governor.reload_config(&clg_cfg);
@@ -2377,7 +2376,7 @@ pub fn start_scheduler_thread(
                 }
                 log::info!("{}", t("config-reloading"));
 
-                // meta.yaml 自愈先于重载：字段非法用嵌入默认整体覆盖并追加警告注释，文件缺失则重建，再加载；nofix 防篡改开启时跳过，非法字段由 Config::load 自行回退（不落盘）
+                // meta.yaml 自愈先于重载：非法字段只恢复该字段那一行（其余内容保留）并追加警告注释，文件缺失则重建，再加载；nofix 防篡改开启时跳过，非法字段由 Config::load 自行回退（不落盘）
                 if !common::nofix_active() {
                     common::sync_meta_snapshot(&config_path);
                 }
@@ -2532,7 +2531,7 @@ pub fn start_scheduler_thread(
 
             // 屏幕状态标记
             let mut is_screen_on = true;
-            // 初值同步到进程级原子量（缺省也是 true）：CLG 选 PowerBase 后端时只读这个原子量
+            // 初值同步到进程级原子量（缺省也是 true）：CLG 接管时只读这个原子量
             crate::common::set_screen_on(is_screen_on);
             // 息屏计时：屏幕熄灭时记录，超过 scene_mode_delay_secs 后切到 scenemode 低功耗
             let mut screen_off_at: Option<Instant> = None;
@@ -2839,7 +2838,7 @@ pub fn start_scheduler_thread(
                         // fas 模式下 CLG fallback 不参与热重载（FAS 配置编译期嵌入静态）
                         let clg_cfg = get_clg_cfg(&config_lock, &current_mode);
                         if clg_cfg.enabled {
-                            // 热重载也走 CLG 自己的入口：后端要不要换（Worker↔PowerBase）由它在新配置下
+                            // 热重载也走 CLG 自己的入口：接管者要不要换由它在新配置下
                             // 自行判定，这里不再替它判断「谁在接管」
                             if cpu_governor.is_active() {
                                 cpu_governor.reload_config(&clg_cfg);
@@ -3589,7 +3588,7 @@ pub fn start_scheduler_thread(
                             reconcile_fas_focus(&mut fas_mgr, &window_probe, &mut confirmed_window_focus,
                                 &mut pending_mode_after_fas, true);
                         }
-                        // 同步到进程级原子量：CLG 在接管那一刻要靠它判断能不能选 PowerBase 后端（没有别的渠道拿到屏幕状态），必须与本地变量同点更新
+                        // 同步到进程级原子量：CLG 在接管那一刻要读它（没有别的渠道拿到屏幕状态），必须与本地变量同点更新
                         crate::common::set_screen_on(is_screen_on);
                         // 息屏/亮屏 info 打点：uevent 直推绕过 app_detect 的变更日志，统一保证触发点可见
                         if screen_on {
@@ -4072,7 +4071,7 @@ pub fn start_scheduler_thread(
                         } else if ak_governor.is_active() {
                             ak_governor.on_load_update(&core_utils);
                         } else if cpu_governor.is_active() {
-                            // CLG 角色优先级链终点：内部再分流到 Worker 或 PowerBase 后端
+                            // CLG 角色优先级链终点：内部再分流到 Worker
                             cpu_governor.on_load_update(&core_utils);
                         }
 
@@ -4325,7 +4324,7 @@ pub fn start_scheduler_thread(
                                 fast_lock.release();
                                 let clg_cfg = get_clg_cfg(&config_lock, &current_mode);
                                 if clg_cfg.enabled {
-                                    // 后端是否要换（Worker↔PowerBase）由 CLG 在新配置下自行判定
+                                    // 接管者是否要换由 CLG 在新配置下自行判定
                                     if cpu_governor.is_active() { cpu_governor.reload_config(&clg_cfg); }
                                     else { cpu_governor.init_policies(&clg_cfg); }
                                 } else if cpu_governor.is_active() {

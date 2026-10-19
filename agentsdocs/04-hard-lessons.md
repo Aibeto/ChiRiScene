@@ -80,7 +80,7 @@
 
 - **is_fast_lock 六入口收敛（2026-09-22）**：`is_fast_lock(mode)` 必须覆盖 vector|frozen 全集，六个接管入口（启动/亮屏/ModeChange/ConfigReload/DOWN 退出/panic 自愈）漏一个就静默失效——曾漏 ConfigReload 分支（`== "vector"` 没算 frozen），配置热重载即 fast_lock.release()。核对手段：`git grep '== "vector"' src` 应为空。
 
-- **锁频写序**：升频先写 max 后写 min、降频先写 min 后写 max——反序出现 min>max 被内核拒绝、写失败后状态静默失效（frozen、PowerBase 接管首拍都踩过：接管时立刻写 min=max=最高频且 perf 同步 1.0，否则首 tick 走升频写序时 max<min 被拒 → perf 不前移 → 永久静默失效且零报错）。
+- **锁频写序**：升频先写 max 后写 min、降频先写 min 后写 max——反序出现 min>max 被内核拒绝、写失败后状态静默失效（frozen 接管首拍踩过：它把 min 与 max 一起锁到硬件最低频，必须走降频写序 min 先于 max；同一拍若按升频写序先写 max，min 仍停在原值 → min>max 被拒 → 状态不前移 → 永久静默失效且零报错）。
 
 - **写频滞回三断链（2026-09-24，全部 cargo check 通过仍错）**：① 死区吞写 × hold 用精确比较 → 假 down 循环（hold 改用死区比较，`deadzone_band()` 是唯一换算点，对称假 up 同修）；② CLG up 判定加 1e-6 epsilon（α≤0.5 慢升时 1 ulp 舍入停滞 → 假 up 无限累加）；③ last_failed 悬挂：write_freq 值去重早退路径要补清失败标记。cargo/类型检查通过 ≠ 行为等价，浮点比较与早退路径要单独过一遍。
 
@@ -90,7 +90,7 @@
 
 - **Rust 块注释里写 sysfs 通配路径会吃掉注释配对（2026-09-26）**：路径中的 `/*` `*/` 与块注释定界符冲突（screen_detect.rs 实例），注释里的通配路径要改写成不含 `/*` 的形式。
 
-- **meta 新字段漏同步 = 配置死循环（2026-09-22）**：`MetaYamlFile`（deny_unknown_fields）缺新字段时，WebUI 写入该键 → 整文件判非法 → sync_meta_snapshot 内嵌默认整体覆盖 → 用户 oplus/双电芯设置被抹、循环往复。同步点清单见 02「新增字段要同步」，漏一处即此后果。
+- **meta 新字段漏同步 = 配置死循环（2026-09-22）**：`MetaYamlFile`（deny_unknown_fields）缺新字段时，WebUI 写入该键 → 该键判非法 → sync_meta_snapshot 把它整行删除（其余设置保留，不再被抹）→ 界面每次写入都被改回、循环往复。同步点清单见 02「新增字段要同步」，漏一处即此后果。
 
 - **devimp main_ 的 batt_i 整数化高估仅适用于轻载 / 旧包（2026-09-24，2026-10-01 限定）**：旧包值域仅 0–3 时，「`batt_i==0` 严格排除」会误删过半轻载样本、使 P_avg 系统性高估（aweme 3.35 vs 真值 2.14W），该场景下功耗一律以 status.csv 的 charge+batt_power_w 为准。**此结论在当前 8550/PHB110 已不成立**：`customize.sh` 探测到 `bcc_parms` 后会置 `oplus_chg: true`，把模板 divisor 从 1000000 改为 **1000**（节点报 mV/mA），`dvpower [8]` 与 status.csv 实测几乎相等；引用「系统性高估」前必须先确认仍是旧包 / 轻载整数化口径。
 

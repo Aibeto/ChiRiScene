@@ -32,10 +32,13 @@ fn high_zone_gate_knobs() {
     assert_eq!(default_value("high_zone_gate"), 0.85);
     assert_eq!(default_value("high_zone_count"), 2.0);
     assert_eq!(default_value("high_zone_util"), 0.90);
-    for section in ["# [reduce]", "# [boost]"] {
+    // [boost] 是 feature.yaml 的最后一个段头：它之后没有同级段头，整段延伸到文件末尾
+    for (section, next) in [("# [reduce]", Some("# [default]")), ("# [boost]", None)] {
         let block = FEATURE.split(section).nth(1).unwrap();
-        let next = if section == "# [reduce]" { "# [default]" } else { "# [powerbase]" };
-        let body = block.split(next).next().unwrap();
+        let body = match next {
+            Some(n) => block.split(n).next().unwrap(),
+            None => block,
+        };
         assert!(body.contains("high_zone_gate: 0.85"), "{section} must enable high-zone gate");
     }
 }

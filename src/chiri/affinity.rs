@@ -2009,18 +2009,10 @@ impl AffinityManager {
                         .by_ref()
                         .filter_map(|c| self.core_utils.get(c).copied())
                         .fold(0.0_f32, f32::max);
-                    // PowerBase 开启时积极性减半：promote 阈值翻倍减少迁移动作，与「最低限度干预」取向一致
-                    let (promote_base, little_promote) = if crate::common::powerbase_enabled() {
-                        (
-                            self.tuning.promote_util_pct * 2.0,
-                            self.tuning.little_promote_util_pct * 2.0,
-                        )
-                    } else {
-                        (
-                            self.tuning.promote_util_pct,
-                            self.tuning.little_promote_util_pct,
-                        )
-                    };
+                    let (promote_base, little_promote) = (
+                        self.tuning.promote_util_pct,
+                        self.tuning.little_promote_util_pct,
+                    );
                     let promote_thresh = if little_max > self.tuning.little_high_water {
                         little_promote
                     } else {

@@ -1048,7 +1048,8 @@ playback 中位 38 mW（p90 159 mW）、default 中位 52 mW（p90 252 mW），�
 - 桶号是前沿表的索引，表重生成（桶边界变化）后本节落点需重算；三簇落点运行期还要再按
   真机 `scaling_available_frequencies` floor 对齐。
 - TODO: 日常「能用」的下界（流畅度预留）未定——本节 U 分位是实测负载分布，不是流畅度判据；
-  PowerBase 的 `reserve_pct` 与 CLG 的 `lead_frac` 定稿前，落点选取不含预留量。
+  `reserve_pct` 与 CLG 的 `lead_frac` 定稿前，落点选取不含预留量。
 
-**应用**：PowerBase 的档位体系（`module/config/8550/feature.yaml` 的 `powerbase.tier_*`）
-即取本节落点——标准 #13 / 触摸一级 #20 / 上限 #25，详见 `agentsdocs/03-chiri.md` 的 PowerBase 段。
+**应用**：CLG-PF 的 `frontier_policy` 受控块（`module/config/8550/soc.yaml`，由 `scripts/frontier_policy.py`
+从本节 §3 模型复算生成）即取本节落点；运行期需求落到哪个桶由亮度与负载决定，8550 亮屏日常的中位负载
+落在 #13 桶。详见 `agentsdocs/03-chiri.md` 的「稳态下探（T11）与帕累托前沿落点（CLG-PF）」节。

@@ -131,7 +131,7 @@ fn main() -> Result<()> {
         deferred_write_fails.push(("pf.chr", e.to_string()));
     }
 
-    // meta.yaml 快照自愈：以编译期嵌入的 meta.yaml 为基准校验磁盘副本，字段非法整体覆盖并追加警告注释，缺失则重建
+    // meta.yaml 快照自愈：以编译期嵌入的 meta.yaml 为基准校验磁盘副本，非法字段只恢复该字段那一行（其余内容保留），缺失则重建
     // `nofix: true` 时跳过所有覆盖类操作，必须在自愈之前读（晚了开关本身先丢）
     let nofix = common::read_nofix_flag(&config_path);
     // 置进程级标志：热重载路径的自愈与资产还原都读它，避免各入口重复读磁盘

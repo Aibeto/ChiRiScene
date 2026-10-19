@@ -51,13 +51,13 @@ npm run verify       # style-check + type-check + test + build 一把过
 - **只读接触点**：`active_config.chr`、`current_mode.chr`、`pf.chr`（CLG 是否启用帕累托前沿落点：
   `1` = 启用，仅 8550；家族名据此显示 `CLG-PF`）、`rhine-back.chr`、`PowerAVG.chr`、`LiveTime.chr`、
   `rules.yaml`、`special_tuned.yaml`、`fas_whitelist.yaml`、`module.prop`、`logs/**`。
-- **可写接触点**：`meta.yaml`（写入口 = `contract/meta.ts::WRITABLE_FIELDS`，当前 16 项：language /
-  loglevel / dev_record / fas_enabled / scenemode_enabled / powerbase_enabled / power_avg / notify /
+- **可写接触点**：`meta.yaml`（写入口 = `contract/meta.ts::WRITABLE_FIELDS`，当前 15 项：language /
+  loglevel / dev_record / fas_enabled / scenemode_enabled / power_avg / notify /
   oplus_chg / oplus_dual_cell / voltage_double / current_double / voltage_divisor / current_divisor /
   power_max_w / screen_off_value），`rhine.chr`（实验室状态，写模式 key、空内容或保留字
   `off` 强制关闭），以及 `down.chr`（DOWN 停摆，写 `down` 开、写空内容关）。
-  都做「tmp→rename」的原子写；meta 还需顶层行替换以保住注释，且都要写后回读——守护进程会在
-  文件非法时整体重置。
+  都做「tmp→rename」的原子写；meta 还需顶层行替换以保住注释，且都要写后回读——守护进程会把非法
+  字段那一行恢复成默认值（其余内容保留）。
 - **实验室（`#/lab`）**：状态文件 `rhine.chr` 不存在或只有注释都算未启用（不是错误）；
   关闭实验室写空内容而不是删文件；锁定期间关闭要写保留字 `off`（强制关闭，走确认弹层）。
   模式列表在 `data/lab.ts` 里硬编码，英文名取明日方舟官方译名

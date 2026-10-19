@@ -21,7 +21,6 @@ export const META_FIELDS = [
   'fas_enabled',
   'scenemode_enabled',
   'thread_bind',
-  'powerbase_enabled',
   'power_avg',
   'notify',
   'oplus_chg',
@@ -46,7 +45,6 @@ export const WRITABLE_FIELDS = [
   'dev_record',
   'fas_enabled',
   'scenemode_enabled',
-  'powerbase_enabled',
   'power_avg',
   'notify',
   'oplus_chg',
@@ -126,7 +124,7 @@ export async function readMeta(): Promise<ReadResult<MetaSnapshot>> {
 // [validate]
 function normalizeScalar(v: unknown): string {
   if (typeof v !== 'string') return ''
-  // 复刻 daemon common.rs::unquote 语义：只剥一层「成对且同型」的引号、不做逐边剥离——畸形值 daemon 判非法，这里必须同样判非法，避免「界面已保存、daemon 整体重置」
+  // 复刻 daemon common.rs::unquote 语义：只剥一层「成对且同型」的引号、不做逐边剥离——畸形值 daemon 判非法，这里必须同样判非法，避免「界面已保存、daemon 把该行恢复成默认」
   const s = v.trim()
   if (s.length >= 2) {
     const head = s[0]
@@ -167,7 +165,6 @@ export function validateMeta(values: Record<string, unknown>): string[] {
     'fas_enabled',
     'scenemode_enabled',
     'thread_bind',
-    'powerbase_enabled',
     'power_avg',
     'notify',
     'oplus_chg',
@@ -180,7 +177,7 @@ export function validateMeta(values: Record<string, unknown>): string[] {
     }
   }
 
-  // 出现即校验类型（类型不符 daemon 会判整个文件非法、被内嵌默认覆盖）；数值越界不限报——daemon 只回退默认值，界面同口径
+  // 出现即校验类型（类型不符 daemon 判定该字段非法、只把该行恢复为内嵌默认）；数值越界不限报——daemon 只回退默认值，界面同口径
   if ('nofix' in values && typeof values.nofix !== 'boolean') {
     problems.push('nofix 必须是布尔值 true/false')
   }
@@ -191,7 +188,7 @@ export function validateMeta(values: Record<string, unknown>): string[] {
     problems.push('power_max_w 必须是数字')
   }
   // devimp_top_n 用 isSafeInteger 而非 isInteger：超过 2^53 的"整数"（如 1e21）会让daemon 侧 serde 解析 usize 失败、整个 meta
-  // yaml 判非法被内嵌默认整体重置
+  // yaml 判非法时该行被恢复为内嵌默认
   if (
     'devimp_top_n' in values &&
     (typeof values.devimp_top_n !== 'number' ||
@@ -258,7 +255,6 @@ export function validateFieldValue(
     case 'dev_record':
     case 'fas_enabled':
     case 'scenemode_enabled':
-    case 'powerbase_enabled':
     case 'power_avg':
     case 'notify':
     case 'oplus_chg':

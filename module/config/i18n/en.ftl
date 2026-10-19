@@ -181,13 +181,6 @@ config-meta-fallback = [Config] meta config fell back to embedded defaults: { $p
 # --- CLG ---
 clg-init = [CLG] P{ $pid } init | cores={ $cpus } | freqs={ $fmin }-{ $fmax } MHz | P={ $perf } -> { $freq } kHz
 clg-activated = [CLG] CPU Load Governor activated, taking over { $count } cluster(s)
-powerbase-activated = [PowerBase] power-based governor took over (CLG released)
-powerbase-deactivated = [PowerBase] power-based governor released
-powerbase-writer-invalid = [PowerBase] P{ $pid } frequency writer unavailable, cluster skipped
-powerbase-touch-tier = [PowerBase] touch raise to frontier bucket #{ $tier } ceiling
-powerbase-takeover-skipped = [PowerBase] P{ $pid } freq table and soc.yaml fallback both unavailable, cluster takeover skipped
-powerbase-init-write-failed = [PowerBase] P{ $pid } initial max write failed, cluster perf stays 0
-powerbase-init-min-failed = [PowerBase] P{ $pid } initial min write failed, min cannot be lowered
 clg-no-clusters = [CLG] CPU Load Governor: no valid clusters found, staying inactive
 clg-deactivated = [CLG] CPU Load Governor deactivated
 clg-config-reloaded = [CLG] config hot-reloaded | up={ $up } down={ $down } floor={ $floor } ceil={ $ceil }

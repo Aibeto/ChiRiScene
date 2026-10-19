@@ -16,22 +16,15 @@
   );
   // 调度未运行时不把 current_mode.chr 的陈旧值当「当前模式」，卡片只陈述「调度未运行」；文件缺失同口径显示「尚未产生模式记录」
   const modeIdle = $derived(app.daemonState === "stopped");
-  // PowerBase 接管 CLG 时只换「谁在调频」：家族/模式名显示 Stardust / PowerBase，原始 id 保留展示
-  // daemon 只在亮屏 + CLG 档生效，这里以 kind==='clg' 近似，实验室 vector 不受影响
-  const pbTakesClg = $derived(
-    !modeIdle && !app.modeMissing && app.powerbaseEnabled && app.modeInfo.kind === "clg",
-  );
   const modeName = $derived(
     modeIdle ? t("mode.unknown.stopped")
     : app.modeMissing ? t("mode.unknown.missing")
-    : pbTakesClg ? t("mode.powerbase")
     : t(app.modeInfo.labelKey),
   );
   // 模式家族（CLG/特调/实验室/停摆/FAS），与详细模式分开显示；未运行/无记录时不显示
-  // 本机启用帕累托前沿落点（daemon 写的 pf.chr）时 CLG 家族名显示 CLG-PF，与 daemon 日志前缀同口径；PowerBase 接管时家族名仍是 Stardust
+  // 本机启用帕累托前沿落点（daemon 写的 pf.chr）时 CLG 家族名显示 CLG-PF，与 daemon 日志前缀同口径
   const familyLabel = $derived(
     modeIdle || app.modeMissing ? ""
-    : pbTakesClg ? t("mode.family.stardust")
     : app.modeInfo.kind === "clg" ? t(clgFamilyKey(app.clgPfEnabled))
     : t(`mode.family.${app.modeInfo.kind}`),
   );

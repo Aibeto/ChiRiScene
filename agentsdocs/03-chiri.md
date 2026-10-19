@@ -1,6 +1,6 @@
 ## [chiri] ChiRi 调度子系统
 
-以下子系统仅在命中 `CHIRI_SOC_HINTS` 的 SoC 上生效（未命中不接管 CPU，原 Yumi 兜底已删）。全局统一默认调速器（`{soc}/soc.yaml` 的 `[cpu_governors]` 按从左到右优先级与真机 `scaling_available_governors` 求交选定，无该段或全不可用 → `schedutil`）：CLG 与 akmode 均把内核调速器写为该值（各自 `init_policies` 时写 governor、release 时恢复快照）。选型在 schedule 启动时一次算定（`common.rs [governor]`，日志 key `governor-selected`），特调 / PowerBase / FastLock / 残留清理共用同一结果；启动期离线（之后才上线的簇）与停摆期被跳过的 policy，在写入点按同一口径惰性补算。
+以下子系统仅在命中 `CHIRI_SOC_HINTS` 的 SoC 上生效（未命中不接管 CPU，原 Yumi 兜底已删）。全局统一默认调速器（`{soc}/soc.yaml` 的 `[cpu_governors]` 按从左到右优先级与真机 `scaling_available_governors` 求交选定，无该段或全不可用 → `schedutil`）：CLG 与 akmode 均把内核调速器写为该值（各自 `init_policies` 时写 governor、release 时恢复快照）。选型在 schedule 启动时一次算定（`common.rs [governor]`，日志 key `governor-selected`），特调 / FastLock / 残留清理共用同一结果；启动期离线（之后才上线的簇）与停摆期被跳过的 policy，在写入点按同一口径惰性补算。
 
 ### 特调（akmode）
 
@@ -178,8 +178,6 @@ WebUI 侧：
 ### 极速模式（fast）
 
 - vector 档用专属锁频器、不读 yaml、停用 CLG：`src/chiri/fast.rs` 的 `FastLock` 与 CLG 完全独立，vector 档下由 `mod.rs` 的 scheduler\*ipc 先 `cpu_governor.release()` 再 `fast_lock.init()` 接管（**六个入口都不能漏**：启动 / 亮屏恢复 / ModeChange / ConfigReload / DOWN 退出 / panic 自愈——vector 不注册 CLG 参数，漏掉就是频率零接管且无任何告警）。**frozen（待春归）复用同一条通路、共享这六个入口**，差别只在 `fast_lock.init(true)` 锁到**硬件最低频**（vector 是最高频）；额外地，frozen 会停掉一切额外开销：devimp 诊断日志与 status.csv 停写（闸门在 `logger.rs` 的 `diag_active()` 与 `status_log_snapshot()`，只保留 daemon.log 便于排错）——frozen 下 main\_ 与 aff\_（含 `@S` 快照）同停（同一 `diag_active()` 闸门），线程亲和/绑核与 core_ctl 由 rhine 的 `thread_bind: false` 交还系统（不再迁移线程）。
-
-- **PowerBase（Stardust 家族，meta.yaml `powerbase_enabled`，默认关）只替换「谁来调频」**：开启后原本由 CLG 接管的档位（reduce/default/boost）改由 `src/chiri/power_base.rs` 以**放电功耗**为指标调频——功耗低于 feature 里的 `target_power_w` 时放宽升频；达到或超过时守住不升，除非「满占用核心占比 ≥ `overload_cores_pct` 且持续 `overload_hold_ms`」；降频恒激进（不看功耗）；触摸窗口（`touch_break_ms`）内允许突破功率上限。**模式名与所有外部接口一律不变**（`current_mode.chr` 仍是 default/boost，rules / WebUI / 通知都不受影响）。**启动逻辑（2026-09-29 改）**：PowerBase 不再是独立的第二个写入者，而是 `CpuLoadGovernor` 的**备用后端**（与 PF 同款的可选后端）——`CpuLoadGovernor::init_policies` / `reload_config` 在接管那一刻按「开关开启 + 亮屏 + 未停摆 + CLG 段启用」二选一（Worker ↔ PowerBase，缺任一前提落回 Worker），选定后全程只有一个 owner 在写这批节点，因此不需要主循环再来兜底互斥（原每轮兜底纠正块已删）。**热重载会整段重建它**：reload_config 走 init_policies 同路径，perf 回 1.0、档位回落标准档、触摸窗口清空，并重写一次 min/max。affinity 的 promote 阈值在开启时翻倍（积极性减半）。**写频口径同 CLG**：min 一次性锁硬件最低、只动态压 max，下限交回 schedutil（副作用是 PB 的功耗确定性下降）。**档位体系（2026-09-28 加，8550 启用）**：`tier_standard/tier_touch/tier_max` 三个能效前沿表桶号把频率上界钉在桶落点上（8550：标准 #13 = 1017600/1286400/864000、触摸 #20 = 1344000/1536000/1132800、上限 #25 = 1555200/1785600/1478400，顺序为 little/big/prime；这些是表值，运行期仍由 `frontier_aligned` 按真机频表 floor 对齐）——标准档工作，**触摸事件沿阶梯瞬时升档**（事件驱动，与 CLG 共用 touch_detect → sync_channel 链路；已在最高档则忽略本次调频、只续窗口；窗口内锁当前档落点，负载决策不得把刚抬起的档位压回），窗口过期回落标准档。非 PF SoC / 三桶任一为 0 / 桶号越界一律恒回退 `hw_max`（行为与不启用一致），这些回退态下 `on_touch` 不升档、只续功耗豁免窗口；起手锁标准档而非硬件最高频。**热保护对它无效是预期行为**（thermal 靠压 CLG 上限工作）。
 
 - `FastLock::init()` 遍历 `get_cpu_policies()`、快照原始状态、写默认调速器（同 `[cpu_governors]` 选型）、把 min=max 锁到 target（vector=含 boost 硬件最高频、frozen=硬件最低频）；`tick()` 每 5 秒重写一次 **target** 作异常兜底收敛（默认无竞争者，节点被改写属异常态——残留旧模块、手动调试、内核异常态；2026-09-22 修：原误写 hw_max，frozen 每 5 秒被拉回最高频=失效）；`release()` 恢复接管前的 governor/min/max。
 

@@ -7,7 +7,7 @@
 - 拓扑：little A510 cpu0-2→policy0、big A715 cpu3-6→policy3、prime X3 cpu7→policy7（**勿用 8475 的 0-3/4-6/policy4 口径**）；全部 CPU 共享 L3（跨簇迁移丢 L2 不丢 L3）。A510 r1 支持 AArch32（A715/X3 才移除）。
 - OPP 频点（与真机 `scaling_available_frequencies` 一档不差，可依赖；电压/功耗参数不可）：little 16 档 307200–2016000；big 20 档 499200–2803200；prime 21 档 595200–3187200（逐档 kHz 表见归档件 `.archive/.codebuddy/docs/2026-09-26-sm8550-opp-ladder.md`，定位是校准基准非运行时输入）。
 - capacity：真机 280/855/1024 ≠ mainline DT 326/693/1024 → 厂商板级 DTS 覆盖；**算容量一律读真机 `cpu_capacity`**，mainline 值仅参照。
-- floor 对齐取档：内核对 scaling_max_freq 写入**向下 clamp 到最近档**（写 little 1900000 落 1785600）；2026-09-26 起 CLG/tuned/PowerBase 取档 floor 对齐（≤目标的最大档）后再写；FAS 锁频（min=max）与 fast.rs 锁 hw_max 取表内真实档无需对齐。
+- floor 对齐取档：内核对 scaling_max_freq 写入**向下 clamp 到最近档**（写 little 1900000 落 1785600）；2026-09-26 起 CLG/tuned 取档 floor 对齐（≤目标的最大档）后再写；FAS 锁频（min=max）与 fast.rs 锁 hw_max 取表内真实档无需对齐。
 - idle 深度（µs，residency/exit）：silver 750/6700、gold 1300/8136、goldplus 1350/7480、簇级 2350/9144、4400/10150；prime 睡实需 ≥7.5ms 空闲、唤醒 ~1.35ms → FAS migration_cost_ns=400000（400µs）远低于唤醒 prime 代价，与「prime 空转就压」同向。
 - CPU 注册为 thermal cooling device：内核温控限频是独立于 ChiRi thermal_cap 的第二层——「写了 max 却上不去」先查 OPP 对齐、再查 thermal cooling。
 - cpu-map 平铺，簇划分靠 capacity + freq-domain + idle 域表达，**勿拿 cpu-map 当簇划分依据**。

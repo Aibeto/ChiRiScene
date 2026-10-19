@@ -201,7 +201,7 @@
     </Panel>
   {/if}
 
-  <!-- 高级设置：二级页面入口（DOWN / PowerBase / 息屏判定值），与电池读数同一套二级页逻辑，直写状态文件与 meta.yaml，不经过草稿/保存 -->
+  <!-- 高级设置：二级页面入口（DOWN / 息屏判定值），与电池读数同一套二级页逻辑，直写状态文件与 meta.yaml，不经过草稿/保存 -->
   <Panel signal="action" title={t('config.advanced')} desc={t('config.advanced.hint')}>
     <div class="entry__row">
       <!-- 高级设置二级页入口：直写调度进程状态文件与 meta.yaml，不经过草稿/保存 -->

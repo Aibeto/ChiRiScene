@@ -570,7 +570,7 @@ fn activity_lookup<'a>(
 }
 
 /// 模式判定：FAS 白名单 > **Activity 级规则** > 特调白名单 > app_modes(包名) > 特调映射 > 全局模式
-/// **PowerBase 不在这里出现**，它只替换谁来调频，模式名与所有外部接口保持原样；`activity` 为查表键，为空或查不到时完全落回包名级，只有显式配了 `pkg/.Activity` 键才命中 activity 层
+/// `activity` 为查表键，为空或查不到时完全落回包名级，只有显式配了 `pkg/.Activity` 键才命中 activity 层
 fn determine_mode(config: &RulesConfig, current_package: &str, activity: &str) -> String {
     // 特调仅 Chiri SoC 且 tuned_profiles.yaml 加载成功时生效；缺配置的机型白名单应用回退 CLG 普通模式调度
     let chiri = crate::common::is_chiri_soc();

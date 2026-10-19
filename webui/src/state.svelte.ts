@@ -411,7 +411,7 @@ class AppStore {
     this.writeError = ''
     this.writeReverted = false
     try {
-      // 期望值 = 写入前的字段值 + 本次草稿；回读后若有字段不等于期望值，说明守护进程判定文件非法并整体重置（界面必须如实说“已恢复默认值”）
+      // 期望值 = 写入前的字段值 + 本次草稿；回读后若有字段不等于期望值，说明守护进程判定该字段非法并把它恢复成了默认值（界面必须如实说“已恢复默认值”）
       const patchKeys = Object.keys(this.draft) as WritableField[]
       const expected: Record<string, unknown> = {}
       for (const key of patchKeys) expected[key] = this.draft[key]
@@ -627,9 +627,6 @@ class AppStore {
   /** 口径开关写入中（高级设置直写 meta.yaml） */
   powerAvgPending = $state(false)
   powerAvgError = $state('')
-  /** PowerBase 开关写入中的状态（高级设置） */
-  powerbasePending = $state(false)
-  powerbaseError = $state('')
   /** 息屏判定值写入中的状态（高级设置） */
   screenOffPending = $state(false)
   screenOffError = $state('')
@@ -639,11 +636,6 @@ class AppStore {
   /** 功耗口径：是否使用累计平均值（meta.yaml `power_avg`，默认 false = 参考值） */
   get powerAvgUsesAverage(): boolean {
     return this.metaSnapshot?.values?.power_avg === true
-  }
-
-  /** PowerBase 是否开启（meta.yaml `powerbase_enabled`，默认 false = 由 CLG 调频） */
-  get powerbaseEnabled(): boolean {
-    return this.metaSnapshot?.values?.powerbase_enabled === true
   }
 
   /** 息屏判定值（meta.yaml `screen_off_value`，缺省 1）：debug.tracing.screen_state 等于该值视为息屏；非法值与缺失一律按默认 1 呈现（daemon 侧同口径） */
@@ -765,34 +757,6 @@ class AppStore {
       toast(useAverage ? t('overview.power.avg') : t('overview.power.ref'))
     } finally {
       this.powerAvgPending = false
-      this.metaWritePending = false
-    }
-  }
-
-  /** 高级设置：直写 meta.yaml 的 `powerbase_enabled`（不走草稿，立即热重载）；开启后 CLG 档改由 PowerBase 按放电功耗调频，模式名/规则/界面等外部接口不变
-   *  写后回读 */
-  async setPowerbase(enabled: boolean): Promise<void> {
-    if (this.powerbasePending || this.metaWritePending) return
-    this.powerbasePending = true
-    this.metaWritePending = true
-    this.powerbaseError = ''
-    try {
-      const result = await writeMetaFields({ powerbase_enabled: enabled })
-      if (result.kind !== 'ok') {
-        this.powerbaseError =
-          result.kind === 'failed' ? result.error : t('state.unsupportedEnv')
-        toast(this.powerbaseError)
-        return
-      }
-      this.metaSnapshot = result.value
-      this.metaValid = result.value.valid
-      this.metaProblems = result.value.problems
-      this.metaPath = result.value.path
-      // meta 直写成功：强制补拉静态项（meta 快照刚被改；fire-and-forget 不拖慢返回）
-      void this.loadStatic(true)
-      toast(enabled ? t('config.powerbase') : t('config.advanced'))
-    } finally {
-      this.powerbasePending = false
       this.metaWritePending = false
     }
   }

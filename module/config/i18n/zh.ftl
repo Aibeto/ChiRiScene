@@ -181,13 +181,6 @@ config-meta-fallback = [Config] meta 配置回退内嵌默认: { $path }
 # --- CLG ---
 clg-init = [CLG] P{ $pid } 初始化 | 核心={ $cpus } | 频率={ $fmin }-{ $fmax } MHz | P={ $perf } -> { $freq } kHz
 clg-activated = [CLG] CPU 负载调频器已激活，共接管 { $count } 个集群
-powerbase-activated = [PowerBase] 功耗基准调频器已接管 (CLG 已释放)
-powerbase-deactivated = [PowerBase] 功耗基准调频器已释放
-powerbase-writer-invalid = [PowerBase] P{ $pid } 频率写入器不可用，跳过该集群
-powerbase-touch-tier = [PowerBase] 触摸升档至前沿 #{ $tier } 桶上限
-powerbase-takeover-skipped = [PowerBase] P{ $pid } 频率表与 soc.yaml 兜底均不可用，该集群跳过接管
-powerbase-init-write-failed = [PowerBase] P{ $pid } 接管初写上限失败，该簇 perf 停在 0
-powerbase-init-min-failed = [PowerBase] P{ $pid } 接管初写下限失败，min 压不下去
 clg-no-clusters = [CLG] CPU 负载调频器: 未找到有效集群，保持未激活状态
 clg-deactivated = [CLG] CPU 负载调频器已停用
 clg-config-reloaded = [CLG] 配置已热重载 | 升频={ $up } 降频={ $down } 地板={ $floor } 天花板={ $ceil }

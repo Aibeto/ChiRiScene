@@ -1,7 +1,6 @@
 //! common.rs: [events] [proc_snap] [paths] [soc_detect] [core_ranges] [soc_config] [governor] [special_tuned] [fas_whitelist]
 //! [aff_blacklist] [embedded] [external_meta] [frontier_table]
 
-use crate::chiri::config::PowerBaseConfig;
 use crate::monitor::config::RulesConfig;
 use include_dir::{Dir, include_dir};
 use serde::Deserialize;
@@ -729,7 +728,7 @@ fn pick_governor(policy_id: i32, prefs: &[String]) -> String {
 }
 
 /// 调度启动（及每次热重载）时调用：批量算定当前可见的 policy 并回填表，返回全表副本（供日志）
-/// 已在表内则不重复读 sysfs，所有「默认调速器」写入点（CLG / 特调 / PowerBase / FastLock /
+/// 已在表内则不重复读 sysfs，所有「默认调速器」写入点（CLG / 特调 / FastLock /
 /// 残留清理）都按这里的值写，不再各自写死 schedutil
 pub fn select_cpu_governors() -> HashMap<i32, String> {
     let mut m = governor_map().lock().unwrap_or_else(|e| e.into_inner());
@@ -772,41 +771,9 @@ pub fn set_special_tuned_available(available: bool) {
 // 高频路径（fas_available / scenemode 进入判定）只读原子量，不触碰磁盘与锁
 static FAS_ENABLED: AtomicBool = AtomicBool::new(true);
 static SCENEMODE_ENABLED: AtomicBool = AtomicBool::new(true);
-/// PowerBase 总开关（meta.yaml `powerbase_enabled`，**缺省 false**：默认由 CLG 接管）
-static POWERBASE_ENABLED: AtomicBool = AtomicBool::new(false);
 
-/// 设置 PowerBase 总开关（meta.yaml 的 powerbase_enabled，Config::load 时调用）
-pub fn set_powerbase_enabled(enabled: bool) {
-    POWERBASE_ENABLED.store(enabled, Ordering::Release);
-}
-
-/// PowerBase 是否开启（powerbase_enabled，缺省 false）：高频路径（determine_mode 模式替换、affinity promote 阈值）只读原子量，不读磁盘与锁
-pub fn powerbase_enabled() -> bool {
-    POWERBASE_ENABLED.load(Ordering::Acquire)
-}
-
-/// PowerBase 参数（feature.yaml `powerbase` 段，Config::load 下发）：CLG 的接管入口在 Cluster 那一刻
-/// 才读一次（选中它当后端时才会用到），不在负载 tick 路径取锁
-static POWERBASE_CFG: OnceLock<Mutex<PowerBaseConfig>> = OnceLock::new();
-
-/// 下发 PowerBase 参数（Config::load 时与总开关同步调用）
-pub fn set_powerbase_config(cfg: PowerBaseConfig) {
-    let lock = POWERBASE_CFG.get_or_init(|| Mutex::new(PowerBaseConfig::default()));
-    if let Ok(mut g) = lock.lock() {
-        *g = cfg;
-    }
-}
-
-/// 取 PowerBase 参数副本（未下发过则代码默认值）
-pub fn powerbase_config() -> PowerBaseConfig {
-    match POWERBASE_CFG.get() {
-        Some(l) => l.lock().map(|g| g.clone()).unwrap_or_default(),
-        None => PowerBaseConfig::default(),
-    }
-}
-
-/// 当前是否亮屏（屏幕事件同步，缺省 true）：接管判决需要在 CLG 内部取值——PowerBase 是它的后端之一，
-/// 息屏必须交 doze（息屏接管会把夜间功耗抬高），而屏幕事件的处理在调度循环而不在 CLG 内部
+/// 当前是否亮屏（屏幕事件同步，缺省 true）：状态块据此填 screen_on 列、择模式列与决定功率采样口径（平均档只采亮屏）
+/// 屏幕事件的处理在调度循环而不在这里，必须经原子量跨线程同步
 static SCREEN_ON: AtomicBool = AtomicBool::new(true);
 
 /// 同步亮屏状态（ScreenStateChange 事件与启动时各同步一次）
@@ -1311,8 +1278,8 @@ pub fn embedded_ftl_str(lang: &str) -> &'static str {
     embedded_config_file(rel).unwrap_or_default()
 }
 
-/// 磁盘 meta.yaml 的严格结构：字段全部可选，类型不符或未知键即整文件判非法，由 sync_meta_snapshot 用内嵌默认覆盖
-/// 新增字段四处必须同步：本结构与 ExternalMetaOverrides、chiri::config::Meta 与 Config::load、四个 meta.yaml 模板、WebUI META_FIELDS
+/// 磁盘 meta.yaml 的严格结构：字段全部可选，类型不符或未知键即整文件判非法，由 sync_meta_snapshot 逐字段恢复（仅 YAML 读不出时整体重建）
+/// 新增字段四处必须同步：本结构与 ExternalMetaOverrides、chiri::config::Meta 与 Config::load、六个 meta.yaml 模板、WebUI META_FIELDS
 // [external_meta]
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1330,8 +1297,6 @@ struct MetaYamlFile {
     scenemode_enabled: Option<bool>,
     /// 线程摆放总开关（affinity + core_ctl），见 ExternalMetaOverrides
     thread_bind: Option<bool>,
-    /// PowerBase 总开关（缺省 false）必须与本结构同步注册：deny_unknown_fields 下 WebUI 直写键不在这里会让整个 meta.yaml 被判非法并整体重置
-    powerbase_enabled: Option<bool>,
     /// 功耗口径开关（PowerAVG.chr），见 ExternalMetaOverrides（缺省 false）
     power_avg: Option<bool>,
     /// 常驻状态通知开关，见 ExternalMetaOverrides（缺省 true）
@@ -1371,9 +1336,6 @@ pub struct ExternalMetaOverrides {
     /// 线程摆放总闸（`thread_bind`）：实验室 frozen 专用机制——用户侧开关已移除，仅 frozen 模式写 false 交还线程亲和/绑核与 core_ctl， 与机型内嵌 feature
     /// yaml 的两个子开关取「与」，见 chiri/config.rs::Config::load
     pub thread_bind: Option<bool>,
-    /// PowerBase 总开关（缺省 false）：开启后原由 CLG 接管的亮屏日常场合改由 PowerBase 接管（以放电功耗为指标）消费点：Config::
-    /// load 合并后 set_powerbase_enabled 同步原子量
-    pub powerbase_enabled: Option<bool>,
     /// 功耗口径开关（PowerAVG.chr）：false（默认）= 参考值（旧值先乘 10 再按 10:1 加权递推，偏历史，含息屏样本）；true = 累计平均（等权全史，仅亮屏放电样本）两者都只在放电时取样；
     /// 仅 ChiRi 1s 状态采样消费；写侧走单次读-改-写顶层行替换，见 WebUI contract/meta.ts
     pub power_avg: Option<bool>,
@@ -1409,7 +1371,7 @@ pub struct ExternalMetaOverrides {
 /// 读磁盘 meta.yaml（先经 sync_meta_snapshot 校验/纠正）：文件缺失或仍非法返回 None，调用方沿用嵌入默认——绝不 panic，不让坏文件拖垮配置加载
 pub fn read_external_meta(path: &Path) -> Option<ExternalMetaOverrides> {
     // [silent-fallback] 读不到与「读到了但解析/校验判非法」都返回 None、调用方无从区分
-    // 前者是首装常态，后者是用户配置被整体丢弃（回退内嵌默认），debug 下按原因分开留痕
+    // 前者是首装常态，后者是结构层仍非法（自愈已尽力逐字段修）；debug 下按原因分开留痕
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) => {
@@ -1485,7 +1447,7 @@ fn sanitize_language(raw: &str) -> Option<String> {
     }
 }
 
-/// 整体校验磁盘 meta.yaml：结构严格（无未知键、类型正确）+ 取值白名单；任一字段异常返回 None——调用方以内嵌默认覆盖修正，用户乱改不生效
+/// 整体校验磁盘 meta.yaml：结构严格（无未知键、类型正确）+ 取值白名单；任一字段异常返回 None——调用方先逐字段自愈（heal_disk_meta），自愈失败才整体重建
 fn parse_disk_meta(text: &str) -> Option<ExternalMetaOverrides> {
     let f: MetaYamlFile = serde_yaml::from_str(text).ok()?;
     // 出现即校验（缺省跳过）：name/author 非空
@@ -1529,7 +1491,6 @@ fn parse_disk_meta(text: &str) -> Option<ExternalMetaOverrides> {
         fas_enabled: f.fas_enabled,
         scenemode_enabled: f.scenemode_enabled,
         thread_bind: f.thread_bind,
-        powerbase_enabled: f.powerbase_enabled,
         power_avg: f.power_avg,
         notify: f.notify,
         oplus_chg: f.oplus_chg,
@@ -1544,8 +1505,100 @@ fn parse_disk_meta(text: &str) -> Option<ExternalMetaOverrides> {
     })
 }
 
+/// 逐字段自愈结果：Unlocalizable = 连 YAML 结构都读不出（语法错）或结构异常，只能整份重建；
+/// Clean = 全部合法（不写盘）；Repaired = 已就地修好几行，其余内容逐字保留
+/// 自愈追加在文件末尾的警告注释（固定文案，用于「削掉上一轮同名行再补本轮」，避免多轮自愈累积多行）
+const META_HEAL_NOTE: &str =
+    "# 上一次修改存在非法字段，仅该字段已恢复为默认值；详情见 logs/daemon.log";
+
+enum MetaHeal {
+    Unlocalizable,
+    Clean,
+    Repaired(String),
+}
+
+/// 值域校验（结构层面之外的白名单，与 parse_disk_meta 同口径）：name/author 非空、loglevel 六档、language en/zh；
+/// 类型不匹配与未知键已由结构层拦截，此处只判「类型对但取值非法」的那几项
+fn meta_value_domain_ok(key: &str, v: &serde_yaml::Value) -> bool {
+    match key.to_ascii_lowercase().as_str() {
+        "name" | "author" => v.as_str().is_some_and(|s| !s.trim().is_empty()),
+        "loglevel" => v.as_str().is_some_and(|s| sanitize_loglevel(s).is_some()),
+        "language" => v.as_str().is_some_and(|s| sanitize_language(s).is_some()),
+        _ => true,
+    }
+}
+
+/// meta.yaml 逐字段自愈：只把非法字段所在的那一行恢复为内嵌默认（模板未带的键则整行删除 = 沿用代码默认），
+/// 合法字段、用户注释与其余内容逐字保留。返回 Unlocalizable 时调用方才退回整份重建。
+/// 结构判定复用 MetaYamlFile 本体（未知键/类型错即报错），故字段名与类型只有那一处权威
+fn heal_disk_meta(text: &str) -> MetaHeal {
+    let Ok(serde_yaml::Value::Mapping(map)) = serde_yaml::from_str::<serde_yaml::Value>(text)
+    else {
+        return MetaHeal::Unlocalizable;
+    };
+    // 模板本身读不出时不做逐字段推断（否则每个非法键都会退化成「删除」，可能连合法字段一起误伤）——保守走整份重建
+    let Ok(template) = serde_yaml::from_str::<serde_yaml::Value>(embedded_meta_str()) else {
+        return MetaHeal::Unlocalizable;
+    };
+    let Some(template_map) = template.as_mapping() else {
+        return MetaHeal::Unlocalizable;
+    };
+
+    let mut out = text.to_string();
+    let mut changed = false;
+    for (k, v) in &map {
+        // 顶层键不是字符串（YAML 允许 `1: x` 这类）：无法按行定位，保守走整份重建，别让它落到「全部合法」而静默不修
+        let Some(key) = k.as_str() else {
+            return MetaHeal::Unlocalizable;
+        };
+        // 本段所有字段都是标量；出现嵌套值即结构异常，交给整份重建，避免只删首行留下悬空块
+        if !(v.is_null() || v.is_bool() || v.is_string() || v.is_number()) {
+            return MetaHeal::Unlocalizable;
+        }
+        // 结构层：单键回灌 MetaYamlFile——未知键报 unknown field、类型错报 invalid type，两者都算非法
+        let structurally_ok = {
+            let mut one = serde_yaml::Mapping::new();
+            one.insert(k.clone(), v.clone());
+            serde_yaml::from_value::<MetaYamlFile>(serde_yaml::Value::Mapping(one)).is_ok()
+        };
+        if structurally_ok && meta_value_domain_ok(key, v) {
+            continue;
+        }
+        match template_map.get(k) {
+            // 模板带该键：就地回填模板值（保留键名大小写、分隔空白与行内注释）
+            Some(default) => {
+                let rendered = serde_yaml::to_string(default).unwrap_or_default();
+                if let Some(next) = replace_top_level_value(&out, key, rendered.trim_end()) {
+                    out = next;
+                    changed = true;
+                } else {
+                    return MetaHeal::Unlocalizable;
+                }
+            }
+            // 模板不带（devimp_top_n / devimp_aff_secs / unit_divisor / nofix 这类可选键，以及已废弃键）：整行删除 = 沿用代码默认
+            None => match remove_top_level_key(&out, key) {
+                Some(next) => {
+                    out = next;
+                    changed = true;
+                }
+                None => return MetaHeal::Unlocalizable,
+            },
+        }
+    }
+    if !changed {
+        return MetaHeal::Clean;
+    }
+    // 自愈后必须真的能通过严格校验，否则宁可整份重建（不把半修好的文件留给加载侧）
+    if parse_disk_meta(&out).is_some() {
+        MetaHeal::Repaired(out)
+    } else {
+        MetaHeal::Unlocalizable
+    }
+}
+
 /// meta.yaml 快照自愈：main.rs 启动时与 chiri config_watcher 触发热重载前调用文件合法 → 跳过写入（返回 false，防 config_watcher 事件成环）；
-/// 文件缺失/不可读 → 嵌入原文原子重建（不留警告注释）-任一字段非法 → 嵌入原文整体覆盖 + 末尾追加警告注释 + warn 日志（完全丢失重建与「修改出错纠正不同，前者不留言）
+/// 文件缺失/不可读 → 嵌入原文原子重建（不留警告注释）；字段非法 → **只恢复非法字段所在行**，合法字段与用户注释保留 + 末尾追加警告注释 + warn 日志；
+/// 仅当连 YAML 结构都读不出（语法错/嵌套异常值/修完仍不合法）才退回整份重建（完全丢失重建与「修改出错纠正不同，前者不留言）
 pub fn sync_meta_snapshot(meta_path: &Path) -> bool {
     let embedded = embedded_meta_str();
     let corrected = match std::fs::read_to_string(meta_path) {
@@ -1553,13 +1606,28 @@ pub fn sync_meta_snapshot(meta_path: &Path) -> bool {
             if parse_disk_meta(&text).is_some() {
                 return false;
             }
-            log::warn!(
-                "[Meta] meta.yaml fields invalid, reset to embedded defaults: {}",
-                meta_path.display()
-            );
-            format!(
-                "{embedded}\n# 上一次修改存在非法字段，已恢复为默认值；详情见 logs/daemon.log\n"
-            )
+            match heal_disk_meta(&text) {
+                MetaHeal::Clean => return false,
+                MetaHeal::Repaired(fixed) => {
+                    log::warn!(
+                        "[Meta] meta.yaml has invalid fields, restored those lines to defaults (rest kept): {}",
+                        meta_path.display()
+                    );
+                    // 幂等追加：先削掉上一轮留下的同款注释行，再补本轮（否则多轮自愈会累积多行）
+                    let body = fixed.trim_end();
+                    let body = body.strip_suffix(META_HEAL_NOTE).unwrap_or(body).trim_end();
+                    format!("{body}\n{META_HEAL_NOTE}\n")
+                }
+                MetaHeal::Unlocalizable => {
+                    log::warn!(
+                        "[Meta] meta.yaml unreadable as YAML or still invalid after per-field repair, reset to embedded defaults: {}",
+                        meta_path.display()
+                    );
+                    format!(
+                        "{embedded}\n# 上一次修改存在非法字段，已整体恢复为默认值；详情见 logs/daemon.log\n"
+                    )
+                }
+            }
         }
         Err(_) => {
             log::info!(
@@ -1631,13 +1699,14 @@ pub(crate) fn write_file_no_panic(path: &Path, bytes: &[u8]) -> bool {
     false
 }
 
-/// meta.yaml 顶层行替换：只匹配缩进为 0 的 `键: 值` 行，保留键名大小写、分隔空白与行内注释；字段不存在返回 None，调用方放弃写入，绝不退化成整文件重排不走 serde 反序列化再序列化：
-/// 整文件重排会吃掉用户注释，且 `MetaYamlFile` 带 deny_unknown_fields，漏一个新字段就会让下次 sync_meta_snapshot 判非法整体覆盖
-/// 口径与 WebUI `contract/meta.ts::replaceTopLevelField` 一致，两边不要各写一套
-pub(crate) fn replace_top_level_bool(content: &str, field: &str, value: bool) -> Option<String> {
+/// meta.yaml 顶层行的定位（键名大小写不敏感）：返回 (行下标, 冒号位置, 键名原文, 冒号后的分隔空白, 值+行内注释)；
+/// 只认缩进为 0 的 `键: 值` 行，跳过空行/注释/序列项与所有嵌套行。下面两个写入口共用它，避免定位口径各写一套
+fn find_top_level_line(
+    content: &str,
+    field: &str,
+) -> Option<(usize, usize, String, String, String)> {
     let want = field.to_ascii_lowercase();
-    let mut lines: Vec<String> = content.split('\n').map(str::to_string).collect();
-    for line in lines.iter_mut() {
+    for (i, line) in content.split('\n').enumerate() {
         let trimmed = line.trim_start();
         if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('-') {
             continue;
@@ -1658,15 +1727,50 @@ pub(crate) fn replace_top_level_bool(content: &str, field: &str, value: bool) ->
         }
         let rest = &trimmed[colon + 1..];
         let sep: String = rest.chars().take_while(|c| c.is_whitespace()).collect();
-        let tail = &rest[sep.len()..];
-        let comment = match tail.find(" #") {
-            Some(i) => &tail[i..],
-            None => "",
-        };
-        *line = format!("{key}:{sep}{value}{comment}");
-        return Some(lines.join("\n"));
+        let tail = rest[sep.len()..].to_string();
+        return Some((i, colon, key.to_string(), sep, tail));
     }
     None
+}
+
+/// 顶层行替换（值可为任意已渲染的 YAML 标量）：保留键名原文、分隔空白与行内注释；字段不存在返回 None，绝不退化成整文件重排
+/// 与 `replace_top_level_bool` 同一定位口径，语义见其注释；供逐字段自愈回填内嵌默认值
+pub(crate) fn replace_top_level_value(content: &str, field: &str, value: &str) -> Option<String> {
+    let (idx, _, key, sep, tail) = find_top_level_line(content, field)?;
+    let comment = match tail.find(" #") {
+        Some(i) => &tail[i..],
+        None => "",
+    };
+    let mut out = String::with_capacity(content.len() + value.len());
+    for (i, line) in content.split('\n').enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        if i == idx {
+            out.push_str(&format!("{key}:{sep}{value}{comment}"));
+        } else {
+            out.push_str(line);
+        }
+    }
+    Some(out)
+}
+
+/// 顶层行删除（模板不带的可选键：删掉即「沿用代码默认」，比保留脏行更干净）；字段不存在返回 None，绝不整文件重排
+fn remove_top_level_key(content: &str, field: &str) -> Option<String> {
+    let (idx, ..) = find_top_level_line(content, field)?;
+    let kept: Vec<&str> = content
+        .split('\n')
+        .enumerate()
+        .filter_map(|(i, l)| (i != idx).then_some(l))
+        .collect();
+    Some(kept.join("\n"))
+}
+
+/// meta.yaml 顶层行替换：只匹配缩进为 0 的 `键: 值` 行，保留键名大小写、分隔空白与行内注释；字段不存在返回 None，调用方放弃写入，绝不退化成整文件重排不走 serde 反序列化再序列化：
+/// 整文件重排会吃掉用户注释，且 `MetaYamlFile` 带 deny_unknown_fields，漏一个新字段就会让下次 sync_meta_snapshot 把该行判非法并恢复默认
+/// 口径与 WebUI `contract/meta.ts::replaceTopLevelField` 一致，两边不要各写一套
+pub(crate) fn replace_top_level_bool(content: &str, field: &str, value: bool) -> Option<String> {
+    replace_top_level_value(content, field, if value { "true" } else { "false" })
 }
 
 /// 一次写盘改掉 meta.yaml 的总开关（None = 该项不动；thread_bind 仅实验室使用），返回 false 表示文件没被改到期望状态（字段缺失 / 读写失败），调用方放弃本次实验室套用
@@ -1708,4 +1812,257 @@ pub(crate) fn rewrite_meta_toggles(
         return false;
     }
     true
+}
+
+// [meta_heal_tests] 逐字段自愈契约：只修非法行，合法字段、用户注释与未知键之外的内容逐字保留
+#[cfg(test)]
+mod meta_heal_tests {
+    use super::*;
+
+    fn healed(t: &str) -> Option<String> {
+        match heal_disk_meta(t) {
+            MetaHeal::Repaired(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    // 模板自带的键（loglevel）非法：只回填该行，其余行含注释逐字保留
+    #[test]
+    fn invalid_template_key_only_its_line_changes() {
+        let src = "# 我的注释\nname: \"mine\"\nloglevel: NOPE\nauthor: \"me\"\npower_max_w: 12\n";
+        let out = healed(src).expect("should repair loglevel");
+        assert!(out.contains("# 我的注释"), "comment lost: {out}");
+        assert!(out.contains("name: \"mine\""), "valid field lost: {out}");
+        assert!(out.contains("author: \"me\""), "valid field lost: {out}");
+        assert!(out.contains("power_max_w: 12"), "valid field lost: {out}");
+        assert!(!out.contains("NOPE"), "bad value kept: {out}");
+        assert!(parse_disk_meta(&out).is_some(), "still invalid: {out}");
+    }
+
+    // 行内注释与键名原文/空白要保留
+    #[test]
+    fn inline_comment_and_key_spacing_preserved() {
+        let src = "loglevel:   NOPE   # 这里是注释\n";
+        let out = healed(src).unwrap();
+        assert!(out.contains("# 这里是注释"), "inline comment lost: {out}");
+        assert!(out.contains("loglevel:"), "key lost: {out}");
+        assert!(!out.contains("NOPE"), "bad value kept: {out}");
+    }
+
+    // 未知键（升级残留，如已删的 powerbase_enabled）：模板不带 → 整行删除，其余保留
+    #[test]
+    fn unknown_key_line_removed_others_intact() {
+        let src = "name: \"mine\"\npowerbase_enabled: false\nloglevel: \"INFO\"\n";
+        let out = healed(src).unwrap();
+        assert!(
+            !out.contains("powerbase_enabled"),
+            "unknown key kept: {out}"
+        );
+        assert!(out.contains("name: \"mine\""), "valid field lost: {out}");
+        assert!(
+            out.contains("loglevel: \"INFO\""),
+            "valid field lost: {out}"
+        );
+        assert!(parse_disk_meta(&out).is_some(), "still invalid: {out}");
+    }
+
+    // 多个非法字段一次修完
+    #[test]
+    fn multiple_bad_fields_all_repaired() {
+        let src = "loglevel: NOPE\nlanguage: ja\nname: \"keep\"\n";
+        let out = healed(src).unwrap();
+        assert!(
+            !out.contains("NOPE") && !out.contains("ja"),
+            "bad kept: {out}"
+        );
+        assert!(out.contains("name: \"keep\""), "valid field lost: {out}");
+        assert!(parse_disk_meta(&out).is_some(), "still invalid: {out}");
+    }
+
+    // 全合法：不写盘、不改内容
+    #[test]
+    fn all_valid_is_clean() {
+        let src = "name: \"mine\"\nloglevel: \"INFO\"\nlanguage: \"zh\"\n";
+        assert!(matches!(heal_disk_meta(src), MetaHeal::Clean));
+    }
+
+    // 语法错：无法逐行定位 → 交回整份重建
+    #[test]
+    fn syntax_error_is_unlocalizable() {
+        let src = "name: x\n\tdev_record: true\n";
+        assert!(matches!(heal_disk_meta(src), MetaHeal::Unlocalizable));
+    }
+
+    // 嵌套值（结构异常）→ 交回整份重建，不留下悬空块
+    #[test]
+    fn nested_value_is_unlocalizable() {
+        let src = "name: \"x\"\nloglevel:\n  a: 1\n";
+        assert!(matches!(heal_disk_meta(src), MetaHeal::Unlocalizable));
+    }
+
+    // 顶层键不是字符串（如 `1: x`）：无法按行定位，必须走整份重建，不能静默当作「全部合法」
+    #[test]
+    fn non_string_top_key_is_unlocalizable() {
+        let src = "name: \"mine\"\n1: x\n";
+        assert!(matches!(heal_disk_meta(src), MetaHeal::Unlocalizable));
+    }
+
+    // 块标量（`loglevel: |` 带缩进体）被判定非法时：就地改行会留下悬空缩进体，
+    // 收尾的 parse_disk_meta 不变量必须拦住它并改走整份重建
+    #[test]
+    fn block_scalar_body_never_left_dangling() {
+        let src = "name: \"mine\"\nloglevel: |\n  NOPE\n";
+        match heal_disk_meta(src) {
+            // 要么成功修好且结果真的合法，要么明确交回整份重建；不许产出半修好的文件
+            MetaHeal::Repaired(out) => {
+                assert!(parse_disk_meta(&out).is_some(), "half-repaired: {out}")
+            }
+            MetaHeal::Unlocalizable => {}
+            MetaHeal::Clean => panic!("must not report clean for an invalid loglevel"),
+        }
+    }
+
+    // 类型错（布尔写成字符串）也要修掉，且不牵连其它行
+    #[test]
+    fn type_mismatch_repaired_not_whole_file() {
+        let src = "# keep me\nname: \"mine\"\ndev_record: \"true\"\npower_avg: false\n";
+        let out = healed(src).unwrap();
+        assert!(out.contains("# keep me"), "comment lost: {out}");
+        assert!(out.contains("name: \"mine\""), "valid lost: {out}");
+        assert!(out.contains("power_avg: false"), "valid lost: {out}");
+        assert!(!out.contains("\"true\""), "bad value kept: {out}");
+        assert!(parse_disk_meta(&out).is_some(), "still invalid: {out}");
+    }
+}
+
+// 端到端：跑真实文件路径的 sync_meta_snapshot，验证 stale_powerbase_key
+#[test]
+fn e2e_stale_powerbase_key() {
+    let dir = std::env::temp_dir().join("chiri_heal_stale_powerbase_key");
+    let _ = std::fs::create_dir_all(&dir);
+    let f = dir.join("meta.yaml");
+    let src: &str = match "stale_powerbase_key" {
+        "stale_powerbase_key" => {
+            "# 用户注释\nname: \"mine\"\nloglevel: \"DEBUG\"\npowerbase_enabled: false\npower_avg: false\n"
+        }
+        "bad_loglevel_keeps_rest" => {
+            "# 用户注释\nname: \"mine\"\nloglevel: NOPE\npower_avg: false\n"
+        }
+        _ => "name: x\n\tdev_record: true\n",
+    };
+    std::fs::write(&f, src).unwrap();
+    sync_meta_snapshot(&f);
+    let after = std::fs::read_to_string(&f).unwrap();
+    println!("===== stale_powerbase_key =====\n{after}");
+    match "stale_powerbase_key" {
+        "stale_powerbase_key" => {
+            assert!(!after.contains("powerbase_enabled"), "stale key kept");
+            assert!(after.contains("name: \"mine\""), "user name kept");
+            assert!(after.contains("loglevel: \"DEBUG\""), "user loglevel kept");
+            assert!(after.contains("power_avg: false"), "user switch kept");
+            assert!(after.contains("# 用户注释"), "comment kept");
+        }
+        "bad_loglevel_keeps_rest" => {
+            assert!(!after.contains("NOPE"), "bad kept");
+            assert!(after.contains("name: \"mine\""), "user name lost");
+            assert!(after.contains("power_avg: false"), "user switch lost");
+            assert!(after.contains("# 用户注释"), "comment lost");
+            assert!(after.contains("loglevel:"), "key lost");
+        }
+        _ => {
+            assert!(
+                after.contains("default_config"),
+                "should be embedded rebuild"
+            );
+            assert!(!after.contains("\t"), "tab still present");
+        }
+    }
+}
+
+// 端到端：跑真实文件路径的 sync_meta_snapshot，验证 bad_loglevel_keeps_rest
+#[test]
+fn e2e_bad_loglevel_keeps_rest() {
+    let dir = std::env::temp_dir().join("chiri_heal_bad_loglevel_keeps_rest");
+    let _ = std::fs::create_dir_all(&dir);
+    let f = dir.join("meta.yaml");
+    let src: &str = match "bad_loglevel_keeps_rest" {
+        "stale_powerbase_key" => {
+            "# 用户注释\nname: \"mine\"\nloglevel: \"DEBUG\"\npowerbase_enabled: false\npower_avg: false\n"
+        }
+        "bad_loglevel_keeps_rest" => {
+            "# 用户注释\nname: \"mine\"\nloglevel: NOPE\npower_avg: false\n"
+        }
+        _ => "name: x\n\tdev_record: true\n",
+    };
+    std::fs::write(&f, src).unwrap();
+    sync_meta_snapshot(&f);
+    let after = std::fs::read_to_string(&f).unwrap();
+    println!("===== bad_loglevel_keeps_rest =====\n{after}");
+    match "bad_loglevel_keeps_rest" {
+        "stale_powerbase_key" => {
+            assert!(!after.contains("powerbase_enabled"), "stale key kept");
+            assert!(after.contains("name: \"mine\""), "user name kept");
+            assert!(after.contains("loglevel: \"DEBUG\""), "user loglevel kept");
+            assert!(after.contains("power_avg: false"), "user switch kept");
+            assert!(after.contains("# 用户注释"), "comment kept");
+        }
+        "bad_loglevel_keeps_rest" => {
+            assert!(!after.contains("NOPE"), "bad kept");
+            assert!(after.contains("name: \"mine\""), "user name lost");
+            assert!(after.contains("power_avg: false"), "user switch lost");
+            assert!(after.contains("# 用户注释"), "comment lost");
+            assert!(after.contains("loglevel:"), "key lost");
+        }
+        _ => {
+            assert!(
+                after.contains("default_config"),
+                "should be embedded rebuild"
+            );
+            assert!(!after.contains("\t"), "tab still present");
+        }
+    }
+}
+
+// 端到端：跑真实文件路径的 sync_meta_snapshot，验证 syntax_error_whole_rebuild
+#[test]
+fn e2e_syntax_error_whole_rebuild() {
+    let dir = std::env::temp_dir().join("chiri_heal_syntax_error_whole_rebuild");
+    let _ = std::fs::create_dir_all(&dir);
+    let f = dir.join("meta.yaml");
+    let src: &str = match "syntax_error_whole_rebuild" {
+        "stale_powerbase_key" => {
+            "# 用户注释\nname: \"mine\"\nloglevel: \"DEBUG\"\npowerbase_enabled: false\npower_avg: false\n"
+        }
+        "bad_loglevel_keeps_rest" => {
+            "# 用户注释\nname: \"mine\"\nloglevel: NOPE\npower_avg: false\n"
+        }
+        _ => "name: x\n\tdev_record: true\n",
+    };
+    std::fs::write(&f, src).unwrap();
+    sync_meta_snapshot(&f);
+    let after = std::fs::read_to_string(&f).unwrap();
+    println!("===== syntax_error_whole_rebuild =====\n{after}");
+    match "syntax_error_whole_rebuild" {
+        "stale_powerbase_key" => {
+            assert!(!after.contains("powerbase_enabled"), "stale key kept");
+            assert!(after.contains("name: \"mine\""), "user name kept");
+            assert!(after.contains("loglevel: \"DEBUG\""), "user loglevel kept");
+            assert!(after.contains("power_avg: false"), "user switch kept");
+            assert!(after.contains("# 用户注释"), "comment kept");
+        }
+        "bad_loglevel_keeps_rest" => {
+            assert!(!after.contains("NOPE"), "bad kept");
+            assert!(after.contains("name: \"mine\""), "user name lost");
+            assert!(after.contains("power_avg: false"), "user switch lost");
+            assert!(after.contains("# 用户注释"), "comment lost");
+            assert!(after.contains("loglevel:"), "key lost");
+        }
+        _ => {
+            assert!(
+                after.contains("default_config"),
+                "should be embedded rebuild"
+            );
+            assert!(!after.contains("\t"), "tab still present");
+        }
+    }
 }

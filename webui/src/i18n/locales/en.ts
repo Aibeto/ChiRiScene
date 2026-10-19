@@ -146,7 +146,7 @@ export default {
   'config.daemonLanguage': 'daemon.log language',
   'config.daemonLanguage.hint': 'Switch the WebUI language in the top‑right corner.',
   'config.saved': 'Written; the daemon hot-reloads immediately',
-  'config.reverted': 'The daemon rejected the file and restored defaults; showing actual content',
+  'config.reverted': 'The daemon rejected the written field(s) and restored them to defaults (other content kept); showing actual content',
   'config.invalid': 'Current config fails daemon validation, write refused',
   'config.missing': 'Config file not created yet',
   'config.failed': 'Write failed',
@@ -162,8 +162,6 @@ export default {
   'lab.subtitle': 'Experimental feature warning',
   'lab.notice.stability': 'Features on this page are highly unstable and may be removed at any time',
   'lab.notice.reboot': 'Use under developer guidance',
-  'config.powerbase': 'ChiRi PB',
-  'config.powerbase.hint': 'Follow me — right or wrong is a false premise',
   'config.screenoff': 'Screen-off value',
   'config.screenoff.hint': 'Set the screen-off detection value',
   'config.screenoff.saved': 'Screen-off value saved',
@@ -287,9 +285,6 @@ export default {
   'mode.down': 'down',
   // 'mode.down.desc': 'Scheduling halted; collection and logs only',
   'mode.scenemode': 'Screen-off scene',
-  // PowerBase (Stardust family): replaces the CLG governor when ChiRi PB is on
-  // current_mode still holds the CLG slot name, the status card swaps the label
-  'mode.powerbase': 'PowerBase',
   // 'mode.scenemode.desc':
   // 'Low-power state entered after the screen-off timeout (separate screen axis; no mode value is produced)',
   'mode.fas': 'FAS',

@@ -1,7 +1,6 @@
 //! cpu_load_governor.rs: [cluster] [touch_state] [worker] [worker_handle] [governor]
 
 use crate::chiri::config::CpuLoadGovernorConfig;
-use crate::chiri::power_base::PowerBase;
 use crate::utils::FastWriter;
 use log::{debug, info, warn};
 use std::fs;
@@ -1173,9 +1172,6 @@ pub struct CpuLoadGovernor {
     active: bool,
     /// 上一 tick 广播给 Worker 的负载缓冲；引用计数归 1 时下一 tick 原地复用，省每 tick 一次 Vec 分配
     load_buf: Option<Arc<Vec<f32>>>,
-    /// [backend] 备用后端 PowerBase（Stardust 家族）：与 Worker 共用同一批 cpufreq 节点，二者互斥，
-    /// 由 `init_policies` 在接管那一刻二选一——之后本结构体对外仍是唯一的调频 owner（release / touch / tick 全部走它）
-    pb: PowerBase,
 }
 
 impl CpuLoadGovernor {
@@ -1191,7 +1187,6 @@ impl CpuLoadGovernor {
             thermal_free_above: Arc::new(AtomicU32::new(0.80_f32.to_bits())),
             active: false,
             load_buf: None,
-            pb: PowerBase::new(),
         }
     }
 
@@ -1222,32 +1217,11 @@ impl CpuLoadGovernor {
         }
     }
 
-    /// [backend] PowerBase 当选判据：两个入口共用（`init_policies` 与 `reload_config`）——亮屏恢复走的是 reload 而不是 init，只判「PowerBase 正在接管」会让它在一次息屏之后再选不上
-    /// 三个前提缺一不可：CLG 段启用、总开关开启、亮屏（息屏该由 doze 接管，接管会抬高夜间功耗）、未停摆
-    fn pb_wanted(cfg: &CpuLoadGovernorConfig) -> bool {
-        cfg.enabled
-            && crate::common::powerbase_enabled()
-            && crate::common::screen_on()
-            && !crate::down::is_down()
-    }
-
-    /// 接管 CLG 角色位置（唯一入口）：[backend] 先选后端——PowerBase 与 Worker 共用同一批 cpufreq 节点，此处二选一之后全程只有一个 owner
-    /// 判据与 PF 的 `pf_aligned` 同款：只在接管那一刻求值一次，缺任一前提就落回 Worker 路径（逐位等价旧行为）
+    /// 接管 CLG 角色位置（唯一入口）：建 Worker 并接管 CPU 频率
     pub fn init_policies(&mut self, gov_cfg: &CpuLoadGovernorConfig) {
         self.stop_workers();
         self.cfg = gov_cfg.clone();
         self.normalize_cfg();
-
-        // 接管失败（没有可用 policy）落回 Worker：宁可由 CLG 接管，也不要出现无人调频
-        if Self::pb_wanted(&self.cfg) {
-            self.pb.init(&crate::common::powerbase_config());
-            if self.pb.is_active() {
-                self.active = true;
-                return;
-            }
-        }
-        // 走 Worker 路径：先把 PowerBase 交还（上一轮可能是它在接管）
-        self.pb.release();
 
         let policies = crate::chiri::get_cpu_policies();
         let core_ranges = crate::common::chiri_core_ranges();
@@ -1298,25 +1272,15 @@ impl CpuLoadGovernor {
 
     /// 释放接管：停止所有 Worker（Worker 线程退出前恢复系统原始状态），清空状态
     pub fn release(&mut self) {
-        // PowerBase 接管时由它自己打 powerbase-deactivated（同一时刻只有一个 owner），这里不重复打
-        // CLG 的停用日志——两条一起出会让人误判成两个调频器并存
-        if self.active && !self.pb.is_active() {
+        if self.active {
             info!("{}", t("clg-deactivated"));
         }
-        self.pb.release();
         self.stop_workers();
         self.active = false;
     }
 
     /// 热切换配置：停旧 Worker 并用新配置重建（与 init_policies 同路径，current_perf 重置到新 perf_init 并立即写频），避免息屏期间 current_perf 掉到 ~0 后亮屏恢复时频率从地板缓慢爬升数秒
-    /// PowerBase 路径是整段重建：perf 回到 1.0、档位回落标准档、触摸窗口清空，一次热重载会打断进行中的触摸升档窗口并重新读写 min/max
     pub fn reload_config(&mut self, gov_cfg: &CpuLoadGovernorConfig) {
-        // [backend] 双向重判：PowerBase 接管中、或新配置下它应当当选，都整段走 init_policies——它内部自有 release/init 顺序，不会出现两个 owner 并存
-        // 缺了「应当当选」这一半，一次息屏（那时选的是 Worker doze）之后亮屏走本入口就再也切不回 PowerBase
-        if self.pb.is_active() || Self::pb_wanted(gov_cfg) {
-            self.init_policies(gov_cfg);
-            return;
-        }
         // 保存旧 Worker 的 policy 信息用于重建
         let policy_ids: Vec<i32> = self.workers.iter().map(|w| w.policy_id).collect();
         let policies = crate::chiri::get_cpu_policies();
@@ -1379,11 +1343,6 @@ impl CpuLoadGovernor {
         if !self.active {
             return;
         }
-        // [backend] PowerBase 接管中：调用分流到它（集中式单循环决策，功耗读数由它自己取）
-        if self.pb.is_active() {
-            let _ = self.pb.on_load_update(core_utils);
-            return;
-        }
         // 复用上一 tick 的广播缓冲：引用计数归 1 且长度一致时原地覆盖，否则新建
         let mut shared = match self.load_buf.take() {
             Some(arc) if arc.len() == core_utils.len() => arc,
@@ -1403,19 +1362,6 @@ impl CpuLoadGovernor {
     /// 触摸事件入口：更新共享触摸升频状态，并广播空负载包立即唤醒全部 Worker 触发 flush，大核 Worker 本次 flush 即提升性能下限，无需等下一个 160ms tick
     pub fn on_touch(&mut self) {
         if TOUCH_BOOST_SUSPENDED || !self.active {
-            return;
-        }
-        // [backend] PowerBase 接管中：同一条触摸链路走它自己的档位阶梯
-        if self.pb.is_active() {
-            if let Some(tier) = self.pb.on_touch() {
-                debug!(
-                    "{}",
-                    t_with_args(
-                        "powerbase-touch-tier",
-                        &fluent_args!("tier" => tier.to_string())
-                    )
-                );
-            }
             return;
         }
         if !self.cfg.touch_boost_enabled {

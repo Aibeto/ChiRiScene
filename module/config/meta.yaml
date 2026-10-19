@@ -1,6 +1,7 @@
 # meta.yaml: [meta] 用户可修改的抬头字段（守护进程逐字段严格校验）
 # 九个字段必须齐全；loglevel 限 OFF/ERROR/WARN/INFO/DEBUG/TRACE，language 限 en/zh。
-# 任一字段非法时，daemon 启动/热重载会用二进制内嵌默认整体覆盖本文件并在末尾追加警告注释。
+# 某个字段非法时，daemon 启动/热重载只把该字段那一行恢复为内嵌默认（模板未带的键整行删除），
+# 其余字段与注释原样保留，并在文件末尾追加一行警告注释；只有整个文件连 YAML 都读不出时才整体重建。
 # 修改保存后热重载即时生效。
 name: "default_config"
 author: "yuki"
@@ -39,10 +40,6 @@ voltage_divisor: 1000000
 current_divisor: 1000000
 # 耗电读数满量程（W，WebUI 状态页仪表盘用；可选，默认 12）：只影响显示，不参与调度。
 power_max_w: 12
-# PowerBase 总开关（Stardust 家族，**高级设置，默认关闭**）：开启后原本由 CLG 接管的
-# 场合（reduce / default / boost）改由 PowerBase 以放电功耗为指标调频；FAS / 特调 /
-# DOWN 停摆 / 实验室的启停判据不受影响。
-powerbase_enabled: false
 # 息屏判定值（高级设置，默认 1）：debug.tracing.screen_state 属性等于该值视为息屏。
 # 安装时会按属性实测值自动校正，一般无需手改。
 screen_off_value: 1

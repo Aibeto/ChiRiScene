@@ -122,7 +122,7 @@ describe('模式派生', () => {
   it('CLG 家族名随帕累托前沿落点切换（pf.chr = 1 → CLG-PF），家族归属不变', () => {
     expect(clgFamilyKey(true)).toBe('mode.family.clgpf')
     expect(clgFamilyKey(false)).toBe('mode.family.clg')
-    // PF 只是 CLG 内部的落点机制：ModeKind 仍是 clg（PowerBase 接管判定等按 kind 分支的地方不受影响）
+    // PF 只是 CLG 内部的落点机制：ModeKind 仍是 clg（按 kind 分支的地方不受影响）
     expect(describeMode('default', special).kind).toBe('clg')
   })
 })
