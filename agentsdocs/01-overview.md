@@ -31,7 +31,7 @@ webui/                # Svelte 5(runes) + TypeScript + Vite 管理界面（2026-
 WebUI-old/            # 重构前 ak-ui 版本留档（2026-10-15 停更，仅供对照）
 analyze/              # PC 端 CSV 分析台（analyze/index.html 单文件零依赖 + analyze/fonts/ 按实际用字裁的子集字体），浏览器打开即可看 status.csv 曲线（file:// 下需 `python -m http.server`）
 updateInformation/    # 更新.json 与 changelog（changelog.md / HotUpdateInfo.md 现为空文件，是否填充待定，见 07）
-.github/workflows/    # CI：Node 24 + Rust nightly + NDK r29；cargo-ndk/bpf-linker 走官方预编译二进制 + rust-cache；提交信息含 "skip ci"（不分大小写）时跳过该次构建；push 变更全落在 docs/agentsdocs/mdocs/.archive/.trae/.cursor/.codebuddy/.workbuddy 时不触发（tag 发布不受 path 过滤影响）
+.github/workflows/    # CI：Node 24 + Rust nightly + NDK r29；cargo-ndk/bpf-linker 走官方预编译二进制 + rust-cache；提交信息含 "skip ci"（不分大小写）时跳过该次构建；push 变更全落在 docs/agentsdocs/mdocs/.archive/.trae/.cursor/.codebuddy/.workbuddy 时不触发（tag 发布不受 path 过滤影响）；**加速前基线 run #77 总 220s**（分步见 `05-maint.md` 的 CI 取证条），三项加速落地后热命中预期 110~130s
 AppOptR/              # 第三方 submodule（线程调整参考实现，锁 commit；内部文件勿移动/改写，否则污染 submodule 工作区）
 LittleYouran_CTS_3/   # 第三方 submodule（CPU Turbo Scheduler 二改；feature.yaml Scheduler 段参数的借鉴来源）
 devimpbin/            # devimp 日志工作区（AI 协作用，gitignore）：logd_*.tar.gz 导出包（内层 .tar.zst/.tar.lz4/.tar）→ dvrun.py 解包 → 各日期子目录（daemon.log / status.csv / main_*.log / aff_*.log + analyze/main/aff/status/report 聚合表）；scratch 用完即删，一次性 probe py 不落地

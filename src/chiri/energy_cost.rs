@@ -1,5 +1,5 @@
 //! energy_cost.rs: [source] [power] [supply] [cost] [probe] [decision] [tests]
-//! FDP（前沿主导的放置内核）能耗成本模型：数据链 mdocs/8550/sm8550-freq-power.md §3 → scripts/frontier_policy.py → soc.yaml 受控块 `per_cluster.<簇>.power_w` → `soc_frontier_policy()`，本模块不手抄表
+//! FDP（前沿主导的放置内核）能耗成本模型：数据链 mdocs/sm8550/sm8550-freq-power.md §3 → scripts/frontier_policy.py → soc.yaml 受控块 `per_cluster.<簇>.power_w` → `soc_frontier_policy()`，本模块不手抄表
 
 use crate::common::{self, CoreGroup};
 use std::sync::OnceLock;

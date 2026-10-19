@@ -28,7 +28,7 @@
 
 - selfcost 一致性契约：配置指纹仅排序 map，保留列表优先顺序；配置、指纹及代际在配置写锁内发布，采样参数与身份在对应读锁内冻结，build 前释放。worker 故障关闭发送入口后排空至通道断开，失败提交等待 join 后回退，不再超时放行新差分帧；永久 IO 阻塞仍会导致等待无界，worker 保持默认关闭。修订未编译测试，详见 agentsdocs/02-convention.md。
 
-- **SoC 硬件基线 soc.yaml（2026-09-26）**：`module/config/{soc}/soc.yaml`（topology/capacity/freq_khz/idle/dpc），编译期嵌入，sysfs 兜底与校准基准、非调优输入；`chiri_core_ranges`/capacity/freq 兜底已接，硬编码 match 保留为最后兜底。口径与坑见 agentsdocs/02-convention.md 配置嵌入条；审计结论（其余 rs 常数不外挂）见 `.cursor/docs/2026-09-26-soc-hardcode-audit.md`。
+- **SoC 硬件基线 soc.yaml（2026-09-26）**：`module/config/{soc}/soc.yaml`（topology/capacity/freq_khz/idle/dpc），编译期嵌入，sysfs 兜底与校准基准、非调优输入；`chiri_core_ranges`/capacity/freq 兜底已接，硬编码 match 保留为最后兜底。口径与坑见 agentsdocs/02-convention.md 配置嵌入条；审计结论（其余 rs 常数不外挂）见 `.archive/.cursor/docs/2026-09-26-soc-hardcode-audit.md`（该文件上轮已归档）。
 - logd/ 归档预算清理（2026-09-24 起）：`enforce_logd_limit` 按**归档批次原子删**——
   `<ts>.tar` 与 `devimp_<ts>.tar` 同进退、最新批次永不删，最新批次 ≥200MB 时收到 256MB 即停。
   背景：超大 devimp 归档（114MB）曾把同批 daemon.log/status.csv 归档挤掉（logd_0924-173105 包）。
@@ -140,7 +140,7 @@
 
 ## 进行中
 
-- **CLG 高位升频门槛（2026-10-13 落地，未提交）**：`CpuLoadGovernorConfig` 新增 `high_zone_gate`(0.85)/`high_zone_count`(0=关)/`high_zone_util`(0.90)/`high_zone_hold_ticks`(20) 四字段；`on_load_update` 在 perf ≥ gate 后升频需「≥count 核 util ≥ util」确认，未满足冻结 tick（decision=`hz_hold`，早退不动 up/down_wait），满 hold_ticks 强制放行一次。**只压决策意图，不封顶不回写 current_perf**（R2/R7 合规）；8550 三段（reduce/default/boost）全启用 count=2。replay 模板/生成器/契约测试已同步（clg_tuning 5/5 含 `high_zone_gate_knobs`；selfcheck 含「单核阻塞 + hold 兜底 2000 tick 到 hw_max」断言）。WebUI status 快照表温度列已删（数据解析契约不动）。回退 = 删 8550 三段三行。详见 `.cursor/memory/2026-10-13.md`。
+- **CLG 高位升频门槛（2026-10-13 落地，未提交）**：`CpuLoadGovernorConfig` 新增 `high_zone_gate`(0.85)/`high_zone_count`(0=关)/`high_zone_util`(0.90)/`high_zone_hold_ticks`(20) 四字段；`on_load_update` 在 perf ≥ gate 后升频需「≥count 核 util ≥ util」确认，未满足冻结 tick（decision=`hz_hold`，早退不动 up/down_wait），满 hold_ticks 强制放行一次。**只压决策意图，不封顶不回写 current_perf**（R2/R7 合规）；8550 三段（reduce/default/boost）全启用 count=2。replay 模板/生成器/契约测试已同步（clg_tuning 5/5 含 `high_zone_gate_knobs`；selfcheck 含「单核阻塞 + hold 兜底 2000 tick 到 hw_max」断言）。WebUI status 快照表温度列已删（数据解析契约不动）。回退 = 删 8550 三段三行。详见 `.archive/.cursor/memory/2026-10-13.md`。
 
 - daemon-perf-opt 五阶段性能优化计划：**已归档** `.archive/.cursor/docs/daemon-perf-opt-plan.md`（原路径 `.cursor/docs/` 下的副本已不存在）
   （Phase 3 前置 `.trae/specs/harden-scenemode-and-screen-detect` 的 hold 三分支）。
@@ -175,7 +175,7 @@
 - **其他环境的硬口径（读，勿重复评估）**：`.codebuddy/plans/d924b09f…/plan.md`（v14）的 **R1**（只有 SceneMode 允许不到最高频）、**R2**（天花板全拆；`perf_ceil<1`/`headroom<1` 都算，全仓现只剩 `module/config/normal/scenemode.yaml:15 perf_ceil: 0.12`）、**R3**（**永不再新增 A/B 对照**，允许同版本同场景观察）、**R5**（判据 = 帕累托前沿，46 点下凸；先 big 低频 499200→614400、prime 只在末端）、**R6**（放置类动作三道时间闸 `MIN_MIGRATE_INTERVAL` 4s/`REPIN_DEBOUNCE` 8s/`RETURN_COOLDOWN` 16s 不得绕过，新门槛须成对滞回）、**R7**（模式差异只能靠取点/到达速度/降权表达，不得用封顶；交叠带 default×1、reduce×0.5、boost×2）；回退三项（触发条件/字段级可逆/留档位置）**缺一不排期**。`agentsdocs/07-todos.md:53` 明写棘轮**不要往调阈值方向改**；`ANALYSIS-1009.md:297-301` ③④同样限定了 FAS 退出期不得提前降 perf。
 
 - **并行写者互斥范围（2026-10-11 教训）**：派子代理写文档时必须给出互斥写范围，否则会覆盖主线程版本。
-  实例：子代理 `2d93d9f6-56d3-40dd-a701-955ca80ea414` 覆盖了当时的 `.cursor/docs/2026-10-11-调度改进方案.md`（321 行 → 445 行），
+  实例：子代理 `2d93d9f6-56d3-40dd-a701-955ca80ea414` 覆盖了当时的 `.cursor/plans/2026-10-11-调度改进方案.md`（保留原位；321 行 → 445 行），
   丢失速判表与合规自查；同名 `tmp_an200~203.py` 亦被覆盖（脚本丢失、结论尚存）。规则见 `.cursor/rules/parallel-agent-file-ownership.mdc`。
 
 - **MemSearch（@zilliz/memsearch-dsh）索引故障与修复口径（2026-10-11 新增）**：这是 **MemSearch 记忆配置**，不是宿主 agent 自带的 memory/config 系统。

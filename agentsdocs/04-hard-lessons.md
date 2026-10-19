@@ -10,9 +10,20 @@
 
 - 不允许在未经许可的情况下主动创建git提交
 
+- **越权提交事故（2026-10-07）**：提交 `61f50f6` 一次纳入 52 个文件、规模 `+10766/-751`；随后 CI 修复提交 `a2ce07a` 被用户明确判定为越权，已用 `git reset --soft HEAD~1` 撤销并 unstage，HEAD 回到 `18e181a`，修复仍留在工作区。修完只能汇报，提交/推送等改历史操作必须另获明确授权。本机 git 全局身份未配置，获准提交时须显式传 `git -c user.name=13812773784 -c user.email=tc.aibeto@outlook.com`；fish 不支持 heredoc，长提交信息走 `git commit -F <file>`。
+
 - 所有任务除例外外都需要调用 /token-efficient-coding 这个SKILL，如果找不到这个SKILL则终止任务并提示
 
 - **永不再新增 A/B 测试（2026-09-28 用户定，长期口径）**：判据只有三类——「**逻辑必然 + 模型折算 + 功能回归观察**」。**观察**＝同版本、同场景、不并行对照、不控制变量，只记录现象与指标；**对照实验**＝并行或交错对比两个版本/两个配置、以差值做判据——一律不做（"关/开某配置比功耗"属对照实验）。替代手段：离线重放（把日志帧当输入重跑决策）、模型折算、构造性自检。
+
+- **能效策略 R1（2026-09-28 起）**：只有 SceneMode（息屏轴）允许不到最高频；其他任何模式（含特调 playback / akmode、reduce、兜底机型）都必须**实质上具备到达硬件最高频的能力**。
+- **能效策略 R2**：所有天花板一律拆除，省电改由「门槛 + 严格升频审批 + 稳态下探」承担。`perf_ceil < 1.0`、`headroom < 1.0`、抬高 `scaling_min_freq` 都算天花板；FAS 的 `min = max = 目标档` 是机制本身（`perf_ceil` 默认 1.0），不算天花板。
+- **能效策略 R4**：总目标是**降低功耗**；每条改动都必须能回答「它省了哪部分功耗」。
+- **能效策略 R5**：**判据 = 帕累托前沿**。建议必须说明把工作点移向前沿的哪一段，成立条件只有「同等总算力下总功耗下移」或「同等功耗下总算力上移」；单核峰值能效排序、整机均值、单场景实测差都不是判据。前沿也是调度内核目标函数：CLG 选点、affinity 放置、FAS 档位与特调下探统一以「等算力下总功耗最小」为准绳。
+- **能效策略 R6**：任何新增放置/迁移动作都必须过现有三道时间闸，且不得绕过或改小：`MIN_MIGRATE_INTERVAL` 4s、`REPIN_DEBOUNCE` 8s、`RETURN_COOLDOWN` 16s。任何新增门槛必须成对给出「进入/退出」阈值，阈值跨度至少为一个频档的等效 util 差；现成范例为 `FG_BUSY_UTIL_PCT` 30 / `FG_BUSY_RELEASE_UTIL_PCT` 15、`LITTLE_HIGH_WATER` 0.70 / `KEY_BIND_RELEASE_WATER` 0.50、`DEMOTE_UTIL_PCT` 5 + `DEMOTE_STREAK` 3。
+- **能效策略 R7**：reduce/default/boost 是同一条帕累托前沿上的取点策略，不是三组无关参数；模式差异只能靠①取点（目标档/目标簇）②到达速度（升频审批、下探步长、滞回带宽）③降权（uclamp）表达，**不许封顶**。临界点前用交叠带平滑切换：以 default 为基准，reduce ×0.5、default ×1、boost ×2，单位 = 需求百分比；需求下降沿必须对称操作（提前纳入更省的一侧、把待离簇降级为待撤）。流畅度是第一约束，省电是目标函数。
+- **改动回退三项（缺一不排期）**：上线前必须同时写清①可观测的触发条件（掉帧、首帧/启动时长、绑定变化率、功耗分位等，不得写「变卡了」「不跟手」）；②配置项/字段级可逆动作；③回退后留档位置。三者缺一即视为未定义回退。
+- **生产前阻塞项：uclamp 天花板口径须签字**：建议裁定组级 uclamp 允许——现有 `top_app_uclamp_max_pct 85` / `background_uclamp_max_pct 35` 依赖此条，组级钳制不阻止任何模式或整簇达到最高频，FAS 激活期也会放开 top-app 到 100；线程级从严——per-task `max` 会让该任务永远到不了最高频，只允许明确的后台/批处理线程使用，且退出即还原。若 R1 也覆盖任务级钳制，则计划第 3 节 A1/A2/A9 与 3.3 的线程级 uclamp 全部作废；**未签字前 3.3 的线程级通道不得实现**。
 
 - **暂存（git add）前必须先查格式并格式化（2026-10-16 用户定，长期口径）**：`cargo fmt --all` 后再 `cargo fmt --all --check` 确认干净，才允许暂存。CI 的 `Lint (fmt)` 是**秒级前置门禁**（跑在重下载/编译之前），格式漂移会直接红掉整套构建。独立文件（`scripts/tests/*.rs`）不在 workspace 内、`cargo fmt --all` **覆盖不到**，改到它们要单独 `rustfmt --edition 2024 <file>`。
   - **例外：`scripts/tests/clg_replay.rs` 不要 rustfmt**——它是 `scripts/devimp/replay_clg.py` 的生成物，且 `clg_tuning_regression.rs` 用 `include_str!("clg_replay.rs")` 对它做**子串字面量断言**（`assert_eq!(saturated_freq, hw_max` 等）。rustfmt 会把这些断言拆成多行，断言随即失效（2026-10-16 实测踩到：`saturation_selfcheck_must_not_be_weakened` 由 pass 转 FAILED）。要改它应改生成器 `replay_clg.py`。
@@ -20,8 +31,19 @@
 
 - **CI 工具链钉版本（2026-10-18 用户定）**：`build.yml` 的 Setup Rust Toolchain 由浮动 `@nightly` 改为显式 `toolchain: nightly-2026-10-12`（1.101.0-nightly，commit `080cc2714`，与本机验证版本一致）。浮动 nightly 会让 rustfmt/clippy 规则随日期漂移，出现「本地绿、CI 红」；遇到 lint 结论不一致先对齐 pin，再判断代码问题。**xtask 的 `cargo +<spec>` 也吃同一个 pin**：`build_core` 读 `CHIRI_RUSTUP_TOOLCHAIN`（缺省 `nightly`），`Run xtask build` 步骤把它设为同一日期——否则 `+nightly` 缺失会触发 rustup 自动安装最新 nightly，pin 形同虚设。升级口径 = 同步改两处（action `toolchain` + 该 env）→ 本机同版本跑 `cargo fmt --all --check` + `cargo check --workspace --all-targets --target aarch64-linux-android` + `cargo clippy --workspace --all-targets --target aarch64-linux-android --no-deps` → 再提交。`Lint (fmt)` 与 `Lint (check + clippy)` 两步全部保留（fmt 仅 1s；check 是 CI 里唯一编译测试目标的步骤，别删）。
 
+- **host `cargo test` 只允许临时门控 bionic 符号（2026-10-18）**：host target 会在 `src/monitor/screen_detect.rs:366` 因 bionic 符号无法编译；为跑测试可临时加 `#[cfg(target_os = "android")]`，跑完立即用 `git checkout` 还原。该改动只是本机测试垫片，**不可当作可提交修复**。
+
+- **沙箱新增 Cargo 依赖必须改用临时工作区缓存（2026-10-18）**：`~/.cargo` 在 workspace-write 沙箱内只读；先执行 `CARGO_HOME=$PWD/.cargohome cargo fetch`，后续 cargo 命令沿用同一前缀。`.cargohome/` 用完删除、不得提交；正常可写的用户环境不需要此绕行。
+
 ## [lessons] 经验教训
 
+- **数字必须分三类标注（2026-10-11）**：①确定性事实（源码行为 / 常量 / 行号 / 日志串）；②可复现统计（必须给出脚本与执行目录，并能从仓库根重跑得到同一数字）；③模型外推（只表达区间与方向，不冒充实测）。事故例：修订区间时只重算上界，仍保留下界 `0.93`，而完整公式结果应为 `1.38`，随后还写了与公式自相矛盾的「修正说明」；改任一边界都要整式重算、交叉核对。
+
+- **用户明确提出的目标不得被 AI 自选评估口径否决（2026-10-11）**：评估结论负面时仍须保留条目、附上意见并把决定权交回用户。曾把用户要求的「取消二段式息屏」当待裁决项自行删掉，后续只能恢复完整方案。
+
+- **取消叠加式参数设计应删叠加，而不是换底层（2026-10-11）**：换底层会连带引入与目标无关的参数差异，使结果不再只回答「是否叠加」。
+
+- **口径澄清只能用既有词并说明关系，不得另造词（2026-10-11）**：曾造出在 `src/`、`module/`、`agentsdocs/` 均零命中的「浅压档 / 深压档」，最终全文撤回；应直接沿用仓库已有的 `doze` / `scenemode` 并解释二者关系。
 - 含 `std::ops::Range<usize>` 字段的结构体别 `derive(Copy)`：CI（`-Z build-std` + nightly）编译 `common::CoreGroupRanges` 时报 E0204（字段不实现 Copy），即便标准库中 `Range<usize>` 实现了 Copy。按值 move 或显式 `clone()` 即可，用 `#[derive(Debug, Clone)]` 够了，不要加 Copy。
 
 - 日志文件被删不能崩：`src/logger.rs` 用自实现 `SelfHealingAppender`（替换 log4rs `RollingFileAppender`），每次写入按路径 `create+append` 重新打开，`daemon.log` 被外部删除会自动重建；循环轮转与锁上锁全程 `Result`/剥除 poison，绝不 `unwrap`。别改回 log4rs 滚动追加器。
@@ -70,7 +92,7 @@
 
 - **meta 新字段漏同步 = 配置死循环（2026-09-22）**：`MetaYamlFile`（deny_unknown_fields）缺新字段时，WebUI 写入该键 → 整文件判非法 → sync_meta_snapshot 内嵌默认整体覆盖 → 用户 oplus/双电芯设置被抹、循环往复。同步点清单见 02「新增字段要同步」，漏一处即此后果。
 
-- **devimp main_ 的 batt_i 列疑似整数化（值域仅 0-3，2026-09-24）**：「batt_i==0 严格排除」会误删过半样本、P_avg 系统性高估（aweme 3.35 vs 真值 2.14W）——**功耗一律以 status.csv 的 charge+batt_power_w 为准**。
+- **devimp main_ 的 batt_i 整数化高估仅适用于轻载 / 旧包（2026-09-24，2026-10-01 限定）**：旧包值域仅 0–3 时，「`batt_i==0` 严格排除」会误删过半轻载样本、使 P_avg 系统性高估（aweme 3.35 vs 真值 2.14W），该场景下功耗一律以 status.csv 的 charge+batt_power_w 为准。**此结论在当前 8550/PHB110 已不成立**：`customize.sh` 探测到 `bcc_parms` 后会置 `oplus_chg: true`，把模板 divisor 从 1000000 改为 **1000**（节点报 mV/mA），`dvpower [8]` 与 status.csv 实测几乎相等；引用「系统性高估」前必须先确认仍是旧包 / 轻载整数化口径。
 
 - **PowerShell 管道陷阱（2026-09-17）**：svelte-check 等命令输出经 `2>&1` 变对象数组，直接管道 Select-String 会漏——先存变量再筛（`$o = & node ... 2>&1; $o | Select-String ...`）。
 
@@ -87,5 +109,9 @@
 - **文档里的数字必须从常量定义核对**，不能凭印象写（CLG_STALE_MAX 实为 5s，初稿误写 30s；TUNED_COOLDOWN=300s 已核）。
 
 - **未提交的工作区改动（尤其注释掉的代码）可能是用户重构中间态（2026-09-16）**：报错指向用户正在编辑的文件时只报告、不动手；顺手修之前区分「我改的/工作区已有的」，评估 ≠ 批准开工。
+
+- **子代理派工必须跨供应商混合路由（2026-10-17）**：同供应商 + 同模型不是独立失败，而是共因故障；一次异常会让整批代理一起中断。并行派工一律分散供应商与模型，不能用增加同路由代理数量冒充冗余。
+
+- **子代理中断后的验收不能止于「能编译」（2026-10-17）**：半截改动可能留下未声明字段或声明后未消费、新字段未进构造 / reset / 实际分支、只 push 从不消费、函数定义后从未调用、失败路径反而多写一次 sysfs、以及未用 import 等症状。收口须逐项核对构造与复位、生产与消费、调用点、失败副作用次数和清理路径；编译通过不等于语义完整。
 
 - **子代理会顺手重排无关行（2026-09-28，一次会话内实际发生两次）**：让它改 A，它把整份文件的注释重新缩进/重排 → `core_ctl` / `cpu_load_governor` / `tuned` / `common` / `fps_monitor` 合计约 250 行**只差空白**的假改动，把真实改动的 diff 淹没。派工必须写明「只改必要行、禁止格式化与重排无关行」；收工时用 `git diff` 与 `git diff -w` 的 numstat 对比做验收（两者不一致即有空白噪声）。还原办法：按「只差空白取 HEAD、实质改动取工作区」逐行合并（忽略空白比对），**不要**用 `git checkout` / `git restore` 批量回滚——会误伤用户 WIP，且该做法已被明确拒绝一次（见 `.codebuddy/memory/feedback_fix_scope.md`）。前置条件：动手前先确认这批文件在本次会话开始时与 HEAD 一致（否则 HEAD 内容不可作为还原基线）。

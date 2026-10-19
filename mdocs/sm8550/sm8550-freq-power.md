@@ -2,7 +2,7 @@
 
 > 索引：`[coefficients]` `[opp]` `[k2mw]` `[efi]` `[bw]` `[ratio]` `[limits]` `[check]` `[sweetspot]`
 
-- 基础数据：`mdocs/8550/sm8550.dtsi`（mainline Linaro 2022）。频率档位、`capacity-dmips-mhz`
+- 基础数据：`mdocs/sm8550/sm8550.dtsi`（mainline Linaro 2022）。频率档位、`capacity-dmips-mhz`
   （326/693/1024）、DPC（251/447/1057）、角落与 L3 票全部来自该文件（CPU 节点 76–295 行、
   三张 `cpu*_opp_table` 458 行起）。
 - 电压/实测功耗：AYN Odin 2 (QCS8550) EAS 补丁实测表（Xilin Wu, 2024-04-24,

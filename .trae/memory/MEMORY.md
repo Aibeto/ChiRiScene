@@ -17,7 +17,7 @@
 - **配套**：`build_aff_snapshot` 签名与 `AffinityManager` 解耦（非 ChiRi 传空被管表）；`monitor/mod.rs` 的
   telemetry 线程由「仅 ChiRi」放开为**全 SoC 启动**（`main_snap` 数据源）；`logger::note_write` 仍非 ChiRi
   早退（不自动重启，目录靠 128MB 轮转 + `enforce_dir_limits` 约束）。
-- 逐文件改动清单、i18n 新增 key 与校验结果见当日日志 `.trae/memory/2026-10-02.md`；契约正文见
+- 逐文件改动清单、i18n 新增 key 与校验结果见当日日志 `.archive/.trae/memory/2026-10-02.md`；契约正文见
   `agentsdocs/02-convention.md` 的「开发诊断日志（devimp/）」条。
 
 ## 2026-10-01：scenemode 改为不下线（修法3）+ 前台不落 little + 功耗尺子结论

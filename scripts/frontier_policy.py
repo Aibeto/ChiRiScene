@@ -8,7 +8,7 @@
   用途: 读能效模型表 → 复算帕累托前沿 → 算出 reduce/default/boost 三模式的结果向量 → 输出可嵌入的 YAML 块。
 
 输入（只读）:
-  mdocs/8550/sm8550-freq-power.md   §3 的三张"簇级"表（little 16 / big 20 / prime 21 行）
+  mdocs/sm8550/sm8550-freq-power.md   §3 的三张"簇级"表（little 16 / big 20 / prime 21 行）
                                     列 = 频率 kHz | 簇功耗 W | 簇算力 Mdmips
                                     （不自己乘核数: 用文档给出的簇级值，避免二次换算误差）
   module/config/8550/soc.yaml       capacity / freq_khz（对账与真机容量口径）
@@ -291,7 +291,7 @@ def render_block(tables, cap, freqs, hull, buckets, modes, enabled):
     L = []
     L.append(BLOCK_BEGIN)
     L.append("# 由 scripts/frontier_policy.py 生成；受控块替换，块外内容请勿手改本块")
-    L.append("# 口径: 能效模型 mdocs/8550/sm8550-freq-power.md §3 簇级表 + 本文件 capacity/freq_khz")
+    L.append("# 口径: 能效模型 mdocs/sm8550/sm8550-freq-power.md §3 簇级表 + 本文件 capacity/freq_khz")
     L.append("# 运行期: 只查表落点与逐档功耗（不重算 Cx·f·V²）；表缺失/指纹不符/桶越界 → 回退既有参数组")
     L.append("frontier_policy:")
     L.append(f"  enabled: {str(enabled).lower()}")

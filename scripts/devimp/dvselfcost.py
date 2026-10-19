@@ -16,6 +16,7 @@
 
 用法（项目根目录执行）：
   python3 scripts/devimp/dvselfcost.py feas --manifest .trae/docs/2026-10-07-daemon-selfcost-inputs.json
+  （该清单保留原位，是 --manifest 的现成样例输入）
   python3 scripts/devimp/dvselfcost.py diag --manifest ...
   python3 scripts/devimp/dvselfcost.py pair --manifest ...
 """

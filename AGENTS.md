@@ -22,10 +22,13 @@
 >   具体某次改动的经过只写本环境当日日志。
 >   **开始工作前互相阅读**：读本文件 + 本环境 `memory/MEMORY.md` 与部分 `YYYY-MM-DD.md`
 >   - `.codebuddy/memory/MEMORY.md`（历史长期事实）。
-> - **2026-09-26 沉淀归档**：所有记录性 md（memory 工作日志、plans、分析报告、内核分析、TechAnalyze）
+> - **2026-09-26 首轮、2026-10-19 第二轮沉淀归档**：所有记录性 md（memory 工作日志、plans、分析报告、内核分析、TechAnalyze）
 >   已并入 `agentsdocs/01~07`，历史原件移至 **`.archive/`**（镜像原相对路径，如 `.archive/.codebuddy/plans/`）
 >   ——TODO 台账唯一权威 = `07-todos.md`，内核机制权威摘要 = `06-kernel.md`；
->   归档/保留清单见 05 的「沉淀与归档」。
+>   第二轮分界 = ≤2026-10-18 全量归档（含三环境 `memory/` 日志与 `docs/` 报告、`.codebuddy/plans/` 全部），
+>   **各环境 `memory/MEMORY.md` 长期事实索引、`.codebuddy/memory/feedback_*.md` 生效约定、
+>   `.cursor/commands|rules|skills/`、`.trae/rules/`、两份仍活跃的 `.cursor/plans/` 计划保留原位**，
+>   归档/保留完整清单见 05 的「沉淀与归档」。
 
 ## 区块索引
 

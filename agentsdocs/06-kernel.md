@@ -42,7 +42,7 @@
 ### DT 对账
 
 - 本内核检出**无任何厂商 DT 源**：`arch/arm64/boot/dts/vendor` 是 symlink→`qcom/proprietary/devicetree`（仓库外、非 gitlink），`dts/qcom` 止于 sm8350；「280/855/1024 出自厂商 dts」在本检出永远无法验证。需厂商 DT 时另拉 `qcom/proprietary/devicetree` repo。
-- mainline `mdocs/8550/sm8550.dtsi` 可依赖块：freq-domain 划分（CPU0-2→domain0 / 3-6→1 / 7→2）、CPU OPP 档位、idle-states；**capacity / dpc / thermal trip 不能当真机基准**。`soc_max` zone 在 mainline 不存在（厂商/Oplus 侧定制）。
+- mainline `mdocs/sm8550/sm8550.dtsi` 可依赖块：freq-domain 划分（CPU0-2→domain0 / 3-6→1 / 7→2）、CPU OPP 档位、idle-states；**capacity / dpc / thermal trip 不能当真机基准**。`soc_max` zone 在 mainline 不存在（厂商/Oplus 侧定制）。
 - 取证唯一路径：真机 `adb pull /sys/firmware/fdt` + `dtc -I dtb -O dts`（产物放 mdocs/）——见 07 T1。
 
 ### 调频路径与竞争者

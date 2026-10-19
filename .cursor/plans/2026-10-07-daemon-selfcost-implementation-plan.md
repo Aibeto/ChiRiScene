@@ -1,6 +1,6 @@
 # daemon 自耗归因与调度优化实施计划（合并版）
 
-> 状态（2026-10-07 更新）：阶段 A 已完成；阶段 B/C(部分)/D1 代码已实施并暂存，**全部「未验证」**（验证状态见 `.trae/docs/2026-10-07-selfcost-phase-bcf-results.md` 与台账 07）；C3/C5/D4/E/F 未实施。编译测试与设备验收仍未取得授权。
+> 状态（2026-10-07 更新）：阶段 A 已完成；阶段 B/C(部分)/D1 代码已实施并暂存，**全部「未验证」**（验证状态见 `.archive/.trae/docs/2026-10-07-selfcost-phase-bcf-results.md` 与台账 07）；C3/C5/D4/E/F 未实施。编译测试与设备验收仍未取得授权。
 > 本文件合并 CodeBuddy 原计划与 Cursor 修订版，是本专项唯一有效计划。原版已废弃，修订版不再保留有效副本。
 > 执行时使用 writing-plans / executing-plans 技能逐阶段核对；每阶段需取得对应授权，不自动创建 worktree、安装依赖或提交。
 
@@ -12,9 +12,9 @@
 
 ## 1. 依据与优先级
 
-- `.codebuddy/docs/2026-10-07-daemon-perf-四项查证与优化方案.md`：现状与分析，重点 §5、§8、§10～§12。
-- `.codebuddy/plans/2026-10-07-基线归因-实施计划.md`：废弃原计划，仅作历史参考。
-- `.codebuddy/memory/MEMORY.md`、`.codebuddy/memory/2026-10-07.md`：长期事实与历史过程；早期建议不重新视为批准。
+- `.archive/.codebuddy/docs/2026-10-07-daemon-perf-四项查证与优化方案.md`：现状与分析，重点 §5、§8、§10～§12。
+- `.archive/.codebuddy/plans/2026-10-07-基线归因-实施计划.md`：废弃原计划，仅作历史参考。
+- `.codebuddy/memory/MEMORY.md`（保留原位）、`.archive/.codebuddy/memory/2026-10-07.md`：长期事实与历史过程；早期建议不重新视为批准。
 - `agentsdocs/07-todos.md`：唯一 TODO 台账，引用本计划。
 
 冲突优先级：用户当前授权与不降质裁决 > 本计划执行边界 > 方案最新限定 > 历史记录。已暂存的 FAS 计划、报告和代码不属于本次整理范围。
@@ -37,8 +37,8 @@
 
 - `scripts/devimp/dvselfcost.py`：显式输入、时间轴、差分与证据分类。
 - `scripts/devimp/test_selfcost.py`（新建）：标准库单元测试。
-- `.cursor/docs/2026-10-07-daemon-selfcost-inputs.json`（新建）：输入清单，顶层 `{"cases": [...]}`，每项采用 A1 的七个字段。
-- `.cursor/docs/2026-10-07-daemon-selfcost-results.md`（授权分析后新建）：输入、方法、候选、限制与成本明细。
+- `.trae/docs/2026-10-07-daemon-selfcost-inputs.json`（新建；实际落点在 `.trae/docs/`，非 `.cursor/docs/`）：输入清单，顶层 `{"cases": [...]}`，每项采用 A1 的七个字段。
+- `.archive/.trae/docs/2026-10-07-daemon-selfcost-results.md`（授权分析后新建，实际落点 `.trae/docs/`，2026-10-19 已归档）：输入、方法、候选、限制与成本明细。
 
 阶段 B 单独授权后可修改：
 
@@ -96,7 +96,7 @@
 - [ ] 测试覆盖跨午夜、重复秒、多帧同秒、计数重置、模式/包/屏幕/clg/type边界、缺口、空文件、缺字段、未知身份与main首尾有洞。
 - [ ] 断言：边界不入差分；2s内20ms计10ms/s；3行一秒段覆盖2s而非3s；两帧不合并；日志之外状态unknown；负配对不输出因果结论。
 - [ ] 测试获授权后运行 `python3 -m unittest discover -s scripts/devimp -p 'test_selfcost.py'`，通过后才使用修订算法。
-- [ ] 分析获授权后运行 `python3 scripts/devimp/dvselfcost.py feas --manifest .cursor/docs/2026-10-07-daemon-selfcost-inputs.json`；另两条只将feas改为diag/pair，清单路径先由A1核对。
+- [ ] 分析获授权后运行 `python3 scripts/devimp/dvselfcost.py feas --manifest .trae/docs/2026-10-07-daemon-selfcost-inputs.json`；另两条只将feas改为diag/pair，清单路径先由A1核对。
 - [ ] 报告并列旧算法复现与修订差异，每个数附case/session/版本/配置、有效时长与排除原因，不为迎合旧数调整算法。
 
 交付：可复算覆盖、候选路径及现有日志分不开的部分。没有显式关闭证据就保持非诊断成本未知；不承诺已查明分块执行次数或CPU残差。
