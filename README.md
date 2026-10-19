@@ -291,9 +291,11 @@ FAS 白名单内的游戏（明日方舟：终末地、王者荣耀等）前台�
 | imacte/yumi                              | GPL v3.0                         | [GitHub](https://github.com/imacte/yumi)                              | ALL      |
 | Sutoliu/AppOptR                          | GPL v3.0                         | [Gitee](https://gitee.com/sutoliu/AppOptR)                            | ALL      |
 | torvalds/linux                           | GPL v2.0 WITH Linux-syscall-note | [GitHub](https://github.com/torvalds/linux)                           | SM8550   |
-| OnePlusOSS/android_kernel_oneplus_sm8550 | GPL v2.0 WITH Linux-syscall-note | [Github](https://github.com/OnePlusOSS/android_kernel_oneplus_sm8550) | SM8550   |
 | AYNTechnologies/linux                    | GPL v2.0 WITH Linux-syscall-note | [Github](https://github.com/AYNTechnologies/linux)                    | SM8550   |
-| OnePlusOSS/android_kernel_oneplus_sm8650 | GPL v2.0 WITH Linux-syscall-note | [Github](https://github.com/OnePlusOSS/android_kernel_oneplus_sm8650) | SM8650   |
+| OnePlusOSS/android_kernel_oneplus_sm8550 | GPL v2.0 WITH Linux-syscall-note | [GitHub](https://github.com/OnePlusOSS/android_kernel_oneplus_sm8550) | SM8550   |
+| OnePlusOSS/android_kernel_oneplus_sm8650 | GPL v2.0 WITH Linux-syscall-note | [GitHub](https://github.com/OnePlusOSS/android_kernel_oneplus_sm8650) | SM8650   |
+| kdrag0n/freqbench                        | MIT                              | [GitHub](https://github.com/kdrag0n/freqbench)                        | part     |
+| kerneltoast/freqbench                    | MIT                              | [GitHub](https://github.com/kerneltoast/freqbench)                    | part     |
 
 ### 补丁
 
@@ -301,12 +303,14 @@ FAS 白名单内的游戏（明日方舟：终末地、王者荣耀等）前台�
 | :------------------------------------------------------------ | :------------------------------ | :-------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [PATCH 07/10] arm64: dts: qcom: sm8550: Update EAS properties | Xilin Wu <wuxilin123@gmail.com> | [Patchew](https://patchew.org/linux/20240424-ayn-odin2-initial-v1-0-e0aa05c991fd@gmail.com/20240424-ayn-odin2-initial-v1-7-e0aa05c991fd@gmail.com/) |
 
-### 技术参考项目
+### 参考项目
 
-| Project            | License  | Repository                                                   |
+| Project            | License  | Link                                                         |
 | :----------------- | :------- | :----------------------------------------------------------- |
 | LittleYouran_CTS_3 | GPL v3.0 | [GitHub](https://github.com/LittleYouran/LittleYouran_CTS_3) |
-| dieshot            |          | kurnal-insights.com                                          |
+| socpk              |          | [socpk](https://www.socpk.com)                               |
+
+<!-- | dieshot            |          | [Kurnal Insights](kurnal-insights.com)                       | -->
 
 ### 字体
 

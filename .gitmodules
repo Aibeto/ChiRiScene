@@ -26,3 +26,15 @@
 	path = android-gs-caimito-6.1-android15-qpr1
 	url = https://android.googlesource.com/device/google/caimito-kernels/6.1
 	branch = 
+[submodule "socpk"]
+	path = socpk
+	url = https://github.com/Aibeto/socpk.git
+	branch = main
+[submodule "freqbench"]
+	path = freqbench
+	url = https://github.com/kdrag0n/freqbench.git
+	branch = master
+[submodule "freqbench"]
+	path = freqbench_tensor
+	url = https://github.com/kerneltoast/freqbench.git
+	branch = tensor

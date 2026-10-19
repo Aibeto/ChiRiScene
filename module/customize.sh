@@ -500,7 +500,8 @@ if [ "$HOT_UPDATE_AVAILABLE" = "true" ]; then
         # 3.【已取消】重启调度服务，安装器环境里 setsid/nohup 拉起的 service.sh 生命周期不可控，改为要求用户手动执行 Action 启动
         ui_print " "
         ui_print "$MSG_HOT_UPDATE_ABORT"
-
+        cmd notification post -t "ChiRi 已安装" "ChiRi-HotUpdate" "手动运行 Action 以启动 ChiRi 调度"
+        
         # 5. 清理安装暂存并以官方失败路径结束安装
         # 热更新已把文件热替换到 live，若让安装成功，管理器会按 modules_update 暂存显示需要重启更新并屏蔽 Action/WebUI
         # 不能用 exit，exit 跳过安装器收尾清理，暂存残留后每次热更新都无法解除
