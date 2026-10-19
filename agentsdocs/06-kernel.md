@@ -24,7 +24,8 @@
 - 频率档表由 EPSS 硬件 LUT 运行时注册（`drivers/cpufreq/qcom-cpufreq-hw.c::qcom_cpufreq_hw_read_lut`），无静态 CPU OPP 可抄；EM 依赖 DT 的 `dynamic-power-coefficient`（随 vendor DTS 缺失）。
 - **真机 capacity（`cpu_capacity` 逐 policy）**：policy0 = 379、policy2 = 923、policy5 = 867、policy7 = 1024（FAS 自动算力权重日志，已是 `arch_topology.c` 归一化后的值）。已写入 `config/sm8650/soc.yaml [capacity]`（big 取 923）。
 - 真机频率范围（CLG 初始化读到的 policy min–max，MHz）：P0 364.8–2265.6、P2 499.2–3148.8、P5 499.2–2956.8、P7 480–3302.4。注意 snap 行里的 `cpu_max_khz` 常见 3052800 之类**不是硬件上限**，是厂商/vendor 动态改过的 policy max。
-- TODO: 逐档功耗表（→ 无 `frontier_policy`，CLG-PF / FDP 均不启用）、idle/dpc 全缺；sm8450.dtsi 的数值（4+3+1 三域）**不可**套到 8650。
+- **真机 frequency 与厂商 dtsi 静态 OPP 表已对账一致（2026-10-20）**：`AYNTechnologies/linux/arch/arm64/boot/dts/qcom/sm8650.dtsi` 含完整静态 CPU OPP 表，逐簇括住真机范围 —— little 25 档 `307200-2265600`（真机 P0 `364800-2265600`）、big 47 档 `460800-3148800`（真机 P2 `499200-3148800`，且含 P5 的 `2956800`）、prime 49 档 `480000-3302400`（真机 P7 `480-3302.4` 完全吻合）。已写入 `config/sm8650/soc.yaml [freq_khz]`。注意 P5 真机 max 只有 2956800、而 dtsi 的 cpu5_opp_table 与 cpu2_opp_table 逐档相同（都到 3148800）——差异来自厂商/vendor 动态改 policy max，非 DT 阶梯不同。
+- TODO: 逐档功耗表（→ 无 `frontier_policy`，CLG-PF / FDP 均不启用）；sm8450.dtsi 的数值（4+3+1 三域）**不可**套到 8650。idle/dpc 已从厂商 dtsi 补入（idle exit 750 / min_res 6700 / 簇态 2350，dpc 100/238/588）。
 
 ### 平台基线（zumapro，Pixel 9 Pro / Tensor G4）
 

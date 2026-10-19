@@ -90,8 +90,3 @@
 
 - `t8103`（Apple M1）：燃料计读数恒为 0（`housekeeping.power_mean == 0.0`），逐档功耗全零，量不了动态功耗。
 - `mt6768`（Helio G70）：满频簇功耗仅 2.6 mW / 0.5 mW 量级，原始读数被单位缩放过。
-
-判据与实测输出见 `python3 devimpbin/batch_ingest.py --all`。
-
-另：`sm8475` / `sm8650` 属**已适配但缺帕累托前沿**（无 freqbench 实测数据、本地无 dtsi，算不出逐档能效表），
-缺口与补齐途径记于 `agentsdocs/07-todos.md`。

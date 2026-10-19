@@ -18,6 +18,10 @@ topology:
 # [capacity] EAS capacity 兜底（真机 cpu_capacity 读不到时用；真机 sysfs 永远优先）。
 # 取值 = 实测 coremarks_per_mhz(f_max) × f_max 归一到最高簇 1024；
 # 与控制侧算力权重同口径（相对值），不是绝对分。真机 cpu_capacity 一旦可读即被覆盖。
+# 交叉核对（2026-10-20）：本地厂商 dtsi `msm8998.dtsi` 声明 `capacity-dmips-mhz`
+# little 1024 / big 1536（Kryo280 4+4）。两口径的**比值**差得远（本表 490:1024 ≈ 1:2.09，
+# DT 1024:1536 = 1:1.5），但都是相对值、消费方只做排序，故不冲突；以 freqbench 实测折算
+# 为兜底（与其余批量适配机型同口径），真机 `cpu_capacity` 可读时以真机值为准。
 capacity:
   little: 490
   big: 1024
@@ -88,7 +92,16 @@ freq_khz:
       2457600,
     ]
 
-# [idle] / [dpc] 本机型无本地 dtsi，暂无该数据；缺段 = None → 调用方走原有回退路径。
+# [idle] 空闲态代价（µs，厂商 dtsi `msm8998.dtsi` 的 idle-states；校准基准）。
+# 每簇两级 per-CPU 态，本表取 sleep_1（深一级，实际驻留才进入）的 exit/min_residency：
+# little = cpu-sleep-0-1 exit 4562（entry 814）；big = cpu-sleep-1-1 exit 2027（entry 724）。
+# 浅态 sleep_0 的 exit 仅 86/82 µs、min_residency 504/1302 µs。
+idle_us:
+  exit_latency: { little: 4562, big: 2027 }
+  min_residency: { little: 9183, big: 9419 }
+
+# [dpc] dynamic-power-coefficient：**本机型 dtsi 未声明该属性**（4.4 内核时代 DT 不用
+# EAS 的 dpc 口径），故本段缺省 → 无运行时消费方，仅不参与校准。
 
 # [cpu_governors] cpufreq 调速器优先级（从左到右）：启动时逐 policy 读
 # scaling_available_governors，取第一个该 policy 可用的作为「默认调速器」。
