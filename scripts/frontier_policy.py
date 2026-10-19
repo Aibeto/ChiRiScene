@@ -61,10 +61,10 @@ ANCHOR_TOL = 0.03
 #            anchors（文档公布值，容差 ANCHOR_TOL）、compute_unit（块注释里的算力单位名）、
 #            power_comment（块注释里的功耗口径说明，两行）。
 SOC_PROFILES = {
-    "8550": {
+    "sm8550": {
         "doc": ROOT / "mdocs" / "sm8550" / "sm8550-freq-power.md",
-        "soc": ROOT / "module" / "config" / "8550" / "soc.yaml",
-        "out_new": ROOT / "module" / "config" / "8550" / "frontier_policy.yaml",
+        "soc": ROOT / "module" / "config" / "sm8550" / "soc.yaml",
+        "out_new": ROOT / "module" / "config" / "sm8550" / "frontier_policy.yaml",
         # 文档 §5 原话："prime 冲顶段（2092800→3187200 只剩 600 Mdmips/W）" —— 指的是**整段摊薄**的边际，
         # 不是顶部单档（2956800→3187200 单档只有约 470 Mdmips/W）。锚点按整段口径取。
         "prime_top_from_khz": 2092800,
@@ -107,7 +107,50 @@ SOC_PROFILES = {
         ],
     },
 }
-DEFAULT_SOC = "8550"
+DEFAULT_SOC = "sm8550"
+
+# [soc] 批量适配：手写档案只留给有人工核对过的机型（sm8550 / zumapro）。
+# 其余 SoC 由 devimpbin/batch_ingest.py 从 freqbench_tensor 结果折算出 mdocs/<soc>/<soc>-freq-power.md，
+# 档案按下方约定自动生成——只信实测、不编调优值：
+#   * prime_top_from_khz 取 prime 表倒数第二档（末段边际能效的起点）
+#   * anchors 置空 = 该机型没有独立公布值可对账，块内不写对账段（避免自产自对的假自检）
+#   * compute_unit / power_comment 用实测口径的通用措辞
+BATCH_COMPUTE_UNIT = "CMdmips(CoreMark 实测折算)"
+BATCH_POWER_COMMENT = [
+    "  # 各簇频表 + 逐档**簇功耗**(W)：功耗列由 devimpbin/batch_ingest.py 从 freqbench_tensor",
+    "  # 实测折算（净动态、已做漏电校正），**只能用于相对排序**；档位与 freq_khz 逐档对齐。",
+]
+
+
+def generic_profile(soc: str):
+    """按约定为无手写档案的 SoC 合成一份 [soc] 档案；缺输入文件返回 None"""
+    doc = ROOT / "mdocs" / soc / f"{soc}-freq-power.md"
+    soc_yaml = ROOT / "module" / "config" / soc / "soc.yaml"
+    if not doc.exists() or not soc_yaml.exists():
+        return None
+    prof = {
+        "doc": doc,
+        "soc": soc_yaml,
+        "out_new": ROOT / "module" / "config" / soc / "frontier_policy.yaml",
+        "prime_top_from_khz": None,  # 落表时按 prime 表倒数第二档现算
+        "anchors": {},               # 无独立公布值：不写对账段
+        "compute_unit": BATCH_COMPUTE_UNIT,
+        "power_comment": BATCH_POWER_COMMENT,
+    }
+    try:
+        tables = parse_cluster_tables(doc)
+    except SystemExit:
+        return None
+    if "prime" in tables and len(tables["prime"]) >= 2:
+        prof["prime_top_from_khz"] = tables["prime"][-2][0]
+    return prof
+
+
+def resolve_profile(soc: str):
+    """取该 SoC 的档案：手写优先，其次通用合成；都取不到则 None"""
+    if soc in SOC_PROFILES:
+        return SOC_PROFILES[soc]
+    return generic_profile(soc)
 
 
 # [parse_doc] ---------------------------------------------------------------
@@ -119,7 +162,9 @@ def parse_cluster_tables(path: Path):
     for cluster, zh in (("little", "little"), ("big", "big"), ("prime", "prime")):
         m = re.search(rf"^####\s*{zh}\s*簇.*?$", text, re.M)
         if not m:
-            raise SystemExit(f"未找到 {cluster} 簇级表标题")
+            # 单簇 / 双簇 SoC（如 msm8917 只有 little、msm8996 只有 little+big）：
+            # 表不存在 = 该簇不存在，跳过；至少一张表由调用方兜底断言
+            continue
         rows = []
         for line in text[m.end():].splitlines():
             line = line.strip()
@@ -141,6 +186,8 @@ def parse_cluster_tables(path: Path):
         if not rows:
             raise SystemExit(f"{cluster} 簇级表为空")
         out[cluster] = rows
+    if not out:
+        raise SystemExit("文档 §3 未找到任何簇级表（至少需要 little）")
     return out
 
 
@@ -203,7 +250,12 @@ def parse_soc(path: Path):
 def enumerate_frontier(tables):
     """三簇档位全组合枚举（档数×档数×档数，随 soc.yaml 频表变化，8550 现为 6358、zumapro 为 3051）
     → 每个总算力档位取最小总功耗"""
-    little, big, prime = (tables[c] for c in CLUSTERS)
+    # 缺失簇用「单档 0 频/0 功耗/0 算力」占位：枚举与枚举后求和都退化成该簇不存在，
+    # 单簇 SoC 因此与三簇 SoC 走同一条代码路径（0 档不贡献算力，选中也不会写非零 kHz）
+    missing = [(0, 0.0, 0.0)]
+    little = tables.get("little", missing)
+    big = tables.get("big", missing)
+    prime = tables.get("prime", missing)
     best = {}
     for fl, pl, cl in little:
         for fb, pb, cb in big:
@@ -263,11 +315,17 @@ def check_anchors(hull, tables, anchors, prime_top_from_khz):
     口径易错点（已修）: "冲顶段 600 Mdmips/W" 指的是 **prime 表自己**末两档的边际能效，
     不是下凸包末段（末段可能混簇，值会明显不同）。
     """
+    # 批量机型无独立公布值：不编造期望值，直接不对账（块内也不写对账段，避免自产自对）
+    if not anchors:
+        return []
     results = []
     xs = [p[0] for p in hull]
     ys = [p[1] for p in hull]
     prime = tables["prime"]
-    top_from = next((r for r in prime if r[0] >= prime_top_from_khz), prime[-2])
+    top_from = next(
+        (r for r in prime if prime_top_from_khz is not None and r[0] >= prime_top_from_khz),
+        prime[-2],
+    )
     top_seg = efficiency(top_from[2], top_from[1], prime[-1][2], prime[-1][1])
     checks = [
         ("总算力下限", min(xs), anchors["compute_min"]),
@@ -353,7 +411,7 @@ def fingerprint(tables, cap, freqs):
     """确定性指纹: 只由输入内容决定，不含生成时刻"""
     h = hashlib.sha256()
     for c in CLUSTERS:
-        for freq, power, compute in tables[c]:
+        for freq, power, compute in tables.get(c, []):
             h.update(f"{c}:{freq}:{power:.4f}:{compute:.4f}\n".encode())
     for c in CLUSTERS:
         h.update(f"cap:{c}:{cap.get(c, 0)}\n".encode())
@@ -375,10 +433,14 @@ def render_block(tables, cap, freqs, hull, buckets, modes, enabled, prof):
     L.append(f'  model_fingerprint: "{fp}"')
     L.append("  # TODO 待拍板: reserve_pct（流畅度下界）与 lead_frac（预判基准提前量）仍为占位值；")
     L.append("  # 真机观察后重跑本脚本覆盖（--reserve / --lead-frac），不要手改本块。")
-    L.append("  # 复算自检锚点（与文档 §5/§7 公布值对账，容差 3%）")
-    L.append("  anchors:")
-    for name, got, want, ok in check_anchors(hull, tables, prof["anchors"], prof["prime_top_from_khz"]):
-        L.append(f"    - {{ name: \"{name}\", got: {round(got, 3)}, want: {want}, ok: {str(ok).lower()} }}")
+    anchor_rows = check_anchors(hull, tables, prof["anchors"], prof["prime_top_from_khz"])
+    if anchor_rows:
+        L.append("  # 复算自检锚点（与文档 §5/§7 公布值对账，容差 3%）")
+        L.append("  anchors:")
+        for name, got, want, ok in anchor_rows:
+            L.append(f"    - {{ name: \"{name}\", got: {round(got, 3)}, want: {want}, ok: {str(ok).lower()} }}")
+    else:
+        L.append("  # 无独立公布值可对账：本机型不设 anchors 段（实测折算表，逐档见能效模型文档 §3）")
     L.append(f"  # 前沿点（{len(hull)} 点；compute={prof['compute_unit']}、power=W）")
     L.append("  frontier:")
     for x, y, _ in hull:
@@ -387,6 +449,9 @@ def render_block(tables, cap, freqs, hull, buckets, modes, enabled, prof):
         L.append(ln)
     L.append("  per_cluster:")
     for c in CLUSTERS:
+        # 缺席簇（单簇/双簇 SoC）不落 per_cluster：查表侧按「0 = 表未提供」处理，写空数组反而误导
+        if not tables.get(c):
+            continue
         if len(tables[c]) != len(freqs.get(c, [])):
             raise SystemExit(
                 f"{c} 档位数不一致：文档 §3 有 {len(tables[c])} 档、soc.yaml freq_khz 有 "
@@ -503,8 +568,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="帕累托前沿结果向量生成器（离线）")
     ap.add_argument("--write", action="store_true", help="写回目标文件（默认 dry-run 只打印）")
     ap.add_argument("--check", action="store_true", help="与现有块逐字节比对")
-    ap.add_argument("--soc", choices=sorted(SOC_PROFILES), default=DEFAULT_SOC,
-                    help="目标机型键（见脚本 [soc] 段 SOC_PROFILES；缺省 8550 保持历史行为）")
+    ap.add_argument("--soc", default=DEFAULT_SOC,
+                    help="目标机型键（手写档案见 [soc] 段；批量机型需先有 mdocs/<soc>/ 文档；缺省 sm8550）")
     ap.add_argument("--selftest", action="store_true", help="写盘路径自检（仓库内临时目录，不碰仓库文件）")
     ap.add_argument("--force", action="store_true",
                     help="锚点对账未过时仍允许 --write（默认拒绝落表）")
@@ -524,7 +589,9 @@ def main(argv=None):
     if args.selftest:
         return selftest()
 
-    prof = SOC_PROFILES[args.soc]
+    prof = resolve_profile(args.soc)
+    if prof is None:
+        raise SystemExit(f"没有 {args.soc} 的档案：手写档案见 [soc] 段，或先跑 devimpbin/batch_ingest.py 产出 mdocs/<soc>/ 文档")
 
     for p in (prof["doc"], prof["soc"]):
         if not p.exists():
@@ -532,13 +599,16 @@ def main(argv=None):
 
     tables = parse_cluster_tables(prof["doc"])
     cap, freqs, cores = parse_soc(prof["soc"])
-    counts = {c: len(tables[c]) for c in CLUSTERS}
+    counts = {c: len(tables.get(c, [])) for c in CLUSTERS}
     # 不再写死「期望 little16/big20/prime21」：档位数随 SoC 变，只查退化表
-    thin = {c: n for c, n in counts.items() if n < 2}
+    # 只为「有表但档数<2」告警；表都不存在的簇是该 SoC 本来就没有那个簇，不是缺数据
+    thin = {c: n for c, n in counts.items() if 0 < n < 2}
     if thin:
-        print(f"⚠ 档位表过稀: {thin}（每簇至少 2 档才有边际能效，先补文档 §3）", file=sys.stderr)
-    if any(c not in cores for c in CLUSTERS):
-        print(f"⚠ [topology] 缺簇核数: {[c for c in CLUSTERS if c not in cores]}", file=sys.stderr)
+        print(f"⚠ 档位表过稀: {thin}（有表但不足 2 档，边际能效无从计算）", file=sys.stderr)
+    # 只对「有簇表却缺核数」告警：单簇/双簇 SoC 的缺席簇不是缺数据（它本来就没有那个簇）
+    no_cores = [c for c in CLUSTERS if tables.get(c) and c not in cores]
+    if no_cores:
+        print(f"⚠ [topology] 有簇表却缺核数: {no_cores}", file=sys.stderr)
 
     combos = enumerate_frontier(tables)
     # 下凸包几何只吃 (总算力, 总功耗)，但把频率三元组带出（第三维）供运行期查表

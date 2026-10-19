@@ -1,0 +1,344 @@
+# sm8550/feature.yaml: [function] [io-settings] [cpu-idle] [affinity] [corectl] [thermal] [reduce] [default] [boost]
+
+# [function]
+function:
+  CpuIdleScalingGovernor: true
+  IOOptimization: true
+
+# [io-settings]
+# IO 设置
+IO_Settings:
+  Scheduler: ""
+  read_ahead_kb: "512"
+  nomerges: "1"
+  iostats: "0"
+
+# [cpu-idle]
+CpuIdle:
+  current_governor: "menu"
+
+scene_mode_delay_secs: 3000
+
+# [affinity]
+Affinity:
+  enabled: true
+  top_app_uclamp_min_pct: 0
+  top_app_uclamp_max_pct: 85
+  pin_foreground_threads: true
+  # 后台降权（background / restricted 的 cpu.uclamp.max 百分比，0 = 关闭）：
+  # 后台任务的 util 需求被钳低 → EAS 放置与 schedutil 频率回落、优先落小核，
+  # 给 UI/视频等视觉可感的线程让路；不禁止使用大核（空闲时仍会被调度上去）。
+  # 刻意不含 system-background（媒体/音频等可感知的系统后台）。
+  # A1（2026-09-28）：35 → 25，把后台实际工作点压到更低频段（等算力下总功耗下移）。
+  # TODO: 实机复核后台同步/消息推送时延；回退 = 改回 35。
+  background_uclamp_max_pct: 25
+  # normal（非 boost）下 top-app/foreground 组掩码剔除 little 开关（2026-10-01 开启）：
+  # A510 能效差且 DT 能耗模型低估其真实能耗，EAS 会把 64 位前台线程吸进 little；
+  # 收窄后每 2s 纠偏。原 TODO「待内核信息（32 位核位图 / A710 核位）」已作废：
+  # 本机 A710/X3 均不直接执行 AArch32，32 位程序经系统原生桥（转译层）落 64 位代码，
+  # 全核可跑，故无需按核位宽针对性放行；内核侧核交集兜底逻辑不变。
+  # 依据：logd_1001-045147 亮屏 UI 功耗偏高（launcher 亮屏 2.61 W vs 基线 1.9~2.4 W）。
+  normal_fg_exclude_little: true
+  # ---- 2026-09-28 新增（放置与亲和线）。全部字段可选，但**缺省值不等于旧行为**：
+  # bg_promote_exclude_prime / big_pressure_any_mode / bitwidth_aware / write_dedup 的代码缺省是
+  # true = 新逻辑默认开启，要回旧行为必须显式写 false——没写这些键的档位/机型都已按新行为运行。
+  # 后台/批处理线程 promote 时禁止溢出到 prime：prime 冲顶段边际能效最差
+  # （2092800→3187200 只剩 600 Mdmips/W），可并行的批处理（HTTP 池/下载/软解）不需要 X3。
+  bg_promote_exclude_prime: true
+  # big 饱和保护推广到所有会 promote 的模式（原来只在 boost 态生效）：
+  # false = 回到「仅 boost 态判 big 高水位」的旧行为。
+  big_pressure_any_mode: true
+  # AArch32 簇白名单：**留空 = 不限制**（主流系统带转译层，32 位程序实际可跑全核，故缺省不限制落点）。
+  # 只有确认系统无转译层时才填（如 `["little"]`），届时 32 位线程的落点被限制在这些簇内、写掩码前先拦截
+  # （不发起必然被内核拒的调用）；留空时位宽判定仍生效，只用于落 `elf32` 观测帧。
+  aarch32_clusters: []
+  # 位宽感知总开关（false = 不做 32 位判定，逐位回旧行为）。
+  bitwidth_aware: true
+  # 掩码写去重 + 同 tid 同目标最短重写间隔（去掉「写了也没变化」的冗余写；
+  # false = 逐位回旧行为）。注意：去重只在「本层再次决定写同一目标」时才可能重写，
+  # 内核侧被框架/外部改写掩码不会周期性纠偏（uclamp 有 60s 重断言，掩码路径没有）。
+  write_dedup: true
+  # ---- FDP：帕累托前沿主导的放置内核（2026-09-28 落地；数据自 2026-10-20 起 8550 与 zumapro 都有）----
+  # 用 mdocs/sm8550/sm8550-freq-power.md §3 的**逐档簇功耗**做双边净收益比较：把线程从源簇搬到目标簇，
+  # 只有 [源簇让出后−现状] + [目标簇承接后−现状] < 0（且超阈值）才迁 —— 等价于「等算力下把这份算力
+  # 放到边际 mW/Mdmips 更低的地方」。现状取**实测**（该簇最忙核 util + scaling_cur_freq），
+  # 之后按「单核落位 + schedutil util→freq 映射」估；P(f) 超线性，故把目标簇推向高位会自动变贵。
+  # 数据来自 soc.yaml 的 frontier_policy 段；无该段的 SoC → 整段不动作（自动回退原逻辑）。
+  # 只作用于**后台/批处理线程 promote**（成本模型不含延迟项，前台路径一律不动）。
+  fdp_enabled: true
+  # 只在该次搬迁能省 ≥ 该值(W) 时才动：防在噪声上反复搬（0.02 = 20 mW）
+  fdp_cost_hysteresis_w: 0.02
+  # 每轮每个目的簇的迁入条数硬上限：成本项只在跨轮生效，同轮几十条线程会一起判「big 最便宜」，
+  # 必须靠配额兜住同向涌入（0 视为 1，不允许「无上限」）
+  fdp_max_inserts_per_round: 2
+  # 迁入后目标簇的模型工作频率不得高于「该值 × 该簇最高频」——
+  # P-a「任何簇贴顶都不行」在代码里的落点
+  fdp_dst_freq_cap_ratio: 0.85
+  # 放置类阈值的可配化：缺省值 = `src/chiri/affinity.rs` consts 段的原常量（那里是缺省值唯一来源），
+  # 本段整体可省略；但**写出来就会覆盖 const**，改 const 时必须同步本段，否则两者静默分叉。
+  # ⚠️ 三道时间闸是防 A→B→A 乒乓的护栏，钳制下界就是现值（4000/8000/16000），**不得改小**。
+  tuning:
+    promote_util_pct: 25
+    little_high_water: 0.70
+    key_bind_release_water: 0.50
+    fg_busy_util_pct: 30
+    fg_busy_release_util_pct: 15
+    little_promote_util_pct: 10
+    big_high_water: 0.90
+    demote_util_pct: 5
+    demote_streak: 3
+    pinned_weight: 0.4
+    max_pins_per_core: 3
+    overload_margin: 0.15
+    core_overload_util: 0.70
+    min_migrate_interval_ms: 4000
+    repin_debounce_ms: 8000
+    return_cooldown_ms: 16000
+    thread_stale_secs: 30
+
+# [corectl]
+CoreCtl:
+  enabled: true
+  # scenemode 是否下线核心（修法3，2026-10-01 改）：
+  # false = 息屏进入 scenemode 后**不下线任何核**，保留全核、只靠 scenemode.yaml 的
+  # perf_ceil（0.12，三簇统一压低）+ 后台 uclamp 压制省电。理由（logd_1001-045147 实测）：
+  # 09-28「下线 little 簇（CPU1-2）」把负载挤到唯一在线的引导核 CPU0 → CPU0 util 100% →
+  # 触发 saturation 保护，26 次进入 scenemode 里 20 次被「退回 reduce + 300s 冷却」撤销
+  # （最短 11s），有效驻留不足一半、另有 ~1.7h 处于禁入冷却。保留全核消除单核瓶颈后
+  # 负载按 EAS 自然铺开，饱和判据（little 引导核+big 的 max_util ≥ 0.75 持续 10s）不再被
+  # 误触；省电交回频率上限。true = 旧行为（下线 little 簇）。
+  # 权衡：全核在线比下线核多一份漏电，但息屏期核多处于 cpuidle/WFI，实测判断以「消除
+  # 抖动 + 免冷却」为先；息屏功耗/壳温走向待下包复核。
+  scenemode_offline: false
+
+# [thermal]
+Thermal:
+  # 【2026-10-16 用户要求】温控全部关闭，标记为安全关闭（随时可恢复）。
+  # 内核 thermal 独立于 ChiRi（~95°C 起控），软件压制只是提前轻压，关掉无新增过热风险。
+  # 温控全关需三处同关：本段 enabled、tuned_resp_enabled、FAS 的 core_temp_threshold（置 0）。
+  # 恢复 = 三处改回 true / 45.0，阈值与回滞参数原样保留。
+  enabled: false
+  # CPU 温度探测名单默认 = 内置（soc_max → cpuss → mtktscpu/… 按序 contains
+  # 匹配）：soc_max 为聚合温区（偏保守、非纯 CPU），cpuss0-3 为 cluster 级
+  # 单传感器回退；本机若需增删节点才写 cpu_temp_zone_types 覆盖
+  batt_soft_temp_c: 41
+  # 【未决，待用户裁决】2026-10-16 实测（devimpbin/1016-001727）：**充电中**打大型游戏时
+  # 电池稳定 45–47.6°C，硬档解除点 45−hysteresis_hard_c(2)=43°C 占比 0%，cap=40 整段咬住
+  # 无法解除——终末地窗口 cap=40 共 8020 行，其中 charging/full 7918 行、discharging 仅 102 行。
+  # 但**放电**场景实测 battT p95=39.1°C（全 build 仅放电行），硬档仅 0.07%，故本值对放电安全。
+  # 候选改法：45 → 48，令「边充边玩」退回中档 0.60（+20 个百分点性能上限、抖动更小），
+  # 放电侧行为不变；代价是充电时允许更高电池温度（用户本期诉求是「发热变大」，故不擅自放宽）。
+  # 判据：`eval_thermal_cap`（src/chiri/mod.rs:168-178）只吃电池温度、不看 charge——
+  # 同一阶梯同时服务充电与放电是本问题的结构根因。
+  batt_hard_temp_c: 45
+  # 电池中限：软/硬限中点 (41+45)/2。2026-09-27 实测：41→45°C 这 4°C 占会话时长
+  # 64%，原三级阶梯在该区间几乎无压制力（cap=85 窗口真钳制率仅 13.8%、实机一路升到
+  # 45.8°C 才撞硬限），故中段补一级。必须 soft < mid < hard（normalize 越界钳制 + warn）。
+  # 注：mid 的合法区间是 (soft+0.5, hard-0.5)，故 normalize 要求 hard >= soft + 1.0——
+  # 硬限比软限只高不到 1°C 的配置会被兜底改写（旧判据只看 hard <= soft，差在 (0,1) 时
+  # 会造出 lo > hi 并让 f32::clamp panic）。
+  batt_mid_temp_c: 43
+  # CPU 温度仅极端热时参与（内核 ~95°C 温控兜底）：soc_max 合成温区在大型游戏
+  # 高负载下常态 85°C+，75/85 会导致过半时间被软件压制、比官调更卡；90/95
+  # 只在接近内核起控点时提前轻压
+  cpu_soft_temp_c: 90
+  cpu_hard_temp_c: 95
+  # CPU 中限取软/硬中点向下取整：soc_max 聚合温区噪声大，中档刻意贴硬限一侧
+  cpu_mid_temp_c: 92
+  # 2026-09-22 实测调整（仅本机型）：原 0.70 是一刀切，电池 40.7℃ 触发后瞬间砍掉
+  # 三成上限 = 断崖式掉帧。改 0.85 让压制更平缓（少掉帧、也不至于失控），
+  # 真正的解法是 P1/P3 把功耗压下去让温度不上来——这条只是把「断崖」改成「斜坡」。
+  # 安全阈值本身（batt_soft_temp_c / batt_hard_temp_c）不动。
+  soft_perf_cap: 0.85
+  # 中档 cap（P0-2）：41–45°C 之间再给一档，形成 1.0 → 0.85 → 0.60 → 0.40 四级。
+  # 只压 cap 值不动阈值——CLG 自己选的 current_perf 通常低于 0.85，抬阈值不会增加
+  # 命中率（实测 13.8%），只有把 cap 值降到负载真的贴住的位置才有压制力。
+  # 必须 hard <= mid <= soft。
+  mid_perf_cap: 0.60
+  hard_perf_cap: 0.40
+  # 豁免档：仅在 clamp_heavy=false（重钳关闭）时生效——热压制只落在
+  # (soft_perf_cap, free_above) 区间，>= 豁免档不钳制。必须 > soft_perf_cap
+  # （相等 = 压制带为空、软限档完全不生效）；也不要贴 1.0（持续高负载要能
+  # 平滑涨过豁免档拿全速）
+  free_above: 0.95
+  # 重钳开关（默认 true，缺键 = true）：cap 窗口内对**所有簇**恒钳写频目标，
+  # 窗口解除立即恢复全速；current_perf 决策状态照常平滑、不回写（卡死根因不存在）。
+  # 2026-09-26 真机：cap85 窗口 37 分钟高载簇决策值恒为满频、降档 0 次——旧豁免带
+  # （>= free_above 完全不钳）过于宽松，故改恒钳。false = 回退 free_above 豁免旧行为。
+  clamp_heavy: true
+  # 软档回滞：降到 软限-3=38°C 才解除软限档
+  hysteresis_c: 3
+  # 中档专用回滞（2026-09-28 修）：原与软档共用 hysteresis_c=3 → 中档解除点 43-3=40°C
+  # **低于软档跳闸点 41°C**，中档一咬住就整段跳过软档、必须一路冷过 40°C 才恢复——
+  # 当天实测 cap=60 的 5152 s 里 2556 s 落在 batt 40~41°C 桶，另有 2216 s 是「温度从 43
+  # 降到 40、cap 一动不动」。取 1.5 → 41.5°C 即退回软档 0.85（不越过 41 这条软限边）。
+  # 上限受 normalize 约束 `中限 - 本值 >= 软限`（其余机型缺省 3.0 会被自动钳到 2.0 + warn）。
+  hysteresis_mid_c: 1.5
+  # 硬档专用回滞（P0-1）：原实现硬档→软档这条边**无回滞**，batt 一降到 44.9°C 就从
+  # 0.40 跳回 0.85，批次2 75 分钟内 5 次进硬档、两次 60s 内重入（最近相隔 2.0 s）。
+  # 取 2.0（而非与 hysteresis_c 同为 3）——中档 43°C 在 43 附近接棒，硬档退到 43 即交
+  # 给中档 0.60，不必压到 42；45↔43 的 2°C 带回滞已足够吃掉 0.1°C 级抖动。
+  hysteresis_hard_c: 2
+  # 热态 tuned 响应（P0-3）：cap 同时下发 tuned（playback/akmode 不走 CLG，原本对温度
+  # 零响应）。有效上限 = min(档位天花板, max(cap, tuned_thermal_floor))。2026-09-28 三簇
+  # 天花板全部拆除（tuned_profiles.yaml 的 per_cluster 与 headroom 已按 R2 撤回），playback
+  # 各簇天花板现为 1.0，软限 0.85 因此会真实咬住 big（原被 0.75 掩盖）；中档 0.60 与硬档
+  # （→floor）的压制关系不变。
+  tuned_resp_enabled: false
+  # 性能下限：不把硬档 0.40 直接套到播放态（掉帧风险实打实；播放态帧信号 2026-09-27 起有，
+  # 但只是离线直方图 `event` 行 decision=playback_fps，在线无判据）。normalize 保证 >= hard_perf_cap。
+  tuned_thermal_floor: 0.55
+
+# [sched]
+# 内核调度器参数微调（借鉴 LittleYouran CTS 的 Scheduler 段）：migration_cost 由
+# 内核默认 500000 降到 200000——调度器更愿意跨核均衡、避免单核积压（855 八核
+# 同构经验值）；nr_migrate 32→27 收敛单次均衡迁移量。写 /proc/sys/kernel/，白名单外忽略
+Sched:
+  enabled: true
+  params:
+    sched_migration_cost_ns: "200000"
+    sched_nr_migrate: "27"
+
+# [reduce]
+reduce:
+  cpu_load_governor:
+    up_threshold: 0.90
+    down_threshold: 0.50
+    smoothing_up: 0.50
+    util_smoothing: 0.5
+    down_rate_limit_ticks: 2
+    up_rate_limit_ticks: 2
+    headroom_factor: 1.05
+    headroom_ramp: 0.12
+    perf_floor: 0.05
+    # 原 0.60 属天花板，2026-09-28 拆除（R2）：省电改走门槛 + 升频速率 + 稳态下探。
+    perf_ceil: 1.00
+    # 稳态下探的取点（R7：模式差异靠取点/到达速度表达，不靠封顶）。天花板拆掉后 reduce 与 default
+    # 的其余参数已很接近，故刻意把目标水位压低以保留省电档差异：
+    # T = up_threshold(0.90) × 0.80 = 0.72（缺省 0.90，即 default 的取点）。
+    # TODO: 实机复核（看省电档流畅度是否仍可接受；回退 = 删掉本行回到 0.90）。
+    steady_decay_target_ratio: 0.80
+    perf_init: 0.20
+    up_jump_threshold: 0.35
+    slow_up_scale: 0.02
+    down_fast_threshold: 0.10
+    spike_jump_threshold: 0.35
+    spike_decay: 0.30
+    # 高位升频门槛：perf ≥ 0.85 后再往抬需 ≥2 核（little 3 核取 2）util ≥ 0.90 确认。
+    # TODO: 实机复核（看高压负载到达最高频的延迟；回退 = 删掉下面三行，count 归 0 即关闭）。
+    high_zone_gate: 0.85
+    high_zone_count: 2
+    high_zone_util: 0.90
+    touch_boost_enabled: true
+    touch_boost_ms: 350
+    touch_boost_tiers: 1
+
+# [default]
+default:
+  cpu_load_governor:
+    # 高频门槛：util ≥ 该值才算「高负载」并走全速升频，否则在滞回带内慢速爬升
+    # TODO: 实机复核 0.88（重点看应用启动/重载响应是否变钝）。
+    up_threshold: 0.88
+    # 降频门槛：低于该值开始降频（与 up 之间构成滞回带）
+    down_threshold: 0.62
+    # 高负载升频步长：每次只走 60% 差距（越小爬升越缓）
+    smoothing_up: 0.60
+    # 决策负载 EMA（1.0=关闭）：滤掉抖动负载的单 tick 摆动，抑制决策翻转与
+    # scaling_max_freq 高频改写（2026-09-22 本机型 QQ 日志回放：大核反转 458→194、
+    # 写频 −30%；alpha 0.35 可再降但上限均值抬升更多，取 0.5 折中）。boost 不开。
+    util_smoothing: 0.5
+    # 降频确认 tick 数（越小回落越快）
+    # TODO(P3): 实机观察回落/翻转；回退 down_rate=2、down_fast=0.30。
+    down_rate_limit_ticks: 1
+    # 升频确认 tick 数（越大越难升）
+    # TODO(P2): 实机复核启动/重载响应；回退 up_rate=3、up_jump=0.45、spike_jump=0.40。
+    up_rate_limit_ticks: 4
+    # target = util × headroom；1.0 = 贴负载，不给余量放大
+    headroom_factor: 1.00
+    # headroom 的过渡带宽：util 从 (up_threshold − ramp) 爬到 up_threshold 期间
+    # headroom 由 1.0 线性升到 headroom_factor（越窄，「高负载加成」启用越晚）
+    headroom_ramp: 0.08
+    perf_floor: 0.05
+    # 不设天花板：上限完全由负载动态决定，保留随时到最高频的能力。
+    # 控功耗靠「升频门槛 + 升频速率」（up_threshold / rate limit / smoothing / jump），
+    # 不靠砍上限；需要单独收紧的簇走 per_cluster 覆盖（本档不覆盖任何簇）。
+    perf_ceil: 1.00
+    # 稳态下探取点：T = up_threshold(0.88) × 0.90 = 0.792。与代码缺省一致，显式写出便于与 reduce/boost 对照。
+    steady_decay_target_ratio: 0.90
+    # 接管起始性能，同时是触摸升频地板的基线（floor = perf_init + tiers × 0.05）
+    perf_init: 0.35
+    # 按核心组再收紧（8550 实测日常 util：little 0.55 / big 0.36 / prime 0.32，
+    # 但三簇上限都被尖峰顶到 100%）——三簇一刀切只能取「最松那簇」能接受的值：
+    # 历史上 little 压到 0.70、prime 空转压到 0.65、big 不覆盖（继承当年的 0.80）；
+    # 2026-09-28 天花板一律拆除后本档只保留 little 的升频门槛覆盖，上限继承模式级 1.00。
+    # [A/B 结论 2026-09-22] 迁移率异常与 per_cluster 无关：0922-1306 包（更旧的
+    # 40 列版本、无任何天花板）亮屏 UI 场景迁移同样 ~2500-5000/s——高迁移是
+    # surfaceflinger/system_server 主导的亮屏 UI 固有形态，视频稳态才是 ~300/s。
+    # 之前拿 cloudmusic（亮屏 UI）对比 0920 视频稳态属场景错配，P2 嫌疑解除，
+    # 恢复按簇收紧。
+    # 本档不做 per_cluster 上限覆盖：三簇都保留随时到最高频的能力（硬性口径）。
+    # 历史：2026-09-22 曾按簇收紧（little 0.70 / prime 0.65），2026-09-23 改为不封顶、只控门槛；
+    # 迁移率的 A/B 结论（高迁移是亮屏 UI 固有形态，与 per_cluster 无关）见 .archive/.codebuddy/memory/2026-09-22.md。
+    # little 抬升频门槛：A510 能效差（为 AArch32 放弃 merged-core），DT 能耗模型
+    # 低估其真实能耗，little 高频时 EAS 会把 64 位工作线程吸进来贴顶运行；抬高
+    # 门槛后滞回带内慢速爬升、贴顶时间大减，负载真高时仍全速到顶（不砍上限）。
+    # TODO: 实机复核 0.95（看 little 贴顶时间、功耗回落与 32 位 App 响应）。
+    per_cluster:
+      little:
+        up_threshold: 0.95
+    # 跳变门槛：target 相对当前跳升超过该值才算「显著跳变」而立即升频，
+    # 否则走滞回带慢速爬升（提高它 = 尖峰更难把上限瞬间拉到高频）
+    up_jump_threshold: 0.55
+    # 滞回带内的升频速度系数（配合 smoothing_up）
+    slow_up_scale: 0.02
+    # 低于该 util 立即降频（跳过 down_wait 确认期）
+    # 与稳态下探的退出条件共用：0.30~0.40 带清 decay；ratio 保留 0.90，目标 0.792 不变。
+    down_fast_threshold: 0.40
+    spike_jump_threshold: 0.50
+    # 单 tick 尖峰只保留 10% 增量（削 p95 尖峰，不动稳态）
+    spike_decay: 0.10
+    # 高位升频门槛：perf ≥ 0.85 后再往抬需 ≥2 核（big 4 核取 2）util ≥ 0.90 确认。
+    # TODO: 实机复核（看应用启动/重载冲顶延迟；回退 = 删掉下面三行，count 归 0 即关闭）。
+    high_zone_gate: 0.85
+    high_zone_count: 2
+    high_zone_util: 0.90
+    touch_boost_enabled: true
+    # 触摸窗口内大核地板抬高：floor = perf_init + tiers × 0.05，且不超过 perf_ceil
+    # TODO: 实机复核 600ms / 2 档（手指在屏上滑动时应始终处于窗口内；档位过高会在
+    # 轻载触摸期把上限顶到目标之上，再降档需配合滑动/打字流畅度实测）。
+    touch_boost_ms: 600
+    # 【临时待 A/B，仅 8550 调整】2026-09-26 由 3 档降为 2 档：touch=1 共 2255 行，
+    # big 簇决策下限实测恒为 1651200 kHz，来自 perf_init 0.35 + 3×0.05 = 0.50；
+    # 降到 2 档 = 0.45（约 1.65GHz → 1.4GHz）。滑动/打字流畅度实测后再定稿，
+    # 不行就回 3 档。其它机型（8475/8998）保持各自原值，勿跟随本机改动。
+    touch_boost_tiers: 2
+
+# [boost]
+boost:
+  cpu_load_governor:
+    up_threshold: 0.55
+    down_threshold: 0.40
+    smoothing_up: 0.95
+    down_rate_limit_ticks: 5
+    up_rate_limit_ticks: 1
+    headroom_factor: 1.25
+    headroom_ramp: 0.12
+    perf_floor: 0.40
+    perf_ceil: 1.0
+    # 稳态下探关闭（R7 取点：boost 是对功耗宽松档，不主动下探）。boost 的 perf_ceil 拆前拆后都是 1.0，
+    # 且 up_threshold 只有 0.55 → 若开启下探，T = 0.55×0.90 = 0.50 会让常态负载也被下探、削掉 boost 的响应优势，
+    # 故此处关闭；关闭后 boost 行为与天花板拆除前逐位一致。
+    steady_decay_enabled: false
+    perf_init: 0.60
+    up_jump_threshold: 0.25
+    slow_up_scale: 0.05
+    down_fast_threshold: 0.05
+    spike_jump_threshold: 0.40
+    spike_decay: 0.20
+    # 高位升频门槛：perf_init 0.60 起步即过 gate，确认条件与 reduce/default 同款。
+    high_zone_gate: 0.85
+    high_zone_count: 2
+    high_zone_util: 0.90
+    touch_boost_enabled: true
+    touch_boost_ms: 500
+    touch_boost_tiers: 1

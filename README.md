@@ -303,12 +303,15 @@ FAS 白名单内的游戏（明日方舟：终末地、王者荣耀等）前台�
 | :------------------------------------------------------------ | :------------------------------ | :-------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [PATCH 07/10] arm64: dts: qcom: sm8550: Update EAS properties | Xilin Wu <wuxilin123@gmail.com> | [Patchew](https://patchew.org/linux/20240424-ayn-odin2-initial-v1-0-e0aa05c991fd@gmail.com/20240424-ayn-odin2-initial-v1-7-e0aa05c991fd@gmail.com/) |
 
-### 参考项目
+### 参考
 
-| Project            | License  | Link                                                         |
+| Project/Resource   | License  | Link                                                         |
 | :----------------- | :------- | :----------------------------------------------------------- |
 | LittleYouran_CTS_3 | GPL v3.0 | [GitHub](https://github.com/LittleYouran/LittleYouran_CTS_3) |
 | socpk              |          | [socpk](https://www.socpk.com)                               |
+| nanoreview.net     |          | [nanoreview](https://nanoreview.net)                     |
+| GSMArena           |          | [gsmarena](https://www.gsmarena.com)                     |
+| Wikipedia          | CC BY-SA | [wikipedia](https://en.wikipedia.org)                    |
 
 <!-- | dieshot            |          | [Kurnal Insights](kurnal-insights.com)                       | -->
 

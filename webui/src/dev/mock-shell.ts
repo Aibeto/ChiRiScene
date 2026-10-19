@@ -202,9 +202,9 @@ function seed(): void {
   put('daemon.lock', '')
   put('action.sh', '#!/system/bin/sh\n')
 
-  const metaRel = isChiri ? 'config/8550/meta.yaml' : 'config/meta.yaml'
-  put('active_config.chr', isChiri ? '8550/meta.yaml' : 'meta.yaml')
-  put(metaRel, FILES[`module/config/${isChiri ? '8550/' : ''}meta.yaml`] ?? '')
+  const metaRel = isChiri ? 'config/sm8550/meta.yaml' : 'config/meta.yaml'
+  put('active_config.chr', isChiri ? 'sm8550/meta.yaml' : 'meta.yaml')
+  put(metaRel, FILES[`module/config/${isChiri ? 'sm8550/' : ''}meta.yaml`] ?? '')
 
   if (isChiri) {
     put('special_tuned.yaml', specialTunedExport())

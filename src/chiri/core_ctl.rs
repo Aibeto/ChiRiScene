@@ -95,7 +95,7 @@ fn self_tids() -> Vec<i32> {
 }
 
 /// 计算 scenemode 下线目标：little 簇除引导核 CPU0 外的全部核（CPU0 内核拒写 online=0；big / prime 常驻低频）
-/// 由 `CoreCtl.scenemode_offline` 控制，8550 置 false 走「不下线、只压频」（8550/feature.yaml [corectl]）
+/// 由 `CoreCtl.scenemode_offline` 控制，sm8550 置 false 走「不下线、只压频」（sm8550/feature.yaml [corectl]）
 fn scenemode_targets() -> Vec<u32> {
     let ranges = crate::common::chiri_core_ranges();
     let mut targets: Vec<u32> = ranges.little.clone().map(|c| c as u32).collect();

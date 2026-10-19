@@ -1,0 +1,149 @@
+# msm8998/feature.yaml: [function] [io-settings] [cpu-idle] [affinity] [corectl] [thermal] [reduce] [default] [boost]
+
+# [function]
+function:
+  CpuIdleScalingGovernor: true
+  IOOptimization: true
+
+# [io-settings]
+IO_Settings:
+  Scheduler: ""
+  read_ahead_kb: "512"
+  nomerges: "1"
+  iostats: "0"
+
+# [cpu-idle]
+CpuIdle:
+  current_governor: "menu"
+
+scene_mode_delay_secs: 3000
+
+# [affinity]
+Affinity:
+  enabled: true
+  top_app_uclamp_min_pct: 0
+  top_app_uclamp_max_pct: 0
+  pin_foreground_threads: true
+  # 后台降权（background / restricted 的 cpu.uclamp.max 百分比，0 = 关闭）：
+  # 后台任务的 util 需求被钳低 → EAS 放置与 schedutil 频率回落、优先落小核，
+  # 给 UI/视频等视觉可感的线程让路；不禁止使用大核（空闲时仍会被调度上去）。
+  # 刻意不含 system-background（媒体/音频等可感知的系统后台）。
+  background_uclamp_max_pct: 50
+
+# [corectl]
+CoreCtl:
+  enabled: true
+  # scenemode 离线核：息屏超时进入 scenemode 后**下线 little 簇**（引导核无法热拔出；
+  # big/prime 常驻低频，另留 1 颗大核给调度服务）。2026-09-28 与 8550 同批改为「下线小核」
+  # （原因见 8550 同名段）。8998 内核 4.4 的热插拔路径质量未知，默认仍关闭
+  # （如需省电可改 true 自行验证）。
+  scenemode_offline: false
+
+# [thermal]
+Thermal:
+  # 【2026-10-16 用户要求】温控全部关闭，安全关闭（说明与恢复见 sm8550/feature.yaml 同段）。
+  enabled: false
+  batt_soft_temp_c: 41
+  batt_hard_temp_c: 45
+  # CPU 温度仅极端热时参与（内核 ~95°C 温控兜底）：合成温区在大型游戏高负载下
+  # 常态 85°C+，75/85 会导致过半时间被软件压制、比官调更卡；90/95 只在接近
+  # 内核起控点时提前轻压
+  cpu_soft_temp_c: 90
+  cpu_hard_temp_c: 95
+  soft_perf_cap: 0.70
+  mid_perf_cap: 0.60
+  hard_perf_cap: 0.40
+  free_above: 0.80
+  hysteresis_c: 3
+  # 以下几项为代码缺省值（2026-09-27 随四级阶梯 + 硬档回滞 + tuned 热响应新增，
+  # 2026-09-28 补中档回滞）：本机型未实测，先按缺省跟进（字段语义见 sm8550/feature.yaml 同名段）。
+  batt_mid_temp_c: 43
+  cpu_mid_temp_c: 92
+  # 中/硬档回滞取 2：受 normalize 不变量「本级解除点不得低于下一档跳闸点」约束
+  # （中限-软限 = 硬限-中限 = 2，写 3 会被钳到 2 并 warn），取舍与 8550 一致。
+  hysteresis_mid_c: 2
+  hysteresis_hard_c: 2
+  tuned_resp_enabled: false
+  tuned_thermal_floor: 0.55
+
+# [sched]
+# 内核调度器参数微调（借鉴 LittleYouran CTS 的 Scheduler 段）：迁移成本调低
+# 便于跨核均衡、nr_migrate 收敛单次迁移量。写 /proc/sys/kernel/，白名单外忽略
+Sched:
+  enabled: true
+  params:
+    sched_migration_cost_ns: "200000"
+    sched_nr_migrate: "27"
+
+# [reduce]
+reduce:
+  cpu_load_governor:
+    up_threshold: 0.90
+    down_threshold: 0.50
+    smoothing_up: 0.50
+    util_smoothing: 0.5
+    down_rate_limit_ticks: 2
+    up_rate_limit_ticks: 2
+    headroom_factor: 1.05
+    headroom_ramp: 0.12
+    perf_floor: 0.05
+    perf_ceil: 1.0
+    perf_init: 0.20
+    up_jump_threshold: 0.35
+    slow_up_scale: 0.02
+    down_fast_threshold: 0.10
+    spike_jump_threshold: 0.35
+    spike_decay: 0.30
+    touch_boost_enabled: true
+    touch_boost_ms: 350
+    touch_boost_tiers: 1
+
+# [default]
+default:
+  cpu_load_governor:
+    up_threshold: 0.78
+    down_threshold: 0.55
+    smoothing_up: 0.75
+    util_smoothing: 0.5
+    down_rate_limit_ticks: 1
+    up_rate_limit_ticks: 1
+    headroom_factor: 1.05
+    headroom_ramp: 0.12
+    perf_floor: 0.05
+    # 原 0.80（2026-09-22 为省视频功耗所加）属天花板，2026-09-28 按「天花板一律拆除」撤回。
+    # 交互响应仍靠 touch_boost_ms 兜；稳态降功耗改由 steady_decay_* 承担。
+    perf_ceil: 1.0
+    perf_init: 0.25
+    up_jump_threshold: 0.30
+    slow_up_scale: 0.03
+    down_fast_threshold: 0.25
+    spike_jump_threshold: 0.40
+    spike_decay: 0.25
+    touch_boost_enabled: true
+    touch_boost_ms: 400
+    touch_boost_tiers: 1
+
+# [boost]
+boost:
+  cpu_load_governor:
+    up_threshold: 0.55
+    down_threshold: 0.40
+    smoothing_up: 0.95
+    down_rate_limit_ticks: 5
+    up_rate_limit_ticks: 1
+    headroom_factor: 1.25
+    headroom_ramp: 0.12
+    perf_floor: 0.40
+    perf_ceil: 1.0
+    # 稳态下探关闭：与 8550 boost 同口径——本档 up_threshold 0.55 时 T = (1.0/1.25)×0.90 = 0.72，
+    # 高于「下探积分区间」的上界 0.55，开启会让整个常态区间持续加深下探、削掉 boost 响应优势
+    steady_decay_enabled: false
+    perf_init: 0.60
+    up_jump_threshold: 0.25
+    slow_up_scale: 0.05
+    down_fast_threshold: 0.05
+    spike_jump_threshold: 0.40
+    spike_decay: 0.20
+    touch_boost_enabled: true
+    touch_boost_ms: 500
+    touch_boost_tiers: 1

@@ -14,5 +14,5 @@ fas_rules:
   # 接管/切回后的起始性能 0.50（与 sgame/speedmobile 一致）
   perf_init: 0.50
   migration_cost_ns: 400000
-  # 【2026-10-16 用户要求】FAS 温度护栏关闭，安全关闭（0 = 禁用；说明见 8550/feature.yaml 同段）。
+  # 【2026-10-16 用户要求】FAS 温度护栏关闭，安全关闭（0 = 禁用；说明见 sm8550/feature.yaml 同段）。
   core_temp_threshold: 0.0

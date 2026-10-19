@@ -1,0 +1,18 @@
+# exynos5250/feature.yaml: 只写机型专属项，其余与根 feature.yaml 深合并继承
+# （common.rs::embedded_feature_str：map 递归合并、标量与序列整体替换）。
+# 本机型**无真机调优结论**，reduce/default/boost 的 CLG 参数一律不写 → 继承根默认；
+# 编一套没验证过的数字比继承保守默认更危险（AGENTS.md R3 禁无依据的取值）。
+function:
+  CpuIdleScalingGovernor: false
+  IOOptimization: true
+
+IO_Settings:
+  Scheduler: "none"
+  read_ahead_kb: "128"
+  nomerges: "2"
+  iostats: "0"
+
+CpuIdle:
+  current_governor: ""
+
+scene_mode_delay_secs: 3000

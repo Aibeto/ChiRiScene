@@ -96,10 +96,56 @@ fn read_first_line(path: &str) -> String {
         .unwrap_or_default()
 }
 
-/// 触发 Chiri 专用调度的处理器型号片段，命中任一即启用；片段须能互相区分，新增机型在此追加即可8998 暂时下线：从名单移除即不接管 CPU 仅监控，config/8998/ 与兜底 match 保留，
-/// 恢复时把片段加回来
+/// 触发 Chiri 专用调度的处理器型号片段，命中任一即启用；片段须能互相区分，新增机型在此追加即可。
+/// 片段统一带厂牌前缀（sm/msm），兼作更安全的探测器：子串匹配下 sm8550 不会误命中无关硬件，原先的裸数字 8550 则会。
+/// 2026-10-20 批量适配后本表扩到 39 条（覆盖 freqbench_tensor 全部可用机型，含 34 个新机型）；
+/// msm8998 原曾从名单移除（「暂时下线」），本轮已随帕累托前沿一起恢复：其 freqbench 实测折算出了
+/// capacity/freq_khz 与前沿表，不再等 dtsi。
 // [soc_detect]
-const CHIRI_SOC_HINTS: &[&str] = &["8550", "8475", "8650", "zumapro"];
+// 顺序有语义：片段是「子串匹配、首个命中即停」，故任何**更短**的片段必须排在它的超集之后
+// （zuma ⊂ zumapro、sm6150 ⊂ sm6150ac、sm7150 ⊂ sm7150ab/ac、sm8150 ⊂ sm8150ac），
+// 否则长名机型会解析到短名的配置目录，静默拿错 topology/capacity。新增机型同理：放进冲突组内更长的那个之前。
+const CHIRI_SOC_HINTS: &[&str] = &[
+    "sm8550",
+    "sm8475",
+    "sm8650",
+    "msm8998",
+    "zumapro",
+    "exynos5250",
+    "exynos7880",
+    "exynos7904",
+    "exynos9611",
+    "gs201",
+    "lga",
+    "msm8917",
+    "msm8940",
+    "msm8953",
+    "msm8996",
+    "mt6853t",
+    "sdm439",
+    "sdm630",
+    "sdm632",
+    "sdm636",
+    "sdm660",
+    "sdm670",
+    "sdm710",
+    "sdm712",
+    "sdm845",
+    "sm6115",
+    "sm6125",
+    "sm6150ac",
+    "sm7125",
+    "sm6150",
+    "sm7150ab",
+    "sm7150ac",
+    "sm7150",
+    "sm7250ab",
+    "sm8150ac",
+    "sm8250",
+    "sm8150",
+    "sm8350",
+    "zuma",
+];
 
 /// 读取单个 Android 系统属性（getprop key），失败/为空返回空串跨分区属性只能走 getprop 拿合并视图，直接读 /system/build.prop 会读空
 pub(crate) fn getprop(key: &str) -> String {
@@ -113,7 +159,7 @@ pub(crate) fn getprop(key: &str) -> String {
 }
 
 /// 型号片段是否命中任一特定处理器：从多个权威来源取硬件标识统一比较，避免机型只暴露部分来源而漏检来源：soc0/machine、soc0/plat_name、getprop ro.soc.model / ro.board
-/// platform / ro.product.board / ro.hardware、/proc/cpuinfo 兜底结果统一转小写后做子串匹配，兼容 "SM8550" / "sm8550" / "8550"
+/// platform / ro.product.board / ro.hardware、/proc/cpuinfo 兜底结果统一转小写后做子串匹配，兼容 "SM8550" / "sm8550"（裸数字 8550 不再命中——片段带厂牌前缀才能避免误匹配无关硬件）
 fn soc_hint_matches(hints: &[&str]) -> bool {
     hints.iter().any(|h| hint_matches(h))
 }
@@ -167,7 +213,7 @@ fn matched_soc_config_dir() -> Option<PathBuf> {
     matched_soc_hint().map(|hint| get_module_root().join("config").join(hint))
 }
 
-/// 处理器核心组区间（little/big/prime 的 CPU ID，左闭右开）：akmode 忙/闲统计、CLG 触摸升频判定大核簇使用各 SoC 簇布局不同，按命中片段区分，未命中回退 8550 布局兜底
+/// 处理器核心组区间（little/big/prime 的 CPU ID，左闭右开）：akmode 忙/闲统计、CLG 触摸升频判定大核簇使用各 SoC 簇布局不同，按命中片段区分，未命中回退 sm8550 布局兜底
 // [core_ranges]
 #[derive(Debug, Clone)]
 pub struct CoreGroupRanges {
@@ -193,12 +239,12 @@ pub fn chiri_core_ranges() -> CoreGroupRanges {
         }
     }
     match matched_soc_hint() {
-        Some("8475") => CoreGroupRanges {
+        Some("sm8475") => CoreGroupRanges {
             little: 0..4,
             big: 4..7,
             prime: 7..8,
         },
-        Some("8998") => CoreGroupRanges {
+        Some("msm8998") => CoreGroupRanges {
             little: 0..4,
             big: 4..8,
             prime: 7..7,
@@ -221,7 +267,7 @@ pub enum CoreGroup {
     Prime,
 }
 
-/// cpu id 落在哪个核心组，都不在返回 None（8998 空 prime 区间不会命中 prime）；区间以 chiri_core_ranges 为准
+/// cpu id 落在哪个核心组，都不在返回 None（msm8998 空 prime 区间不会命中 prime）；区间以 chiri_core_ranges 为准
 pub fn core_group_of(cpu: u32) -> Option<CoreGroup> {
     let r = chiri_core_ranges();
     let c = cpu as usize;
@@ -259,7 +305,7 @@ pub struct SocConfig {
     #[serde(default)]
     #[allow(dead_code)]
     pub dpc: Option<SocTriValues>,
-    /// 帕累托前沿查表段（8550 / zumapro 已具备；无本段的 SoC → 天然 None → 走原比例路径）
+    /// 帕累托前沿查表段（sm8550 / zumapro 已具备；无本段的 SoC → 天然 None → 走原比例路径）
     /// [frontier_lenient] 用宽松反序列化：本段损坏不得拖垮整份 soc.yaml（topology/capacity/freq 兜底是更贵的资产）
     #[serde(default, deserialize_with = "deserialize_frontier_lenient")]
     pub frontier_policy: Option<FrontierPolicy>,
@@ -1176,7 +1222,7 @@ pub fn is_affinity_blacklisted(cmdline: &str) -> bool {
 // [embedded]
 static CONFIG_DIR: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/module/config");
 
-/// 按相对 module/config 的路径取嵌入文本（如 "8550/meta.yaml"），缺失返回 None；必需文件存在性由 build.rs 编译期断言，运行时不会静默空转
+/// 按相对 module/config 的路径取嵌入文本（如 "sm8550/meta.yaml"），缺失返回 None；必需文件存在性由 build.rs 编译期断言，运行时不会静默空转
 pub(crate) fn embedded_config_file(rel: &str) -> Option<&'static str> {
     CONFIG_DIR.get_file(rel).and_then(|f| f.contents_utf8())
 }
@@ -1199,7 +1245,7 @@ pub fn embedded_meta_str() -> &'static str {
 }
 
 /// 嵌入的 feature.yaml：以根文件为基底，按字段深合并命中处理器的 {soc}/feature.yaml，map 递归合并、标量与序列整体替换
-/// 未命中处理器时即根文件本身，SoC 未写的整段也会从根继承（如 8550/8998 无 vector 段）
+/// 未命中处理器时即根文件本身，SoC 未写的整段也会从根继承（如 sm8550/msm8998 无 vector 段）
 fn merge_yaml(base: &mut serde_yaml::Value, over: &serde_yaml::Value) {
     if let (serde_yaml::Value::Mapping(b), serde_yaml::Value::Mapping(o)) = (&mut *base, over) {
         for (k, v) in o {

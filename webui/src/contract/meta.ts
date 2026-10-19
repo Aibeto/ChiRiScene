@@ -79,7 +79,7 @@ export interface MetaSnapshot {
 }
 
 // [active]
-/** 读取生效配置相对路径（active_config.chr）：daemon 启动时写入、无换行，形如 `meta.yaml` 或 `8550/meta.yaml`；只在启动时写，停跑后可能是陈旧值 */
+/** 读取生效配置相对路径（active_config.chr）：daemon 启动时写入、无换行，形如 `meta.yaml` 或 `sm8550/meta.yaml`；只在启动时写，停跑后可能是陈旧值 */
 export async function readActiveConfigRel(): Promise<ReadResult<string>> {
   const r = await readText(absOf('activeConfig'), 'not-created', 512)
   if (r.kind !== 'ok') return r

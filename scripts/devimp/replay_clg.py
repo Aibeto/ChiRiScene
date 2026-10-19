@@ -81,8 +81,8 @@ def function(text, signature):
 def build_source():
     production = (ROOT / "src/chiri/cpu_load_governor.rs").read_text()
     config_source = (ROOT / "src/chiri/config.rs").read_text()
-    feature = (ROOT / "module/config/8550/feature.yaml").read_text()
-    soc = (ROOT / "module/config/8550/soc.yaml").read_text()
+    feature = (ROOT / "module/config/sm8550/feature.yaml").read_text()
+    soc = (ROOT / "module/config/sm8550/soc.yaml").read_text()
     decision = function(production, "fn on_load_update(&mut self, core_utils: &[f32])")
     helpers = "\n".join(function(production, "fn " + name) for name in (
         "find_floor_freq(&self, target_ratio: f32)", "deadzone_band(&self, deadzone_ratio: f32)",

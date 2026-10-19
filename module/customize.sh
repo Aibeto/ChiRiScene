@@ -196,7 +196,7 @@ detect_volume_key() {
 }
 
 # [battery-detect] 按机型把电池读数开关与校准倍数写进当前机型的 meta.yaml
-# 定位优先 active_config.chr（生效配置相对路径，如 8550/meta.yaml），否则用 rosoc.model 数字部分拼机型目录
+# 定位优先 active_config.chr（生效配置相对路径，如 sm8550/meta.yaml），否则按 ro.soc.model 拼机型目录
 # OPlus 私有节点 bcc_parms 可读则开 oplus_chg，第 12 字段为正则开 oplus_dual_cell
 # 校准倍数走 apply_divisor_from_raw，只在「不保留配置」时调用，定义必须早于调用点
 OPLUS_BCC="/sys/class/oplus_chg/battery/bcc_parms"
@@ -213,9 +213,24 @@ locate_meta_file() {
         rel=$(cat "$active" 2>/dev/null | tr -d ' \t\r\n')
     fi
     if [ -z "$rel" ]; then
-        local soc=$(getprop ro.soc.model 2>/dev/null | tr -cd '0-9')
+        # 目录名 = 处理器标识全小写（sm8550 / sm8475 / sm8650 / msm8998 / zumapro），
+        # 与 src/common.rs 的 CHIRI_SOC_HINTS 同口径：**不能只取数字部分**
+        # （旧写法 tr -cd '0-9' 会得到 "8550"，而目录叫 sm8550，装机首次定位必然落空）。
+        local soc=$(getprop ro.soc.model 2>/dev/null | tr -d ' \t\r\n' | tr 'A-Z' 'a-z')
         if [ -n "$soc" ] && [ -f "$MODPATH/config/$soc/meta.yaml" ]; then
             rel="$soc/meta.yaml"
+        else
+            # 兜底：机型可能只暴露别处的硬件标识（ro.product.board / ro.board.platform），
+            # 逐个候选目录比对，命中即用；都不命中留空（调用方按「无专属 meta」处理）
+            local cand
+            for cand in $(getprop ro.board.platform 2>/dev/null | tr -d ' \t\r\n' | tr 'A-Z' 'a-z') \
+                        $(getprop ro.product.board 2>/dev/null | tr -d ' \t\r\n' | tr 'A-Z' 'a-z'); do
+                [ -n "$cand" ] || continue
+                if [ -f "$MODPATH/config/$cand/meta.yaml" ]; then
+                    rel="$cand/meta.yaml"
+                    break
+                fi
+            done
         fi
     fi
     if [ -n "$rel" ] && [ -f "$MODPATH/config/$rel" ]; then

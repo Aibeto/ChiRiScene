@@ -1,6 +1,6 @@
 //! clg_tuning_regression.rs: [config_contract]
 //! Run: rustc --test scripts/tests/clg_tuning_regression.rs -o devimpbin/p23_config_test
-const FEATURE: &str = include_str!("../../module/config/8550/feature.yaml");
+const FEATURE: &str = include_str!("../../module/config/sm8550/feature.yaml");
 fn default_value(key: &str) -> f32 {
     let block = FEATURE.split("# [default]").nth(1).unwrap().split("# [boost]").next().unwrap();
     block.lines().find_map(|line| line.strip_prefix(&format!("    {key}: "))).unwrap().parse().unwrap()

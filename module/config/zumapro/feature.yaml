@@ -68,7 +68,7 @@ CoreCtl:
 
 # [thermal]
 Thermal:
-  # 【2026-10-16 用户要求】温控全部关闭，安全关闭（说明与恢复见 8550/feature.yaml 同段）。
+  # 【2026-10-16 用户要求】温控全部关闭，安全关闭（说明与恢复见 sm8550/feature.yaml 同段）。
   enabled: false
   # CPU 温度探测名单默认 = 内置（soc_max → cpuss → mtktscpu/… 按序 contains 匹配），
   # soc_max 为聚合温区（偏保守、非纯 CPU）；本机若需增删节点才写 cpu_temp_zone_types。

@@ -919,7 +919,7 @@ DDR 票 2.188 → 3.072 GB/s），跳过 big/prime 用到的「4.8 / 3.072」组
 X3 只有单核算力需求 >2600 Mdmips 才值得上（它的每 Mdmips 从低到高劣化近 3 倍）。
 
 capacity 注记：`capacity-dmips-mhz` 用 DT 的 326/693/1024，真机 capacity 实测 280/855/1024
-（`module/config/8550/soc.yaml`）。
+（`module/config/sm8550/soc.yaml`）。
 
 换算必须按内核 `cpu_capacity` 的语义来：它是**各自最高频处的相对性能**（prime 归一化到 1024），**不是每 MHz 速率**，所以真机算力(f) = `cpu_capacity × f / f_max`。
 把「每 Mdmips 成本」换算成「每真机容量单位成本」的系数 = `dmips_mhz × f_max ÷ (1000 × cpu_capacity)`：little（326×2016÷(1000×280)）**2.347**、big（693×2803.2÷(1000×855)）**2.272**、prime（1024×3187.2÷(1000×1024)）**3.187**。
@@ -993,7 +993,7 @@ Cx 出处核对：Odin2 补丁 Cx 列均值 250.3/471.3/420.3/1056.1 → 251/472
 | 30%·峰值     | #29      | 3.859 W     | 9073 Mdmips     | 1785600 / 2054400 / 1593600    |
 | 25%·峰值     | #34      | 4.780 W     | 10161 Mdmips    | 2016000 / 2323200 / 1708800    |
 
-上界 = 「最后一个满足边际 ≥ 阈值的前沿段」的终点；段边际与 `module/config/8550/soc.yaml`
+上界 = 「最后一个满足边际 ≥ 阈值的前沿段」的终点；段边际与 `module/config/sm8550/soc.yaml`
 的 `demand_buckets.margin_mdmips_per_w`（该点 → 下一点）同口径，可逐点对账。
 
 前沿的边际能效分四段衰减（Mdmips/W）：
@@ -1050,6 +1050,6 @@ playback 中位 38 mW（p90 159 mW）、default 中位 52 mW（p90 252 mW），�
 - TODO: 日常「能用」的下界（流畅度预留）未定——本节 U 分位是实测负载分布，不是流畅度判据；
   `reserve_pct` 与 CLG 的 `lead_frac` 定稿前，落点选取不含预留量。
 
-**应用**：CLG-PF 的 `frontier_policy` 受控块（`module/config/8550/soc.yaml`，由 `scripts/frontier_policy.py`
+**应用**：CLG-PF 的 `frontier_policy` 受控块（`module/config/sm8550/soc.yaml`，由 `scripts/frontier_policy.py`
 从本节 §3 模型复算生成）即取本节落点；运行期需求落到哪个桶由亮度与负载决定，8550 亮屏日常的中位负载
 落在 #13 桶。详见 `agentsdocs/03-chiri.md` 的「稳态下探（T11）与帕累托前沿落点（CLG-PF）」节。
