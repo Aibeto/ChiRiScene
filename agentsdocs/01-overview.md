@@ -30,7 +30,7 @@ webui/                # Svelte 5(runes) + TypeScript + Vite 管理界面（2026-
   scripts/fetch-fonts.mjs  # 构建期拉取字体（predev/prebuild 自动执行）：Poppins 拉丁 + Noto Sans SC 中文子集，产物 src/assets/fonts/ 不入库
 WebUI-old/            # 重构前 ak-ui 版本留档（2026-10-15 停更，仅供对照）
 analyze/              # PC 端 CSV 分析台（analyze/index.html 单文件零依赖 + analyze/fonts/ 按实际用字裁的子集字体），浏览器打开即可看 status.csv 曲线（file:// 下需 `python -m http.server`）
-updateInformation/    # 更新.json 与 changelog（changelog.md / HotUpdateInfo.md 现为空文件，是否填充待定，见 07）
+updateInformation/    # 更新.json 与 changelog（changelog.md / HotUpdateInfo.md 现为空文件，是否填充待定 — 台账条目见 07）
 .github/workflows/    # CI：Node 24 + Rust nightly + NDK r29；cargo-ndk/bpf-linker 走官方预编译二进制 + rust-cache；提交信息含 "skip ci"（不分大小写）时跳过该次构建；push 变更全落在 docs/agentsdocs/mdocs/.archive/.trae/.cursor/.codebuddy/.workbuddy 时不触发（tag 发布不受 path 过滤影响）；**加速前基线 run #77 总 220s**（分步见 `05-maint.md` 的 CI 取证条），三项加速落地后热命中预期 110~130s
 AppOptR/              # 第三方 submodule（线程调整参考实现，锁 commit；内部文件勿移动/改写，否则污染 submodule 工作区）
 LittleYouran_CTS_3/   # 第三方 submodule（CPU Turbo Scheduler 二改；feature.yaml Scheduler 段参数的借鉴来源）
@@ -85,3 +85,5 @@ cd webui && npm test
 - 本地开发只做 `cargo check` / WebUI `type-check`；完整产物由 CI（GitHub Actions）生成。不要随意 `cargo build`（需要 NDK 环境），优先静态检查。
 
 - bpf-linker 获取：`build.rs` 的 `ensure_bpf_linker` 依次尝试 PATH 中已有 bpf-linker → OUT_DIR 缓存 → `cargo install bpf-linker`。CI 通过 GitHub API 下载静态链接 LLVM 的预编译二进制（bpf-linker 0.11 依赖 LLVM 21+，源码编译在 ubuntu runner 上不可行；cargo-binstall 也会回退到源码编译）。eBPF release 编译在 build.rs 内用 `CARGO_PROFILE_RELEASE_OPT_LEVEL=2` 局部覆盖（新版 bpf-linker 已移除 `-Oz`/`-Os`，仅支持 `-O0~O3`，workspace 根的 `opt-level="z"` 会导致链接失败）。Windows 兜底：bpf-linker 源码编译依赖 `os::unix` API，Windows 上无法构建，且本地不承担完整产物构建。`ensure_bpf_linker` 在 Windows 无现成 bpf-linker 时返回跳过错误，`build_ebpf` 捕获后经 `write_ebpf_stub()` 回退占位产物（`ebpf_target/bpfel-unknown-none/{debug,release}/yumi-ebpf`，与 `YUMI_SKIP_EBPF=1` 同路径），保证 rust-analyzer 和本地 `cargo check` 不被阻塞。Windows 上若有 `bpf-linker.exe` 仍正常构建 eBPF，CI 行为不变。
+
+- **本机（无 NDK）的验证边界（2026-10-20 实测）**：`cargo check --workspace` 在本机预失败——`build.rs:157` panic `yumi-ebpf 编译失败`，stderr = `error: the -Z flag is only accepted on the nightly channel of Cargo`；需 nightly 或 `YUMI_SKIP_EBPF=1`。**但 `YUMI_SKIP_EBPF=1` 会产出 stub 占位产物**：日志里「✅ 编译成功」可能是 stub 假象，只有「⚠ 跳过 eBPF 编译」才是真相（见 MEMORY 同一口径）。`--target aarch64-linux-android` 也跑不了：本机无 Android NDK，`zstd-sys` / `ring` 的 vendored C 缺 `aarch64-linux-android-clang`。**故本机可做的回归只有**：`cargo fmt --all --check`、`sh -n module/customize.sh`、`rustc --test scripts/tests/*.rs` 三件套，以及纯 Python 的生成器 / 回放脚本。凡「改动涉 Rust 语义」的结论都不能以本机 check 通过为依据。

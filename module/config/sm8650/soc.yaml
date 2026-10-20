@@ -161,12 +161,16 @@ freq_khz:
     ]
 
 # [idle] 空闲态代价（µs，厂商 dtsi；校准基准，暂无运行时消费方）。
-# 本机型 dtsi 只声明单级 per-CPU 态（A520/A720/X4 同用 cpu-sleep-0-0，不分组）+
-# 单级簇态，故三簇同值。
+# 本机型 dtsi 的 per-CPU 空闲态按供电轨分三族，**不是三簇同值**（2026-10-20 对账订正）：
+#   silver     cpu-sleep-0-0  → CPU0-1   exit 750  / min_res 6700
+#   gold       cpu-sleep-1-0  → CPU2-6   exit 1300 / min_res 8136
+#   gold-plus  cpu-sleep-2-0  → CPU7     exit 1350 / min_res 7480
+# 映射到 ChiRi 三簇口径即 little=silver / big=gold / prime=gold-plus。
+# 簇态两级：cluster-sleep-0 exit 2350（min_res 9144）、cluster-sleep-1 exit 4400（min_res 10150）。
 idle_us:
-  exit_latency: { little: 750, big: 750, prime: 750 }
-  min_residency: { little: 6700, big: 6700, prime: 6700 }
-  cluster_exit_latency: [2350] # cluster-sleep-0
+  exit_latency: { little: 750, big: 1300, prime: 1350 }
+  min_residency: { little: 6700, big: 8136, prime: 7480 }
+  cluster_exit_latency: [2350, 4400] # cluster-sleep-0 / cluster-sleep-1
 
 # [dpc] dynamic-power-coefficient（厂商 dtsi 的 `dynamic-power-coefficient`；校准基准）。
 dpc: { little: 100, big: 238, prime: 588 }

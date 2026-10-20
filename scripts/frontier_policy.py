@@ -191,6 +191,32 @@ def parse_cluster_tables(path: Path):
     return out
 
 
+def monotone_compute(tables):
+    """把每簇算力列修正为随频率**单调不减**，并报告被抬起的档位
+
+    算力在物理上必然随频率单调不减（同簇同核数，频率越高算力只会持平或上升）。
+    实测表出现逆序 = CoreMark 单档噪声（sm8350 prime 1420800 档 coremarks_per_mhz
+    5.22，邻档 8.83 / 7.75），而生成器的 hull 与桶边界都要拿算力排序：
+    非单调列会让「hull 序」与「combo_units 序」互相矛盾，产出 lo_units 非单调的桶表，
+    运行期二分查表随即落到错桶（见 07-todos 的 sm8350 条）。
+
+    修法取**保守侧**：逆序档抬到「到此为止见过的最大值」（前缀最大值），
+    即把测低的档当作「至少与前档同算力」，不用邻档插值（会凭空造出未测点）。
+    返回 (修正后的 tables, [(簇, 频率, 原值, 修正值), ...])，供调用方打印告警。
+    """
+    out, fixes = {}, []
+    for cluster, rows in tables.items():
+        fixed, run = [], None
+        for freq, power, compute in rows:
+            if run is None or compute > run:
+                run = compute
+            elif compute < run:
+                fixes.append((cluster, freq, compute, run))
+            fixed.append((freq, power, run))
+        out[cluster] = fixed
+    return out, fixes
+
+
 def section_lines(text: str, name: str):
     """取顶层 `name:` 段落（到下一个列 0 的非注释行前）。
 
@@ -351,8 +377,26 @@ def build_buckets(hull, cap, freqs, cores):
 
     每个桶直接带该前沿点的三簇目标频点（little_khz/big_khz/prime_khz）——运行期
     查表即可，不用在设备上重算 Cx·f·V²。纯几何定义，不依赖 SLO。
+
+    **不变式（落表前硬断言）**：`units` 必须严格非降。运行期 `bucket_for_demand()`
+    对 `lo_units` 做二分（partition_point），数组一旦非单调，查表结果未定义——不是慢，
+    是**错桶**：需求落到相邻桶、目标频点偏低（过度降频）或本应有桶却回退比例路径。
+    `units` 用的是 capacity×f/f_max 折算算力，与文档 §3 算力列**不同源**，所以
+    「文档算力单调」推不出「units 单调」；这里显式兜底，坏表一律拒绝落盘。
     """
     units = [combo_units(p[2], cap, freqs, cores) for p in hull]
+    bad = [
+        (i, units[i], units[i + 1])
+        for i in range(len(units) - 1)
+        if units[i + 1] < units[i] - 1e-9
+    ]
+    if bad:
+        detail = "、".join(f"#{i} {a:.1f} → #{i + 1} {b:.1f}" for i, a, b in bad[:5])
+        raise SystemExit(
+            f"桶表不可落盘：hull 的 combo_units 非单调（{len(bad)} 处逆序：{detail}）。"
+            "运行期二分查表会落到错桶。先查文档 §3 算力列是否非单调（本脚本已按前缀"
+            "最大值自动修，仍有逆序说明 capacity / freq_khz 与文档 §3 表不一致）。"
+        )
     buckets = []
     for i, p in enumerate(hull):
         lo = units[i] if i == 0 else (units[i - 1] + units[i]) / 2.0
@@ -598,6 +642,12 @@ def main(argv=None):
             raise SystemExit(f"缺少输入: {p}")
 
     tables = parse_cluster_tables(prof["doc"])
+    # 算力列先修单调：非单调列会让 hull 序与 combo_units 序互相矛盾 → 桶表 lo_units 非单调
+    tables, compute_fixes = monotone_compute(tables)
+    if compute_fixes:
+        print(f"⚠ 算力列非单调 {len(compute_fixes)} 处，已按前缀最大值抬起：", file=sys.stderr)
+        for cluster, freq, was, now in compute_fixes:
+            print(f"    {cluster} {freq} kHz: {was:.1f} → {now:.1f} CMdmips", file=sys.stderr)
     cap, freqs, cores = parse_soc(prof["soc"])
     counts = {c: len(tables.get(c, [])) for c in CLUSTERS}
     # 不再写死「期望 little16/big20/prime21」：档位数随 SoC 变，只查退化表

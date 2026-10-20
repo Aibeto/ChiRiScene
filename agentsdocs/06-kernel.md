@@ -1,6 +1,6 @@
 ## [kernel] SM8550 内核机制分析（android_kernel_oneplus_sm8550）
 
-> 2026-09-26 内核分析会话沉淀（8 份报告 + 真机数据包，原件已归档）。基准：OnePlus 11（PHB110）/ 小米 13 Pro（2210132C），内核 5.15.180/194，检出 `oneplus sm8550_b_16.0.0`。真机取证未竟项统一记 `07-todos.md`「内核取证」节。
+> 2026-09-26 内核分析会话沉淀（8 份报告 + 真机数据包，原件已归档）。基准：OnePlus 11（PHB110）/ 小米 13 Pro（2210132C），内核 5.15.180/194，检出 `oneplus sm8550_b_16.0.0`。**取证未竟项**（真机 `fdt` 导出、`uclamp_tg_restrict` 的 tg 层评估、cpu_temp 两路 zone 归属、`freq_trans` 计数、ChirunoNeko 内核帧链路修法三选）现由本节各处就地标注「未做 / 未定」，不再单设台账节。
 
 ### 平台基准（8550）
 
@@ -21,11 +21,21 @@
 - 真机 cpufreq governor 观测值 = `uag`（与 8550/8475/8998 的 `cpu_governors` 首选一致）。
 - 已确认的编译配置：`CONFIG_ENERGY_MODEL=y`、`CONFIG_UCLAMP_TASK=y`、`CONFIG_CPU_IDLE_GOV_MENU=y`、`CONFIG_SCHED_WALT=m`、`CONFIG_ARM_QCOM_CPUFREQ_HW=m`、`CONFIG_OPLUS_CPU_FREQ_GOV_UAG=m`（`cpufreq_uag.ko` 进 `modules.list.msm.pineapple`）；无 `cpufreq_walt` 调速器。
 - **`sched_migration_cost_ns` / `sched_nr_migrate` 在本内核不是 `/proc/sys/kernel` 节点**：本内核注册的 sched sysctl 只有 12 个（`sched_child_runs_first`、`sched_deadline_period_{min,max}_us`、`sched_energy_aware`、`sched_pelt_multiplier`、`sched_rr_timeslice_ms`、`sched_rt_{period,runtime}_us`、`sched_schedstats`、`sched_util_clamp_{min,max}`、`sched_util_clamp_min_rt_default`，分别由 `kernel/sched/core.c`、`topology.c`、`pelt.c` 的 `register_sysctl_init` 注册）；`sched_migration_cost` 等在无 `CONFIG_SCHED_DEBUG` 时是 `const`（`const_debug`），只有 debugfs `/sys/kernel/debug/sched/{migration_cost_ns,nr_migrate}`，该配置未开。源码默认值 500000 / 32。→ 8650 的 `Sched` 段已置 `enabled: false`（白名单 7 键中本机仅 `sched_energy_aware`、`sched_schedstats` 可写，且都不该动）；FAS 与 tuned 的 `migration_cost_ns` 同节点，本机一律空转（写失败按未配置处理）。
-- 频率档表由 EPSS 硬件 LUT 运行时注册（`drivers/cpufreq/qcom-cpufreq-hw.c::qcom_cpufreq_hw_read_lut`），无静态 CPU OPP 可抄；EM 依赖 DT 的 `dynamic-power-coefficient`（随 vendor DTS 缺失）。
+- 频率档表由 EPSS 硬件 LUT 运行时注册（`drivers/cpufreq/qcom-cpufreq-hw.c::qcom_cpufreq_hw_read_lut`）——**本条只对「检出内未带厂商 dtsi」的那份内核成立**：厂商 dtsi `sm8650.dtsi` 实际含完整静态 CPU OPP 表（见下「平台基线（sm8475 / msm8998，dtsi 口径）」节，已逐档对账并写入 `soc.yaml [freq_khz]`）。EM 依赖 DT 的 `dynamic-power-coefficient`——厂商 dtsi 里**有**（100/238/588），也已写入 `[dpc]`。
 - **真机 capacity（`cpu_capacity` 逐 policy）**：policy0 = 379、policy2 = 923、policy5 = 867、policy7 = 1024（FAS 自动算力权重日志，已是 `arch_topology.c` 归一化后的值）。已写入 `config/sm8650/soc.yaml [capacity]`（big 取 923）。
 - 真机频率范围（CLG 初始化读到的 policy min–max，MHz）：P0 364.8–2265.6、P2 499.2–3148.8、P5 499.2–2956.8、P7 480–3302.4。注意 snap 行里的 `cpu_max_khz` 常见 3052800 之类**不是硬件上限**，是厂商/vendor 动态改过的 policy max。
 - **真机 frequency 与厂商 dtsi 静态 OPP 表已对账一致（2026-10-20）**：`AYNTechnologies/linux/arch/arm64/boot/dts/qcom/sm8650.dtsi` 含完整静态 CPU OPP 表，逐簇括住真机范围 —— little 25 档 `307200-2265600`（真机 P0 `364800-2265600`）、big 47 档 `460800-3148800`（真机 P2 `499200-3148800`，且含 P5 的 `2956800`）、prime 49 档 `480000-3302400`（真机 P7 `480-3302.4` 完全吻合）。已写入 `config/sm8650/soc.yaml [freq_khz]`。注意 P5 真机 max 只有 2956800、而 dtsi 的 cpu5_opp_table 与 cpu2_opp_table 逐档相同（都到 3148800）——差异来自厂商/vendor 动态改 policy max，非 DT 阶梯不同。
-- TODO: 逐档功耗表（→ 无 `frontier_policy`，CLG-PF / FDP 均不启用）；sm8450.dtsi 的数值（4+3+1 三域）**不可**套到 8650。idle/dpc 已从厂商 dtsi 补入（idle exit 750 / min_res 6700 / 簇态 2350，dpc 100/238/588）。
+- TODO: 逐档功耗表（→ 无 `frontier_policy`，CLG-PF / FDP 均不启用）；sm8450.dtsi 的数值（4+3+1 三域）**不可**套到 8650。idle/dpc 已从厂商 dtsi 补入，`[idle]` 的分族取值见下「平台基线（sm8475 / msm8998，dtsi 口径，2026-10-20）」节，dpc 100/238/588 逐值正确。
+
+### 平台基线（sm8475 / msm8998，dtsi 口径，2026-10-20）
+
+> 来源 = 厂商 dtsi（非 mainline）：`sm8650` 用仓库内 `AYNTechnologies/linux/arch/arm64/boot/dts/qcom/sm8650.dtsi`；`msm8998` 用 `android_kernel_oneplus_sm8550/arch/arm64/boot/dts/qcom/msm8998.dtsi`（同件亦在 sm8650 仓）；`sm8475` 不在 mainline（`git.kernel.org` 上 `sm8475.dtsi`/`cape.dtsi` 均 404，torvalds/linux-next/stable 三处一致），取自 `OnePlusOSS/android_kernel_modules_and_devicetree_oneplus_sm8475`（分支 `oneplus/sm8475_s_12.1_oneplus_10t_5g`）的 `kernel_platform/qcom/proprietary/devicetree/qcom/cape.dtsi`，落在 **gitignored** 的 `devimpbin/web/cape.dtsi`（换机器/清理 devimpbin 后需重新取）。**平台代号：cape = SM8475，waipio = SM8450，kalama = SM8550。**
+
+- **`sm8650`（kalama）静态 OPP 表已证实存在**：本仓 `sm8650.dtsi` 的 `cpu0/2/5/7_opp_table` 逐档与 `module/config/sm8650/soc.yaml [freq_khz]` **逐字节相同**——little 25 档 307200-2265600、big 47 档 460800-3148800（`cpu2` ≡ `cpu5`，但真机 P5 max 只到 2956800，差异来自 vendor 动态改 policy max 而非 DT 阶梯）、prime 49 档 480000-3302400。原 06 该节「EPSS 无静态 OPP 可抄」只对本检出**未带厂商 dtsi** 的那份内核成立，见 `sm8650.dtsi` 即证伪，勿再据旧结论判定「不可补 `[freq_khz]`」。
+- **`sm8650` idle 是**分族绑定**、不是三簇同值（2026-10-20 订正并已改配置）**：dtsi 声明三种 per-CPU 态并**按供电轨绑定**——CPU0-1 → `silver_cpu_sleep_0`（exit 750 / min_res 6700）、CPU2-6 → `gold_cpu_sleep_0`（exit **1300** / min_res **8136**）、CPU7 → `gold_plus_cpu_sleep_0`（exit **1350** / min_res **7480**）；簇态两级 `cluster_sleep_0`（exit 2350 / min_res 9144）与 `cluster_sleep_1`（exit 4400 / min_res 10150）。`soc.yaml` 的 `[idle_us]` 已按 little=silver / big=gold / prime=gold-plus 落值、`cluster_exit_latency: [2350, 4400]` 补两档（原值三簇同 750/6700、簇态只记一级，注释误称「三簇同用 cpu-sleep-0-0，不分组」）。**该段无运行时消费方**，订正只影响校准基准。
+- **`sm8475`（cape）**：`[capacity]` 1024/2253/2386 与 `[dpc]` 100/257/509 与 `cape.dtsi` 逐值一致（`capacity-dmips-mhz` 4×1024 / 3×2253 / 1×2386）。`[idle]` 取 `silver`/`gold` per-CPU 态（little exit 750 / min_res 4090，big·prime exit 1550 / min_res 4791）+ 簇态 `[2500, 3500]`（`cluster-d4` / `cluster-e3`）与 dtsi 一致。**`[freq_khz]` 仍缺**：`qcom,freq-domain = <&cpufreq_hw N 4>` 只给簇编号，无 `qcom,cpufreq-table`，频表走 EPSS 硬件 LUT。
+- **`msm8998`（OnePlus 4.4 内核时代）**：`[idle_us]` 取深态 `cpu-sleep-0-1`(little exit 4562 / min_res 9183，entry 814) 与 `cpu-sleep-1-1`(big exit 2027 / min_res 9419，entry 724)，与 dtsi 逐值一致；浅态为 little exit 86 / min_res 504、big exit 82 / min_res 1302。该 dtsi **未声明 `dynamic-power-coefficient`**（全文件 0 处），故 `[dpc]` 保持缺省。DT `capacity-dmips-mhz` 声明 1024/1536（Kryo280 4+4），与 freqbench 折算的 490/1024 比值不同（1:1.5 vs 1:2.09）——两者均为相对值、消费方只排序，不冲突。
+- **跨机型通用注意**：厂商板级 DT 的 `capacity-dmips-mhz` 常与真机 `cpu_capacity` 不符（8550：DT 326/693/1024 vs 真机 280/855/1024），故 `[capacity]` 只作 sysfs 读不到时的兜底，真机可读即以真机值为准。
 
 ### 平台基线（zumapro，Pixel 9 Pro / Tensor G4）
 
@@ -44,7 +54,7 @@
 
 - 本内核检出**无任何厂商 DT 源**：`arch/arm64/boot/dts/vendor` 是 symlink→`qcom/proprietary/devicetree`（仓库外、非 gitlink），`dts/qcom` 止于 sm8350；「280/855/1024 出自厂商 dts」在本检出永远无法验证。需厂商 DT 时另拉 `qcom/proprietary/devicetree` repo。
 - mainline `mdocs/sm8550/sm8550.dtsi` 可依赖块：freq-domain 划分（CPU0-2→domain0 / 3-6→1 / 7→2）、CPU OPP 档位、idle-states；**capacity / dpc / thermal trip 不能当真机基准**。`soc_max` zone 在 mainline 不存在（厂商/Oplus 侧定制）。
-- 取证唯一路径：真机 `adb pull /sys/firmware/fdt` + `dtc -I dtb -O dts`（产物放 mdocs/）——见 07 T1。
+- 取证唯一路径：真机 `adb pull /sys/firmware/fdt` + `dtc -I dtb -O dts`（产物放 mdocs/）。**取证未做**：本地检出无厂商 DT 源，`/sys/firmware/fdt` 的真机导出仍未取过；需要确证厂商 `cpu_capacity` / `dpc` / thermal trip 时按此路径补。
 
 ### 调频路径与竞争者
 
@@ -61,7 +71,7 @@
 - 真机选核 = **WALT 劫持**：`select_task_rq_fair` 入口 `android_rvh_select_task_rq_fair`→`walt_find_energy_efficient_cpu` 无条件接管；**WALT 启用时 GKI EAS 是死代码**。
 - WALT FEEC 要点：many-wakeup 回 prev_cpu、pipeline_cpu fastpath、能量差 ≥prev/32（≈3.1%，注释写 6% 与代码不符）才留 prev；OPLUS 后处理 `set_frame_group_task_to_perfer_cpu` / `set_ux_task_to_prefer_cpu` 可改写结果。
 - capacity 运行时重算：`min(fmax_capacity×cluster.max_freq/max_possible, fmax−thermal_pressure)`，OPLUS FAKE_CAP 再乘 `fake_cap_multiple` → 静态 capacity 会失真。
-- uclamp：rq 级 **max 聚合**（任一高 clamp 任务即顶回）；树内 0 个 uclamp 写入者；tg 钳制 `uclamp_tg_restrict` 是 85 钳可作用的 tg 层（评估未做，见 07 T7）。
+- uclamp：rq 级 **max 聚合**（任一高 clamp 任务即顶回）；树内 0 个 uclamp 写入者；tg 钳制 `uclamp_tg_restrict` 是 85 钳可作用的 tg 层（**该 tg 层评估未做**：谁在写 `uclamp_tg_restrict`、85 钳实际命中哪些任务，尚无结论）。
 - 有调用点无注册者的 hook（树外 oplus_cpu，`kernel/oplus_cpu` 为占位）：rvh_find_energy_efficient_cpu、rvh_uclamp_eff_get、rvh_effective_cpu_util、vh_em_cpu_energy、vh_map_util_freq(\_new)、vh_setscheduler_uclamp；SCHED_TUNE / SCHED_ASSIST / FRAME_BOOST / PIPELINE / FAKE_CAP 源码均不在树。
 - WALT 缓存/恢复 sched_setaffinity（**对 ChiRi 有利**：恢复的就是 ChiRi 最后写的值）；walt_halt 拒绑、walt_lb 迁移、core_ctl 拓扑改变是亲和侧竞争者。
 - FAS 冲突五点：QoS 聚合 min 下重写必失败、thermal pressure 期「不兑现」、vendor hook 改写自证读数、busy-hold 观察窗口应 ≥ rate_limit_us、resume 重放窗口 → `qos_clamped` 状态机（policy_controller.rs）应对。
@@ -86,21 +96,21 @@
 ### 真机实测档案（8550）
 
 - core_ctl 快照（Alpha07-02）：policy0 min/max/enable=1/3/0；policy3=3/4/1；policy7=0/1/0——**仅 big enable=1**，little/prime 压核时 core_ctl 不可用（已接 enable 感知，见 03）。
-- cpu_temp 两路读数：main snap 41.8-90.7℃ vs status.csv 恒 85-100 饱和——两路取自不同 zone，语义未定（07 T2）。
+- cpu_temp 两路读数：main snap 41.8-90.7℃ vs status.csv 恒 85-100 饱和——两路取自不同 zone，语义未定（**未定**：两路是否取自同一 zone 尚未核实，引用读数时须标注来源）。
 - 触摸地板行为级证据：touch=1 决策下限 ≥1651200（touch0 min 729600）。
-- **input boost 节点（2026-10-01 定案，07 T9）**：daemon.log 报 `[touch-boost-disable] all 4 node(s) unavailable`
+- **input boost 节点（2026-10-01 定案）**：daemon.log 报 `[touch-boost-disable] all 4 node(s) unavailable`
   （首路径 `/sys/module/cpu_boost/parameters/input_boost_enabled`，errno 2 = ENOENT）→ **整个 `/sys/module/cpu_boost/`
   目录不存在**（模块未加载/未编译），**不是我们写错字符串**；历史记录（`.archive/.codebuddy/memory/2026-09-18.md`）
   亦确认为本机型常态 WARN（功能上由 ChiRi 自身 `on_touch()` 升频接管，`apply_disable_touch_boost` 因节点缺失
   无害跳过）。4 个候选含 `boost_ms`（现代命名应为 `input_boost_ms`）可疑但无从验证；**真实 input boost 挂载点
   本机仍未知**（T9 取证方向 = 换节点名族 / 查厂商 defconfig）。
-- cap85 窗口（0926-162821，n=2217s）：第 15 列 cur_freq_khz（决策）在变、第 16 列 max_freq_khz（上限）恒满档——两列不可混算；free_above 豁免带覆盖 little 5.5 / big 2.3 / prime 3.1%；cap85 2.7844W vs cap100 3.1845W（未场景归一）。clamp_heavy 恒钳已实现、对照实验已停做（07 T8 按 2026-09-28 口径作废）。
+- cap85 窗口（0926-162821，n=2217s）：第 15 列 cur_freq_khz（决策）在变、第 16 列 max_freq_khz（上限）恒满档——两列不可混算；free_above 豁免带覆盖 little 5.5 / big 2.3 / prime 3.1%；cap85 2.7844W vs cap100 3.1845W（未场景归一）。clamp_heavy 恒钳已实现、对照实验已停做（2026-09-28 R3 口径：`clamp_heavy` 恒钳的 A/B **作废**，只保留同版本观察）。
 - **`handle_cpufreq_transition` eBPF 探针（2026-10-01 订正，旧结论「内核无 CONFIG_CPU_FREQ_TRACEPOINTS」已证伪）**：
   实为**探针的 category/name 写错**——原写 `("cpufreq","cpufreq_transition")` 指向
   `/sys/kernel/tracing/events/cpufreq/cpufreq_transition/id`（该路径不存在 → 挂载恒失败 → status/devimp 的
   `freq_trans` 恒 0）。按 mainline：cpufreq 频切 tracepoint 在 **power** 子系统下，且 v4.6 起由 `cpufreq_transition`
   改名为 `cpu_frequency`（`power:cpu_frequency`，另有 `power:cpu_frequency_limits`）。已改为
   `("handle_cpufreq_transition","power","cpu_frequency")`（`cpu_monitor.rs`，本包 `x_*/daemon.log` 实错路径为证）。
-  **待下包复核 `freq_trans` 是否开始计数**；若仍 0，再查厂商是否另改了 tracepoint（ftrace 候选 `trace_dcvsh_freq`，07 T6）。
+  **待下包复核 `freq_trans` 是否开始计数**；若仍 0，再查厂商是否另改了 tracepoint（ftrace 候选 `trace_dcvsh_freq`）。
 - 检索口径：daemon.log 是 fluent 本地化文案非 key 字面量；Grep/rg 读不动部分 x\_\*/daemon.log（编码异常），走显式解码脚本（详见 05）。
-- **ChirunoNeko 5.15.220 自编内核 uprobe→eBPF 帧事件链路疑似裁剪/损坏（2026-10-16 定性，用户裁决不再深究）**：该内核上 fps 探针全失效——uprobe 挂载成功（符号存在可挂）但 eBPF 帧事件几乎不到达 FAS 控制器，包1（2210132C）8 会话 fps 非空率 0~0.08%；**同机同 A17 同 ChiRi 代码的 stock 内核 5.15.194 对照（`devimpbin/1006-123730`）fps 非空率 25.9~45.3%**，混杂变量已排除（代码仅注释/格式化改动、libgui 未变），唯一实质变量=内核。验证全史见 `devimpbin/fps_probe_check.md`（含一加机 tracefs 验证：su 三层引号、events/qb 扁平化、count 文件被裁等环境坑）。影响=该内核上 FAS 帧反馈开环（`controller.rs:231-236` load-only 路径，档位死锁/降档保护失效，见 03 帧源小节④）。修法三选未实施（内核 config 对 stock diff / 帧静默 WARN+`frame_src=silent` 标记 / FAS 开环升档权衡），见 07-todos。
+- **ChirunoNeko 5.15.220 自编内核 uprobe→eBPF 帧事件链路疑似裁剪/损坏（2026-10-16 定性，用户裁决不再深究）**：该内核上 fps 探针全失效——uprobe 挂载成功（符号存在可挂）但 eBPF 帧事件几乎不到达 FAS 控制器，包1（2210132C）8 会话 fps 非空率 0~0.08%；**同机同 A17 同 ChiRi 代码的 stock 内核 5.15.194 对照（`devimpbin/1006-123730`）fps 非空率 25.9~45.3%**，混杂变量已排除（代码仅注释/格式化改动、libgui 未变），唯一实质变量=内核。验证全史见 `devimpbin/fps_probe_check.md`（含一加机 tracefs 验证：su 三层引号、events/qb 扁平化、count 文件被裁等环境坑）。影响=该内核上 FAS 帧反馈开环（`controller.rs:231-236` load-only 路径，档位死锁/降档保护失效，见 03 帧源小节④）。修法三选**均未实施**（内核 config 对 stock diff / 帧静默 WARN + `frame_src=silent` 标记 / FAS 开环升档权衡），用户裁决不再深究；重开需新证据。

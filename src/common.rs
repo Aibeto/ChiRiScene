@@ -550,6 +550,12 @@ pub struct FrontierTable {
 
 impl FrontierTable {
     /// 由 `demand_buckets` 摊平；桶表为空 → None（调用方走原比例路径，与段缺失同口径）
+    ///
+    /// **lo_units 非单调 → 整表拒用**（同样返回 None 回退比例路径）：`bucket_for_demand()`
+    /// 对它做二分，非单调数组的二分结果未定义——不是慢，是**静默查到错桶**（目标频点偏低、
+    /// 过度降频，或本应有桶却回退）。生成器 `scripts/frontier_policy.py` 已在落表前断言单调
+    /// （`build_buckets()`），此处是消费侧的第二道防线：手改 / 旧版本落的坏表一律不生效——
+    /// 宁可不启用 PF，也不让「表面启用、实际落错桶」的无症状错误跑在真机上。
     fn from_policy(policy: &FrontierPolicy) -> Option<Self> {
         if policy.demand_buckets.is_empty() {
             return None;
@@ -565,6 +571,17 @@ impl FrontierTable {
             big.push(b.big_khz);
             prime.push(b.prime_khz);
         }
+        // 严格非降才可用（相等允许：中点重复是同一档的退化，不影响「最大的 lo <= demand」语义）
+        if let Some(i) = lo_units.windows(2).position(|w| w[0] > w[1]) {
+            log::warn!(
+                "frontier-buckets-not-monotone: lo_units[{}]={} > lo_units[{}]={}，整表拒用、回退比例路径",
+                i,
+                lo_units[i],
+                i + 1,
+                lo_units[i + 1]
+            );
+            return None;
+        }
         Some(Self {
             lo_units: lo_units.into_boxed_slice(),
             little: little.into_boxed_slice(),
@@ -574,7 +591,8 @@ impl FrontierTable {
     }
 
     /// 需求（真机容量单位）落在哪个桶：`lo_units <= demand` 的最大桶索引（二分）；
-    /// 桶按 `lo_units` 升序（生成脚本的 hull 天然有序），需求低于首桶 → None（负载极低，几何边界不是表错）
+    /// 升序由 `from_policy()` 保证——**不是**「生成脚本的 hull 天然有序」（该假设曾被
+    /// sm8350 的非单调算力列证伪），构造期已断言过。需求低于首桶 → None（负载极低，几何边界不是表错）
     pub fn bucket_for_demand(&self, demand_units: f32) -> Option<usize> {
         if !demand_units.is_finite() {
             return None;

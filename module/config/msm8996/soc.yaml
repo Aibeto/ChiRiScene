@@ -89,7 +89,7 @@ cpu_governors: [uag, walt, schedutil, performance]
 # 运行期: 只查表落点与逐档功耗（不重算 Cx·f·V²）；表缺失/指纹不符/桶越界 → 回退既有参数组
 frontier_policy:
   enabled: true
-  model_fingerprint: "38c6c29d74e175a4"
+  model_fingerprint: "db357944378f1d51"
   # TODO 待拍板: reserve_pct（流畅度下界）与 lead_frac（预判基准提前量）仍为占位值；
   # 真机观察后重跑本脚本覆盖（--reserve / --lead-frac），不要手改本块。
   # 无独立公布值可对账：本机型不设 anchors 段（实测折算表，逐档见能效模型文档 §3）
