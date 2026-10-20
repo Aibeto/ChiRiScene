@@ -34,7 +34,17 @@ const SUBSET = [
 ]
 
 async function download(url) {
-  const res = await fetch(url)
+  // jsdelivr 直连不稳时退 npmmirror 同路径镜像（registry.npmmirror.com/<pkg>/<ver>/files/<path>）
+  let res
+  try {
+    res = await fetch(url)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  } catch (e) {
+    console.warn(`[fonts] ${url} 不可达（${e.message}），退 npmmirror 镜像`)
+    const m = url.match(/^https:\/\/cdn\.jsdelivr\.net\/npm\/(@?[^@]+)@([^/]+)\/(.*)$/)
+    if (!m) throw e
+    res = await fetch(`https://registry.npmmirror.com/${m[1]}/${m[2]}/files/${m[3]}`)
+  }
   if (!res.ok) throw new Error(`[fonts] 拉取失败 HTTP ${res.status}：${url}`)
   const buf = Buffer.from(await res.arrayBuffer())
   if (buf.length === 0) throw new Error(`[fonts] 拉取到空内容：${url}`)
