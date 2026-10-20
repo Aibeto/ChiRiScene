@@ -77,6 +77,12 @@ pub fn set_battery_options(
     CURR_DIVISOR_BITS.store(sane_divisor(current_divisor).to_bits(), Ordering::Relaxed);
 }
 
+/// 只改电压/电流校准除数（启动期单位自检命中后调用），不动其它机型选项；非法值退回默认
+pub fn set_battery_divisors(voltage_divisor: f32, current_divisor: f32) {
+    VOLT_DIVISOR_BITS.store(sane_divisor(voltage_divisor).to_bits(), Ordering::Relaxed);
+    CURR_DIVISOR_BITS.store(sane_divisor(current_divisor).to_bits(), Ordering::Relaxed);
+}
+
 fn sane_divisor(v: f32) -> f32 {
     if v.is_finite() && v > 0.0 {
         v

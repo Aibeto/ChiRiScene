@@ -448,6 +448,9 @@ pub fn monitor_screen_state_uevent(
                     if event.subsystem == "cpu" {
                         // CPU hotplug（cpuN/online 变更）：只置脏标记，下一轮 affinity 立即刷新在线核位图（≤2s），事件风暴也只是次原子写
                         crate::monitor::CPU_HOTPLUG_DIRTY.store(true, Ordering::Relaxed);
+                    } else if event.subsystem == "power_supply" {
+                        // 电池充放电状态变化：唤醒启动期单位自检，非放电态不必空转轮询
+                        crate::monitor::notify_power_supply();
                     }
                     /* [PAUSED] backlight/leds 屏幕分支暂停，属性轮询见 [prop] */
 

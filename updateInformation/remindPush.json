@@ -8,5 +8,10 @@
         "versionCode": 30001,
         "title": "title1",
         "content": "content1"
+    },
+    {
+        "versionCode": 30211,
+        "title": "新 CI 已发布",
+        "content": "部分小改进； zumapro 已支持帕累托前沿概念算法支持；新支持追加：36 款处理器"
     }
 ]

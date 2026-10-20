@@ -22,6 +22,7 @@ main-no-chiri-scheduler = [Main] Unsupported SoC, CPU not taken over
 main-diag-thread-started = [Main] Non-ChiRi SoC: independent diagnostic thread started
 main-diag-thread-failed = [Main] Failed to start independent diagnostic thread: { $error }
 main-diag-thread-panic = [Diag] diag_writer panicked, devimp output stopped
+main-battery-unit-spawn-failed = [Main] failed to start battery unit check thread: { $error }
 main-special-tuned-exported = [Main] exported { $count } internal special-tuned whitelist entries to special_tuned.yaml
 main-log-archive-submitted = [Main] previous logs archived, packing in background to logd/{ $zip }
 main-devimp-archive-submitted = [Main] previous devimp diagnostics archived, packing in background to logd/{ $zip }
@@ -394,6 +395,12 @@ telemetry-probe-attached = [CPU Monitor] eBPF telemetry probe attached: { $name 
 telemetry-probe-failed = [CPU Monitor] eBPF telemetry probe { $name } attach failed: { $error }
 telemetry-map-missing = [CPU Monitor] map { $name } missing from eBPF binary, its counters stay 0
 telemetry-summary = [Telemetry] PSI cpu={ $cpu }% io={ $io }% mem={ $mem }% | GPU={ $gpu }% | wakeups={ $wakeups } migrations={ $migrations } freq={ $freq } | battery { $power }W
+telemetry-unit-fix-low = [Telemetry] { $n } consecutive discharge readings at { $power }W < 0.1W, current/voltage divisors corrected to { $divisor } (node unit likely mV/mA)
+telemetry-unit-fix-high = [Telemetry] { $n } consecutive discharge readings at { $power }W > 100W, current/voltage divisors corrected to { $divisor } (node unit likely µV/µA)
+telemetry-unit-fix-nofix = [Telemetry] nofix mode: divisors take effect in memory only, not written back to meta.yaml
+telemetry-unit-fix-write-skip = [Telemetry] meta.yaml has no divisor field, divisors take effect in memory only
+telemetry-unit-fix-write-failed = [Telemetry] failed to write divisors back to meta.yaml, memory-only for this run: { $error }
+telemetry-unit-fix-ok = [Telemetry] { $n } consecutive readings in normal power range, divisors need no correction, unit check thread exits
 
 # --- Config hot-reload sync ---
 scheduler-config-dirty-reload = [Scheduler] feature.yaml hot reload synced to scheduler (mode={ $mode })

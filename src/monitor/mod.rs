@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 // [mods]
 pub mod app_detect;
+pub mod battery_unit;
 pub mod config;
 pub mod cpu_monitor;
 pub mod fps_monitor;
@@ -47,6 +48,42 @@ fn spawn_guarded<F: FnOnce() + Send + 'static>(name: &'static str, f: F) -> std:
 /// CPU hotplug 事件标记：netlink uevent 收到 `cpu` 子系统事件（cpuN/online 变更）时置位，affinity 消费方见到即刷新在线核位图，不必等 8s 周期
 /// 周期兜底保留，不广播 uevent 的机型行为不变
 pub static CPU_HOTPLUG_DIRTY: AtomicBool = AtomicBool::new(false);
+
+// [batt_signal]
+/// power_supply uevent 通知：battery_unit 自检在非放电态等待该事件（另有 30s 兜底轮询），
+/// 插拔充电器、status 变化都会唤醒它重新判定；屏幕分支暂停后 uevent 线程只服务 CPU hotplug，这里补上电池事件
+static POWER_SUPPLY_DIRTY: AtomicBool = AtomicBool::new(false);
+static POWER_SUPPLY_LOCK: Mutex<()> = Mutex::new(());
+static POWER_SUPPLY_CVAR: Condvar = Condvar::new();
+
+/// uevent 线程收到 power_supply 子系统事件时调用：置脏并唤醒等待者
+pub(crate) fn notify_power_supply() {
+    POWER_SUPPLY_DIRTY.store(true, Ordering::Relaxed);
+    let _guard = POWER_SUPPLY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    POWER_SUPPLY_CVAR.notify_all();
+}
+
+/// 等待 power_supply 事件或超时；返回是否真的收到事件（脏标记一并清除）
+pub(crate) fn wait_power_supply(timeout: Duration) -> bool {
+    let mut guard = POWER_SUPPLY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    if !POWER_SUPPLY_DIRTY.load(Ordering::Relaxed) {
+        let (g, _) = POWER_SUPPLY_CVAR
+            .wait_timeout(guard, timeout)
+            .unwrap_or_else(|e| e.into_inner());
+        guard = g;
+    }
+    let notified = POWER_SUPPLY_DIRTY.swap(false, Ordering::Relaxed);
+    drop(guard);
+    notified
+}
+
+/// 启动期电流/电压倍数自检线程：调用方 main 必须已执行完 meta.yaml 自愈（sync_meta_snapshot），
+/// 且首次 Config::load 已把 divisor 同步到遥测层；命中后由自检线程把修正值写回 config_path
+pub fn start_battery_unit_check(config_path: std::path::PathBuf) -> std::io::Result<()> {
+    spawn_guarded("battery_unit", move || {
+        battery_unit::battery_unit_check(config_path)
+    })
+}
 
 // [fas_signal]
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]

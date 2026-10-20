@@ -209,6 +209,18 @@ fn main() -> Result<()> {
     load_language(&language);
     logger::init(&loglevel)?;
 
+    // [battery_unit] 启动期电流/电压倍数自检：必须排在 meta.yaml 自愈（sync_meta_snapshot）之后，
+    // 且首次 Config::load 已把 divisor 同步到遥测层；异步执行，非放电态由 power_supply uevent 唤醒等待
+    if let Err(e) = monitor::start_battery_unit_check(config_path.clone()) {
+        error!(
+            "{}",
+            t_with_args(
+                "main-battery-unit-spawn-failed",
+                &fluent_args!("error" => e.to_string())
+            )
+        );
+    }
+
     // [webui_restore] 内嵌 WebUI 资产还原：把 webui/dist 覆盖回模块 webroot/，被改/被删的文件回到出厂内容，nofix 时跳过
     if nofix {
         log::info!("{}", t("main-nofix-skip"));

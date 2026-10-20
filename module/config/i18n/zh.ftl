@@ -22,6 +22,7 @@ main-no-chiri-scheduler = [Main] 非支持机型，不接管 CPU
 main-diag-thread-started = [Main] 非 ChiRi 机型：已启动独立诊断线程
 main-diag-thread-failed = [Main] 启动独立诊断线程失败: { $error }
 main-diag-thread-panic = [诊断] diag_writer panic 退出，devimp 产出停止
+main-battery-unit-spawn-failed = [Main] 启动电流/电压倍数自检线程失败: { $error }
 main-special-tuned-exported = [Main] 已导出 { $count } 个内部特调白名单条目到 special_tuned.yaml
 main-log-archive-submitted = [Main] 上一轮日志已归档，后台打包至 logd/{ $zip }
 main-devimp-archive-submitted = [Main] 上一轮 devimp 诊断日志已归档，后台打包至 logd/{ $zip }
@@ -394,6 +395,12 @@ telemetry-probe-attached = [CPU Monitor] eBPF 扩展探针已挂载: { $name }
 telemetry-probe-failed = [CPU Monitor] eBPF 扩展探针 { $name } 挂载失败: { $error }
 telemetry-map-missing = [CPU Monitor] eBPF 产物中缺少映射 { $name }，对应计数保持为 0
 telemetry-summary = [Telemetry] PSI cpu={ $cpu }% io={ $io }% mem={ $mem }% | GPU={ $gpu }% | 唤醒={ $wakeups } 迁移={ $migrations } 调频={ $freq } | 电池 { $power }W
+telemetry-unit-fix-low = [Telemetry] 放电态连续 { $n } 次功率 { $power }W < 0.1W，电流/电压除数修正为 { $divisor }（疑似节点单位为 mV/mA）
+telemetry-unit-fix-high = [Telemetry] 放电态连续 { $n } 次功率 { $power }W > 100W，电流/电压除数修正为 { $divisor }（疑似节点单位为 µV/µA）
+telemetry-unit-fix-nofix = [Telemetry] nofix 模式：除数仅在本次运行内存生效，未写回 meta.yaml
+telemetry-unit-fix-write-skip = [Telemetry] meta.yaml 缺少 divisor 字段，除数仅在本次运行内存生效
+telemetry-unit-fix-write-failed = [Telemetry] 除数写回 meta.yaml 失败，仅在本次运行内存生效: { $error }
+telemetry-unit-fix-ok = [Telemetry] 连续 { $n } 次功率处于正常量级，电流/电压除数无需修正，单位自检线程退出
 
 # --- Config 热重载联动 ---
 scheduler-config-dirty-reload = [Scheduler] feature.yaml 热重载已同步到调度器 (mode={ $mode })
