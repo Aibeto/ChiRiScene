@@ -146,8 +146,8 @@
       <StateBox kind="missing" message={t('logs.missing')} detail={t('logs.archive')} />
     {:else}
       <div class="pane">
-        <!-- 终端是嵌在玻璃页面里的沉浸深底：一块干玻璃（g-glass--flat，无 backdrop-filter），不再叠模糊玻璃 -->
-        <section class="terminal g-glass--flat" aria-label={t('logs.source.daemon')}>
+        <!-- 终端是嵌在浅色页面里的沉浸深底（Windows Terminal 观感）：深色实心面，不叠模糊层 -->
+        <section class="terminal" aria-label={t('logs.source.daemon')}>
           <header class="terminal__bar u-between">
             <span class="terminal__path u-mono">logs/daemon.log</span>
             <span class="terminal__count u-mono">{t('logs.lines', { n: visible.length })}</span>
@@ -208,7 +208,7 @@
     {:else}
       <div class="pane">
         <div
-          class="snapshot-wrap g-glass--flat u-scroll"
+          class="snapshot-wrap g-surface u-scroll"
           bind:this={snapshotBody}
           onscroll={onStatusScroll}
         >
@@ -247,19 +247,28 @@
 </div>
 
 <style>
-  /* 终端深底是「场景里的屏幕」：等宽日志要沉浸阅读区，干玻璃底 + hairline 边 + 圆角 */
+  /* 终端深底是「场景里的屏幕」：等宽日志要沉浸阅读区，用系统终端的中性深灰 + 一圈细边
+     深底上用一整套局部 token 覆盖（文字/信号色都换成暗色高亮档），下游 .log* 规则一行不用改 */
   .terminal {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
-    border: var(--hairline) solid var(--glass-border);
+    border: var(--hairline) solid #3b3a39;
     border-radius: var(--radius-m);
-    /* 沉浸深底走 token（--night-deep 半透）；不支持 color-mix 的旧 WebView 自动落回 .g-glass--flat 的玻璃底 */
-    background: color-mix(in srgb, var(--night-deep) 70%, transparent);
+    background: #1b1a19;
+    /* 局部 token：浅色主题的正文/信号色在深底上对比不足，这里按 Fluent 暗色调色板重挂 */
+    --text-primary: #faf9f8;
+    --text-secondary: #e1dfdd;
+    --text-muted: #a19f9d;
+    --surface-border: #3b3a39;
+    --divider: #3b3a39;
+    --sig-danger: #f1707b;
+    --sig-action: #fce100;
+    --sig-info: #4cc2ff;
   }
 
   .terminal__bar {
     padding: var(--space-2) var(--space-3);
-    border-bottom: var(--hairline) solid var(--glass-border);
+    border-bottom: var(--hairline) solid var(--surface-border);
   }
 
   .terminal__path,
@@ -325,10 +334,10 @@
 
   .snapshot-wrap {
     /* 列宽随数据自适应；与 daemon 终端同款子滚动窗口：限高 60vh + 双轴滑动（配合跟随底部），滚动行为来自 .u-scroll
-       干玻璃底不叠模糊（嵌在玻璃页面里），圆角成块 */
+       深色实心面不叠模糊（嵌在浅色卡片里），圆角成块 */
     max-width: 100%;
     max-height: 60vh;
-    border: var(--hairline) solid var(--glass-border);
+    border: var(--hairline) solid var(--surface-border);
     border-radius: var(--radius-m);
   }
 
@@ -340,7 +349,7 @@
 
   .snapshot__row {
     white-space: nowrap;
-    border-bottom: var(--hairline) solid var(--glass-border);
+    border-bottom: var(--hairline) solid var(--surface-border);
     font-size: 0.6875rem;
     line-height: 1.5;
   }
@@ -363,7 +372,7 @@
     position: sticky;
     top: 0;
     z-index: 1;
-    background: var(--night);
+    background: var(--surface-alt);
   }
 
   .files {
@@ -394,11 +403,11 @@
     z-index: 20;
     width: 2.75rem;
     height: 2.75rem;
-    border: var(--hairline) solid var(--glass-border);
+    border: var(--hairline) solid var(--surface-border);
     border-radius: 999px;
-    background: var(--glass-bg-strong);
+    background: var(--surface);
     color: var(--text-primary);
     font-size: 1rem;
-    box-shadow: var(--glass-shadow);
+    box-shadow: var(--shadow-2);
   }
 </style>

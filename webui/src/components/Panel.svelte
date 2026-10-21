@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Panel.svelte: [layout] [signal] 面板容器：玻璃卡片（.g-card，三层玻璃结构 [glass]/[primitives]）
+  // Panel.svelte: [layout] [signal] 面板容器：亚克力卡片（.g-card，材质/悬浮/阴影见 app.css [primitives]）
   import type { Snippet } from 'svelte'
 
   let {
@@ -11,19 +11,24 @@
   } = $props<{
     title?: string
     desc?: string
-    /** 语义信号：info / action / danger / success / accent（映射 --signal） */
+    /** 语义信号：info / action / danger / success / accent（映射 --signal，标题前的圆点取它） */
     signal?: string
     actions?: Snippet
     children?: Snippet
   }>()
 </script>
 
-<section class="panel g-glass g-card" data-signal={signal || undefined}>
-  <!-- 无点击元素不铺扫光闪光（.g-sheen 已从 .g-card 宿主选择器移除） -->
+<section class="panel g-card" data-signal={signal || undefined}>
+  <!-- 无点击元素不铺 Reveal 扫光（.g-reveal 只给 .g-btn 这类可点击宿主） -->
   {#if title || actions}
     <header class="g-card__header">
       <div class="g-card__titles">
-        <h2 class="g-card__title">{title}</h2>
+        <h2 class="g-card__title">
+          {#if signal}
+            <span class="g-card__sig" aria-hidden="true"></span>
+          {/if}
+          {title}
+        </h2>
         {#if desc}
           <p class="g-card__desc">{desc}</p>
         {/if}
@@ -39,7 +44,7 @@
 </section>
 
 <style>
-  /* 玻璃结构/信号条/悬浮全部来自 app.css 的 .g-glass 与 .g-card；这里只保留无标题时的首元素贴合 */
+  /* 材质/信号点/悬浮全部来自 app.css 的 .g-card；这里只保留无标题时的首元素贴合 */
   .panel {
     display: block;
   }

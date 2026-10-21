@@ -1,0 +1,1253 @@
+/* app.css: [fonts] [scene] [tokens] [base] [glass] [primitives] [signal-map] [utilities] [fallbacks]
+ * 玻璃拟态设计系统，风格资源见 ../stylekit/glassmorphism/，硬规则：面板永远无色、阴影三层、唯一强调色香槟金 #E4B863、圆角 ≥16px、过渡 500ms
+ */
+
+/* [fonts] 拉丁/数字 'ChiRi Sans'（Poppins），中文 'ChiRi Sans CJK'（Noto Sans SC），等宽 'ChiRi Mono'（JetBrains Mono 拉丁子集）
+ * 二进制不入库，构建期由 scripts/fetch-fonts.mjs 拉取，路径一律用相对路径交给 vite 处理，绝对路径会既不进产物又 404 */
+@font-face {
+  font-family: 'ChiRi Sans';
+  src: url('./assets/fonts/poppins-regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'ChiRi Sans';
+  src: url('./assets/fonts/poppins-semibold.woff2') format('woff2');
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'ChiRi Sans';
+  src: url('./assets/fonts/poppins-bold.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'ChiRi Sans CJK';
+  src: url('./assets/fonts/noto-sans-sc-400.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'ChiRi Sans CJK';
+  src: url('./assets/fonts/noto-sans-sc-700.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'ChiRi Mono';
+  src: url('./assets/fonts/mono-regular.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'ChiRi Mono';
+  src: url('./assets/fonts/mono-bold.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* [tokens] 色值一律用上游 [scene]/[glass] 口径的原始值，不要把色值散进组件 <style>，改这里即可换肤 */
+:root {
+  color-scheme: dark;
+
+  /* 夜景场景，背景承载全部颜色 */
+  --night-deep: #060a13; /* 近黑：页面边缘 */
+  --night: #0b1322; /* 深墨蓝：主背景 */
+  --night-steel: #16233a; /* 钢蓝抬升，原夜空渐变第三色标，当前无引用，留作色阶备用 */
+  --moon-steel: #33517a; /* 月光钢蓝（深），原光源光斑配色，当前无引用，留作色阶备用 */
+  --moonlight: #7c9cc4; /* 月光（亮），信息信号色（signal/progress/notice 的 var 回退） */
+
+  /* 唯一强调色，只用主 CTA / 关键数字 / 高亮文字 */
+  --champagne: #e4b863;
+  --champagne-bright: #f3dca8; /* 香槟按钮上的文字 */
+
+  /* 玻璃永远无色 */
+  --glass-bg: rgb(255 255 255 / 8%);
+  --glass-bg-strong: rgb(255 255 255 / 12%);
+  --glass-bg-hover: rgb(255 255 255 / 15%);
+  --glass-bg-weak: rgb(255 255 255 / 6%);
+  --glass-border: rgb(255 255 255 / 15%);
+  --glass-border-hover: rgb(255 255 255 / 30%);
+  /* 模糊半径按用户要求三次下调，最终 40/32=1.25、60/32=1.875，saturate 保持 180% 不随模糊缩放 */
+  --glass-blur: 1.25px;
+  --glass-blur-heavy: 1.875px;
+  --glass-saturate: 180%;
+
+  /* 文本，正文 ≥ white/60 才够对比度，white/60 在 #0B1322 上约 8.9:1 */
+  --text-primary: #fff;
+  --text-secondary: rgb(255 255 255 / 78%);
+  --text-muted: rgb(255 255 255 / 58%);
+  --text-faint: rgb(255 255 255 / 40%);
+
+  /* 方向性阴影：外层深度 + 顶边受光 + 底边暗缘，禁单层 */
+  --glass-shadow-sm: 0 2px 8px rgb(3 7 18 / 35%),
+    inset 0 1px 0 rgb(255 255 255 / 18%);
+  --glass-shadow: 0 16px 40px rgb(3 7 18 / 50%), inset 0 1px 0 rgb(255 255 255 / 22%),
+    inset 0 -1px 0 rgb(2 6 16 / 35%);
+  --glass-shadow-hover: 0 24px 64px rgb(3 7 18 / 60%), inset 0 1px 0 rgb(255 255 255 / 32%),
+    inset 0 -1px 0 rgb(2 6 16 / 35%);
+  --glass-shadow-lifted: 0 16px 48px rgb(3 7 18 / 55%), 0 0 0 1px rgb(255 255 255 / 8%),
+    inset 0 1px 0 rgb(255 255 255 / 25%), inset 0 -1px 0 rgb(2 6 16 / 35%);
+  --glass-shadow-inset: inset 0 1px 0 rgb(255 255 255 / 15%),
+    inset 0 -1px 0 rgb(2 6 16 / 30%);
+  --focus-ring: 0 0 0 3px rgb(228 184 99 / 18%), 0 8px 24px rgb(3 7 18 / 45%);
+
+  /* 几何与动效 */
+  --radius-m: 16px; /* rounded-2xl */
+  --radius-l: 24px; /* rounded-3xl */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --control-h: 44px; /* 最小命中区 */
+  --hairline: 1px;
+  --spring: cubic-bezier(0.16, 1, 0.3, 1);
+  --motion: 500ms;
+  --safe-b: env(safe-area-inset-bottom, 0px);
+
+  /* 字体栈，中文等宽必须插 'ChiRi Sans CJK'，ChiRi Mono 只裁了拉丁 */
+  --font-body: 'ChiRi Sans', 'ChiRi Sans CJK', system-ui, -apple-system, 'PingFang SC',
+    'Noto Sans SC', 'Source Han Sans SC', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: 'ChiRi Mono', 'ChiRi Sans CJK', ui-monospace, SFMono-Regular, Menlo, Monaco,
+    Consolas, monospace;
+}
+
+/* [base] */
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  /* 场景先于玻璃：底色是夜景，不是平面填充 */
+  background: var(--night);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior-y: none;
+}
+
+#app {
+  min-height: 100%;
+}
+
+button,
+[role='button'],
+input,
+select,
+label {
+  font: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--champagne);
+  outline-offset: 2px;
+}
+
+/* [scene] .g-scene 提供深墨夜景纯色底，.g-grain 叠 2.5% feTurbulence 噪点消塑料感 */
+.g-scene {
+  position: relative;
+  min-height: 100vh;
+  min-height: 100dvh;
+  background: var(--night);
+  /* isolate 让下面 z-index:-1 的伪元素被约束在本元素的层叠上下文里，否则负 z-index 会逃到根上下文被 body 背景盖住 */
+  isolation: isolate;
+}
+
+/* 光源光斑占位：三个 radial-gradient 已删，backdrop-filter 只剩纯色底 + 噪点可模糊，玻璃质感随之减弱
+ * 如需恢复可改用同色系大半径纯色圆（border-radius:50% + 低透明度纯色，非渐变） */
+.g-scene::before {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  content: '';
+  /* 原三个 radial-gradient 光源（右上月光/左下月光钢蓝/中偏左暖色）已删 */
+  background: none;
+  pointer-events: none;
+}
+
+/* 2.5% 颗粒噪点，全屏固定叠层，消除塑料感 */
+.g-grain::after {
+  position: fixed;
+  z-index: 40;
+  inset: 0;
+  opacity: 0.025;
+  content: '';
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  pointer-events: none;
+}
+
+/* [glass] 三层玻璃结构：无色表面 + blur + saturate，内发光（顶亮下透），方向性阴影，.g-glass 是可组合基类 */
+.g-glass {
+  position: relative;
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  border: var(--hairline) solid var(--glass-border);
+  box-shadow: var(--glass-shadow);
+}
+
+/* 第 2 层内发光：顶边受光，原为向下渐隐 linear-gradient，改为顶边纯色高光以保持顶边受光语义 */
+.g-glass::before {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  content: '';
+  background: rgb(255 255 255 / 5%);
+  pointer-events: none;
+}
+
+/* 内容必须抬到内发光之上 */
+.g-glass > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* 扫光是玻璃的装饰层，必须留在内发光之下且保持绝对定位，否则会被上面这条规则变成 static 而挤占布局 */
+.g-glass > .g-sheen {
+  position: absolute;
+  z-index: 0;
+}
+
+/* 干玻璃无模糊，用于已嵌在玻璃里的小元素，避免叠加 blur 造成层数/性能失控 */
+.g-glass--flat {
+  background: var(--glass-bg-weak);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: var(--glass-shadow-inset);
+}
+
+/* 重玻璃：大面板用更高模糊 */
+.g-glass--heavy {
+  background: var(--glass-bg-strong);
+  -webkit-backdrop-filter: blur(var(--glass-blur-heavy)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur-heavy)) saturate(var(--glass-saturate));
+}
+
+/* 扫光高光：hover 时斜向扫过 */
+.g-sheen {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.g-sheen::after {
+  position: absolute;
+  inset: 0;
+  content: '';
+  background: linear-gradient(to right, transparent, rgb(255 255 255 / 25%), transparent);
+  transform: translateX(-150%) skewX(-20deg);
+  transition: transform 700ms ease-out;
+}
+
+/* 闪光只保留在可点击元素，.g-card 无点击语义已移出宿主列表 */
+:where(.g-btn, .g-row-item):hover .g-sheen::after {
+  transform: translateX(150%) skewX(-20deg);
+}
+
+/* [primitives] 卡片 / 按钮 / 输入 / 标签 / 状态 / 分段 / 开关 / 弹层 / 通知 / 进度 */
+
+/* 卡片（面板容器） */
+.g-card {
+  padding: var(--space-5);
+  border-radius: var(--radius-l);
+  transition:
+    border-color var(--motion) var(--spring),
+    box-shadow var(--motion) var(--spring),
+    transform var(--motion) var(--spring);
+}
+
+.g-card:hover {
+  border-color: var(--glass-border-hover);
+  box-shadow: var(--glass-shadow-hover);
+  transform: translateY(-4px);
+}
+
+/* 卡片只在小屏上浮，触屏设备没有 hover，避免无谓位移 */
+@media (hover: none) {
+  .g-card:hover {
+    transform: none;
+  }
+}
+
+.g-card__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.g-card__titles {
+  min-width: 0;
+}
+
+.g-card__title {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 1.0625rem;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.g-card__desc {
+  margin: 0.25rem 0 0;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.g-card__actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* 左侧信号条：卡片语义（危险/警告/成功），不靠颜色单独传递，标题文字同时给出语义 */
+.g-card[data-signal] {
+  overflow: hidden;
+}
+
+.g-card[data-signal]::after {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 3px;
+  content: '';
+  background: var(--signal);
+}
+
+/* 按钮 */
+.g-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: var(--control-h);
+  padding: 0 var(--space-5);
+  overflow: hidden;
+  border: var(--hairline) solid rgb(255 255 255 / 20%);
+  border-radius: var(--radius-m);
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  color: var(--text-primary);
+  box-shadow: var(--glass-shadow-sm);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition:
+    background-color var(--motion) var(--spring),
+    border-color var(--motion) var(--spring),
+    box-shadow var(--motion) var(--spring),
+    transform var(--motion) var(--spring);
+}
+
+.g-btn:hover:not(:disabled) {
+  border-color: var(--glass-border-hover);
+  background: var(--glass-bg-hover);
+  box-shadow: 0 10px 32px rgb(3 7 18 / 55%), inset 0 1px 0 rgb(255 255 255 / 35%);
+  transform: translateY(-2px);
+}
+
+.g-btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.g-btn:disabled {
+  color: var(--text-faint);
+  cursor: not-allowed;
+  opacity: 0.6;
+  transform: none;
+}
+
+/* 主 CTA：唯一允许用香槟金填充的地方 */
+.g-btn--primary {
+  border-color: rgb(228 184 99 / 40%);
+  background: rgb(228 184 99 / 15%);
+  color: var(--champagne-bright);
+  box-shadow: 0 4px 20px rgb(228 184 99 / 15%), inset 0 1px 0 rgb(243 220 168 / 35%);
+}
+
+.g-btn--primary:hover:not(:disabled) {
+  border-color: rgb(228 184 99 / 55%);
+  background: rgb(228 184 99 / 22%);
+  box-shadow: 0 8px 28px rgb(228 184 99 / 22%), inset 0 1px 0 rgb(243 220 168 / 45%);
+}
+
+/* 危险操作：语义红信号，仍走玻璃不上色面板 */
+.g-btn--danger {
+  border-color: rgb(224 113 111 / 45%);
+  background: rgb(224 113 111 / 14%);
+  color: #f3a9a7;
+  box-shadow: 0 4px 20px rgb(224 113 111 / 14%), inset 0 1px 0 rgb(255 255 255 / 25%);
+}
+
+.g-btn--danger:hover:not(:disabled) {
+  border-color: rgb(224 113 111 / 65%);
+  background: rgb(224 113 111 / 22%);
+}
+
+.g-btn--ghost {
+  border-color: transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.g-btn--ghost:hover:not(:disabled) {
+  border-color: var(--glass-border);
+  background: var(--glass-bg-weak);
+  box-shadow: none;
+}
+
+.g-btn--block {
+  width: 100%;
+}
+
+/* 小尺寸按钮（标签行内 / 头部操作） */
+.g-btn--sm {
+  min-height: 36px;
+  padding: 0 var(--space-3);
+  font-size: 0.75rem;
+}
+
+/* 纯图标按钮（关闭 / 语言切换） */
+.g-btn--icon {
+  flex: 0 0 auto;
+  width: var(--control-h);
+  padding: 0;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+/* 输入框 / 下拉 */
+.g-input {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: var(--control-h);
+  padding: 0 var(--space-4);
+  border: var(--hairline) solid var(--glass-border);
+  border-radius: var(--radius-m);
+  outline: none;
+  background: var(--glass-bg-weak);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  color: var(--text-primary);
+  box-shadow: var(--glass-shadow-inset);
+  font: inherit;
+  transition:
+    border-color var(--motion) var(--spring),
+    background-color var(--motion) var(--spring),
+    box-shadow var(--motion) var(--spring);
+}
+
+.g-input::placeholder {
+  color: var(--text-faint);
+}
+
+.g-input:hover:not(:disabled) {
+  border-color: var(--glass-border-hover);
+}
+
+.g-input:focus {
+  border-color: rgb(255 255 255 / 35%);
+  background: rgb(255 255 255 / 10%);
+  box-shadow: var(--focus-ring);
+}
+
+.g-input:disabled {
+  color: var(--text-faint);
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* 原生 select 的选项在 WebView 里由系统绘制，深色下必须显式给底色否则白底白字 */
+.g-input option {
+  background: var(--night);
+  color: var(--text-primary);
+}
+
+/* 数字输入去掉浏览器微调箭头，触屏误触且与玻璃观感冲突 */
+.g-input[type='number'] {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+.g-input[type='number']::-webkit-outer-spin-button,
+.g-input[type='number']::-webkit-inner-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
+}
+
+/* 非法输入：红边 + 红字，文字提示在组件里，不靠颜色单独传达 */
+.g-input[aria-invalid='true'] {
+  border-color: rgb(224 113 111 / 60%);
+}
+
+/* 字段 / 表单 */
+.g-field {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.g-label {
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.g-hint {
+  color: var(--text-muted);
+  font-size: 0.6875rem;
+  line-height: 1.5;
+}
+
+.g-form-stack {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-5);
+}
+
+/* 标签（包名 / 配置名 / 模式名） */
+.g-tag {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 0.2rem var(--space-2);
+  border: var(--hairline) solid var(--glass-border);
+  border-radius: 999px;
+  background: var(--glass-bg-weak);
+  /* 标签承载标识符，不做大小写变换，避免界面显示与设备真实取值不一致 */
+  text-transform: none;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.02em;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.g-tag--neutral {
+  color: var(--text-muted);
+}
+
+/* 特调 / FAS / 实验室接管等值得注意的标签用香槟金边 */
+.g-tag--accent {
+  border-color: rgb(228 184 99 / 40%);
+  background: rgb(228 184 99 / 12%);
+  color: var(--champagne-bright);
+}
+
+.g-tag--danger {
+  border-color: rgb(224 113 111 / 45%);
+  background: rgb(224 113 111 / 12%);
+  color: #f3a9a7;
+}
+
+.g-tag-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+/* 存活状态芯片 */
+.g-status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  box-sizing: border-box;
+  min-height: var(--control-h);
+  padding: 0 var(--space-3);
+  border: var(--hairline) solid var(--glass-border);
+  border-radius: var(--radius-m);
+  background: var(--glass-bg-weak);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  box-shadow: var(--glass-shadow-inset);
+}
+
+.g-status__signal {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--signal, var(--moonlight));
+  box-shadow: 0 0 8px var(--signal, var(--moonlight));
+}
+
+.g-status__label {
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.g-status__detail {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  white-space: nowrap;
+}
+
+/* 只有 running 态脉冲，停止/未知不闪 */
+.g-status--running .g-status__signal {
+  animation: g-pulse 2s ease-in-out infinite;
+}
+
+/* 分段切换器 */
+.g-segmented {
+  display: flex;
+  width: 100%;
+  gap: var(--space-1);
+  padding: var(--space-1);
+  border: var(--hairline) solid var(--glass-border);
+  border-radius: var(--radius-m);
+  background: var(--glass-bg-weak);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  box-shadow: var(--glass-shadow-inset);
+}
+
+.g-segmented__item {
+  flex: 1;
+  min-width: 0;
+  min-height: 36px;
+  padding: 0 var(--space-2);
+  border: var(--hairline) solid transparent;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition:
+    background-color var(--motion) var(--spring),
+    border-color var(--motion) var(--spring),
+    color var(--motion) var(--spring);
+}
+
+.g-segmented__item:hover {
+  color: var(--text-primary);
+  background: var(--glass-bg-weak);
+}
+
+.g-segmented__item[aria-checked='true'] {
+  border-color: var(--glass-border-hover);
+  background: var(--glass-bg-strong);
+  color: var(--text-primary);
+  box-shadow: var(--glass-shadow-inset);
+}
+
+/* 横向滑动变体：项多时窄屏被压到看不清，按内容宽度排、整条左右滑 */
+.g-segmented[data-scroll] {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+
+.g-segmented[data-scroll]::-webkit-scrollbar {
+  display: none;
+}
+
+.g-segmented[data-scroll] .g-segmented__item {
+  flex: 0 0 auto;
+  min-width: auto;
+  padding: 0 var(--space-4);
+}
+
+/* 开关：项目红线禁 :has()，track 必须是 input 的兄弟元素、靠 input:checked ~ track 联动
+ * thumb 放在 track 内，用 track 的 overflow 收纳，避免绝对定位两处对齐出错 */
+.g-switch {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.g-switch__control {
+  position: relative;
+  flex: 0 0 auto;
+  width: 48px;
+  height: 28px;
+  margin-top: 2px;
+}
+
+/* 原生 checkbox 视觉隐藏但保持可聚焦可点击，不能用 hidden/display:none 否则键盘与无障碍失效
+ * 铺满整个 label 的命中区，焦点环由 :focus-visible 画在 track 上 */
+.g-switch__input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.g-switch[data-disabled] .g-switch__input {
+  cursor: not-allowed;
+}
+
+.g-switch__track {
+  position: absolute;
+  inset: 0;
+  border: var(--hairline) solid var(--glass-border);
+  border-radius: 999px;
+  background: var(--glass-bg-weak);
+  box-shadow: var(--glass-shadow-inset);
+  transition:
+    background-color var(--motion) var(--spring),
+    border-color var(--motion) var(--spring),
+    box-shadow var(--motion) var(--spring);
+}
+
+.g-switch__thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  box-shadow: 0 2px 6px rgb(3 7 18 / 50%);
+  transition:
+    transform var(--motion) var(--spring),
+    background-color var(--motion) var(--spring);
+}
+
+.g-switch input:checked ~ .g-switch__control .g-switch__track {
+  border-color: rgb(228 184 99 / 45%);
+  background: rgb(228 184 99 / 22%);
+}
+
+.g-switch input:checked ~ .g-switch__control .g-switch__thumb {
+  background: var(--champagne-bright);
+  transform: translateX(20px);
+}
+
+.g-switch input:focus-visible ~ .g-switch__control .g-switch__track {
+  box-shadow: var(--focus-ring);
+}
+
+.g-switch__text {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.g-switch__name {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.g-switch[data-disabled] {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+/* 待提交标记：香槟金小点 */
+.g-pending {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--champagne);
+  box-shadow: 0 0 6px var(--champagne);
+}
+
+/* 弹层（确认 sheet） */
+.g-dialog {
+  width: min(32rem, calc(100vw - 2rem));
+  padding: 0;
+  overflow: hidden;
+  border: var(--hairline) solid var(--glass-border-hover);
+  border-radius: var(--radius-l);
+  background: var(--glass-bg-strong);
+  -webkit-backdrop-filter: blur(var(--glass-blur-heavy)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur-heavy)) saturate(var(--glass-saturate));
+  color: var(--text-primary);
+  box-shadow: var(--glass-shadow-lifted);
+}
+
+.g-dialog::backdrop {
+  background: rgb(6 10 19 / 62%);
+  -webkit-backdrop-filter: blur(0.25px);
+  backdrop-filter: blur(0.25px);
+}
+
+.g-dialog__header {
+  padding: var(--space-5) var(--space-5) var(--space-3);
+  border-bottom: var(--hairline) solid var(--glass-border);
+}
+
+.g-dialog__eyebrow {
+  margin: 0 0 var(--space-1);
+  color: var(--dialog-signal, var(--champagne));
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+
+.g-dialog__title {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 1.0625rem;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.g-dialog__body {
+  padding: var(--space-4) var(--space-5);
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+  line-height: 1.6;
+}
+
+.g-dialog__body p {
+  margin: 0;
+}
+
+.g-dialog__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5) var(--space-5);
+}
+
+/* 通知 / 状态占位（StateBox 底座） */
+.g-notice {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-3);
+  align-items: center;
+  padding: var(--space-4) var(--space-4) var(--space-4) var(--space-5);
+  overflow: hidden;
+  border: var(--hairline) solid var(--glass-border);
+  border-radius: var(--radius-m);
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  box-shadow: var(--glass-shadow-sm);
+}
+
+/* 信号条用 ::after 而不是 ::before：.g-notice 与 .g-glass 同挂一个元素，::before 已被内发光占用，两条同特异性规则会互相顶掉 */
+.g-notice::after {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 3px;
+  content: '';
+  background: var(--notice-signal, var(--moonlight));
+}
+
+.g-notice[data-kind='empty'],
+.g-notice[data-kind='loading'] {
+  --notice-signal: var(--moonlight);
+}
+
+.g-notice[data-kind='missing'] {
+  --notice-signal: var(--champagne);
+}
+
+.g-notice[data-kind='error'] {
+  --notice-signal: var(--sig-danger);
+}
+
+.g-notice__body {
+  min-width: 0;
+}
+
+.g-notice__title {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.g-notice__message {
+  margin: var(--space-1) 0 0;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+/* 进度条（总览页功耗/进度） */
+.g-progress {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.g-progress__header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+}
+
+.g-progress__track {
+  position: relative;
+  height: 8px;
+  overflow: hidden;
+  border: var(--hairline) solid var(--glass-border);
+  border-radius: 999px;
+  background: var(--glass-bg-weak);
+  box-shadow: var(--glass-shadow-inset);
+}
+
+.g-progress__fill {
+  /* 必须是 block，标记里是 <span>，行内盒上 width/height 一律无效，条恒为空
+     上游 ak-ui 的 .ak-progress__fill 正有 display:block，改写时漏掉是这两个功耗条不出填充的真正原因
+     （此前误判成宽度/变量问题，改 width 方向自然无效） */
+  display: block;
+  height: 100%;
+  /* 宽度由使用方在 .g-progress 根上给 --progress-width（如 style="--progress-width: 42%"）
+     也能直接内联 width；两者都支持，缺省 0 */
+  width: var(--progress-width, 0);
+  border-radius: 999px;
+  background: var(--progress-signal, var(--moonlight));
+  box-shadow: 0 0 12px var(--progress-signal, var(--moonlight));
+  transition: width var(--motion) var(--spring);
+}
+
+/* 关键数字：香槟金，唯一强调色的合法用法 */
+.g-progress__value {
+  color: var(--progress-signal, var(--champagne));
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 大号读数（功耗仪表 / 关键指标） */
+.g-readout {
+  color: var(--champagne);
+  font-family: var(--font-mono);
+  font-size: 1.75rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+
+/* [signal-map] data-signal="info|action|danger|success|accent" → --signal 单点映射
+ * 语义信号色只标状态，每个信号都有对应文字，香槟金是唯一用于强调的颜色 */
+[data-signal] {
+  --signal: var(--sig-info);
+}
+
+[data-signal='info'] {
+  --signal: var(--sig-info);
+}
+
+[data-signal='action'] {
+  --signal: var(--sig-action);
+}
+
+[data-signal='danger'] {
+  --signal: var(--sig-danger);
+}
+
+[data-signal='success'] {
+  --signal: var(--sig-success);
+}
+
+[data-signal='accent'] {
+  --signal: var(--sig-accent);
+}
+
+[data-signal='muted'] {
+  --signal: var(--sig-muted);
+}
+
+:root {
+  /* 信号色：全部为夜景里的低饱和玻璃语言，不引入第二强调色 */
+  --sig-info: #7c9cc4; /* 月光：信息 / 中性态 */
+  --sig-action: #e4b863; /* 香槟金：待提交 / 需注意（与唯一强调色同源） */
+  --sig-danger: #e0716f; /* 危险：红信号（仍低饱和，不刺穿玻璃） */
+  --sig-success: #6fbf9b; /* 成功：冷绿，与月光同族 */
+  --sig-accent: #a894d8; /* 备用强调：极少用（实验室接管）*/
+  --sig-muted: rgb(255 255 255 / 40%);
+}
+
+/* [utilities] 项目级通用类，只做布局与排版，视觉决策走上面的 token，一律 :where() 降特异性便于视图局部覆写 */
+
+.u-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.u-row-tight {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.u-between {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.u-col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.u-grow {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* 纵向分组：列宽必须显式 minmax(0,1fr)，网格项默认 min-width:auto，日志这类 nowrap 内容会把整列撑出屏幕 */
+.u-stack {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+}
+
+.u-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-3);
+}
+
+.u-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.u-muted {
+  color: var(--text-muted);
+}
+
+.u-danger {
+  color: var(--sig-danger);
+}
+
+.u-truncate {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* 说明性小字，.u-mt-* 必须定义在其后，组合使用时 margin-top 才不被 margin:0 吃掉 */
+.u-note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.u-mt-2 {
+  margin-top: var(--space-2);
+}
+
+.u-mt-3 {
+  margin-top: var(--space-3);
+}
+
+/* 子滚动窗口：限高由使用方给，滚动行为统一在这里（终端 / 快照表 / 文件清单） */
+.u-scroll {
+  overflow: auto;
+  overscroll-behavior: contain;
+  /* WebView 默认 overlay 滚动条一滑即隐，看不出来还有没有内容，显式绘制细滚动条 */
+  scrollbar-width: thin;
+  scrollbar-color: rgb(255 255 255 / 22%) transparent;
+}
+
+.u-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.u-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.u-scroll::-webkit-scrollbar-thumb {
+  border-radius: 3px;
+  background: rgb(255 255 255 / 22%);
+}
+
+.u-list-reset {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* 信息行：标签在左、值在右，长值可换行 */
+.kv {
+  display: grid;
+  grid-template-columns: 5.5rem minmax(0, 1fr);
+  gap: var(--space-3);
+  padding: 0.5rem 0;
+  border-bottom: var(--hairline) solid var(--glass-border);
+}
+
+.kv:last-child {
+  border-bottom: 0;
+}
+
+.kv__key {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  line-height: 1.6;
+}
+
+.kv__value {
+  min-width: 0;
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+/* 提示清单：香槟金短竖条 + 次要小字（导出须知 / 实验室须知共用） */
+.u-notice {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.u-notice li {
+  position: relative;
+  padding-left: var(--space-3);
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  line-height: 1.6;
+}
+
+.u-notice li::before {
+  position: absolute;
+  top: 0.4em;
+  left: 0;
+  width: 2px;
+  height: 0.85em;
+  content: '';
+  background: var(--champagne);
+}
+
+/* [fallbacks] 无 backdrop-filter 的环境（极旧 WebView）退化为更高不透明度的实心表面，属能力降级而非给玻璃上色 */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .g-glass,
+  .g-card,
+  .g-btn,
+  .g-input,
+  .g-status,
+  .g-segmented,
+  .g-dialog,
+  .g-notice {
+    background: rgb(22 35 58 / 92%);
+  }
+
+  .g-glass--flat {
+    background: rgb(22 35 58 / 75%);
+  }
+}
+
+/* 骨架脉冲 / 存活呼吸，唯一的两处关键动效 */
+@keyframes g-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.45;
+  }
+}
+
+@keyframes g-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.g-animate-in {
+  animation: g-fade-in var(--motion) var(--spring) both;
+}
+
+/* 减弱动效：尊重系统设置 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .g-card:hover,
+  .g-btn:hover:not(:disabled) {
+    transform: none;
+  }
+}

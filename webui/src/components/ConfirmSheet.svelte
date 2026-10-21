@@ -1,5 +1,5 @@
 <script lang="ts">
-  // ConfirmSheet.svelte: [dialog] 破坏性操作确认：原生 <dialog> 提供焦点陷阱、Esc 关闭与无障碍语义，视觉是重玻璃弹层（.g-dialog）
+  // ConfirmSheet.svelte: [dialog] 破坏性操作确认：原生 <dialog> 提供焦点陷阱、Esc 关闭与无障碍语义，视觉是亚克力强档弹层（.g-dialog）
   let {
     open = false,
     title,
@@ -80,15 +80,14 @@
 </dialog>
 
 <style>
-  /* 弹层骨架/皮肤来自 .g-dialog，这里只保留项目特有的「注意事项」块：整圈极淡描边 + 内发光的玻璃提示块
-     信号色跟随弹层（CONFIRM 香槟 / DANGER 危险红），不引入第三种颜色 */
+  /* 弹层骨架/皮肤来自 .g-dialog，这里只保留项目特有的「注意事项」块：信号色淡底 + 同色细边（Fluent 的 InfoBar 语言）
+     信号色跟随弹层（CONFIRM 品牌蓝 / DANGER 危险红），不引入第三种颜色 */
   .note {
     margin-top: var(--space-3);
     padding: var(--space-2) var(--space-3);
-    border: var(--hairline) solid color-mix(in srgb, var(--dialog-signal, var(--champagne)) 28%, transparent);
+    border: var(--hairline) solid color-mix(in srgb, var(--dialog-signal, var(--accent)) 32%, transparent);
     border-radius: var(--radius-m);
-    background: color-mix(in srgb, var(--dialog-signal, var(--champagne)) 7%, transparent);
-    box-shadow: inset 0 1px 0 rgb(255 255 255 / 12%);
+    background: color-mix(in srgb, var(--dialog-signal, var(--accent)) 8%, transparent);
     color: var(--text-muted);
   }
 </style>

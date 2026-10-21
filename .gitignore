@@ -94,6 +94,24 @@ WebUI-old/src/assets/fonts/noto-sans-sc-*.woff2
 WebUI-old/src/assets/fonts/.subset-charset
 WebUI-old/src/assets/fonts/*.tmp
 
+# webui-blur（2026-10-22 重构前的玻璃拟态版本留档，规则同 webui/）
+webui-blur/dist
+webui-blur/dist-ssr
+webui-blur/node_modules
+webui-blur/logs
+webui-blur/coverage
+webui-blur/.svelte-check/
+webui-blur/*.tsbuildinfo
+webui-blur/.vscode/*
+!webui-blur/.vscode/extensions.json
+webui-blur/src/assets/fonts/poppins-*.woff2
+webui-blur/src/assets/fonts/noto-sans-sc-*.woff2
+webui-blur/src/assets/fonts/.subset-charset
+webui-blur/src/assets/fonts/*.tmp
+
+# 无头浏览器走查截图（临时产物，不参与构建）
+webui/.shots/
+
 # Magisk 模块打包产物（原 module/.gitignore 合并于此）
 module/webroot/
 module/core/bin/chiri

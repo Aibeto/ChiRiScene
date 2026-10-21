@@ -1,8 +1,8 @@
 # chiri-webui
 
 ChiRi 内核调度模块的 WebUI（KernelSU / Magisk 模块管理界面）。
-Svelte 5（runes）+ TypeScript + Vite，**玻璃拟态 / Nocturne Glassmorphism** 观感，无 UI 组件框架依赖。
-设计规范见 `DESIGN.md`（token、原子类、组件契约、红线）；风格原始资源见 `stylekit/glassmorphism/`。
+Svelte 5（runes）+ TypeScript + Vite，**Fluent Design（流利设计）** 观感，无 UI 组件框架依赖、无 Tailwind。
+设计规范见 `DESIGN.md`（token、原子类、组件契约、红线）；风格规则集见 `stylekit/fluent/`。
 
 ## 分层
 
@@ -16,14 +16,15 @@ ksu.exec → kernel/shell（可注入） → contract（契约层） → data（
 | `src/kernel/` | KernelSU 桥（`ksu.ts`）与可注入的 `ShellRunner`（`shell.ts`） |
 | `src/contract/` | 与守护进程的接口：路径与安全校验、三分类读取、meta 读写、实验室状态读写、存活探测、关闭调度 |
 | `src/data/` | 纯解析：status.csv（27 列，`daemon_utime_ms`/`daemon_stime_ms` 为 daemon 自测量基线，末两列 `cpu_dyn_w`/`resid_w` 为功耗分解）、daemon.log、白名单、rules、模式派生、应用标签、实验室状态 |
-| `src/app.css` | 玻璃拟态设计系统：`[fonts] [scene] [tokens] [base] [glass] [primitives] [signal-map] [utilities] [fallbacks]`。夜景场景/玻璃三层结构/原子类全在这里，色值只在此处定义 |
+| `src/app.css` | Fluent 设计系统：`[fonts] [tokens] [base] [scene] [materials] [primitives] [signal-map] [utilities] [fallbacks]`。Mica 场景 / Acrylic 材质 / 原子类全在这里，色值只在此处定义 |
 | `src/views/` | 四主屏：状态总览 / 配置 / 应用与规则 / 日志；二级页：实验室 `#/lab`、电量 `#/battery`、高级 `#/advanced` |
 | `src/components/` | 面板、存活芯片、状态占位、开关、数值输入、分段切换、确认弹层（原生 `<dialog>`） |
 | `src/i18n/` | 界面文案（界面语言与 daemon 日志语言互不影响） |
 | `src/stylekit/` | 上游 StyleKit 导出的风格包留档（全局 CSS / tokens / Tailwind preset / SKILL.md） |
 | `tests/` | 契约层与数据层的纯逻辑断言（vitest，可脱离真机运行） |
 
-> `WebUI-old/` 是重构前的 ak-ui 版本留档（2026-10-15 起停更，仅供对照）。
+> 三代留档对照：`webui-blur/` = 玻璃拟态 Nocturne Glassmorphism 版（2026-10-22 起停更），
+> `WebUI-old/` = 更早的 ak-ui 版（2026-10-15 起停更），MIUIX 中间稿已废弃。
 
 ## 脚本
 
@@ -32,16 +33,17 @@ npm install          # 安装依赖
 npm run dev          # 本地预览（无 ksu 时自动装载设备替身）
 npm run build        # 产出 dist（xtask 拷进模块 webroot/）
 npm run type-check   # svelte-check（--tsgo）
-npm run style-check  # 玻璃拟态风格闸门（扫禁止项/必须项，防风格漂移）
+npm run style-check  # Fluent 风格闸门（扫禁止项/必须项，防风格漂移）
 npm test             # vitest
 npm run verify       # style-check + type-check + test + build 一把过
 ```
 
 `dev` / `build` 前会自动执行 `scripts/fetch-fonts.mjs`（npm 的 `predev` / `prebuild`）：
 从 jsdelivr 拉取字体并落地到 `src/assets/fonts/`（二进制不入库，已在 `.gitignore` 忽略）。
-字体分工见 `src/app.css` 的 `[fonts]`：拉丁/数字走 Poppins（几何主义）、中文走 Noto Sans SC
-（人文主义）子集、等宽走内置 JetBrains Mono。脚本按仓库实际用字裁中文（只留 CJK 码位，
-拉丁交给 Poppins，故无需 `unicode-range`），新增中文文案后重跑构建即可覆盖新字。
+字体分工见 `src/app.css` 的 `[fonts]`：拉丁/数字走系统 **Segoe UI** 一族（Fluent 本体字体，
+Android 上回落 `system-ui`，故不再加载 Poppins）、中文走 Noto Sans SC 子集、等宽走内置 JetBrains Mono。
+脚本按仓库实际用字裁中文（只留 CJK 码位，拉丁交给系统字体，故无需 `unicode-range`），
+新增中文文案后重跑构建即可覆盖新字。
 
 ## 与守护进程的契约要点
 
@@ -106,22 +108,24 @@ cp /sdcard/my-wallpaper.jpg /data/adb/modules/chiri/webroot/backend.chr
 - **升级时能否保住它，取决于安装方式**：热更新走 `cp -r`（只覆盖同名文件，用户文件保留）；
   Magisk 完整安装会整体替换模块目录，放在 `webroot/` 的文件会随之丢失，需重新放置。
   两条路径都没有「专门删除 backend.chr」的代码——丢失只源于「整体替换目录」这一通用行为。
-- 为让上方白字保持可读，背景会自动压暗（`brightness(.72)`）；这是调场景亮度，不是给玻璃上色。
+- 为让亚克力浮层上的深色文字保持可读，背景会自动压暗并轻微降饱和（`brightness(.88) saturate(1.02)`）；
+  这是调场景亮度，不是给亚克力上色。
 
-## 设计系统（玻璃拟态 / Nocturne Glassmorphism）
+## 设计系统（Fluent Design / 流利设计）
 
-风格规则来源：StyleKit `glassmorphism`（完整规则集见 `stylekit/glassmorphism/glassmorphism-SKILL.md`）。
+风格规则来源：StyleKit `fluent-design`（规则集见 `stylekit/fluent/fluent-SKILL.md`，令牌快照见 `fluent-tokens.json`）。
 实现口径与组件契约见 `DESIGN.md`；**写任何界面代码前先读 DESIGN.md**。
 
 六条不可违反的红线（`npm run style-check` 会静态拦截）：
 
-1. 玻璃无色——面板只用 `rgba(255,255,255,5%~12%)`，颜色只能来自夜景场景底
-2. 必须有场景——深墨夜景纯色底（`.g-scene`，2026-10-16 用户要求去除渐变，原 2~3 个大半径 radial 光源已删）+ 2.5% 颗粒噪点（`.g-grain`）
-3. `backdrop-filter` 用具体数值（`--glass-blur` 1.25px / `--glass-blur-heavy` 1.875px，2026-10-16 再次减半；上游 40/60 的 1/16 再半）**且**带 `saturate(180%)`
-4. 阴影必须三层：外层深度 + `inset 0 1px 0` 顶边受光 + `inset 0 -1px 0` 底边暗缘
-5. 唯一强调色香槟金 `#E4B863`（主 CTA / 关键数字 / 当前项）；禁止第二强调色与紫粉渐变
-6. 圆角 ≥16px；过渡一律 `500ms cubic-bezier(0.16,1,0.3,1)`
+1. 亚克力有选择——只有顶栏/底栏/卡片/弹层用 `bg white/78~90% + blur 20~28px`；卡片内部的小块用实心面 `g-surface`
+2. 必须有场景——Mica 底（`.g-scene` 中性 `#F3F2F1` + 顶部一层单色品牌蓝光晕）+ 2% 颗粒噪点（`.g-noise` ≡ Fluent Acrylic 自带噪点）
+3. 阴影必须两层柔和（`--shadow-1..4`：近距离小阴影 + 远距离扩散），禁硬边、禁单层扁平
+4. 唯一强调色品牌蓝 `#0078D4`（主 CTA / 当前项 / 关键数字 / 焦点环）；禁止第二强调色与紫粉渐变
+5. 圆角只有 4/6/8px；过渡只有 150ms / 200ms 两档，缓动固定 `cubic-bezier(.1,.9,.2,1)`（禁弹簧）
+6. 按钮 `:active` 必须 `scale(0.97)` 并收掉阴影；所有可聚焦元素必须有可见焦点环
 
 风格闸门是**可执行**的：`scripts/stylecheck.mjs` 扫描全部 `.svelte`/`.css`，
-拦截紫粉渐变、给玻璃上色、低模糊值、旧 `ak-*` / `--md-*` 体系残留、`:has()`、顶层 await 等，
-并断言场景/噪点/饱和增强/spring easing/香槟金确实存在。已挂进 `npm run verify`。
+拦截紫粉渐变、裸 `backdrop-filter: blur(Npx)`、>200ms 过渡、回弹缓动、旧体系残留（`--glass-*`/`g-glass`/`--champagne`/`--night`）、
+`:has()`、顶层 await 等，并断言品牌蓝 / 分层阴影 / 统一缓动 / 焦点环 / 卡片上浮 / 按钮按压确实存在，
+同时校验「标记里用到的 `g-*` 类必须在样式里定义」。已挂进 `npm run verify`。

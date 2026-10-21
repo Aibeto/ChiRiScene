@@ -28,7 +28,7 @@
   }
 </script>
 
-<!-- 视觉/尺寸/响应式来自 app.css .g-segmented（玻璃切换器）；aria-checked 即选中态
+<!-- 视觉/尺寸/响应式来自 app.css .g-segmented（分段切换器）；aria-checked 即选中态
      tabindex=-1：roving tabindex 容器（焦点实际在按钮上，方向键事件冒泡至此） -->
 <div
   class="g-segmented"

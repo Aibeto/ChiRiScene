@@ -15,8 +15,9 @@
   }>()
 </script>
 
-<!-- 底座来自 app.css [primitives] 的 .g-notice（玻璃 + 信号条）；本组件只管结构与加载脉冲 -->
-<div class="state g-glass g-notice" data-kind={kind} role={kind === 'error' ? 'alert' : undefined}>
+<!-- 底座来自 app.css [primitives] 的 .g-notice（实心面 + 信号点）；本组件只管结构与加载脉冲 -->
+<div class="state g-notice" data-kind={kind} role={kind === 'error' ? 'alert' : undefined}>
+  <span class="g-notice__signal" aria-hidden="true"></span>
   <div class="g-notice__body">
     <p class="g-notice__title">{message}</p>
     {#if detail}
@@ -29,9 +30,9 @@
 </div>
 
 <style>
-  /* 骨架/信号色来自 .g-notice；这里只保留加载脉冲与两点结构修正
-     脉冲打在信号条（::after）上——::before 是玻璃的顶边内发光，不该闪 */
-  .state[data-kind='loading']::after {
+  /* 骨架/信号色来自 .g-notice；这里只保留加载脉冲与结构修正
+     脉冲打在信号点上（.g-notice__signal），状态色由 data-kind 决定 */
+  .state[data-kind='loading'] .g-notice__signal {
     animation: state-pulse 1.4s ease-in-out infinite;
   }
 
@@ -51,7 +52,7 @@
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .state[data-kind='loading']::after {
+    .state[data-kind='loading'] .g-notice__signal {
       animation: none;
     }
   }

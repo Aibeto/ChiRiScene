@@ -187,50 +187,59 @@
 
 - 文件写入用 base64 管道（`printf '%s' <b64> | base64 -d > <path>.webui.tmp && mv -f <path>.webui.tmp <path>`）避免 shell 特殊字符干扰；临时文件后缀固定 `.webui.tmp`（与 daemon 自身的 `<name>.tmp` 区分防互踩），必须经临时文件 + 原子 mv，防止直接 `>` 截断时 config_watcher 读到半截内容导致重载失败；不要用 `echo "${content}"` 拼接。
 
-- 样式分层（**2026-10-15 起 WebUI 重构为玻璃拟态 Nocturne Glassmorphism**；两代旧版均留档对照：`WebUI-old/` = 重构前 ak-ui 原版，MIUIX 中间稿已废弃）。
-  风格来源 = StyleKit 风格 `glassmorphism`，原始资源与完整规则集落库在 `webui/stylekit/glassmorphism/`
-  （`glassmorphism-globals.css` / `-tokens.json` / `-tailwind-preset.js` / `-SKILL.md` 等；由 `webui/stylekit/build-pack.mjs`
-  按上游 `exportStyleTokens` 模板复现——StyleKit 无服务端下载接口，导出全部是浏览器端现算）。
+- 样式分层（**2026-10-22 起 WebUI 重构为 Fluent Design 流利设计**；三代留档对照：`webui-blur/` = 玻璃拟态 Nocturne Glassmorphism 版，
+  `WebUI-old/` = 重构前 ak-ui 原版，MIUIX 中间稿已废弃）。
+  风格来源 = StyleKit 风格 `fluent-design`，规则集转录在 `webui/stylekit/fluent/`（`fluent-SKILL.md` / `fluent-tokens.json` /
+  `fluent-ai-rules.md`；StyleKit 无服务端下载接口，导出全部是浏览器端现算，故按上游规则人工转录留档）。
 
   **唯一权威实现口径 = `webui/DESIGN.md`**（token 表、原子类表、组件 prop 契约、工程红线）；写界面代码前必读。
-  全局 `webui/src/app.css` 承担 `[fonts]`、`[scene]`（夜景场景）、`[tokens]`、`[base]`、`[glass]`、`[primitives]`、
-  `[signal-map]`、`[utilities]`、`[fallbacks]`；**所有色值只在此处定义**，视图 `<style>` 不得出现硬编码色值。
-  组件一律用自研原子类：`g-scene`/`g-grain`（仅 App.svelte）、`g-glass`(+`--flat`/`--heavy`)、`g-sheen`、
-  `g-card`(+`__header`/`__title`/`__desc`/`__actions`)、`g-btn`(+`--primary`/`--danger`/`--ghost`/`--block`/`--sm`/`--icon`)、
+  全局 `webui/src/app.css` 承担 `[fonts]`、`[tokens]`、`[base]`、`[scene]`（Mica 底）、`[materials]`（Acrylic / 实心面 / Reveal）、
+  `[primitives]`、`[signal-map]`、`[utilities]`、`[fallbacks]`；**所有色值只在此处定义**，视图 `<style>` 不得出现硬编码色值。
+  组件一律用自研原子类：`g-scene`/`g-noise`（仅 App.svelte）、`g-acrylic`(+`--strong`)、`g-surface`（实心面，卡片内部用）、
+  `g-reveal`（Reveal 扫光）、`g-icon`、`g-card`(+`__header`/`__title`/`__sig`/`__desc`/`__actions`)、
+  `g-btn`(+`--primary`/`--danger`/`--ghost`/`--block`/`--sm`/`--icon`)、
   `g-input`、`g-field`/`g-label`/`g-hint`/`g-form-stack`、`g-tag`(+`--neutral`/`--accent`/`--danger`)/`g-tag-group`、
   `g-status`(+`__signal`/`__label`/`__detail`/`--running`)、`g-segmented`(+`__item`)、`g-switch`(+`__input`/`__control`/`__track`/`__thumb`/`__text`/`__name`)、
-  `g-dialog`(+`__header`/`__eyebrow`/`__title`/`__body`/`__footer`)、`g-notice`(+`__body`/`__title`/`__message`)、
+  `g-dialog`(+`__header`/`__eyebrow`/`__title`/`__body`/`__footer`)、`g-notice`(+`__signal`/`__body`/`__title`/`__message`)、
   `g-progress`(+`__header`/`__track`/`__fill`/`__value`)、`g-readout`、`g-pending`、`g-animate-in`，
   布局/排版用 `u-row`/`u-row-tight`/`u-between`/`u-col`/`u-grow`/`u-stack`/`u-actions`/`u-mono`/`u-muted`/`u-danger`/
   `u-truncate`/`u-note`/`u-mt-2`/`u-mt-3`/`u-scroll`/`u-list-reset`/`kv`(+`__key`/`__value`)/`u-notice`。
   **禁止再引 ak-ui 与 Material 体系**（`ak-*` 类、`--ak-*` token、`--md-*` token、`data-ak-ui` 标记、
   `@yunyoujun/ak-ui` 与 `@material/material-color-utilities` 依赖均已移除，`package.json` 只剩 `js-yaml`）。
 
-  **六条风格红线**（违反即风格报废，`npm run style-check` 静态拦截）：① 玻璃无色——面板只用 `rgba(255,255,255,5%~12%)`，
-  颜色只能来自场景；② 必须有场景——深墨夜景 `#060A13→#0B1322→#16233A` + 2~3 个大半径 radial 光源 + 2.5% feTurbulence 噪点；
-  ③ `backdrop-filter` 必须 ≥30px 且必须带 `saturate(180%)`；④ 阴影必须三层（外层深度 + `inset 0 1px 0` 顶边受光 + `inset 0 -1px 0` 底边暗缘）；
-  ⑤ 唯一强调色香槟金 `#E4B863`（只用于主 CTA / 关键数字 / 当前项），禁第二强调色与紫粉 AI 渐变；
-  ⑥ 圆角 ≥16px（`--radius-m`=16 / `--radius-l`=24），过渡一律 `500ms cubic-bezier(0.16,1,0.3,1)`（禁 duration-100/150）。
+  **六条 Fluent 红线**（违反即风格报废，`npm run style-check` 静态拦截）：① 亚克力不许铺满全场——只有顶栏/底栏/卡片/弹层用
+  `g-acrylic` 或 `g-card`（`bg white/78% + blur 20px`），卡片内部的小块一律 `g-surface` 实心面无模糊；② 阴影必须两层柔和叠加
+  （`--shadow-1..4`：近距离小阴影 + 远距离扩散），禁硬边、禁单层扁平；③ 过渡 ≤200ms（`--motion` 200ms / `--motion-fast` 150ms）
+  + 标准缓动 `--ease cubic-bezier(.1,.9,.2,1)`，禁弹簧/回弹；④ 唯一强调色品牌蓝 `#0078D4`（主 CTA / 当前项 / 关键数字 / 焦点环），
+  禁第二强调色与紫粉 AI 渐变；⑤ 圆角只有 4/6/8px（`--radius-s/m/l`），禁直角与 16px+ 大圆角；⑥ 禁单侧粗边框信号条、渐变文字、
+  亚克力套亚克力（模糊层数会拖垮 WebView）。
 
-  **风格闸门已可执行**：`webui/scripts/stylecheck.mjs` 扫全部 `.svelte`/`.css`，拦截紫粉渐变、给玻璃上色、低模糊值、
-  旧体系残留、`:has()`（项目红线，开关轨道必须靠 `input:checked ~ .g-switch__control .g-switch__track` 联动）、
-  顶层 await、`Intl.Segmenter`，并断言场景/噪点/饱和增强/spring easing/香槟金确实存在；已挂进 `npm run verify`
-  （style-check + svelte-check + vitest + build 一把过）。**`.u-stack` 必须显式 `grid-template-columns: minmax(0, 1fr)`**
-  ——网格项默认 `min-width: auto`，nowrap 日志这类宽内容会把整列/整页撑出屏幕；`.u-scroll` 自带显式细滚动条；
-  回到底部按钮只在滑离底部时渲染，且用 `.pane{position:relative}` + `absolute` 锚在所属滚动子块内（禁 `position: fixed`）；
-  左上角「关闭」走管理器 `ksu.exit`（`kernel/ksu.ts::exitApp`），仅在缺失该 API 时才 `window.close()`。
-  **禁玻璃套玻璃**（模糊层数会拖垮 WebView）：卡片内的小元素用 `g-glass--flat`（干玻璃，无 backdrop-filter）。
+  **材质三层**：Mica 场景（`.g-scene` 中性 `#F3F2F1` + 顶部一层单色品牌蓝光晕 + `.g-noise` 2% 颗粒 ≡ Fluent Acrylic 自带噪点）→
+  Acrylic 浮层（顶栏/底栏/卡片/弹层）→ 实心面 `g-surface`（列表行、终端、快照表）。**卡片 hover 上浮 4px + 阴影双向扩张**、
+  **按钮 hover 上浮 2px、`:active` 固定 `scale(0.97)` 并收掉阴影**（Fluent 的触觉确认），所有可聚焦元素走全局
+  `:focus-visible`（2px 品牌蓝 + 2px 偏移；开关的环画在 track 上）。
+  **风格闸门已可执行**：`webui/scripts/stylecheck.mjs` 扫全部 `.svelte`/`.css`，拦截紫粉渐变、裸 `backdrop-filter: blur(Npx)`、
+  长过渡（>200ms）、回弹缓动、旧体系残留（`--glass-*`/`g-glass`/`g-sheen`/`--champagne`/`--night`）、`:has()`（项目红线，
+  开关轨道必须靠 `input:checked ~ .g-switch__control .g-switch__track` 联动）、顶层 await、`Intl.Segmenter`，并断言品牌蓝 /
+  分层阴影 / 统一缓动 / 焦点环 / 卡片上浮 / 按钮按压 / 亚克力次数上限确实成立，另校验「标记里用到的 `g-*` 类必须在样式里定义」；
+  已挂进 `npm run verify`（stylecheck + svelte-check + vitest + build 一把过）。**`.u-stack` 必须显式
+  `grid-template-columns: minmax(0, 1fr)`**——网格项默认 `min-width: auto`，nowrap 日志这类宽内容会把整列/整页撑出屏幕；
+  `.u-scroll` 自带显式细滚动条；回到底部按钮只在滑离底部时渲染，且用 `.pane{position:relative}` + `absolute` 锚在所属滚动子块内
+  （禁 `position: fixed`）；左上角「关闭」走管理器 `ksu.exit`（`kernel/ksu.ts::exitApp`），仅在缺失该 API 时才 `window.close()`。
   **`data-signal` 单点映射**：`info|action|danger|success|accent|muted` → `--signal`；信号色只标*状态*
-  （且每条状态都必须另有文字，不能只靠颜色），香槟金是唯一用于*强调*的颜色，两者语义不同不要混用。
-  **字体分工不变**：拉丁/数字 Poppins（`ChiRi Sans`，400/600/700），中文 Noto Sans SC 子集（`ChiRi Sans CJK`，400/700），
-  等宽 `--font-mono` = JetBrains Mono + `ChiRi Sans CJK` 兜底（等宽组件里也有中文）。字体**二进制不入库**，
+  （且每条状态都必须另有文字，不能只靠颜色），品牌蓝是唯一用于*强调*的颜色，两者语义不同不要混用。
+  **字体分工（2026-10-22 调整）**：拉丁/数字改走系统 **Segoe UI** 一族（Fluent 本体字体，Android 上回落 `system-ui`），
+  不再加载 Poppins；中文仍用 Noto Sans SC 子集（`ChiRi Sans CJK`，400/700）保底，等宽 `--font-mono` =
+  Cascadia Code / JetBrains Mono + `ChiRi Sans CJK` 兜底（等宽组件里也有中文）。字体**二进制不入库**，
   由 `webui/scripts/fetch-fonts.mjs` 在构建期从 jsdelivr 拉取（挂 npm `predev`/`prebuild`，devDependency `subset-font`），
   许可正文随仓库。中文那份按仓库实际用字裁到 **CJK 码位、不含拉丁字形**——这正是「英文不变」的实现方式；
   **因此不要给中文那份加 `unicode-range`**（范围声明过宽会在缺字时出豆腐块）。字表外生僻字回落系统 CJK。
   **`@font-face` 必须用相对路径** `./assets/fonts/xxx.woff2`——写成 `/fonts/` 绝对路径既不会进 dist 产物、WebView 下也 404
   （MIUIX 中间稿就踩过这个坑，产物里一个字体文件都没有、全站静默回落系统字体）。
+  **`public/` 目录已取消**（`vite.config.ts` 设 `publicDir: false`）：favicon 并入 `src/assets/` 走资产管线，
+  产物里每个文件都由 vite 生成，才能被 `build.rs` 的 `[webui-embed]` 清单完整收录。
 
-- 依赖现状：根 `typescript` 保持 ^6.0.3（只允许 5/6 系列）——svelte-check 的 peerDependencies 仅认 `^5 || ^6`，内部还校验 `major < 7`；实际 type-check 走 `svelte-check --tsgo`（旧 vue-tsc 已随重构移除），TypeScript 7（^7.0.2）经 npm 别名 `@typescript/native` 接入，**别名与 `--tsgo` 必须成对**（缺任一 svelte-check 直接报错退出）。升级根 `typescript` 会同时导致 `npm install` ERESOLVE 与 svelte-check 运行失败，现无可用 svelte-check 版本支持，故 **Dependabot 必须忽略根 `typescript` 的主版本更新**，等上游放宽后再评估；`svelte` 5（runes）；**运行时样式依赖已清零**——玻璃拟态是纯 CSS（`src/app.css`），ak-ui 1.0.0 与 MIUIX 中间稿用的 `@material/material-color-utilities` ^0.4（Material You 按 seed 生成 token）**均已随 2026-10-15 重构移除**，不要再往 `webui/` 加配色运行时依赖；devDependency `subset-font` 只用于构建期裁中文字体（见上一条字体分工），不进产物。
+- 依赖现状：根 `typescript` 保持 ^6.0.3（只允许 5/6 系列）——svelte-check 的 peerDependencies 仅认 `^5 || ^6`，内部还校验 `major < 7`；实际 type-check 走 `svelte-check --tsgo`（旧 vue-tsc 已随重构移除），TypeScript 7（^7.0.2）经 npm 别名 `@typescript/native` 接入，**别名与 `--tsgo` 必须成对**（缺任一 svelte-check 直接报错退出）。升级根 `typescript` 会同时导致 `npm install` ERESOLVE 与 svelte-check 运行失败，现无可用 svelte-check 版本支持，故 **Dependabot 必须忽略根 `typescript` 的主版本更新**，等上游放宽后再评估；`svelte` 5（runes）；**运行时样式依赖已清零**——Fluent Design 是纯 CSS（`src/app.css`），ak-ui 1.0.0 与 MIUIX 中间稿用的 `@material/material-color-utilities` ^0.4（Material You 按 seed 生成 token）**均已随 2026-10-15 重构移除**，不要再往 `webui/` 加配色运行时依赖；devDependency `subset-font` 只用于构建期裁中文字体（见上一条字体分工），不进产物。
 
 - 状态页（OverviewView）底部的「导出历史归档」：把 `logd/`（历次重启的日志归档）经 `module/scripts/pack.sh export` 打成**未压缩 tar** 到 `/sdcard/Download`（**2026-10-13 起导出仅打包不压缩——zstd -19 在设备上分钟级太慢，用户要求**；历史：2026-09-25 前后曾走 gzip / zstd -19，产物曾为 `.tar.gz`/`.tar.zst`），随附两条提示——不含本次运行正在写的日志、导出期间别关调度/重启设备。进度取**文件读数**而不是脚本回显（`tar -v` 定向到文件是块缓冲，整段打包期间一行都读不到）：**打包段** = `.part` 字节 / 源总字节（脚本 `du -sk` 预算写 `/dev/chiri_export.total`），前端一轮 exec 读回 `.part`/`.tar`/源总字节三个数，封顶 99。`tar` 的 stderr 写 `/dev/chiri_export.log`（排障用，前端不读）。**阶段判定顺序 s:fail → s:tar**（fail 排最前：失败时半截 `.tar.part` 可能还在，先判产物会把失败静默上报成完成）。失败标记（含退出码：3=logd 不可进、4=打包失败、5=无归档）与进度文件都放 `/dev`（tmpfs 必在）而不是 `/sdcard`。**`/sdcard/Download` 由系统提供，不要 `mkdir` 它**：真不可写（未挂载/只读）时脚本立即写失败标记，前端 1.5 秒内报出而不是干等超时。三条实现约束：① **后台执行**：命令 `nohup sh <脚本> &` 立刻返回，前端 1.5s 一轮轮询（`contract/export.ts::pollExport`，上限 3 分钟），前台 await 会被 ksu 桥超时掐断、看起来也像卡死；② **打包逻辑全部在 pack.sh**（对外暴露的稳定接口，构建流程不得修改——CI 注释剥离已排除 `module/scripts/`；Rust 启动归档与 WebUI 导出共用）；③ **`pack.sh export` 的 dest_base 参数是不带扩展名的基准名**（脚本自己生成 `<base>.tar`）——调用方若传带 `.tar` 的名字会得到 `logd_X.tar.tar`，轮询永远找不到目标；④ 轮询判定靠两个标记：`.tar` 存在=完成、`$FAIL` 存在=按退出码分类。
 - meta.yaml 是唯一可写配置：草稿 + 保存覆盖 7 字段（language/loglevel/dev_record/fas_enabled/scenemode_enabled/thread_bind/notify），电池读数八项（`power_avg`、`power_max_w`、`oplus_chg`、`oplus_dual_cell`、`voltage_double`、`current_double`、`voltage_divisor`、`current_divisor`）走「电池读数」二级页直写（`state.setPowerAvg` / `state.setBatteryFields`，同样经 `writeMetaFields`，不走草稿）；`contract/meta.ts::writeMetaFields` 做单次读-改-写（`replaceTopLevelField` 顶层行替换、保留注释与其余内容 + tmp→rename；tmp+rename 会产生两个 inotify 事件，故整段一次写入、绝不做多次写入；**可选字段整行缺失时走 `appendTopLevelField` 顶层追加**），写后回读实际值——daemon 对 meta 整文件严格校验（**字段全部可选**：缺字段沿用二进制内嵌默认，只有类型不符/取值不在白名单/未知键才判非法，`deny_unknown_fields`），非法即把该字段用内嵌默认恢复（其余内容保留）；「配置」页交互为草稿 + 保存（`state.svelte.ts::setDraft`），config_watcher 热重载即时生效。name/author 仅展示；`nofix` 只手改。dev mock 走同一条链路（ShellRunner 注入），无 MockBridge 联合类型约束。

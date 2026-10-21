@@ -62,5 +62,8 @@ export default defineConfig({
     }
   },
   // 强制打包为相对路径，确保在 WebView（file:// 或自定义 scheme）下资源可加载
-  base: './'
+  base: './',
+  // 不设 public/ 直通目录：favicon 已并入 src/assets 走资产管线（hash + 相对路径），
+  // 少一层「原样拷贝到 dist」的构建步骤，产物里所有文件都由 vite 生成、可被 build.rs 的资产清单完整收录
+  publicDir: false
 })

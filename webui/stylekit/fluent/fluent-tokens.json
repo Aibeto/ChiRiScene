@@ -1,0 +1,74 @@
+{
+  "$style": "fluent-design",
+  "$source": "StyleKit fluent-design（WebUI 重构时按上游规则转录，非 API 导出）",
+  "$note": "本项目落地值以 src/app.css 的 :root 为准；本文件是设计口径来源，便于后续换肤/对照",
+  "color": {
+    "accent": "#0078D4",
+    "accentHover": "#106EBE",
+    "accentPressed": "#005A9E",
+    "accentTint": "#EFF6FC",
+    "accentYellow": "#FFB900",
+    "danger": "#E81123",
+    "dangerHover": "#C50F1F",
+    "dangerPressed": "#A4262C",
+    "dangerTint": "#FDE7E9",
+    "success": "#107C10",
+    "successTint": "#DFF6DD",
+    "background": "#F3F2F1",
+    "surface": "#FFFFFF",
+    "surfaceAlt": "#FAF9F8",
+    "surfaceSunken": "#EDEBE9",
+    "border": "#E1E1E1",
+    "borderStrong": "#8A8886",
+    "divider": "#EDEBE9",
+    "textPrimary": "#201F1E",
+    "textSecondary": "#323130",
+    "textMuted": "#605E5C",
+    "textFaint": "#A19F9D"
+  },
+  "material": {
+    "acrylic": "rgb(255 255 255 / 78%)",
+    "acrylicStrong": "rgb(255 255 255 / 90%)",
+    "acrylicHover": "rgb(255 255 255 / 92%)",
+    "acrylicBorder": "rgb(255 255 255 / 60%)",
+    "blur": "20px",
+    "blurStrong": "28px",
+    "noiseOpacity": 0.02,
+    "allowedHosts": ["top bar", "bottom nav", "card", "dialog"]
+  },
+  "shadow": {
+    "1": "0 1.6px 3.6px rgba(0,0,0,.13), 0 0.3px 0.9px rgba(0,0,0,.10)",
+    "2": "0 3.2px 7.2px rgba(0,0,0,.13), 0 0.6px 1.8px rgba(0,0,0,.10)",
+    "3": "0 6.4px 14.4px rgba(0,0,0,.13), 0 1.2px 3.6px rgba(0,0,0,.10)",
+    "4": "0 6.4px 14.4px rgba(0,0,0,.18), 0 1.2px 3.6px rgba(0,0,0,.14)",
+    "dialog": "0 25.6px 57.6px rgba(0,0,0,.22), 0 4.8px 14.4px rgba(0,0,0,.18)"
+  },
+  "radius": { "s": "4px", "m": "6px", "l": "8px" },
+  "motion": {
+    "ease": "cubic-bezier(0.1, 0.9, 0.2, 1)",
+    "duration": "200ms",
+    "durationFast": "150ms",
+    "maxDuration": "200ms",
+    "press": "scale(0.97)",
+    "hoverLiftCard": "-4px",
+    "hoverLiftControl": "-2px"
+  },
+  "focus": {
+    "outline": "2px solid #0078D4",
+    "outlineOffset": "2px",
+    "softRing": "0 0 0 3px rgb(0 120 212 / 35%)"
+  },
+  "typography": {
+    "body": "'Segoe UI', 'Segoe UI Variable Text', system-ui, -apple-system, 'PingFang SC', 'ChiRi Sans CJK', 'Noto Sans SC', 'Microsoft YaHei', 'Helvetica Neue', Arial, sans-serif",
+    "mono": "'Cascadia Code', 'ChiRi Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+    "weights": [400, 600, 700]
+  },
+  "signals": {
+    "info": "#0078D4",
+    "action": "#9D5D00",
+    "danger": "#D13438",
+    "success": "#107C10",
+    "accent": "#8764B8",
+    "muted": "#8A8886"
+  }
+}

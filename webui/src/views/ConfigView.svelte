@@ -260,7 +260,7 @@
     gap: var(--space-3);
     margin-top: var(--space-4);
     padding-top: var(--space-3);
-    border-top: var(--hairline) solid var(--glass-border);
+    border-top: var(--hairline) solid var(--divider);
   }
 
   /* 有意保留正文色：与「未改动」态的 .u-muted 拉开对比（不用 .u-note） */

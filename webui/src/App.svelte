@@ -1,6 +1,6 @@
 <script lang="ts">
-  // App.svelte: [shell] [bar] [views] [nav] 顶层骨架：顶栏（关闭 / 模块名版本 + 守护进程状态 + 界面语言）、路由视图区、玻璃底栏
-  // 场景（深墨夜景纯色底 + 噪点）挂在 .g-scene/.g-grain 上，玻璃质感由纯色底 + 颗粒噪点 + 自定义背景图承担
+  // App.svelte: [shell] [bar] [views] [nav] 顶层骨架：顶栏（关闭 / 模块名版本 + 守护进程状态 + 界面语言）、路由视图区、亚克力底栏
+  // 场景用 Mica 底（.g-scene 中性面 + 顶部一层品牌蓝光晕 + .g-noise 颗粒），亚克力只上在顶栏/底栏/卡片这些浮层
   import { onMount } from 'svelte'
   import LiveStatus from '@/components/LiveStatus.svelte'
   import AppsView from '@/views/AppsView.svelte'
@@ -27,7 +27,7 @@
   })
 
   // [custom-bg] 自定义背景：与 index.html 同目录存在 backend.chr 时用它作为页面背景；'./backend.chr' 相对**文档**（index.html 所在目录）解析，不是相对打包后的 JS 目录
-  // 用 Image 探测而不是 fetch/HEAD：WebView 的 file:// 或自定义 scheme 下 fetch 常被同源策略拒绝，<img> 加载不受此限且顺带校验可解码（不是图片时静默保持夜景底）
+  // 用 Image 探测而不是 fetch/HEAD：WebView 的 file:// 或自定义 scheme 下 fetch 常被同源策略拒绝，<img> 加载不受此限且顺带校验可解码（不是图片时静默保持 Mica 底）
   const BACKEND_BG_URL = './backend.chr'
   let customBg = $state(false)
 
@@ -52,8 +52,8 @@
   }
 </script>
 
-<!-- 场景层：底色 + 全屏噪点（.g-grain 的 ::after 固定在视口上，不随滚动位移） -->
-<div class="shell g-scene g-grain {customBg ? 'g-scene--custom-bg' : ''}">
+<!-- 场景层：Mica 底 + 全屏颗粒（.g-noise 的 ::after 固定在视口上，不随滚动位移） -->
+<div class="shell g-scene g-noise {customBg ? 'g-scene--custom-bg' : ''}">
   {#if customBg}
     <!-- 自定义背景：与 index.html 同目录的 backend.chr（src 是运行时字符串，Vite 不参与解析，
          故相对**文档**而非打包后的 assets/ 目录解析——写成 CSS url() 会落到 assets/backend.chr 而 404） -->
@@ -67,14 +67,17 @@
         aria-label={t('app.exit')}
         onclick={exitWebui}
       >
-        <span class="g-sheen"></span>
+        <span class="g-reveal" aria-hidden="true"></span>
         ✕
       </button>
-      <div class="shell__brand">
-        <p class="shell__title">{app.moduleProp.name || t('app.title')}</p>
-        <p class="shell__version u-mono">
-          {app.moduleProp.version || t('app.subtitle')}
-        </p>
+      <div class="shell__brand g-brand">
+        <span class="g-icon" aria-hidden="true">CR</span>
+        <div class="shell__names">
+          <p class="shell__title">{app.moduleProp.name || t('app.title')}</p>
+          <p class="shell__version u-mono">
+            {app.moduleProp.version || t('app.subtitle')}
+          </p>
+        </div>
       </div>
     </div>
     <div class="shell__side u-row-tight">
@@ -85,7 +88,7 @@
         aria-label={t('action.toggleLocale')}
         onclick={toggleLocale}
       >
-        <span class="g-sheen"></span>
+        <span class="g-reveal" aria-hidden="true"></span>
         {i18n.locale === 'zh' ? 'EN' : '中文'}
       </button>
     </div>
@@ -118,7 +121,7 @@
         aria-current={navActive === item.id ? 'page' : undefined}
         onclick={() => go(item.id)}
       >
-        <span class="g-sheen"></span>
+        <span class="g-reveal" aria-hidden="true"></span>
         {item.label}
       </button>
     {/each}
@@ -146,19 +149,20 @@
     object-fit: cover;
     object-position: center;
     pointer-events: none;
-    /* 用户图不可控可能很亮，压暗一层让上方白字仍达 AA，玻璃仍是无色半透明 */
-    filter: brightness(0.72) saturate(1.05);
+    /* 用户图不可控可能很亮，压暗一层让亚克力卡片与暗字仍有对比；亚克力本身仍是无色半透明 */
+    filter: brightness(0.88) saturate(1.02);
   }
 
-  /* 有自定义背景时关掉 .g-scene 的夜景底，背景图自己就是可折射之物，叠纯色夜景底只会盖掉它 */
+  /* 有自定义背景时关掉 Mica 底色与光晕，背景图自己就是场景（同一时刻只应有一个场景） */
   .g-scene--custom-bg {
-    background: var(--night-deep);
+    background: #e9e7e5;
   }
   .g-scene--custom-bg::before {
     display: none;
   }
 
-  /* 吸顶顶栏：重玻璃（60px 模糊）；底部用 1px 收边而不是实色分隔线——玻璃之间靠受光顶边 + 底边暗缘分层，画线会把它变回普通导航栏 */
+  /* 吸顶顶栏：强亚克力（28px 模糊）+ 1px 底边收边，滚动时内容在它下面虚化穿过
+     左右内距在宽屏下自动加大到「与 720px 正文列对齐」，所以不给顶栏套 max-width */
   .shell__bar {
     position: sticky;
     top: 0;
@@ -167,12 +171,13 @@
     align-items: center;
     justify-content: space-between;
     gap: var(--space-3);
-    padding: calc(var(--space-3) + env(safe-area-inset-top, 0px)) var(--space-4) var(--space-3);
-    border-bottom: var(--hairline) solid var(--glass-border);
-    background: var(--glass-bg-weak);
-    -webkit-backdrop-filter: blur(var(--glass-blur-heavy)) saturate(var(--glass-saturate));
-    backdrop-filter: blur(var(--glass-blur-heavy)) saturate(var(--glass-saturate));
-    box-shadow: 0 8px 32px rgb(3 7 18 / 45%), inset 0 -1px 0 rgb(2 6 16 / 30%);
+    padding: calc(var(--space-2) + env(safe-area-inset-top, 0px))
+      max(var(--space-4), calc((100% - 720px) / 2)) var(--space-2);
+    border-bottom: var(--hairline) solid var(--surface-border);
+    background: var(--acrylic-strong);
+    -webkit-backdrop-filter: blur(var(--blur-strong)) saturate(120%);
+    backdrop-filter: blur(var(--blur-strong)) saturate(120%);
+    box-shadow: var(--shadow-1);
   }
 
   .shell__left {
@@ -180,23 +185,30 @@
   }
 
   .shell__brand {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-width: 0;
+  }
+
+  .shell__names {
     min-width: 0;
   }
 
   .shell__title {
     margin: 0;
     color: var(--text-primary);
-    font-size: 1.0625rem;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    line-height: 1.3;
+    font-size: 0.9375rem;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    line-height: 1.25;
   }
 
   .shell__version {
     margin: 0;
     color: var(--text-muted);
     font-size: 0.625rem;
-    letter-spacing: 0.1em;
+    letter-spacing: 0.06em;
     line-height: 1.4;
   }
 
@@ -209,30 +221,35 @@
     font-weight: 700;
   }
 
-  /* 底部留出药丸底栏的高度 + 安全区，避免最后一张卡片被压住 */
+  /* 底部留出底栏的高度 + 安全区，避免最后一张卡片被压住；宽屏居中收窄到 720px（Fluent 的阅读宽度） */
   .shell__main {
     flex: 1 1 auto;
+    width: 100%;
+    max-width: 720px;
+    margin-inline: auto;
     padding: var(--space-4);
-    padding-bottom: calc(64px + var(--space-6) + var(--safe-b));
+    padding-bottom: calc(68px + var(--space-6) + var(--safe-b));
   }
 
-  /* 底栏：玻璃药丸浮在场景上（left/right 留边 + 圆角两处都是"浮起"的关键） */
+  /* 底栏：亚克力药丸浮在场景上（左右留边 + 圆角两处都是「浮起」的关键），阴影用第 3 档
+     宽屏下居中并限宽 520px，避免四项被拉成四根长条 */
   .shell__nav {
     position: fixed;
     z-index: 30;
-    right: var(--space-4);
     bottom: calc(var(--space-3) + var(--safe-b));
-    left: var(--space-4);
+    left: 50%;
+    width: min(520px, calc(100% - 2 * var(--space-3)));
+    transform: translateX(-50%);
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: var(--space-1);
     padding: var(--space-1);
-    border: var(--hairline) solid var(--glass-border);
+    border: var(--hairline) solid var(--acrylic-border);
     border-radius: var(--radius-l);
-    background: var(--glass-bg);
-    -webkit-backdrop-filter: blur(var(--glass-blur-heavy)) saturate(var(--glass-saturate));
-    backdrop-filter: blur(var(--glass-blur-heavy)) saturate(var(--glass-saturate));
-    box-shadow: var(--glass-shadow-lifted);
+    background: var(--acrylic-strong);
+    -webkit-backdrop-filter: blur(var(--blur-strong)) saturate(120%);
+    backdrop-filter: blur(var(--blur-strong)) saturate(120%);
+    box-shadow: var(--shadow-3), var(--shadow-inset);
   }
 
   /* 覆盖 .g-btn 的圆角与最小高度：底栏项是栅格里的扁按钮，不是标准 CTA */
@@ -246,8 +263,6 @@
     border-radius: var(--radius-m);
     background: transparent;
     box-shadow: none;
-    -webkit-backdrop-filter: none;
-    backdrop-filter: none;
     color: var(--text-muted);
     font-size: 0.8125rem;
     font-weight: 600;
@@ -255,19 +270,31 @@
 
   .shell__nav-item:hover:not(:disabled) {
     border-color: transparent;
-    background: var(--glass-bg-weak);
+    background: rgb(0 0 0 / 4%);
     box-shadow: none;
-    transform: none;
     color: var(--text-primary);
+    transform: none;
   }
 
-  /* 选中态：干玻璃底 + 香槟金顶边（唯一强调色用于"当前所在"这一关键状态） */
+  /* 选中态：品牌蓝淡底 + 深蓝字，顶端一条 2px 蓝色指示条（Fluent 导航的选中语言，不是整条色边） */
   .shell__nav-item--active,
   .shell__nav-item--active:hover:not(:disabled) {
-    border-color: var(--glass-border);
-    background: var(--glass-bg-strong);
-    color: var(--text-primary);
-    box-shadow: var(--glass-shadow-inset), inset 0 2px 0 0 var(--champagne);
+    border-color: transparent;
+    background: var(--accent-tint);
+    color: var(--accent-pressed);
+    box-shadow: none;
+  }
+
+  .shell__nav-item--active::after {
+    position: absolute;
+    top: 5px;
+    left: 50%;
+    width: 18px;
+    height: 2px;
+    margin-left: -9px;
+    border-radius: 1px;
+    content: '';
+    background: var(--accent);
   }
 
   .shell__nav-item:active:not(:disabled) {

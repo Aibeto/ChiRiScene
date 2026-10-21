@@ -172,15 +172,15 @@
     color: var(--text-secondary);
   }
 
-  /* 原始输出可能很长（每条策略一行）：限高可滚，不把卡片撑破 */
+  /* 原始输出可能很长（每条策略一行）：限高可滚，不把卡片撑破；下沉实心面 + 细边，Fluent 的「代码块」观感 */
   .notify__out {
     max-height: 12rem;
     margin: 0;
     padding: 0.5rem 0.6rem;
     overflow: auto;
-    border: var(--hairline) solid var(--glass-border);
-    border-radius: 0.5rem;
-    background: rgb(0 0 0 / 18%);
+    border: var(--hairline) solid var(--surface-border);
+    border-radius: var(--radius-s);
+    background: var(--surface-sunken);
     color: var(--text-secondary);
     font-size: 0.75rem;
     line-height: 1.5;

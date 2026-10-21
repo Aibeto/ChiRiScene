@@ -206,27 +206,31 @@
     gap: var(--space-3);
   }
 
-  /* 单个模式卡：嵌在玻璃面板里，干玻璃（无 backdrop-filter，避免嵌套模糊）
-     「启用中」由右下角 g-tag--danger「已启用」文字标签 + 整圈危险色描边共同承担，不靠颜色单独传递状态 */
+  /* 单个模式卡：嵌在亚克力面板里的实心面（不再叠模糊层，避免层数打爆）
+     「启用中」由右下角 g-tag--danger「已启用」文字标签 + 整圈危险色描边 + 淡红底共同承担，不靠颜色单独传递状态 */
   .mode {
     display: grid;
     gap: 0.35rem;
     padding: var(--space-3);
-    border: var(--hairline) solid var(--glass-border);
+    border: var(--hairline) solid var(--surface-border);
     border-radius: var(--radius-m);
-    background: var(--glass-bg-weak);
-    box-shadow: var(--glass-shadow-inset);
-    transition: border-color var(--motion) var(--spring), box-shadow var(--motion) var(--spring);
+    background: var(--surface-alt);
+    transition:
+      border-color var(--motion-fast) var(--ease),
+      background-color var(--motion-fast) var(--ease),
+      box-shadow var(--motion-fast) var(--ease);
   }
 
-  /* 启用中：只换描边颜色 + 一圈内发光，不做整块染色（玻璃无色，颜色只来自场景） */
+  /* 启用中：整圈危险色描边 + 极淡红底，是 Fluent InfoBar 的状态语言 */
   .mode[data-active='yes'] {
-    border-color: color-mix(in srgb, var(--sig-danger) 50%, var(--glass-border));
-    box-shadow: var(--glass-shadow-inset), inset 0 0 0 1px color-mix(in srgb, var(--sig-danger) 22%, transparent);
+    border-color: color-mix(in srgb, var(--sig-danger) 55%, var(--surface-border));
+    background: color-mix(in srgb, var(--sig-danger) 8%, var(--surface));
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--sig-danger) 18%, transparent);
   }
 
-  /* 保留字：整体退后（背景透明化），文字保持原亮度（不叠 opacity，避免低于 --text-muted 对比线） */
+  /* 保留字：整体退后（去掉底与边），文字保持原亮度（不叠 opacity，避免低于 --text-muted 对比线） */
   .mode[data-reserved='yes'] {
+    border-color: transparent;
     background: transparent;
     box-shadow: none;
   }

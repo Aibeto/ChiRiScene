@@ -54,10 +54,10 @@
   {:else if shown === 0}
     <StateBox kind="empty" message={t("apps.empty")} />
   {:else}
-    <!-- 列表是一整块玻璃（g-glass），行是嵌在内的干玻璃行（g-glass--flat）：玻璃里禁止再叠模糊玻璃 -->
-    <ul class="apps g-glass u-list-reset">
+    <!-- 列表是一整块亚克力（g-acrylic），行是嵌在内的实心面（g-surface）：亚克力里禁止再叠模糊层 -->
+    <ul class="apps g-acrylic u-list-reset">
       {#each app.filteredApps as entry (entry.pkg)}
-        <li class="apps__item g-glass--flat">
+        <li class="apps__item g-surface">
           <div class="apps__head">
             <p class="apps__label u-truncate">{entry.label}</p>
             {#if entry.label !== entry.pkg}
@@ -121,7 +121,7 @@
 </div>
 
 <style>
-  /* 列表重置来自 .u-list-reset；玻璃底/边/影来自 .g-glass，这里只补圆角与内部排布 */
+  /* 列表重置来自 .u-list-reset；亚克力底/边/影来自 .g-acrylic，这里只补圆角与内部排布 */
   .apps {
     display: grid;
     gap: var(--space-2);
@@ -129,12 +129,12 @@
     border-radius: var(--radius-l);
   }
 
-  /* 干玻璃行（g-glass--flat 无 backdrop-filter）：补 hairline 边与圆角成「玻璃行」 */
+  /* 行是实心面（g-surface，无 backdrop-filter）：补细边与圆角成「列表行」 */
   .apps__item {
     display: grid;
     gap: var(--space-2);
     padding: var(--space-3) var(--space-4);
-    border: var(--hairline) solid var(--glass-border);
+    border: var(--hairline) solid var(--surface-border);
     border-radius: var(--radius-m);
   }
 
