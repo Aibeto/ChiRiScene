@@ -1,6 +1,7 @@
 <script lang="ts">
   // AppsView.svelte: [rules] [search] 应用规则查询：只读三份调度规则（rules.yaml + 特调 + FAS 白名单）
-  // 按包名分组展示，activity 级覆盖缩进在包名级下面；不再执行 pm list packages 拉取完整应用列表（规则查询不需要全量清单，扫描也很慢）
+  // 按包名分组：正标题应用名、副标题包名；activity 级覆盖不缩进，模式用独立 chip 与 activity 名区分
+  // 全局规则（动态/全局模式/Activity 开关/忽略包名）已并入状态页「生效配置」，本页不再重复展示
   import { onMount } from "svelte";
   import Panel from "@/components/Panel.svelte";
   import StateBox from "@/components/StateBox.svelte";
@@ -19,87 +20,34 @@
 
 <div class="u-stack">
   <Panel title={t("apps.title")} desc={t("apps.rules.priority")}>
-    {#snippet actions()}
+    <div class="rules__query">
+      <label class="g-field rules__search">
+        <span class="g-label">{t("apps.rules.search")}</span>
+        <input
+          class="g-input"
+          type="search"
+          placeholder={t("apps.search")}
+          bind:value={app.ruleKeyword}
+        />
+      </label>
       <button
         type="button"
-        class="g-btn"
+        class="g-btn rules__refresh"
         disabled={app.rulesLoading}
         onclick={() => void app.loadRules(true)}
       >
         {app.rulesLoading ? t("state.loading") : t("apps.rules.refresh")}
       </button>
-    {/snippet}
-
-    <label class="g-field">
-      <span class="g-label">{t("apps.rules.search")}</span>
-      <input
-        class="g-input"
-        type="search"
-        placeholder={t("apps.rules.search")}
-        bind:value={app.ruleKeyword}
-      />
-    </label>
+    </div>
 
     <p class="u-note u-mt-2 u-mono">
       {t("apps.rules.count", { n: total })}{#if shown !== total} · {t("apps.filtered", { shown, total })}{/if}
     </p>
   </Panel>
 
-  <Panel title={t("apps.rules")} desc={t("apps.rules.hint")}>
-    {#if app.rules.ok}
-      <div class="kv">
-        <span class="kv__key">{t("apps.rules.dynamic")}</span>
-        <span class="kv__value u-mono"
-          >{app.rules.dynamicEnabled ? "true" : "false"}</span
-        >
-      </div>
-      <div class="kv">
-        <span class="kv__key">{t("apps.rules.globalMode")}</span>
-        <span class="kv__value u-mono">{app.rules.globalMode}</span>
-      </div>
-      <div class="kv">
-        <span class="kv__key">{t("apps.rules.activityAware")}</span>
-        <span class="kv__value u-mono"
-          >{app.rules.activityAware ? "true" : "false"}</span
-        >
-      </div>
-      {#if !app.rules.activityAware}
-        <p class="u-note u-mt-2">{t("apps.rules.activityAware.off")}</p>
-      {/if}
-      <div class="kv">
-        <span class="kv__key">{t("apps.rules.ignored")}</span>
-        <span class="kv__value">
-          {#if app.rules.ignoredApps.length > 0}
-            <span class="rules__ignored">
-              {#each app.rules.ignoredApps as name, index (index)}
-                <span class="g-tag g-tag--neutral u-mono">{name}</span>
-              {/each}
-            </span>
-          {:else}
-            <span class="u-mono">—</span>
-          {/if}
-        </span>
-      </div>
-    {:else if app.rulesLoading}
-      <StateBox kind="loading" message={t("state.loading")} />
-    {:else if app.rulesState === "missing"}
-      <StateBox
-        kind="missing"
-        message={t("apps.rules.missing")}
-        detail={t("apps.rules.missing.detail")}
-      />
-    {:else}
-      <StateBox
-        kind="error"
-        message={t("state.failed")}
-        detail={app.rules.problem}
-      />
-    {/if}
-
-    {#if app.rulesWhitelistError}
-      <p class="u-note u-danger u-mt-2">{app.rulesWhitelistError}</p>
-    {/if}
-  </Panel>
+  {#if app.rulesWhitelistError}
+    <p class="u-note u-danger">{app.rulesWhitelistError}</p>
+  {/if}
 
   {#if app.rules.ok}
     {#if shown === 0}
@@ -108,11 +56,17 @@
       <!-- 列表是一整块亚克力（g-acrylic），行是嵌在内的实心面（g-surface）：亚克力里禁止再叠模糊层 -->
       <ul class="rules g-acrylic u-list-reset">
         {#each groups as group (group.pkg)}
+          {@const label = app.ruleLabels[group.pkg] ?? ""}
           <li class="rules__item g-surface">
             <div class="rules__head">
-              <p class="rules__pkg u-mono u-truncate" title={group.pkg}>
-                {group.pkg}
-              </p>
+              <div class="rules__id">
+                <p class="rules__name" title={group.pkg}>
+                  {label || group.pkg}
+                </p>
+                {#if label && label !== group.pkg}
+                  <p class="rules__pkg u-mono">{group.pkg}</p>
+                {/if}
+              </div>
               {#if group.ignored || group.special || group.fasConfig}
                 <div class="g-tag-group">
                   {#if group.ignored}
@@ -146,25 +100,38 @@
             {#if group.mode}
               <div class="rules__line">
                 <span class="rules__level">{t("apps.rules.level.package")}</span>
-                <span class="rules__mode u-mono">{group.mode}</span>
+                <span class="rules__mode rules__mode--chip u-mono">{group.mode}</span>
               </div>
             {/if}
 
             {#each group.activities as activity (activity.activity)}
               <div class="rules__line rules__line--activity">
-                <span class="rules__level"
-                  >{t("apps.rules.level.activity")}</span
-                >
                 <span class="rules__activity u-mono" title={activity.activity}>
                   {activity.activity}
                 </span>
-                <span class="rules__mode u-mono">{activity.mode}</span>
+                <span class="rules__mode rules__mode--chip u-mono">{activity.mode}</span>
               </div>
             {/each}
           </li>
         {/each}
       </ul>
     {/if}
+  {:else if app.rulesLoading}
+    <StateBox kind="loading" message={t("state.loading")} />
+  {:else if app.rulesState === "missing"}
+    <StateBox
+      kind="missing"
+      message={t("apps.rules.missing")}
+      detail={t("apps.rules.missing.detail")}
+    />
+  {:else if app.rules.problem}
+    <StateBox
+      kind="error"
+      message={t("state.failed")}
+      detail={app.rules.problem}
+    />
+  {:else}
+    <StateBox kind="loading" message={t("state.loading")} />
   {/if}
 </div>
 
@@ -192,16 +159,32 @@
     min-width: 0;
   }
 
-  .rules__pkg {
+  .rules__id {
+    display: grid;
+    gap: 0.1rem;
     min-width: 0;
-    margin: 0;
-    color: var(--text-primary);
-    font-size: 0.875rem;
-    font-weight: 600;
-    line-height: 1.4;
   }
 
-  /* 规则行：层级标签 + 值；activity 行多一列 activity 名（缩进表达层级，不用单侧粗边框信号条） */
+  /* 正标题：应用名（拿不到时回落包名）；可换行，不截断 */
+  .rules__name {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 0.9375rem;
+    font-weight: 600;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+  }
+
+  /* 副标题：包名，弱化一档 */
+  .rules__pkg {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 0.6875rem;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+  }
+
+  /* 规则行：层级标签 + 模式；activity 行是「activity 名 + 模式 chip」两列，不再缩进 */
   .rules__line {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);
@@ -211,8 +194,8 @@
   }
 
   .rules__line--activity {
-    grid-template-columns: auto minmax(0, 1fr) auto;
-    padding-left: var(--space-4);
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
   }
 
   .rules__level {
@@ -228,23 +211,40 @@
     margin: 0;
     color: var(--text-secondary);
     font-size: 0.75rem;
-    line-height: 1.4;
+    line-height: 1.45;
     /* activity 名可能很长：换行而不是截断，保证「精确到 activity」看得到全名 */
     overflow-wrap: anywhere;
   }
 
-  .rules__mode {
+  /* 模式值：等宽小 chip，和 activity 名（正文等宽）在字号/字重/底色上拉开层次 */
+  .rules__mode--chip {
     margin: 0;
+    padding: 0.1rem 0.4rem;
+    border: var(--hairline) solid var(--surface-border);
+    border-radius: var(--radius-s);
+    background: var(--surface-sunken);
     color: var(--text-primary);
-    font-size: 0.75rem;
-    font-weight: 600;
+    font-size: 0.6875rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    line-height: 1.4;
     white-space: nowrap;
   }
 
-  /* ignored_apps 是模糊条目，可能有多条：标签流式换行 */
-  .rules__ignored {
-    display: inline-flex;
-    flex-wrap: wrap;
+  /* 搜索行：输入框占满，刷新按钮贴右；窄屏按钮不换行到下一行 */
+  .rules__query {
+    display: flex;
+    align-items: flex-end;
     gap: var(--space-2);
+  }
+
+  .rules__search {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .rules__refresh {
+    flex: 0 0 auto;
+    min-height: var(--control-h);
   }
 </style>

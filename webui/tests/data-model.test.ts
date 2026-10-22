@@ -139,6 +139,20 @@ describe('规则分组（精确到 activity）', () => {
     ])
     expect(filterRuleGroups(groups, '  ')).toHaveLength(groups.length)
   })
+
+  it('搜索支持应用名（label），且不影响包名/activity 原有命中', () => {
+    const labels = { 'com.tencent.mm': '微信', 'tv.danmaku.bili': '哔哩哔哩' }
+    expect(filterRuleGroups(groups, '微信', labels).map(g => g.pkg)).toEqual([
+      'com.tencent.mm'
+    ])
+    expect(filterRuleGroups(groups, '哔哩', labels).map(g => g.pkg)).toEqual([
+      'tv.danmaku.bili'
+    ])
+    // 没有 label 的包仍按包名命中
+    expect(filterRuleGroups(groups, 'sgame', labels).map(g => g.pkg)).toEqual([
+      'com.tencent.tmgp.sgame'
+    ])
+  })
 })
 
 describe('module.prop 解析', () => {

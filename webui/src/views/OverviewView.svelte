@@ -5,7 +5,7 @@
   import LiveStatus from "@/components/LiveStatus.svelte";
   import ConfirmSheet from "@/components/ConfirmSheet.svelte";
   import StateBox from "@/components/StateBox.svelte";
-  import { t } from "@/i18n/index.svelte";
+  import { i18n, t, toggleLocale } from "@/i18n/index.svelte";
   import { clgFamilyKey } from "@/data/mode";
   import { app } from "@/state.svelte";
 
@@ -46,12 +46,9 @@
       modeId.trim().toLowerCase() !== nameKey,
   );
   const modeSignal = $derived(modeIdle ? "info" : app.modeInfo.signal);
-  const deviceLabel = $derived(
-    app.deviceKind === "chiri" ?
-      t("overview.device.chiri")
-    : app.deviceKind === "unsupported" ?
-      t("overview.device.unsupported")
-    : t("overview.device.unknown"),
+  // 语言按钮文案 = 目标语言（当前中文则显示 English WebUI）
+  const localeLabel = $derived(
+    i18n.locale === "zh" ? t("locale.switch.en") : t("locale.switch.zh"),
   );
 
   // 仪表盘进度：功耗 / 满量程（meta.power_max_w，默认 12W），夹在 0~100%
@@ -67,13 +64,17 @@
     return Math.min(100, Math.max(0, (w / app.powerMaxWatt) * 100));
   });
 
-  const configValue = $derived.by(() => {
-    if (app.configState === "ok") return app.configRel;
+  // 生效配置只报当前工作的型号（如 sm8550/meta.yaml → sm8550），不把文件路径摊到界面上
+  const modelName = $derived.by(() => {
     if (app.configState === "missing") return t("logs.missing");
-    return t("state.failed");
+    if (app.configState === "failed") return t("state.failed");
+    const slash = app.configRel.indexOf("/");
+    return slash > 0 ? app.configRel.slice(0, slash) : "—";
   });
 
   onMount(() => {
+    // 生效配置卡展示规则快照：直接进状态页时也要读一次（应用页也会读，loadRules 有在飞守卫）
+    if (!app.rules.ok && !app.rulesLoading) void app.loadRules();
     void app.loadOverview();
     // [poll] 每秒自刷新（loadOverview 有在飞共享，轮询不堆积）；跳过 hidden 期 tick 省电，恢复可见时立即补一次，避免后台数据空窗
     const timer = setInterval(() => {
@@ -105,6 +106,8 @@
 
 <div class="u-stack">
   <Panel signal={app.daemonState === "running" ? "success" : "action"}>
+    <!-- 首卡单列：模块信息独占整行，状态芯片与语言按钮同一行（左右），耗电读数另起一块。
+         不再把耗电板与模块信息并排——并排会把模块名/版本挤成两行（2026-10-22） -->
     <div class="daemon-card">
       <div class="daemon">
         <p class="daemon__name u-mono">
@@ -120,27 +123,37 @@
             {t("overview.module.author")}：{app.moduleProp.author}
           </p>
         {/if}
-        <div class="daemon__status">
-          <LiveStatus state={app.daemonState} label={daemonLabel} />
-        </div>
-        {#if daemonError}
-          <p class="u-note u-danger">{daemonError}</p>
-        {/if}
       </div>
+      <div class="daemon__meta">
+        <LiveStatus state={app.daemonState} label={daemonLabel} />
+        <button
+          type="button"
+          class="g-btn g-btn--ghost daemon__lang"
+          aria-label={t("action.toggleLocale")}
+          onclick={toggleLocale}
+        >
+          {localeLabel}
+        </button>
+      </div>
+      {#if daemonError}
+        <p class="u-note u-danger">{daemonError}</p>
+      {/if}
       {#if app.isChiri}
         <!-- 耗电情况：PowerAVG.chr（daemon 每 1s 采样写入），口径随 meta.power_avg；量程 = meta.power_max_w（默认 12W），
              进度条直接复用 g-progress -->
-        <div class="power">
-          <p class="u-note">
-            {app.powerAvgUsesAverage ?
-              t("overview.power.avg")
-            : t("overview.power.ref")}
-          </p>
-          <p class="power__value u-mono">
-            {app.powerAvgWatt === null ?
-              "—"
-            : `${app.powerAvgWatt.toFixed(2)} ${t("unit.watt")}`}
-          </p>
+        <div class="power power--block">
+          <div class="power__head">
+            <p class="u-note">
+              {app.powerAvgUsesAverage ?
+                t("overview.power.avg")
+              : t("overview.power.ref")}
+            </p>
+            <p class="power__value u-mono">
+              {app.powerAvgWatt === null ?
+                "—"
+              : `${app.powerAvgWatt.toFixed(2)} ${t("unit.watt")}`}
+            </p>
+          </div>
           <!-- g-progress 结构：--progress-signal 与 --progress-width 的默认值都声明在 .g-progress 根上，
                fill 的宽度与颜色全部由变量驱动；壳层由 .power__bar 剥掉 -->
           <div
@@ -244,46 +257,58 @@
     </div>
   </Panel>
 
-  <Panel title={t("overview.config")}>
+  <!-- 生效配置：原应用页「全局规则」并入此处；只报型号，不摊文件路径/设备匹配/规则计数 -->
+  <Panel title={t("overview.config")} desc={t("overview.config.desc")}>
     <div class="kv">
-      <span class="kv__key">{t("overview.config")}</span>
-      <span class="kv__value u-mono">{configValue}</span>
+      <span class="kv__key">{t("overview.model")}</span>
+      <span class="kv__value u-mono">{modelName}</span>
     </div>
-    <div class="kv">
-      <span class="kv__key">{t("overview.device")}</span>
-      <span class="kv__value">{deviceLabel}</span>
-    </div>
-    {#if app.deviceKind === "chiri"}
+    {#if app.rules.ok}
       <div class="kv">
-        <span class="kv__key">{t("apps.tag.special")}</span>
-        <span class="kv__value u-mono">{app.specialCount}</span>
-      </div>
-      <div class="kv">
-        <span class="kv__key">{t("apps.tag.fas")}</span>
-        <span class="kv__value u-mono">{app.fasCount}</span>
-      </div>
-    {:else}
-      <div class="kv">
-        <span class="kv__key"
-          >{t("apps.tag.special")} / {t("apps.tag.fas")}</span
+        <span class="kv__key">{t("apps.rules.dynamic")}</span>
+        <span class="kv__value u-mono"
+          >{app.rules.dynamicEnabled ? "true" : "false"}</span
         >
-        <span class="kv__value u-muted">
-          {t("overview.device.unknown")}
+      </div>
+      <div class="kv">
+        <span class="kv__key">{t("apps.rules.globalMode")}</span>
+        <span class="kv__value u-mono">{app.rules.globalMode || "—"}</span>
+      </div>
+      <div class="kv">
+        <span class="kv__key">{t("apps.rules.activityAware")}</span>
+        <span class="kv__value u-mono"
+          >{app.rules.activityAware ? "true" : "false"}</span
+        >
+      </div>
+      {#if !app.rules.activityAware}
+        <p class="u-note u-mt-2">{t("apps.rules.activityAware.off")}</p>
+      {/if}
+      <div class="kv">
+        <span class="kv__key">{t("apps.rules.ignored")}</span>
+        <span class="kv__value">
+          {#if app.rules.ignoredApps.length > 0}
+            <span class="config__chips">
+              {#each app.rules.ignoredApps as name, index (index)}
+                <span class="g-tag g-tag--neutral u-mono">{name}</span>
+              {/each}
+            </span>
+          {:else}
+            <span class="u-mono">—</span>
+          {/if}
         </span>
       </div>
+    {:else if app.rulesLoading}
+      <p class="u-note u-mt-2">{t("state.loading")}</p>
+    {:else if app.rulesState === "missing"}
+      <p class="u-note u-mt-2">{t("apps.rules.missing")}</p>
+      <p class="u-note">{t("apps.rules.missing.detail")}</p>
+    {:else if app.rules.problem}
+      <p class="u-note u-danger u-mt-2">{app.rules.problem}</p>
+    {:else}
+      <p class="u-note u-mt-2">{t("state.loading")}</p>
     {/if}
-    {#if app.whitelistError}
-      <StateBox
-        kind="error"
-        message={t("state.failed")}
-        detail={app.whitelistError}
-      />
-    {/if}
-    {#if app.metaPath}
-      <div class="kv">
-        <span class="kv__key">meta.yaml</span>
-        <span class="kv__value u-mono">{app.metaPath}</span>
-      </div>
+    {#if app.rulesWhitelistError}
+      <p class="u-note u-danger u-mt-2">{app.rulesWhitelistError}</p>
     {/if}
   </Panel>
 
@@ -401,12 +426,11 @@
 />
 
 <style>
-  /* 第一张卡片：左侧设备/守护进程信息，右侧耗电读数板（平行两栏） */
+  /* 第一张卡片：单列（模块信息 → 状态/语言 → 耗电），模块名不再被读数板挤成两行 */
   .daemon-card {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: var(--space-4);
-    align-items: center;
+    gap: var(--space-3);
+    align-items: start;
   }
 
   .daemon {
@@ -415,19 +439,57 @@
     min-width: 0;
   }
 
-  /* 状态芯片按内容宽度贴左，不在单列栅格里被拉满整行 */
-  .daemon__status {
-    justify-self: start;
-    margin-top: 0.25rem;
+  /* 状态芯片与语言按钮同一行：左状态、右语言；窄屏换行时语言仍贴右 */
+  .daemon__meta {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2) var(--space-3);
+    min-width: 0;
   }
 
-  /* 耗电读数：口径标签 + 数值 + 量程条，右栏紧凑排列 */
+  /* 语言切换是触控目标：保持 44px 高（g-btn--sm 只有 36px），只收窄左右内距 */
+  .daemon__lang {
+    min-height: var(--control-h);
+    margin-left: auto;
+    padding-inline: var(--space-3);
+    font-size: 0.75rem;
+  }
+
+  /* 耗电读数：口径标签 + 数值 + 量程条（模式卡仍用右对齐紧凑版） */
   .power {
     display: grid;
     justify-items: end;
     align-content: center;
     gap: 0.3rem;
     min-width: 8.5rem;
+  }
+
+  /* 首卡耗电块独占整行，用分隔线与上方模块信息区分 */
+  .power--block {
+    justify-items: stretch;
+    padding-top: var(--space-3);
+    border-top: var(--hairline) solid var(--divider);
+  }
+
+  .power__head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-1) var(--space-3);
+  }
+
+  .power--block > .g-progress__value {
+    justify-self: end;
+  }
+
+  /* ignored_apps 可能有多条：标签流式换行 */
+  .config__chips {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
   }
 
   .power__value {

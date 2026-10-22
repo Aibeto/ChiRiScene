@@ -138,13 +138,18 @@ export function buildRuleGroups(
   return list.sort((a, b) => a.pkg.localeCompare(b.pkg))
 }
 
-/** 规则分组过滤：包名 / activity / 模式 / 特调 / FAS 任一命中（大小写不敏感） */
-export function filterRuleGroups(groups: RuleGroup[], keyword: string): RuleGroup[] {
+/** 规则分组过滤：应用名 / 包名 / activity / 模式 / 特调 / FAS 任一命中（大小写不敏感） */
+export function filterRuleGroups(
+  groups: RuleGroup[],
+  keyword: string,
+  labels?: Readonly<Record<string, string>>
+): RuleGroup[] {
   const kw = keyword.trim().toLowerCase()
   if (!kw) return groups
   return groups.filter(
     g =>
       g.pkg.toLowerCase().includes(kw) ||
+      labels?.[g.pkg]?.toLowerCase().includes(kw) === true ||
       g.mode.toLowerCase().includes(kw) ||
       g.activities.some(
         a => a.activity.toLowerCase().includes(kw) || a.mode.toLowerCase().includes(kw)

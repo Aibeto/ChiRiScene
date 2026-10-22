@@ -262,10 +262,11 @@ label {
   }
 }
 
+/* 标题区独占整行：标题/描述先占满卡片宽度，操作另起一行右对齐。
+   左右分栏会让长标题在窄屏被按钮挤成两行（2026-10-22 统一） */
 .g-card__header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-3);
   margin-bottom: var(--space-4);
 }
@@ -306,8 +307,9 @@ label {
 
 .g-card__actions {
   display: flex;
-  flex: 0 0 auto;
+  flex-wrap: wrap;
   align-items: center;
+  justify-self: end;
   gap: var(--space-2);
 }
 
@@ -459,7 +461,7 @@ label {
   font-size: 0.75rem;
 }
 
-/* 纯图标按钮（关闭 / 语言切换） */
+/* 纯图标按钮（关闭） */
 .g-btn--icon {
   flex: 0 0 auto;
   width: var(--control-h);

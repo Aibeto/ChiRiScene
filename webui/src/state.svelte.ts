@@ -49,6 +49,7 @@ import {
   EMPTY_RULES,
   filterRuleGroups,
   parseRules,
+  splitRuleKey,
   type RuleGroup,
   type RulesInfo
 } from '@/data/rules'
@@ -61,7 +62,7 @@ import {
   type SpecialTunedEntry
 } from '@/data/whitelists'
 import { t } from '@/i18n/index.svelte'
-import { toast } from '@/kernel/ksu'
+import { getPackagesInfo, toast } from '@/kernel/ksu'
 
 /** 只读文件的界面态：缺失（不适用/尚未生成）与失败要分开 */
 export type FileState = 'ok' | 'missing' | 'failed'
@@ -91,14 +92,10 @@ class AppStore {
   modeMissing = $state(false)
   /** current_mode.chr 读取「真实失败」——与「尚未生成」分开，界面上排查方向不同 */
   modeError = $state('')
-  /** 特调 / FAS 白名单读取真实失败 */
-  whitelistError = $state('')
   actionAvailable = $state(false)
   metaValid = $state(true)
   metaProblems = $state<string[]>([])
   metaSnapshot = $state<MetaSnapshot | null>(null)
-  specialCount = $state(0)
-  fasCount = $state(0)
   stopping = $state(false)
 
   // [config]
@@ -128,6 +125,8 @@ class AppStore {
   rulesWhitelistError = $state('')
   rulesLoading = $state(false)
   ruleKeyword = $state('')
+  /** 规则包对应的应用名（KSU bridge，只查规则里出现的包，不拉安装列表）；缺失时视图回落包名 */
+  ruleLabels = $state<Record<string, string>>({})
   specialRules = $state<Map<string, SpecialTunedEntry>>(new Map())
   fasRules = $state<Map<string, string>>(new Map())
 
@@ -193,15 +192,16 @@ class AppStore {
     return this.deviceKind === 'chiri'
   }
 
-  /** 规则分组：app_modes（包名级 + activity 级）+ 特调 + FAS 白名单，按包名归并 */
-  get ruleGroups(): RuleGroup[] {
-    return buildRuleGroups(this.rules, this.specialRules, this.fasRules)
-  }
+  /** 规则分组：app_modes（包名级 + activity 级）+ 特调 + FAS 白名单，按包名归并
+   *  $derived 缓存：视图一次渲染会多次读取，getter 每次重建会白付归并/排序 */
+  ruleGroups = $derived.by<RuleGroup[]>(() =>
+    buildRuleGroups(this.rules, this.specialRules, this.fasRules)
+  )
 
-  /** 规则搜索：包名 / activity / 模式 / 特调 / FAS 任一命中 */
-  get filteredRules(): RuleGroup[] {
-    return filterRuleGroups(this.ruleGroups, this.ruleKeyword)
-  }
+  /** 规则搜索：包名 / 应用名 / activity / 模式 / 特调 / FAS 任一命中 */
+  filteredRules = $derived.by<RuleGroup[]>(() =>
+    filterRuleGroups(this.ruleGroups, this.ruleKeyword, this.ruleLabels)
+  )
 
   get statusRowsNewestFirst(): StatusRow[] {
     return this.statusRowsReversed
@@ -239,8 +239,9 @@ class AppStore {
   private modeNameSet: Set<string> = new Set()
   /** 上次 tick 批量读到的特调白名单原文（null = 缺失）：原文未变不重解析 */
   private specialRawCache: string | null = null
-  /** 上次 tick 批量读到的 FAS 白名单原文（null = 缺失）：原文未变不重解析 */
-  private fasRawCache: string | null = null
+  /** describeMode 复用键/结果：mode 与特调模式集合都没变时复用旧对象，避免每秒触发模式卡整块重渲染 */
+  private lastModeKey = ''
+  private lastModeInfo: ModeInfo | null = null
 
   /** 静态项加载（module.prop、meta、特调/FAS 白名单、hasActionScript、deviceKind，天级变化，退出秒级轮询）：loadOverview 每 30s 补拉、各写路径成功后 force 刷新
    *  force=false 且命中 TTL 窗口直接返回，避免每秒 tick 白付这几次 exec */
@@ -317,9 +318,9 @@ class AppStore {
         { key: 'mode', path: absOf('currentMode') },
         { key: 'powerAvg', path: absOf('powerAvg') },
         { key: 'status', path: absOf('statusCsv'), tailBytes: 4096 },
-        // 特调/FAS 白名单挂在同一次批量读上（0 次额外 exec），计数与模式名翻译秒级可达，原文未变只付一次字符串比对
+        // 特调白名单挂在同一次批量读上（0 次额外 exec），模式名翻译秒级可达，原文未变只付一次字符串比对
+        // FAS 白名单不在轮询里读：应用页/规则页按需读，状态页已不展示计数
         { key: 'special', path: absOf('specialTuned') },
-        { key: 'fas', path: absOf('fasWhitelist') },
         // [liveness] 心跳文件并入批量读（64B）：key 为 null = 文件缺失 = stopped，与旧 probeLiveness 的 absent→stopped 口径一致
         { key: 'liveTime', path: absOf('liveTime'), tailBytes: 64 }
       ])
@@ -368,22 +369,17 @@ class AppStore {
             ? new Map<string, SpecialTunedEntry>()
             : parseSpecialTuned(specialRaw)
         this.modeNameSet = specialModeSet(special)
-        this.specialCount = special.size
       }
-      // FAS 白名单同样挂批量读：原文未变只比对；failed 不动上次结果；readMany 整体失败才报 whitelistError
-      const fasRaw = okEntries?.fas ?? null
-      if (fasRaw !== this.fasRawCache) {
-        this.fasRawCache = fasRaw
-        const fas =
-          fasRaw === null ? new Map<string, string>() : parseFasWhitelist(fasRaw)
-        this.fasCount = fas.size
-      }
-      this.whitelistError = rm.kind === 'failed' ? batchError : ''
 
       // 依赖静态项的派生（白名单模式名 / meta 快照的口径开关）等静态补拉就位后再算；静态新鲜时这里是已完成的 promise，await 无额外开销
       if (staticRefresh) await staticRefresh
       this.currentMode = mode
-      this.modeInfo = describeMode(mode, this.modeNameSet)
+      const modeKey = `${mode}\u0000${[...this.modeNameSet].sort().join('\u0001')}`
+      if (modeKey !== this.lastModeKey || this.lastModeInfo === null) {
+        this.lastModeKey = modeKey
+        this.lastModeInfo = describeMode(mode, this.modeNameSet)
+      }
+      this.modeInfo = this.lastModeInfo
       // 没有取值时把「为什么没有」一并算出来：界面只显示 — 会让人以为是坏的
       this.powerStaleReason = watt === null ? this.powerStaleWhyOf(lastStatus) : ''
       } finally {
@@ -460,10 +456,15 @@ class AppStore {
   }
 
   // [rules]
+  /** 规则三件套上次成功读取时间：规则只在 daemon 启动时写快照，30s 内重复进页不必再付 3 次 exec */
+  private rulesLoadedAt = 0
+
   /** 只读规则三件套（rules.yaml 展示副本 + 特调 + FAS 白名单）：规则页与「刷新规则」共用，不再执行 pm list packages */
   async loadRules(refresh = false): Promise<void> {
     // in-flight 守卫：连点「刷新规则」时避免并发读取互相覆盖
     if (this.rulesLoading) return
+    // 命中 TTL 直接复用上次结果；刷新按钮（refresh=true）与上次失败/缺失时仍重读
+    if (!refresh && this.rules.ok && Date.now() - this.rulesLoadedAt < STATIC_TTL_MS) return
     this.rulesLoading = true
     try {
       const [rulesRaw, tunedRaw, fasRaw] = await Promise.all([
@@ -481,11 +482,25 @@ class AppStore {
         rulesRaw.kind === 'ok' ? 'ok' : rulesRaw.kind === 'failed' ? 'failed' : 'missing'
       this.specialRules = tunedRaw.kind === 'ok' ? parseSpecialTuned(tunedRaw.value) : new Map()
       this.fasRules = fasRaw.kind === 'ok' ? parseFasWhitelist(fasRaw.value) : new Map()
+      // 应用名只查规则里出现的包（十几条），不拉安装列表；bridge 不可用（浏览器/dev）时留空，视图回落包名
+      const pkgs = [
+        ...new Set([
+          ...Object.keys(this.rules.appModes).map(key => splitRuleKey(key).pkg),
+          ...this.specialRules.keys(),
+          ...this.fasRules.keys()
+        ])
+      ].filter(Boolean)
+      const labels: Record<string, string> = {}
+      for (const info of getPackagesInfo(pkgs)) {
+        if (info.packageName && info.appLabel) labels[info.packageName] = info.appLabel
+      }
+      this.ruleLabels = labels
       // 白名单读取失败（不是缺失）要如实说，否则页面会把「读失败」显示成「没有配置」
       const problems: string[] = []
       if (tunedRaw.kind === 'failed') problems.push(`special_tuned.yaml: ${tunedRaw.error}`)
       if (fasRaw.kind === 'failed') problems.push(`fas_whitelist.yaml: ${fasRaw.error}`)
       this.rulesWhitelistError = problems.join('；')
+      if (this.rules.ok) this.rulesLoadedAt = Date.now()
       if (refresh) toast(t('apps.rules.refreshed'))
     } finally {
       this.rulesLoading = false

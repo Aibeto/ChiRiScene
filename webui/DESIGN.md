@@ -51,7 +51,12 @@ Acrylic 自带的那层噪点，用来消除大面积白面的塑料感。
 - 正文列 `.shell__content` 统一 `box-sizing: border-box` + `max-width: 720px` 居中：
   手机不横向溢出，很横屏时也不会把卡片拉成一条长线。
 - 守护进程存活芯片（`LiveStatus`）在**状态页首卡**（取代原「调度主服务正常」文字行），不在顶栏。
-- 顶栏只保留：关闭、模块名/版本、界面语言。
+- 顶栏只保留：关闭、模块名/版本。**界面语言按钮不在顶栏**，放在状态页首卡右下角
+  （与存活芯片同一行左右分布，文案是目标语言：`English WebUI` / `中文界面`）。
+- **卡片标题独占整行**：`.g-card__header` 是单列栅格，标题与描述先占满卡片宽度，
+  `actions` 另起一行右对齐。禁止把标题和按钮做成左右两栏——窄屏下长标题会被按钮挤断。
+- **状态页首卡单列**：模块名/版本/作者独占整行，状态芯片 + 语言按钮一行，耗电读数另起一块；
+  不要把耗电读数与模块信息并排（会挤压标题，2026-10-22 修）。
 
 ## 2. Token（全部已定义在 `src/app.css` `:root`，直接用，不要硬编码色值）
 ```
@@ -126,8 +131,10 @@ ConfirmSheet { open, title, message?, notes?: string[], confirmText, cancelText,
 3. **禁顶层 await、禁 `Intl.Segmenter`**。
 4. **i18n 必须用 `t()`**，禁止硬编码中文/英文文案。键必须已存在于 `src/i18n/locales/{zh,en}.ts`
    （`tests/i18n.test.ts` 会校验源码用键都有定义；新增键要中英同步加）。
-5. **不改逻辑层**：`src/kernel/` `src/contract/` `src/data/` `src/i18n/` `src/router.svelte.ts`
-   `src/state.svelte.ts` 一律只读调用，签名不改。视图只消费 `state.svelte.ts` 暴露的 `app`。
+5. **逻辑层只读调用**：`src/kernel/` `src/contract/` `src/i18n/` `src/router.svelte.ts` 签名不改；
+   视图只消费 `state.svelte.ts` 暴露的 `app`，不得直接读契约层或文件。展示所需的派生/缓存
+   （如 `ruleGroups`、`ruleLabels`、规则读取 TTL）在 `state` / `data` 内维护；数据层可加可选参数，
+   但已有调用点必须保持兼容。
 6. **不加依赖**。样式全部手写 CSS 变量，不引入 Tailwind / 组件库。
 7. **字体二进制不入库**，由 `scripts/fetch-fonts.mjs` 构建期拉取；`app.css` 里用相对路径 `./assets/fonts/`。
 8. **滚动容器**：页面级只有 `.shell__main`（app-frame，见 1.2），视图内的子滚动窗口用 `.u-scroll`；
@@ -150,4 +157,5 @@ ConfirmSheet { open, title, message?, notes?: string[], confirmText, cancelText,
 - [ ] 正文用 `--text-muted` 或更深；无硬编码色值（全走 token）
 - [ ] 每个可聚焦元素都有可见焦点环（`outline` 2px + offset 2px，或 track 上的 `--focus-ring`）
 - [ ] `t()` 键都存在；无硬编码文案
+- [ ] 卡片标题/描述独占整行，没有被右侧按钮挤断；首卡模块信息没有被读数板挤成两行
 - [ ] 无横向溢出；手机/平板/桌面均稳定

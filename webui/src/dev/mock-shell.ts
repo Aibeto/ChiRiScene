@@ -267,7 +267,30 @@ const EXPORT_POLL_CMD = /\/sdcard\/Download\/logd_\d{4}-\d{6}\.tar/
 /** 轮询次数：前几轮先回进度态，最后才回完成——一上来就回完成会让进度条一闪而过，预览里看不到进度形态 */
 let exportPolls = 0
 
+// readMany 把 N 个文件读拼成一条 `sh -c '<script>'`；按契约层同款 BEGIN/END 标记回放，
+// 否则状态页每秒的批量读会落到「未识别命令」，预览被一条 mock 报错占满
+const READ_MANY_CMD = /^sh -c '([\s\S]*)'$/
+function handleReadMany(cmd: string): ExecResult | null {
+  if (!READ_MANY_CMD.test(cmd)) return null
+  const script = unquote(cmd.slice('sh -c '.length))
+  const block =
+    /if \[ -f (.+?) \]; then echo '(__CHIRI_RM_\d+_BEGIN__)'; ((?:tail -c \d+|cat) .+?); echo '(__CHIRI_RM_\d+_END__)'; fi/g
+  let out = ''
+  for (const m of script.matchAll(block)) {
+    const path = unquote(m[1])
+    const content = path.endsWith('/LiveTime.chr') ? liveTimeText() : files.get(path)
+    if (content === undefined) continue
+    const tail = /^tail -c (\d+) /.exec(m[3])
+    const chunk = tail ? content.slice(-Number(tail[1])) : content
+    out += `${m[2]}\n${chunk}${chunk.endsWith('\n') ? '' : '\n'}${m[4]}\n`
+  }
+  return ok(out)
+}
+
 function handle(cmd: string): ExecResult | null {
+  const many = handleReadMany(cmd)
+  if (many) return many
+
   if (EXPORT_START_CMD.test(cmd)) {
     exportPolls = 0
     return ok('started\n')
@@ -359,4 +382,44 @@ export function installMockShell(): void {
   installed = true
   seed()
   setShell(mockShell)
+}
+
+// [mock-ksu] 浏览器预览没有 KernelSU bridge：补一个只读的包名→应用名映射，
+// 让规则页按真机口径显示「应用名 + 包名」（真实设备由 getPackagesInfo 提供）
+const MOCK_LABELS: Record<string, string> = {
+  'com.hypergryph.arknights': '明日方舟',
+  'com.YoStarJP.Arknights': '明日方舟（日服）',
+  'com.hypergryph.endfield': '明日方舟：终末地',
+  'com.levelinfinite.sgameGlobal': '王者荣耀（国际服）',
+  'com.tencent.tmgp.sgame': '王者荣耀',
+  'com.tencent.tmgp.speedmobile': 'QQ飞车手游',
+  'com.tencent.tmgp.dfm': '三角洲行动',
+  'com.tencent.lolm': '英雄联盟手游',
+  'com.tencent.mobileqq': 'QQ',
+  'com.xingin.xhs': '小红书',
+  'com.taobao.qianniu': '千牛',
+  'com.taobao.taobao': '淘宝',
+  'com.salt.music': '椒盐音乐',
+  'tv.danmaku.bili': '哔哩哔哩'
+}
+
+export function installMockKsu(): void {
+  const g = globalThis as { ksu?: Record<string, unknown> }
+  if (g.ksu) return
+  g.ksu = {
+    getPackagesInfo: (packages: string) => {
+      try {
+        const list: unknown = JSON.parse(packages)
+        if (!Array.isArray(list)) return '[]'
+        return JSON.stringify(
+          list.map(packageName => ({
+            packageName,
+            appLabel: MOCK_LABELS[String(packageName)]
+          }))
+        )
+      } catch {
+        return '[]'
+      }
+    }
+  }
 }

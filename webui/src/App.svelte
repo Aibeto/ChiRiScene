@@ -1,5 +1,6 @@
 <script lang="ts">
-  // App.svelte: [shell] [bar] [views] [nav] 顶层骨架（app-frame）：顶栏（关闭 / 模块名版本 + 界面语言）、路由视图区（唯一滚动容器）、亚克力底栏
+  // App.svelte: [shell] [bar] [views] [nav] 顶层骨架（app-frame）：顶栏（关闭 / 模块名版本）、路由视图区（唯一滚动容器）、亚克力底栏
+  // 界面语言入口在状态页首卡右下角（English WebUI / 中文界面），顶栏不再放语言按钮
   // 外壳视口高、页面本身不滚；顶/底栏在文档流内，因此不依赖 sticky/fixed 也不会被内容滚走
   // 场景用 Mica 底（.g-scene 中性面 + 顶部一层品牌蓝光晕 + .g-noise 颗粒），亚克力只上在顶栏/底栏/卡片这些浮层
   import { onMount } from 'svelte'
@@ -11,7 +12,7 @@
   import LogsView from '@/views/LogsView.svelte'
   import OverviewView from '@/views/OverviewView.svelte'
   import { exitApp } from '@/kernel/ksu'
-  import { i18n, t, toggleLocale } from '@/i18n/index.svelte'
+  import { t } from '@/i18n/index.svelte'
   import { go, initRouter, navOwner, router, VIEW_IDS } from '@/router.svelte'
   import { app } from '@/state.svelte'
 
@@ -77,17 +78,6 @@
           </p>
         </div>
       </div>
-    </div>
-    <div class="shell__side u-row-tight">
-      <button
-        type="button"
-        class="g-btn g-btn--icon lang"
-        aria-label={t('action.toggleLocale')}
-        onclick={toggleLocale}
-      >
-        <span class="g-reveal" aria-hidden="true"></span>
-        {i18n.locale === 'zh' ? 'EN' : '中文'}
-      </button>
     </div>
   </header>
 
@@ -215,15 +205,6 @@
     font-size: 0.625rem;
     letter-spacing: 0.06em;
     line-height: 1.4;
-  }
-
-  .shell__side {
-    flex: 0 0 auto;
-  }
-
-  .lang {
-    font-size: 0.75rem;
-    font-weight: 700;
   }
 
   /* 唯一滚动容器：页面本身不滚，只有内容区滚 —— 顶/底栏因此始终留在视口内 */

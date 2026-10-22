@@ -44,7 +44,7 @@ WebUI 侧：
 
 - 设备形态两态：`contract/sources.ts::deviceKind()` 依据 active_config 是否指向处理器子目录判定 `chiri` / `unknown`（非 ChiRi 与读不到一律 unknown，界面显示「无法判定」）。状态落在 `src/state.svelte.ts`。
 
-- 特调/FAS 在 WebUI 为只读标注：`data/whitelists.ts` 解析白名单，仅 `chiri` 机型显示「特调 / FAS」标签（其余不显示）；不提供专属特调模式选项、不做特调清理/重扫修复。应用性能模式已禁止在 WebUI 指定（rules.yaml 只读），「应用」页为只读规则查询（2026-10-22 起不再拉取安装应用列表）：按包名分组展示特调/FAS/app_modes（含 activity 级覆盖），提供「刷新规则」按钮（读取中禁用防并发）。
+- 特调/FAS 在 WebUI 为只读标注：`data/whitelists.ts` 解析白名单，仅 `chiri` 机型显示「特调 / FAS」标签（其余不显示）；不提供专属特调模式选项、不做特调清理/重扫修复。应用性能模式已禁止在 WebUI 指定（rules.yaml 只读），「应用」页为只读规则查询（2026-10-22 起不再拉取安装应用列表）：按包名分组展示特调/FAS/app_modes（含 activity 级覆盖），正标题应用名、副标题包名，activity 行不缩进且模式用独立 chip，提供「刷新规则」按钮（读取中禁用防并发）；动态模式/全局模式/Activity 开关/忽略包名归状态页「生效配置」，该块只报当前型号（如 `sm8550`），不展示文件路径。
 
 - 当前模式读取与自愈：`contract/sources.ts::readCurrentModeRaw()` 读 `current_mode.chr`（内容为模式名原样字节、无换行无空格）；守护进程启动时写一次、模式切换时写、并常态每 5 秒**无条件**重写一次（两套 scheduler_ipc 各一份实现），因此**不能用 mtime 判断模式变化**；守护进程停止后文件是陈旧值，界面须结合存活探测呈现。文件为空/缺失时界面显示「未知 · 尚未产生模式记录」，与「模式名不在已注册档位内」区分开。
 

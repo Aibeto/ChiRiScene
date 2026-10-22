@@ -28,6 +28,19 @@
 
   const visible = $derived(filterByLevel(app.logLines, level))
 
+  // [perf] 稳定 key：增量解析会复用旧行对象，按对象身份编号后追加/裁剪只动首尾节点；
+  // 用 index 当 key 时新行入队会让每一行的文本都重写（2000 行 × 每秒）
+  const rowIds = new WeakMap<object, number>()
+  let nextRowId = 0
+  function rowKey(row: object): number {
+    let id = rowIds.get(row)
+    if (id === undefined) {
+      id = ++nextRowId
+      rowIds.set(row, id)
+    }
+    return id
+  }
+
   function fmt(value: number | null, digits: number, suffix = ''): string {
     return value === null ? '—' : `${value.toFixed(digits)}${suffix}`
   }
@@ -157,7 +170,7 @@
             bind:this={daemonBody}
             onscroll={onDaemonScroll}
           >
-            {#each visible as line, index (index)}
+            {#each visible as line (rowKey(line))}
               <p class="log" data-level={line.level}>
                 <span class="log__time u-mono">{line.time}</span>
                 <span class="log__level u-mono">{line.level}</span>
@@ -225,7 +238,7 @@
             </thead>
             <tbody>
               <!-- 时间升序（旧上新下），与 daemon 终端一致：新行从底部进入并跟随 -->
-              {#each app.statusRows as row, index (index)}
+              {#each app.statusRows as row (rowKey(row))}
                 <tr class="snapshot__row u-mono">
                   <td>{row.timestamp}</td>
                   <td>{row.mode || '—'}</td>
@@ -291,6 +304,9 @@
     font-size: 0.6875rem;
     line-height: 1.55;
     white-space: nowrap;
+    /* 终端最多 2000 行：屏幕外的行跳过布局/绘制，滚动时按需渲染 */
+    content-visibility: auto;
+    contain-intrinsic-size: auto 1.1rem;
   }
 
   .log__time {

@@ -12,11 +12,6 @@
 
   const values = $derived((app.metaSnapshot?.values ?? {}) as Record<string, unknown>)
 
-  function raw(field: string): string {
-    const v = values[field]
-    return typeof v === 'string' ? v.replace(/^["']|["']$/g, '').trim() : ''
-  }
-
   function value(field: WritableField, fallback: string | boolean): string | boolean {
     const draft = app.draft[field]
     if (draft !== undefined) return draft
@@ -73,21 +68,6 @@
       detail={app.metaProblems.join('；')}
     />
   {/if}
-
-  <Panel title={t('config.header')} desc={app.configRel || undefined}>
-    <div class="kv">
-      <span class="kv__key">{t('config.name')}</span>
-      <span class="kv__value">{raw('name') || '—'}</span>
-    </div>
-    <div class="kv">
-      <span class="kv__key">{t('config.author')}</span>
-      <span class="kv__value">{raw('author') || '—'}</span>
-    </div>
-    <div class="kv">
-      <span class="kv__key">{t('config.language')}</span>
-      <span class="kv__value u-mono">{raw('language') || '—'}</span>
-    </div>
-  </Panel>
 
   <Panel title={t('config.writable')} desc={t('config.readonly.hint')}>
     <div class="g-form-stack">
