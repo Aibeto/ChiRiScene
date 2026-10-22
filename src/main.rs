@@ -265,7 +265,7 @@ fn main() -> Result<()> {
             .ok();
     }
 
-    // [remote_push] 远程提醒线程：08~24 点每 2 小时拉一次 remindPush.json，命中 versionCode 就发 `ChiRi-Remote` 通知
+    // [remote_push] 远程提醒线程：全天每小时拉一次 remindPush.json，命中 versionCode 就发 `ChiRi-Remote` 通知
     // 独立线程、不 join、失败只留 info 不重试，任何异常都不得影响调度与监控
     remote_push::spawn();
 

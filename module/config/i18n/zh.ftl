@@ -378,8 +378,8 @@ notify-post-ok = [Notify] 投递成功 (tag={ $tag } title={ $title } strategy={
 notify-script-missing = [Notify] 投递脚本缺失，通知发不出去: { $path }
 # 启动完成通知，main.rs 启动尾部直发，tag ChiRi-Status，标题/正文为字面量不走 i18n
 notify-startup-posted = [Notify] 已投递启动完成通知 (tag ChiRi-Status)
-# 远程提醒，remote_push.rs：每日 08~24 点每 2 小时拉 remindPush.json，命中 versionCode 才发
-remote-push-started = [Remote] 远程提醒线程已启动 (每日 08~24 点每 2 小时拉取一次)
+# 远程提醒，remote_push.rs：全天每小时拉 remindPush.json，命中 versionCode 才发
+remote-push-started = [Remote] 远程提醒线程已启动 (全天每小时拉取一次)
 remote-push-primary-failed = [Remote] 主源拉取失败: { $error }，改试备用源
 remote-push-fallback-failed = [Remote] 备用源拉取失败: { $error }，本次放弃
 remote-push-notified = [Remote] 命中 versionCode { $code }，已发送提醒通知: { $title }

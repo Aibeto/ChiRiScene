@@ -1,5 +1,5 @@
-//! remote_push.rs: [schedule] [fetch] [match] [notify] 每天 08~24 点每 2 小时拉 remindPush.json，命中内嵌 versionCode 就发远程通知
-//! 槽位 = 本地偶数整点 08..22，按 (年,月,日,时) 去重；主源失败退 gitee，都失败不重试，未命中静默，tag ChiRi-Remote
+//! remote_push.rs: [schedule] [fetch] [match] [notify] 全天每小时拉 remindPush.json，命中内嵌 versionCode 就发远程通知
+//! 槽位 = 本地时间 0..23 全部整点，按 (年,月,日,时) 去重；主源失败退 gitee，都失败不重试，未命中静默，tag ChiRi-Remote
 
 use std::time::Duration;
 
@@ -22,8 +22,10 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_BODY_BYTES: u64 = 64 * 1024;
 /// 槽位巡检间隔：一分钟一次
 const TICK: Duration = Duration::from_secs(60);
-/// 允许拉取的小时（本地时间，08~24 点每 2 小时）
-const SLOT_HOURS: [i32; 8] = [8, 10, 12, 14, 16, 18, 20, 22];
+/// 允许拉取的小时（本地时间，全天 0~23 点每小时）
+const SLOT_HOURS: [i32; 24] = [
+    0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
+];
 
 /// 本机 versionCode：只认编译期内嵌的 `module.prop`（`include_str!`），不读磁盘
 /// 磁盘那份可被篡改去命中伪造条目；读不到返回空串，`find_entry` 直接判不命中，绝不退化成匹配任意一条
@@ -294,13 +296,13 @@ mod tests {
         }
     }
 
-    /// 槽位口径：本地时间 08~24 点的偶数整点共 8 个，奇数点与凌晨不拉
+    /// 槽位口径：本地时间全天 24 个整点，每小时都拉
     #[test]
-    fn slot_hours_are_even_8_to_22() {
-        for h in [8, 10, 12, 14, 16, 18, 20, 22] {
+    fn slot_hours_cover_all_24() {
+        for h in 0..24 {
             assert!(is_slot_hour(h), "{h} 点应是槽位");
         }
-        for h in [0, 1, 6, 7, 9, 11, 23] {
+        for h in [-1, 24, 25] {
             assert!(!is_slot_hour(h), "{h} 点不该拉取");
         }
     }

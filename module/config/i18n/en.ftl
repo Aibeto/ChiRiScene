@@ -378,8 +378,8 @@ notify-post-ok = [Notify] posted (tag={ $tag } title={ $title } strategy={ $stra
 notify-script-missing = [Notify] notify script missing, notification cannot be posted: { $path }
 # Startup-complete notification, main.rs startup tail, tag ChiRi-Status, title/body are literals not i18n
 notify-startup-posted = [Notify] startup-complete notification posted (tag ChiRi-Status)
-# Remote push, remote_push.rs: fetch remindPush.json every 2h between 08:00 and 24:00, notify only on a versionCode hit
-remote-push-started = [Remote] remote-push thread started (fetches every 2 hours between 08:00 and 24:00)
+# Remote push, remote_push.rs: fetch remindPush.json every hour around the clock, notify only on a versionCode hit
+remote-push-started = [Remote] remote-push thread started (fetches every hour around the clock)
 remote-push-primary-failed = [Remote] primary source fetch failed: { $error }, trying the fallback
 remote-push-fallback-failed = [Remote] fallback source fetch failed: { $error }, giving up for this slot
 remote-push-notified = [Remote] matched versionCode { $code }, reminder notification sent: { $title }
