@@ -64,7 +64,7 @@
 </script>
 
 <div class="u-stack">
-  <header class="bar u-row">
+  <header class="g-subbar g-acrylic">
     <button type="button" class="g-btn g-btn--ghost bar__back" onclick={() => go('config')}>
       <span class="bar__arrow" aria-hidden="true">←</span>
       {t('lab.action.back')}
@@ -178,11 +178,6 @@
 />
 
 <style>
-  .bar {
-    align-items: center;
-    gap: 0.5rem;
-  }
-
   .bar__back {
     display: inline-flex;
     align-items: center;

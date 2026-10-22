@@ -5,6 +5,7 @@ import { buildRuleGroups, filterRuleGroups, parseRules, splitRuleKey } from '@/d
 import { parseModuleProp } from '@/data/module-info'
 import { CLG_MODE_IDS, clgFamilyKey, describeMode } from '@/data/mode'
 import { buildAppEntries, filterApps } from '@/data/apps'
+import { APP_LABELS } from '@/data/app-labels'
 
 describe('白名单解析', () => {
   it('special_tuned.yaml 每行「包名:模式列表:回退模式」', () => {
@@ -138,6 +139,26 @@ describe('规则分组（精确到 activity）', () => {
       'com.tencent.tmgp.sgame'
     ])
     expect(filterRuleGroups(groups, '  ')).toHaveLength(groups.length)
+  })
+
+  it('内置应用名表覆盖当前全部规则包', () => {
+    const pkgs = [
+      'com.YoStarJP.Arknights',
+      'com.hypergryph.arknights',
+      'com.hypergryph.endfield',
+      'com.levelinfinite.sgameGlobal',
+      'com.salt.music',
+      'com.taobao.qianniu',
+      'com.taobao.taobao',
+      'com.tencent.lolm',
+      'com.tencent.mobileqq',
+      'com.tencent.tmgp.dfm',
+      'com.tencent.tmgp.sgame',
+      'com.tencent.tmgp.speedmobile',
+      'com.xingin.xhs',
+      'tv.danmaku.bili'
+    ]
+    for (const pkg of pkgs) expect(APP_LABELS[pkg]).toBeTruthy()
   })
 
   it('搜索支持应用名（label），且不影响包名/activity 原有命中', () => {

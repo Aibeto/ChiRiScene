@@ -25,6 +25,9 @@ const pfEnabled = param('pf', '1') !== '0'
 let daemonRunning = param('daemon', 'running') !== 'stopped'
 const readFails = state === 'error'
 const empty = state === 'empty'
+/** `?grow=1`：每次读 daemon.log 追加一行，模拟线上日志持续增长（用于验证刷新时横向滚动位置不丢） */
+const grow = param('grow', '0') === '1'
+let growSeq = 0
 
 // [fs]
 const files = new Map<string, string>()
@@ -319,6 +322,13 @@ function handle(cmd: string): ExecResult | null {
     if (path.endsWith('/LiveTime.chr')) return ok(liveTimeText())
     const content = files.get(path)
     if (content === undefined) return missing()
+    if (grow && path.endsWith('/logs/daemon.log')) {
+      growSeq++
+      const ts = new Date().toISOString().slice(0, 19).replace('T', ' ')
+      const grown = `${content}[${ts}] [INFO] [mock] grow ${growSeq}\n`
+      files.set(path, grown)
+      return ok(grown.slice(-limit))
+    }
     return ok(content.slice(-limit))
   }
 
@@ -382,44 +392,4 @@ export function installMockShell(): void {
   installed = true
   seed()
   setShell(mockShell)
-}
-
-// [mock-ksu] 浏览器预览没有 KernelSU bridge：补一个只读的包名→应用名映射，
-// 让规则页按真机口径显示「应用名 + 包名」（真实设备由 getPackagesInfo 提供）
-const MOCK_LABELS: Record<string, string> = {
-  'com.hypergryph.arknights': '明日方舟',
-  'com.YoStarJP.Arknights': '明日方舟（日服）',
-  'com.hypergryph.endfield': '明日方舟：终末地',
-  'com.levelinfinite.sgameGlobal': '王者荣耀（国际服）',
-  'com.tencent.tmgp.sgame': '王者荣耀',
-  'com.tencent.tmgp.speedmobile': 'QQ飞车手游',
-  'com.tencent.tmgp.dfm': '三角洲行动',
-  'com.tencent.lolm': '英雄联盟手游',
-  'com.tencent.mobileqq': 'QQ',
-  'com.xingin.xhs': '小红书',
-  'com.taobao.qianniu': '千牛',
-  'com.taobao.taobao': '淘宝',
-  'com.salt.music': '椒盐音乐',
-  'tv.danmaku.bili': '哔哩哔哩'
-}
-
-export function installMockKsu(): void {
-  const g = globalThis as { ksu?: Record<string, unknown> }
-  if (g.ksu) return
-  g.ksu = {
-    getPackagesInfo: (packages: string) => {
-      try {
-        const list: unknown = JSON.parse(packages)
-        if (!Array.isArray(list)) return '[]'
-        return JSON.stringify(
-          list.map(packageName => ({
-            packageName,
-            appLabel: MOCK_LABELS[String(packageName)]
-          }))
-        )
-      } catch {
-        return '[]'
-      }
-    }
-  }
 }

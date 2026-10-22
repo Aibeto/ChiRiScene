@@ -61,11 +61,9 @@
             <div class="rules__head">
               <div class="rules__id">
                 <p class="rules__name" title={group.pkg}>
-                  {label || group.pkg}
+                  {label || t("apps.rules.unknownApp")}
                 </p>
-                {#if label && label !== group.pkg}
-                  <p class="rules__pkg u-mono">{group.pkg}</p>
-                {/if}
+                <p class="rules__pkg u-mono">{group.pkg}</p>
               </div>
               {#if group.ignored || group.special || group.fasConfig}
                 <div class="g-tag-group">

@@ -247,19 +247,36 @@ label {
     transform var(--motion) var(--ease);
 }
 
-.g-card:hover {
-  background: var(--acrylic-hover);
-  border-color: var(--acrylic-border-hover);
-  box-shadow: var(--shadow-3);
-  transform: translateY(-4px);
+/* 只在真正支持 hover 的精确指针设备上抬升：触屏 WebView 会把 :hover 粘住，
+   点击卡片后亚克力背景从 78% 跳到 92%，观感就是「模糊/不透明度变了」 */
+@media (hover: hover) and (pointer: fine) {
+  .g-card:hover {
+    background: var(--acrylic-hover);
+    border-color: var(--acrylic-border-hover);
+    box-shadow: var(--shadow-3);
+    transform: translateY(-4px);
+  }
 }
 
-/* 触屏没有 hover，避免无谓位移 */
+/* 兜底：部分 WebView 会残留 :hover，触屏上显式还原材质，点击卡片不改变模糊/透明度 */
 @media (hover: none) {
   .g-card:hover {
+    background: var(--acrylic);
+    border-color: var(--acrylic-border);
     box-shadow: var(--shadow-1);
     transform: none;
   }
+}
+
+/* 二级页返回栏：复用 g-acrylic 的卡片材质（78% + blur + 细边 + shadow-1），
+   本类只负责条状布局；不做 hover 抬升（它是导航条，不是可点卡片） */
+.g-subbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  box-sizing: border-box;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-l);
 }
 
 /* 标题区独占整行：标题/描述先占满卡片宽度，操作另起一行右对齐。

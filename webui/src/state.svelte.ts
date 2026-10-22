@@ -44,12 +44,12 @@ import {
 } from '@/data/lab'
 import { describeMode, type ModeInfo } from '@/data/mode'
 import { EMPTY_MODULE_PROP, parseModuleProp, type ModuleProp } from '@/data/module-info'
+import { APP_LABELS } from '@/data/app-labels'
 import {
   buildRuleGroups,
   EMPTY_RULES,
   filterRuleGroups,
   parseRules,
-  splitRuleKey,
   type RuleGroup,
   type RulesInfo
 } from '@/data/rules'
@@ -62,7 +62,7 @@ import {
   type SpecialTunedEntry
 } from '@/data/whitelists'
 import { t } from '@/i18n/index.svelte'
-import { getPackagesInfo, toast } from '@/kernel/ksu'
+import { toast } from '@/kernel/ksu'
 
 /** 只读文件的界面态：缺失（不适用/尚未生成）与失败要分开 */
 export type FileState = 'ok' | 'missing' | 'failed'
@@ -125,8 +125,8 @@ class AppStore {
   rulesWhitelistError = $state('')
   rulesLoading = $state(false)
   ruleKeyword = $state('')
-  /** 规则包对应的应用名（KSU bridge，只查规则里出现的包，不拉安装列表）；缺失时视图回落包名 */
-  ruleLabels = $state<Record<string, string>>({})
+  /** 规则包对应的应用名：WebUI 内置静态表，不读本机安装状态；未收录的包由视图回落「未知应用」+ 包名 */
+  ruleLabels = $state<Record<string, string>>({ ...APP_LABELS })
   specialRules = $state<Map<string, SpecialTunedEntry>>(new Map())
   fasRules = $state<Map<string, string>>(new Map())
 
@@ -482,19 +482,6 @@ class AppStore {
         rulesRaw.kind === 'ok' ? 'ok' : rulesRaw.kind === 'failed' ? 'failed' : 'missing'
       this.specialRules = tunedRaw.kind === 'ok' ? parseSpecialTuned(tunedRaw.value) : new Map()
       this.fasRules = fasRaw.kind === 'ok' ? parseFasWhitelist(fasRaw.value) : new Map()
-      // 应用名只查规则里出现的包（十几条），不拉安装列表；bridge 不可用（浏览器/dev）时留空，视图回落包名
-      const pkgs = [
-        ...new Set([
-          ...Object.keys(this.rules.appModes).map(key => splitRuleKey(key).pkg),
-          ...this.specialRules.keys(),
-          ...this.fasRules.keys()
-        ])
-      ].filter(Boolean)
-      const labels: Record<string, string> = {}
-      for (const info of getPackagesInfo(pkgs)) {
-        if (info.packageName && info.appLabel) labels[info.packageName] = info.appLabel
-      }
-      this.ruleLabels = labels
       // 白名单读取失败（不是缺失）要如实说，否则页面会把「读失败」显示成「没有配置」
       const problems: string[] = []
       if (tunedRaw.kind === 'failed') problems.push(`special_tuned.yaml: ${tunedRaw.error}`)

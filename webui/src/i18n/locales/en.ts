@@ -244,6 +244,7 @@ export default {
   'apps.rules.activityAware': 'Activity-aware rules',
   'apps.rules.activityAware.off': 'Off: activity keys are ignored and lookup falls back to package level',
   'apps.rules.level.package': 'Package',
+  'apps.rules.unknownApp': 'Unknown app',
   'apps.rules.special': 'Special mode',
   'apps.rules.fas': 'FAS',
   'apps.rules.ignoredTag': 'Ignored',

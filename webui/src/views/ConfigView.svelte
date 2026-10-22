@@ -28,7 +28,8 @@
   const loglevel = $derived(String(value('loglevel', 'INFO')).toUpperCase())
   const daemonLang = $derived(String(value('language', 'zh')).toLowerCase())
   const devRecord = $derived(Boolean(value('dev_record', false)))
-  const fasEnabled = $derived(Boolean(value('fas_enabled', true)))
+  // FAS 开关暂时被注释（见下方 ToggleField），声明同步注释；恢复开关时一并恢复
+  // const fasEnabled = $derived(Boolean(value('fas_enabled', true)))
   const scenemodeEnabled = $derived(Boolean(value('scenemode_enabled', true)))
 
   /** 实验室接管的开关：置灰不可切换（守护进程正按实验室定义写它，手改也会被写回去） */
@@ -111,14 +112,15 @@
         onchange={next => app.setDraft('dev_record', next)}
       />
 
-      <ToggleField
+      <!-- 暂时注释掉开关 -->
+      <!-- <ToggleField
         label={t('config.fasEnabled')}
         hint={hint('fas_enabled', t('config.fasEnabled.hint'))}
         checked={fasEnabled}
         pending={app.draft.fas_enabled !== undefined}
         disabled={!app.metaValid || takeover.has('fas_enabled')}
         onchange={next => app.setDraft('fas_enabled', next)}
-      />
+      /> -->
 
       <ToggleField
         label={t('config.scenemodeEnabled')}

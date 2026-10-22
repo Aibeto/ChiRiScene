@@ -77,7 +77,7 @@ if echo "$CURRENT_LOCALE" | $BUSYBOX grep -qi "zh"; then
   MSG_SERVICE_FAIL="重启进程失败，请重试或使用普通安装"
   MSG_HOT_UPDATE_HINT="如有报错请忽略。调度未启动，需要手动执行一次Action"
   MSG_INSTALL_CANCELLED="安装已取消"
-  MSG_HOT_UPDATE_ABORT="热更新已完成，如有报错请忽略。调度未启动，需要手动执行一次Action"
+  MSG_HOT_UPDATE_ABORT="热更新已完成。调度未启动，需要手动执行一次Action"
   MSG_HOT_UPDATE_NOTIFY="ChiRi 已安装"
   MSG_KEEP_CONFIG_ASK="是否保留模块内已有的配置？"
   MSG_KEEP_CONFIG_UP="[ 音量 + ] 保留现有配置（不建议）"

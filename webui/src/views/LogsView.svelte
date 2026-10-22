@@ -78,7 +78,10 @@
   }
 
   function onDaemonScroll() {
-    if (daemonBody && !atBottom(daemonBody)) followDaemon = false
+    if (!daemonBody) return
+    // 刷新期间的重建/夹回 0 不算用户操作，保留上一次真实的横向位置
+    if (!logUpdating) daemonLeft = daemonBody.scrollLeft
+    if (!atBottom(daemonBody)) followDaemon = false
   }
 
   function onStatusScroll() {
@@ -114,10 +117,37 @@
     }
   })
 
+  // 日志每秒可能整段重建（tail 窗口锚定失效时行对象全换新，keyed each 会重建 DOM），
+  // DOM 更新前记住横向位置，更新后还原；否则 scrollLeft 随旧节点销毁回到 0
+  let daemonLeft = 0
+  // 日志刷新期间浏览器可能先把 scrollLeft 夹回 0 并触发 scroll 事件；
+  // 用 updating 标记忽略这次「程序性归零」，只记住用户主动滑到的位置
+  let logUpdating = false
+  $effect.pre(() => {
+    void visible
+    logUpdating = true
+  })
+
   // 跟随滚底在 $effect（DOM 更新后）运行；依赖整个数组而非长度——尾部窗口行数恒定时，内容替换也要滚到底
   $effect(() => {
     void visible
-    if (followDaemon && daemonBody) daemonBody.scrollTop = daemonBody.scrollHeight
+    if (!daemonBody) {
+      logUpdating = false
+      return
+    }
+    if (followDaemon) daemonBody.scrollTop = daemonBody.scrollHeight
+    // 只还原横向位置；纵向仍由「跟随底部」或用户手动位置决定。
+    // 下一帧再写一次：DOM 刚换完时 scrollWidth 可能还没算好，立刻写会被夹回 0
+    if (daemonLeft > 0) {
+      const left = daemonLeft
+      daemonBody.scrollLeft = left
+      requestAnimationFrame(() => {
+        if (daemonBody) daemonBody.scrollLeft = left
+      })
+    }
+    queueMicrotask(() => {
+      logUpdating = false
+    })
   })
 
   $effect(() => {
@@ -291,12 +321,20 @@
   }
 
   .terminal__body {
+    min-width: 0;
     max-height: 60vh;
     padding: var(--space-3);
+    /* 横向滚动必须由本层承担：日志行不换行，长消息靠左右滑动查看 */
+    overflow-x: auto;
+    overflow-y: auto;
   }
 
   .log {
     display: grid;
+    /* 行按自身内容撑到 max-content（至少铺满容器）：grid 容器默认填满父宽，
+       长消息只会溢出而不参与父级 scrollWidth，导致外层无法横向滑动 */
+    width: max-content;
+    min-width: 100%;
     /* 全列按内容自适应 + 不换行：长消息靠容器横向滑动查看 */
     grid-template-columns: auto auto auto minmax(0, max-content);
     gap: var(--space-2);
@@ -304,9 +342,8 @@
     font-size: 0.6875rem;
     line-height: 1.55;
     white-space: nowrap;
-    /* 终端最多 2000 行：屏幕外的行跳过布局/绘制，滚动时按需渲染 */
-    content-visibility: auto;
-    contain-intrinsic-size: auto 1.1rem;
+    /* 不用 content-visibility：宽度 containment 会在日志行增删时把 scrollWidth 短暂压小，
+       浏览器随即把横向 scrollLeft 夹回 0，表现为「每刷新一次就回到最左侧」 */
   }
 
   .log__time {
