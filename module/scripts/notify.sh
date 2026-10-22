@@ -19,9 +19,12 @@
 #   unknown  以上都没有（老 ROM 不认 -v）→ 无证据可判，收下
 # -v 是关键，它让 AOSP 在 enqueue 后自己回查并打印结论
 
-# [ladder] 外层 su 形式 × 内层旗标档，按最可能真生效排序
-# su 形式：su 2000 /system/bin/cmd（argv 直传，免一层引号转义）
-#   → su 2000 -c → su shell -c → su -lp 2000 -c（Magisk 上静默留在 root，靠探针兜住）→ su -c / 无 su 直投
+# [ladder] 只保留 argv 直投 × 内层旗标档
+# su 形式：su 2000 /system/bin/cmd（argv 直传，免一层 shell 解析）
+# 旧实现还依次试 su 2000 -c / su shell -c / su -lp 2000 -c / su -c，
+# 这些形式必须把 title/tag/body 拼进 shell 字符串，属于「远程数据 → root shell」
+# 的结构性通道；转义再正确，一旦退化就是 RCE，故整条 su -c 阶梯删除。
+# root（uid 0）直投本来就会被 NMS 丢弃，无 su 时才退化直投（仅兜底）
 # 旗标档：-v -S bigtext → -S bigtext → 最简 -t
 # 某形式 verdict=notfound 就整档跳过，去掉 -v 只会让证据消失、把失败误判成成功
 
@@ -41,25 +44,6 @@ if [ -z "$TAG" ]; then
   echo "FAIL bad-args: tag 为空"
   exit 2
 fi
-
-# POSIX 单引号转义，内部每个 ' 换成 '\''
-quote() {
-  _s=$1
-  _out="'"
-  while :; do
-    case "$_s" in
-      *"'"*)
-        _out="$_out${_s%%\'*}'\\''"
-        _s=${_s#*\'}
-        ;;
-      *)
-        _out="$_out$_s'"
-        break
-        ;;
-    esac
-  done
-  printf '%s' "$_out"
-}
 
 # verdict：判定一次输出的成没成
 verdict() {
@@ -87,7 +71,7 @@ list_check() {
 }
 
 # daemon 在调度线程上同步调用本脚本，每条命令都加超时，整体再受 15s 总预算约束
-# 失败级联时 5 种 su 形式 × 3 档旗标最坏能拖几分钟，超过 WebUI ksu.exec 的 20s 上限
+# 现在只有 1 种形式 × 3 档旗标，最坏 3 次 × 5s 超时，不会超过 WebUI ksu.exec 的 20s 上限
 TIMEOUT=""
 if command -v timeout >/dev/null 2>&1; then
   TIMEOUT="timeout 5"
@@ -156,37 +140,21 @@ attempt() {
   esac
 }
 
-# 按 su 形式 + 旗标档执行内部命令
-run_su() {
-  case "$1" in
-    num)  attempt "$2" "$SU" 2000 -c "$3" ;;
-    name) attempt "$2" "$SU" shell -c "$3" ;;
-    lp)   attempt "$2" "$SU" -lp 2000 -c "$3" ;;
-    root) attempt "$2" "$SU" -c "$3" ;;
-  esac
-}
-
-# 该 su 形式是否真的切到 uid 2000，与 -v 无关，探针用 id -u，输出含 2000 即通过
+# argv 形式是否真的切到 uid 2000，与 -v 无关，探针用 id -u，输出含 2000 即通过
 # MagiskSU 没有 l，su -lp 2000 会静默留在 root，只靠 -v 分不出来
 su_identity_ok() {
-  case "$1" in
-    argv) _pr=$($TIMEOUT "$SU" 2000 /system/bin/id -u 2>/dev/null) ;;
-    num)  _pr=$($TIMEOUT "$SU" 2000 -c 'id -u' 2>/dev/null) ;;
-    name) _pr=$($TIMEOUT "$SU" shell -c 'id -u' 2>/dev/null) ;;
-    lp)   _pr=$($TIMEOUT "$SU" -lp 2000 -c 'id -u' 2>/dev/null) ;;
-    *)    return 1 ;;
-  esac
+  _pr=$($TIMEOUT "$SU" 2000 /system/bin/id -u 2>/dev/null)
   case "$_pr" in
     *2000*) return 0 ;;
   esac
   N=$((N + 1))
-  echo "S$N=[probe] su 未真正切到 uid 2000（id -u 输出：$(printf '%s' "$_pr" | head -n 1)），跳过该形式"
+  echo "S$N=[probe] su 未真正切到 uid 2000（id -u 输出：$(printf '%s' "$_pr" | head -n 1)），跳过 argv 形式"
   return 1
 }
 
-# 外层 su 形式，无 su 时退化为单一直投；内层旗标档
+# 外层只保留 argv 直投；无 su 时退化为单一直投
 if [ -n "$SU" ]; then
-  FORMS="argv num name lp root"
+  FORMS="argv"
 else
   FORMS="direct"
 fi
@@ -195,10 +163,10 @@ BUDGET_HIT=""
 for _form in $FORMS; do
   [ -n "$ACCEPTED" ] && break
   if ! budget_left; then BUDGET_HIT=1; break; fi
-  # 换身份的形式先验身份，探针不通过就整个跳过
-  case "$_form" in
-    argv|num|name|lp) su_identity_ok "$_form" || continue ;;
-  esac
+  # argv 形式先验身份，探针不通过就失败（不再有 su -c 备选）
+  if [ "$_form" = "argv" ]; then
+    su_identity_ok || continue
+  fi
   for _fv in 0 1 2; do
     if ! budget_left; then BUDGET_HIT=1; break 2; fi
     case "$_fv" in
@@ -206,18 +174,8 @@ for _form in $FORMS; do
       1) FLAGS="-S bigtext";    VLABEL="bigtext" ;;
       *) FLAGS="";              VLABEL="minimal" ;;
     esac
-    # FLAGS 是自有定值需分词故不加引号，标题/正文/tag 一律 quote
-    if [ -n "$FLAGS" ]; then
-      INNER="cmd notification post $FLAGS -t $(quote "$TITLE") $(quote "$TAG") $(quote "$BODY")"
-    else
-      INNER="cmd notification post -t $(quote "$TITLE") $(quote "$TAG") $(quote "$BODY")"
-    fi
-
+    # FLAGS 是自有定值需分词故不加引号；title/tag/body 按 argv 位置直传，不经 shell 解析
     case "$_form" in
-      num)    run_su num  "[$VLABEL] su 2000 -c \"$INNER\"" "$INNER" ;;
-      name)   run_su name "[$VLABEL] su shell -c \"$INNER\"" "$INNER" ;;
-      lp)     run_su lp   "[$VLABEL] su -lp 2000 -c \"$INNER\"" "$INNER" ;;
-      root)   run_su root "[$VLABEL] su -c \"$INNER\"（root）" "$INNER" ;;
       argv)   attempt "[$VLABEL] su 2000 /system/bin/cmd notification post $FLAGS -t <title> <tag> <body>" \
                 "$SU" 2000 /system/bin/cmd notification post $FLAGS -t "$TITLE" "$TAG" "$BODY" ;;
       direct) attempt "[$VLABEL] cmd notification post $FLAGS -t <title> <tag> <body>（无 su，直投）" \

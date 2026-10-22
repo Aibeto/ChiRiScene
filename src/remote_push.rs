@@ -10,6 +10,12 @@ const FALLBACK_URL: &str =
     "https://raw.giteeusercontent.com/Aibeto/ChiRiScene/raw/main/updateInformation/remindPush.json";
 /// 通知 tag（无拦截器）
 pub const REMOTE_TAG: &str = "ChiRi-Remote";
+/// 通知标题固定前缀：远程内容一律带官方标识，降低伪造「官方通知」的钓鱼面
+const TITLE_PREFIX: &str = "[ChiRi] ";
+/// 远程标题字符上限（按字符截断，不切坏 UTF-8）
+const MAX_TITLE_CHARS: usize = 120;
+/// 远程正文字符上限
+const MAX_BODY_CHARS: usize = 800;
 /// 单次 HTTP 总超时（连接+收发）
 const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 /// 响应体上限：正常几百字节，64KB 能挡住异常大响应
@@ -114,6 +120,24 @@ fn fetch_any() -> Option<(String, &'static str)> {
     }
 }
 
+/// 按字符（非字节）截断，超限时以 … 结尾，避免切坏多字节字符
+fn clamp_chars(s: &str, max: usize) -> String {
+    let mut it = s.chars();
+    let mut out: String = it.by_ref().take(max.saturating_sub(1)).collect();
+    if it.next().is_some() {
+        out.push('…');
+    }
+    out
+}
+
+/// 远程内容进通知前的收敛：加官方前缀并截断到上限
+/// 只做标识与长度处理，不改写正文（正文可能含换行/emoji，保留原样）
+fn shape_notification(title: &str, body: &str) -> (String, String) {
+    let mut title = clamp_chars(title.trim(), MAX_TITLE_CHARS);
+    title.insert_str(0, TITLE_PREFIX);
+    (title, clamp_chars(body.trim(), MAX_BODY_CHARS))
+}
+
 /// 跑一轮：拉取 → 匹配 → 命中就发通知，返回是否真的发出
 pub fn run_once() -> bool {
     let Some((body, _src)) = fetch_any() else {
@@ -122,6 +146,7 @@ pub fn run_once() -> bool {
     let code = current_version_code();
     match find_entry(&body, &code) {
         Some((title, content)) => {
+            let (title, content) = shape_notification(&title, &content);
             let sent = crate::notify::post_notification(&title, REMOTE_TAG, &content);
             log::info!(
                 "{}",
@@ -317,5 +342,34 @@ mod tests {
         let url = "https://raw.githubusercontent.com/Aibeto/ChiRiScene/main/updateInformation/update.json";
         let body = fetch_text(url).expect("应能取到仓库里的 update.json");
         assert!(body.contains('{'), "返回内容不像 JSON: {body}");
+    }
+
+    /// 截断按字符计：CJK/emoji 不会被切坏，超限以 … 收尾
+    #[test]
+    fn clamp_chars_counts_chars_not_bytes() {
+        assert_eq!(clamp_chars("abc", 10), "abc");
+        // 恰好等于上限时保留 max-1 个字符 + 省略号
+        assert_eq!(clamp_chars("abcde", 5), "abcd…");
+        let long = "测".repeat(300);
+        let cut = clamp_chars(&long, MAX_TITLE_CHARS);
+        assert_eq!(cut.chars().count(), MAX_TITLE_CHARS);
+        assert!(cut.ends_with('…'));
+        assert!(cut.starts_with('测'));
+    }
+
+    /// 远程通知一律带 [ChiRi] 前缀，标题/正文超长被截断
+    #[test]
+    fn shape_notification_prefixes_and_truncates() {
+        let (t, b) = shape_notification("  v2.0.3 已发布  ", "  正文  ");
+        assert_eq!(t, "[ChiRi] v2.0.3 已发布");
+        assert_eq!(b, "正文");
+
+        let (t, b) = shape_notification(&"T".repeat(500), &"B".repeat(5000));
+        assert_eq!(
+            t.chars().count(),
+            TITLE_PREFIX.chars().count() + MAX_TITLE_CHARS,
+            "前缀 + 截断后标题长度不对"
+        );
+        assert_eq!(b.chars().count(), MAX_BODY_CHARS);
     }
 }
