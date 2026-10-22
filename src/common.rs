@@ -1,5 +1,5 @@
 //! common.rs: [events] [proc_snap] [paths] [soc_detect] [core_ranges] [soc_config] [governor] [special_tuned] [fas_whitelist]
-//! [aff_blacklist] [embedded] [external_meta] [frontier_table]
+//! [aff_blacklist] [embedded] [external_meta] [frontier]
 
 use crate::monitor::config::RulesConfig;
 use include_dir::{Dir, include_dir};
@@ -7,7 +7,6 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::env;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -109,6 +108,9 @@ const CHIRI_SOC_HINTS: &[&str] = &[
     "sm8550",
     "sm8475",
     "sm8650",
+    // SM8750（骁龙 8 Elite / OnePlus 13 PJZ110）：标准 SoC 名，命中 ro.soc.model /
+    // soc0/machine 等来源；配置目录同名 config/sm8750/。
+    "sm8750",
     "msm8998",
     "zumapro",
     "exynos5250",
@@ -145,7 +147,16 @@ const CHIRI_SOC_HINTS: &[&str] = &[
     "sm8150",
     "sm8350",
     "zuma",
+    // "sun" = SM8750 的平台代号（真机 ro.board.platform，devimp main_ 头 `board=sun` 可证）。
+    // 它是 sm8750 的**别名**，不是独立机型：配置目录由 [soc_hint_config_name] 统一映射到
+    // config/sm8750/。保留它是因为并非所有来源都暴露 ro.soc.model（有些机型只有 board 名）。
+    // 放末位 + 整词边界匹配（见 SOC_HINT_TOKEN_BOUNDARY）：短片段若用子串匹配会把
+    // sunfish（Pixel 4a / sm7150）误判成本机；末位保证任何具体 SoC 名先命中。
+    "sun",
 ];
+
+/// 需要**整词边界**匹配的片段（其余仍为子串匹配）：只有短且易撞车的 board 代号才进本表
+const SOC_HINT_TOKEN_BOUNDARY: &[&str] = &["sun"];
 
 /// 读取单个 Android 系统属性（getprop key），失败/为空返回空串跨分区属性只能走 getprop 拿合并视图，直接读 /system/build.prop 会读空
 pub(crate) fn getprop(key: &str) -> String {
@@ -182,9 +193,20 @@ fn soc_hint_haystack() -> &'static str {
 }
 
 /// 单个片段是否命中设备硬件标识；片段至少 3 字符，避免过短片段误匹配
+/// `SOC_HINT_TOKEN_BOUNDARY` 内的片段要求**整词命中**（haystack 按非字母数字切分后逐词相等），
+/// 其余片段沿用子串匹配（`qcom,sm8550-mtp` 这类带前缀的标识必须靠子串才命中）
 fn hint_matches(hint: &str) -> bool {
     let hl = hint.to_lowercase();
-    hl.len() >= 3 && soc_hint_haystack().contains(&hl)
+    if hl.len() < 3 {
+        return false;
+    }
+    let hay = soc_hint_haystack();
+    if SOC_HINT_TOKEN_BOUNDARY.contains(&hl.as_str()) {
+        return hay
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|tok| tok == hl);
+    }
+    hay.contains(&hl)
 }
 
 /// 是否应启用 Chiri 专用调度器（检测到列表中的处理器时为 true），结果只探测一次并缓存，避免反复读 /proc 与 sysfs
@@ -209,8 +231,25 @@ pub(crate) fn matched_soc_hint() -> Option<&'static str> {
 }
 
 /// 命中 Chiri 目标 SoC 时，返回其处理器专属配置目录 `config/{命中片段}/`（存在则返回）
+/// 命中片段 → 配置目录名（`config/<name>/`）：**别名在此归一**
+///
+/// 绝大多数片段与目录同名；只有平台代号需要映射（`sun` → `sm8750`），
+/// 这样目录仍按 SoC 型号命名（与既有 39 个目录同构），而 board 名也能命中。
+/// 新增别名 = 在本函数加一条 match 分支，不要复制配置目录。
+pub(crate) fn soc_hint_config_name(hint: &str) -> &str {
+    match hint {
+        "sun" => "sm8750",
+        other => other,
+    }
+}
+
+/// 命中片段的**配置目录名**（已归一别名）；未命中 → None
+pub(crate) fn matched_soc_config_name() -> Option<&'static str> {
+    matched_soc_hint().map(soc_hint_config_name)
+}
+
 fn matched_soc_config_dir() -> Option<PathBuf> {
-    matched_soc_hint().map(|hint| get_module_root().join("config").join(hint))
+    matched_soc_config_name().map(|name| get_module_root().join("config").join(name))
 }
 
 /// 处理器核心组区间（little/big/prime 的 CPU ID，左闭右开）：akmode 忙/闲统计、CLG 触摸升频判定大核簇使用各 SoC 簇布局不同，按命中片段区分，未命中回退 sm8550 布局兜底
@@ -381,53 +420,11 @@ pub struct FrontierPolicy {
     /// 输入内容哈希（生成脚本产出，运行期仅用于日志标识）
     #[serde(default)]
     pub model_fingerprint: Option<String>,
-    /// 复算对账锚点（运行期不消费，落表自检留痕）
+    /// 各簇**单核**能效曲线（频点 + 单核动态功耗 + capacity）：相对能效模型的唯一数据源。
+    /// 这是本段运行期**唯一**被消费的字段——`demand_buckets` / `modes` / `anticipate` 等
+    /// 预计算桶表已随重构移除（决策改由 `energy_model` 在相对向量空间直接算）。
     #[serde(default)]
-    #[allow(dead_code)]
-    pub anchors: Vec<FrontierAnchor>,
-    /// 前沿点（DT 口径，运行期不消费）
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub frontier: Vec<FrontierPoint>,
-    /// 各簇硬件基线与频表（与 soc.yaml 其余段同源，仅作参照）
-    #[serde(default)]
-    #[allow(dead_code)]
     pub per_cluster: Option<FrontierPerCluster>,
-    /// 需求桶（真机容量单位边界 + 该前沿点的三簇目标 kHz）：PF 查表的唯一数据源
-    #[serde(default)]
-    pub demand_buckets: Vec<FrontierBucket>,
-    /// 三模式结果向量（预判带；本版运行期未消费，留待后续）
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub modes: HashMap<String, FrontierMode>,
-    /// 预判参数（本版运行期未消费）
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub anticipate: Option<FrontierAnticipate>,
-}
-
-/// 复算对账锚点（运行期不消费）
-#[derive(Debug, Clone, Default, Deserialize)]
-#[allow(dead_code)]
-pub struct FrontierAnchor {
-    #[serde(default)]
-    pub name: String,
-    #[serde(default)]
-    pub got: f32,
-    #[serde(default)]
-    pub want: f32,
-    #[serde(default)]
-    pub ok: bool,
-}
-
-/// 前沿点（DT 口径 Mdmips / W，运行期不消费）
-#[derive(Debug, Clone, Default, Deserialize)]
-#[allow(dead_code)]
-pub struct FrontierPoint {
-    #[serde(default)]
-    pub compute: f32,
-    #[serde(default)]
-    pub power_w: f32,
 }
 
 /// 各簇硬件基线（参照，运行期不消费）
@@ -450,226 +447,20 @@ pub struct FrontierClusterBase {
     pub capacity: Option<u32>,
     #[serde(default)]
     pub freq_khz: Vec<u32>,
-    /// 逐档簇功耗 W（文档 §3 簇级表，只含动态项、不含漏电）：放置成本模型（FDP）的边际比较输入；
-    /// 长度与 `freq_khz` 对齐，缺省为空 = 该簇无成本数据（FDP 对该簇回退、不动作）
+    /// 逐档**簇**功耗 W（文档 §3 簇级表，只含动态项、不含漏电）。
+    /// 仅供分析工具与溯源；运行期**不再直接消费**——`energy_model` 只用它的**形状**，
+    /// 且必须先除以簇核数折算成单核口径（`single_core_power_w` 缺失时的兜底路径）。
     #[serde(default)]
     pub power_w: Vec<f32>,
-}
-
-/// 需求桶：`lo_units`/`hi_units` 为**真机容量单位**边界；`*_khz` 为该前沿点的三簇目标频点
-/// （收到后仍须 floor 对齐到 `available_freqs`；0 = 表未提供 → 回退比例路径）
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct FrontierBucket {
+    /// 逐档**单核**功耗 W（已按单核口径折算、已扣首档静态项）：相对能效模型的唯一功耗输入。
+    /// 长度与 `freq_khz` 对齐；缺省为空 → `energy_model` 回退到 `power_w ÷ 簇核数`。
+    /// 与 `power_w` 的口径差异是历史事故源（单核/整簇混用），故单列一个字段显式区分。
     #[serde(default)]
-    #[allow(dead_code)]
-    pub point: u32,
-    #[serde(default)]
-    pub lo_units: f32,
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub hi_units: f32,
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub target_compute: f32,
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub target_power_w: f32,
-    #[serde(default)]
-    pub little_khz: u32,
-    #[serde(default)]
-    pub big_khz: u32,
-    #[serde(default)]
-    pub prime_khz: u32,
-}
-
-/// 单模式结果向量（运行期未消费）
-#[derive(Debug, Clone, Default, Deserialize)]
-#[allow(dead_code)]
-pub struct FrontierMode {
-    #[serde(default)]
-    pub lead_mult: f32,
-    #[serde(default)]
-    pub lead_frac: f32,
-    #[serde(default)]
-    pub reserve_pct: f32,
-    #[serde(default)]
-    pub buckets: Vec<FrontierModeBucket>,
-}
-
-/// 单模式单桶（运行期未消费）
-#[derive(Debug, Clone, Default, Deserialize)]
-#[allow(dead_code)]
-pub struct FrontierModeBucket {
-    #[serde(default)]
-    pub point: u32,
-    #[serde(default)]
-    pub target_compute: f32,
-    #[serde(default)]
-    pub target_power_w: f32,
-    #[serde(default)]
-    pub enter_units: f32,
-    #[serde(default)]
-    pub exit_units: f32,
-}
-
-/// 预判参数（运行期未消费）：`mode_mul` 为 reduce/default/boost 三模式乘子
-#[derive(Debug, Clone, Default, Deserialize)]
-#[allow(dead_code)]
-pub struct FrontierAnticipate {
-    #[serde(default)]
-    pub min_dwell_ticks: u32,
-    #[serde(default)]
-    pub adjacent_only: bool,
-    #[serde(default)]
-    pub mode_mul: Option<FrontierModeMul>,
-}
-
-/// 预判模式乘子（reduce/default/boost 三模式）
-#[derive(Debug, Clone, Default, Deserialize)]
-#[allow(dead_code)]
-pub struct FrontierModeMul {
-    #[serde(default)]
-    pub reduce: f32,
-    #[serde(default)]
-    pub default: f32,
-    #[serde(default)]
-    pub boost: f32,
-}
-
-// [frontier_table] 进程级预计算的前沿查表：桶表来自 soc.yaml（编译期嵌入、SoC 硬件固定），
-// 全程只摊平一次——worker 首次接管建表，之后每 tick 只做「二分找桶 + 数组取频点」；
-// 热切换 / 息屏等引起的 worker 重建不再重走结构体、重扫桶表（`frontier_aligned` 另有对齐缓存）
-
-/// 前沿查表（摊平后的桶表）：`lo_units` 升序，三簇目标 kHz 与它逐桶同索引（0 = 表未提供该簇）
-pub struct FrontierTable {
-    lo_units: Box<[f32]>,
-    little: Box<[u32]>,
-    big: Box<[u32]>,
-    prime: Box<[u32]>,
-}
-
-impl FrontierTable {
-    /// 由 `demand_buckets` 摊平；桶表为空 → None（调用方走原比例路径，与段缺失同口径）
-    ///
-    /// **lo_units 非单调 → 整表拒用**（同样返回 None 回退比例路径）：`bucket_for_demand()`
-    /// 对它做二分，非单调数组的二分结果未定义——不是慢，是**静默查到错桶**（目标频点偏低、
-    /// 过度降频，或本应有桶却回退）。生成器 `scripts/frontier_policy.py` 已在落表前断言单调
-    /// （`build_buckets()`），此处是消费侧的第二道防线：手改 / 旧版本落的坏表一律不生效——
-    /// 宁可不启用 PF，也不让「表面启用、实际落错桶」的无症状错误跑在真机上。
-    fn from_policy(policy: &FrontierPolicy) -> Option<Self> {
-        if policy.demand_buckets.is_empty() {
-            return None;
-        }
-        let n = policy.demand_buckets.len();
-        let mut lo_units = Vec::with_capacity(n);
-        let mut little = Vec::with_capacity(n);
-        let mut big = Vec::with_capacity(n);
-        let mut prime = Vec::with_capacity(n);
-        for b in &policy.demand_buckets {
-            lo_units.push(b.lo_units);
-            little.push(b.little_khz);
-            big.push(b.big_khz);
-            prime.push(b.prime_khz);
-        }
-        // 严格非降才可用（相等允许：中点重复是同一档的退化，不影响「最大的 lo <= demand」语义）
-        if let Some(i) = lo_units.windows(2).position(|w| w[0] > w[1]) {
-            log::warn!(
-                "frontier-buckets-not-monotone: lo_units[{}]={} > lo_units[{}]={}，整表拒用、回退比例路径",
-                i,
-                lo_units[i],
-                i + 1,
-                lo_units[i + 1]
-            );
-            return None;
-        }
-        Some(Self {
-            lo_units: lo_units.into_boxed_slice(),
-            little: little.into_boxed_slice(),
-            big: big.into_boxed_slice(),
-            prime: prime.into_boxed_slice(),
-        })
-    }
-
-    /// 需求（真机容量单位）落在哪个桶：`lo_units <= demand` 的最大桶索引（二分）；
-    /// 升序由 `from_policy()` 保证——**不是**「生成脚本的 hull 天然有序」（该假设曾被
-    /// sm8350 的非单调算力列证伪），构造期已断言过。需求低于首桶 → None（负载极低，几何边界不是表错）
-    pub fn bucket_for_demand(&self, demand_units: f32) -> Option<usize> {
-        if !demand_units.is_finite() {
-            return None;
-        }
-        let idx = self.lo_units.partition_point(|&lo| lo <= demand_units);
-        (idx > 0).then_some(idx - 1)
-    }
-
-    /// 该簇逐桶的**原始**目标 kHz（未 floor 对齐；0 = 表未提供该桶该簇）
-    fn targets(&self, group: CoreGroup) -> &[u32] {
-        match group {
-            CoreGroup::Little => &self.little,
-            CoreGroup::Big => &self.big,
-            CoreGroup::Prime => &self.prime,
-        }
-    }
-}
-
-/// 当前 SoC 的前沿查表（OnceLock 惰性构建）：段缺失 / `enabled != true` / 桶表为空 → None
-pub fn frontier_table() -> Option<&'static FrontierTable> {
-    static TABLE: OnceLock<Option<FrontierTable>> = OnceLock::new();
-    TABLE
-        .get_or_init(|| soc_frontier_policy().and_then(FrontierTable::from_policy))
-        .as_ref()
-}
-
-// [frontier_aligned] 逐桶落点表（已 floor 对齐到**某簇真实频率表**）：进程级缓存，键 = 核心组 + 频率表，
-// 同一频率表下的所有 worker、所有次重建（热切换 / 息屏切换）共用同一份，重建不重算
-/// 缓存条目：(该簇真实频率表, 逐桶落点数组)
-type FrontierAlignedEntry = (Vec<u32>, Arc<Vec<u32>>);
-static FRONTIER_ALIGNED: OnceLock<Mutex<HashMap<CoreGroup, Vec<FrontierAlignedEntry>>>> =
-    OnceLock::new();
-
-/// 该簇的逐桶落点：索引 = 需求桶（与 [`frontier_table`] 桶序一致），值 = 频率表中 `<= 表给目标` 的最大档 kHz，
-/// 0 = 该桶该簇无目标 → 调用方回退比例路径，非 PF SoC（无查表）同样 None（调用方静默走比例路径）
-pub fn frontier_aligned(group: CoreGroup, available_freqs: &[u32]) -> Option<Arc<Vec<u32>>> {
-    let targets = frontier_table()?.targets(group);
-    let mut cache = FRONTIER_ALIGNED
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    let slot = cache.entry(group).or_default();
-    if let Some((_, hit)) = slot
-        .iter()
-        .find(|(freqs, _)| freqs.as_slice() == available_freqs)
-    {
-        return Some(Arc::clone(hit));
-    }
-    let aligned: Arc<Vec<u32>> = Arc::new(
-        targets
-            .iter()
-            .map(|&khz| {
-                if khz == 0 {
-                    0
-                } else {
-                    floor_khz(available_freqs, khz)
-                }
-            })
-            .collect(),
-    );
-    slot.push((available_freqs.to_vec(), Arc::clone(&aligned)));
-    Some(aligned)
-}
-
-/// kHz → 频率表中 `<= 目标` 的最大档（floor 对齐，频率表为升序的真实档位）：
-/// 落点不得高于表给目标；目标低于首档时取首档（与比例路径同口径）
-fn floor_khz(available_freqs: &[u32], khz: u32) -> u32 {
-    let idx = available_freqs.partition_point(|&f| f <= khz);
-    if idx == 0 {
-        available_freqs.first().copied().unwrap_or(0)
-    } else {
-        available_freqs[idx - 1]
-    }
+    pub single_core_power_w: Vec<f32>,
 }
 
 /// [frontier_lenient] 前沿段解析失败不得拖垮整份 soc.yaml：单字段兜底为 None + warn 一次
-/// （topology/capacity/freq 兜底是更贵资产，误配必须自愈）
+/// （topology/capacity/freq 兜底是更贵的资产，误配必须自愈）
 fn deserialize_frontier_lenient<'de, D>(d: D) -> Result<Option<FrontierPolicy>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -701,16 +492,16 @@ static SOC_CONFIG: OnceLock<Option<SocConfig>> = OnceLock::new();
 pub fn soc_config() -> Option<&'static SocConfig> {
     SOC_CONFIG
         .get_or_init(|| {
-            let Some(hint) = matched_soc_hint() else {
+            let Some(name) = matched_soc_config_name() else {
                 return None;
             };
-            let Some(text) = embedded_config_file(&format!("{hint}/soc.yaml")) else {
+            let Some(text) = embedded_config_file(&format!("{name}/soc.yaml")) else {
                 return None;
             };
             match serde_yaml::from_str::<SocConfig>(text) {
                 Ok(c) => Some(c),
                 Err(e) => {
-                    log::warn!("soc-config-parse-failed ({hint}): {e}");
+                    log::warn!("soc-config-parse-failed ({name}): {e}");
                     None
                 }
             }
@@ -1247,7 +1038,7 @@ pub(crate) fn embedded_config_file(rel: &str) -> Option<&'static str> {
 
 /// 嵌入的 meta.yaml（用户可修改字段默认值）：按命中处理器取 {soc}/meta.yaml，未命中取 meta.yaml
 pub fn embedded_meta_str() -> &'static str {
-    if let Some(soc) = matched_soc_hint() {
+    if let Some(soc) = matched_soc_config_name() {
         match embedded_config_file(&format!("{soc}/meta.yaml")) {
             Some(text) => return text,
             // [silent-fallback] 命中 SoC 却没有它的 meta.yaml：静默回退根文件后，该机型会拿到
@@ -1284,8 +1075,8 @@ pub fn embedded_feature_str() -> &'static str {
     static MERGED: OnceLock<String> = OnceLock::new();
     MERGED.get_or_init(|| {
         let root = embedded_config_file("feature.yaml").unwrap_or_default();
-        let Some(soc_text) =
-            matched_soc_hint().and_then(|soc| embedded_config_file(&format!("{soc}/feature.yaml")))
+        let Some(soc_text) = matched_soc_config_name()
+            .and_then(|soc| embedded_config_file(&format!("{soc}/feature.yaml")))
         else {
             return root.to_string();
         };

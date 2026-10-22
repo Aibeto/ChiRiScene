@@ -73,7 +73,7 @@ class AppStore {
   configState = $state<FileState>('ok')
   configError = $state('')
   deviceKind = $state<DeviceKind>('unknown')
-  /** 本机 CLG 是否启用帕累托前沿落点（daemon 写的 pf.chr = 1）：只决定家族名显示 CLG-PF，不参与调度 */
+  /** 本机 CLG 是否启用相对能效模型（daemon 写的 pf.chr = 1）：只决定家族名显示 CLG-EEM，不参与调度 */
   clgPfEnabled = $state(false)
   moduleProp = $state<ModuleProp>(EMPTY_MODULE_PROP)
 

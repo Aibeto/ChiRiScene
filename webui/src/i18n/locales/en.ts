@@ -297,8 +297,8 @@ export default {
   'mode.unknown.stopped': 'Scheduler not running',
   'mode.family.clg': 'CLG',
   // CLG family label when the Pareto-frontier landing is enabled (pf.chr = 1, 8550 only)
-  // same wording as the daemon log prefix [CLG-PF]
-  'mode.family.clgpf': 'CLG-PF',
+  // same wording as the daemon log prefix [CLG-EEM]
+  'mode.family.clgpf': 'CLG-EEM',
   'mode.family.special': 'Special',
   'mode.family.lab': 'RHINE',
   'mode.family.down': 'DOWN',

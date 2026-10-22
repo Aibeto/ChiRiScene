@@ -113,6 +113,10 @@ def scan(fn):
     bulk = collections.Counter()
     bulk_frames = collections.Counter()
     bulk_by_act = collections.Counter()
+    # [place] 迁移视图：方向 → (ok, fail)、决策原因、gain 样本
+    place_dir = collections.defaultdict(lambda: [0, 0])
+    place_reason = collections.Counter()
+    place_gain = []
     state = {}
     last = {}                                  # tid → {槽: 值}（槽级差分合并结果）
     tpid = {}                                  # tid → 最近一次的进程 id（tid 复用判定）
@@ -180,6 +184,20 @@ def scan(fn):
                         act_ok[reason] += 1
                     elif result in MISSING_RESULTS:
                         act_missing[reason] += 1
+                    if act == "place":
+                        # reason 槽 = 方向（up/down/hold）
+                        slot = place_dir[reason]
+                        if result == "ok":
+                            slot[0] += 1
+                        else:
+                            slot[1] += 1
+                        # value 形如 `gain=0.123 settled=false reason=cheaper_cluster`
+                        m_gain = re.search(r"gain=(-?\d+(?:\.\d+)?)", value)
+                        if m_gain:
+                            place_gain.append(float(m_gain.group(1)))
+                        m_reason = re.search(r"reason=(\S+)", value)
+                        if m_reason:
+                            place_reason[m_reason.group(1)] += 1
                     if str(reason).endswith("_bulk"):
                         n = dc.num(value)
                         bulk[reason] += int(n) if n is not None else 0
@@ -227,7 +245,8 @@ def scan(fn):
                     core_util[(core, comm)] += int(merged.get("u", 0))
     return dict(acts=acts, act_ok=act_ok, act_tot=act_tot, act_missing=act_missing,
                 bulk=bulk, bulk_frames=bulk_frames,
-                bulk_by_act=bulk_by_act, state=state, last=last, frames=frames,
+                bulk_by_act=bulk_by_act, place_dir=place_dir, place_reason=place_reason,
+                place_gain=place_gain, state=state, last=last, frames=frames,
                 full_frames=full_frames, partial_rows=partial_rows, dropped_t=dropped_t, traj=traj,
                 monotonic=monotonic, peak=peak, peak_ts=peak_ts, nfg_hdr=nfg_hdr,
                 comm_bound=comm_bound, first_bound_frame=first_bound_frame,
@@ -285,6 +304,31 @@ def report(fn, st, groups=None, top=8):
         rate = (ok / denom * 100) if denom else 0.0
         out.append(f"  {reason[:26]:26s} {tot:8d} {ok:8d} {miss:5d} {rate:6.1f}%")
     out.append("")
+
+    # [place] 线程迁移（EEM 放置引擎）专属视图。
+    # 帧口径：`@A act=place pid=.. tid=.. comm=.. dst=<lo>-<hi> value=gain=..,settled=..,reason=.. result=.. reason=<dir>`
+    #   即 **reason 槽写方向**（up/down/hold，INFO 行同口径），value 里带 gain/settled。
+    if st["place_dir"]:
+        out.append("### 线程迁移（act=place）：方向分布")
+        out.append(f"  {'dir':8s} {'ok':>8s} {'fail':>8s}")
+        for d, (okn, badn) in sorted(st["place_dir"].items(), key=lambda kv: -(kv[1][0] + kv[1][1])):
+            out.append(f"  {d:8s} {okn:8d} {badn:8d}")
+        out.append("")
+        out.append("### 线程迁移：决策原因分布")
+        out.append(f"  {'reason':22s} {'count':>8s}")
+        for r, n in st["place_reason"].most_common():
+            out.append(f"  {r[:22]:22s} {n:8d}")
+        out.append("")
+        g = st["place_gain"]
+        if g:
+            gs = sorted(g)
+            out.append(
+                "### 线程迁移收益（相对成本改善）: "
+                f"n={len(gs)} min={gs[0]:.3f} p50={gs[len(gs) // 2]:.3f} max={gs[-1]:.3f}"
+            )
+        else:
+            out.append("### 线程迁移收益：本文件无可用 gain 值")
+        out.append("")
 
     out.append("### bulk 汇总帧（清理规模正解；单列，不与逐条 bind_release 混算）")
     if st["bulk"]:

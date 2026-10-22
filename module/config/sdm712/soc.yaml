@@ -72,98 +72,11 @@ cpu_governors: [uag, walt, schedutil, performance]
 frontier_policy:
   enabled: true
   model_fingerprint: "0aef4917ece708eb"
-  # TODO 待拍板: reserve_pct（流畅度下界）与 lead_frac（预判基准提前量）仍为占位值；
-  # 真机观察后重跑本脚本覆盖（--reserve / --lead-frac），不要手改本块。
-  # 无独立公布值可对账：本机型不设 anchors 段（实测折算表，逐档见能效模型文档 §3）
-  # 前沿点（12 点；compute=CMdmips(CoreMark 实测折算)、power=W）
-  frontier:
-    - { compute: 10407.8, power_w: 0.5645 }
-    - { compute: 37519.0, power_w: 1.0519 }
-    - { compute: 41911.9, power_w: 1.138 }
-    - { compute: 45963.7, power_w: 1.2588 }
-    - { compute: 47881.3, power_w: 1.3233 }
-    - { compute: 50018.5, power_w: 1.398 }
-    - { compute: 52907.8, power_w: 1.5073 }
-    - { compute: 58730.4, power_w: 1.77 }
-    - { compute: 60867.9, power_w: 1.8992 }
-    - { compute: 62843.7, power_w: 2.0488 }
-    - { compute: 65479.9, power_w: 2.2854 }
-    - { compute: 66783.3, power_w: 2.4901 }
-  # 各簇频表 + 逐档**簇功耗**(W)：功耗列由 devimpbin/batch_ingest.py 从 freqbench_tensor
-  # 实测折算（净动态、已做漏电校正），**只能用于相对排序**；档位与 freq_khz 逐档对齐。
+  # 无独立公布值可对账（实测折算表，逐档见能效模型文档 §3）
+  # 各簇**单核**能效曲线：相对能效模型（energy_model）的唯一数据源。
+  # power_w = 簇功耗（溯源用）；single_core_power_w = 单核动态功耗（运行期消费）。
+  # 运行期只取**形状**（归一成 0→1 相对向量），绝对瓦数不参与任何比较。
   per_cluster:
-    little: { capacity: 453, freq_khz: [300000, 576000, 748800, 998400, 1209600, 1324800, 1516800, 1612800, 1708800], power_w: [0.3871, 0.5836, 0.6022, 0.7581, 0.7721, 0.8973, 0.8745, 0.9492, 1.0784] }
-    big: { capacity: 1024, freq_khz: [300000, 652800, 825600, 979200, 1132800, 1363200, 1536000, 1747200, 1843200, 1996800, 2054400, 2169600, 2208000, 2304000], power_w: [0.1774, 0.2635, 0.3640, 0.3843, 0.4488, 0.5581, 0.6621, 0.8181, 0.8208, 0.9704, 1.0453, 1.2488, 1.2070, 1.4117] }
-  # 需求桶: lo_units/hi_units 是真机容量单位边界；三簇 kHz 是查表落点（运行期仍需 floor 对齐）
-  demand_buckets:
-    - { point: 0, lo_units: 743.8, hi_units: 1711.6, little_khz: 300000, big_khz: 300000, prime_khz: 0, target_compute: 10407.8, target_power_w: 0.5645, margin_mdmips_per_w: 55624.1 }
-    - { point: 1, lo_units: 1711.6, hi_units: 2836.1, little_khz: 1516800, big_khz: 300000, prime_khz: 0, target_compute: 37519.0, target_power_w: 1.0519, margin_mdmips_per_w: 51020.9 }
-    - { point: 2, lo_units: 2836.1, hi_units: 3137.9, little_khz: 1516800, big_khz: 652800, prime_khz: 0, target_compute: 41911.9, target_power_w: 1.138, margin_mdmips_per_w: 33541.4 }
-    - { point: 3, lo_units: 3137.9, hi_units: 3351.3, little_khz: 1516800, big_khz: 979200, prime_khz: 0, target_compute: 45963.7, target_power_w: 1.2588, margin_mdmips_per_w: 29730.2 }
-    - { point: 4, lo_units: 3351.3, hi_units: 3495.9, little_khz: 1516800, big_khz: 1132800, prime_khz: 0, target_compute: 47881.3, target_power_w: 1.3233, margin_mdmips_per_w: 28610.4 }
-    - { point: 5, lo_units: 3495.9, hi_units: 3674.6, little_khz: 1612800, big_khz: 1132800, prime_khz: 0, target_compute: 50018.5, target_power_w: 1.398, margin_mdmips_per_w: 26434.6 }
-    - { point: 6, lo_units: 3674.6, hi_units: 3990.4, little_khz: 1612800, big_khz: 1363200, prime_khz: 0, target_compute: 52907.8, target_power_w: 1.5073, margin_mdmips_per_w: 22164.4 }
-    - { point: 7, lo_units: 3990.4, hi_units: 4280.1, little_khz: 1612800, big_khz: 1843200, prime_khz: 0, target_compute: 58730.4, target_power_w: 1.77, margin_mdmips_per_w: 16544.1 }
-    - { point: 8, lo_units: 4280.1, hi_units: 4424.7, little_khz: 1708800, big_khz: 1843200, prime_khz: 0, target_compute: 60867.9, target_power_w: 1.8992, margin_mdmips_per_w: 13207.2 }
-    - { point: 9, lo_units: 4424.7, hi_units: 4586.8, little_khz: 1708800, big_khz: 1996800, prime_khz: 0, target_compute: 62843.7, target_power_w: 2.0488, margin_mdmips_per_w: 11142.0 }
-    - { point: 10, lo_units: 4586.8, hi_units: 4723.3, little_khz: 1708800, big_khz: 2208000, prime_khz: 0, target_compute: 65479.9, target_power_w: 2.2854, margin_mdmips_per_w: 6367.4 }
-    - { point: 11, lo_units: 4723.3, hi_units: 4766.0, little_khz: 1708800, big_khz: 2304000, prime_khz: 0, target_compute: 66783.3, target_power_w: 2.4901, margin_mdmips_per_w: 0.0 }
-  # 三模式结果向量（lead_mult 已定: reduce 0.5 / default 1.0 / boost 2.0）
-  modes:
-    reduce:
-      lead_mult: 0.5
-      lead_frac: 0.15
-      reserve_pct: 0.0
-      buckets:
-        - { point: 0, target_compute: 10407.8, target_power_w: 0.5645, enter_units: 145.2, exit_units: 145.2 }
-        - { point: 1, target_compute: 37519.0, target_power_w: 1.0519, enter_units: 168.7, exit_units: 168.7 }
-        - { point: 2, target_compute: 41911.9, target_power_w: 1.138, enter_units: 45.3, exit_units: 45.3 }
-        - { point: 3, target_compute: 45963.7, target_power_w: 1.2588, enter_units: 32.0, exit_units: 32.0 }
-        - { point: 4, target_compute: 47881.3, target_power_w: 1.3233, enter_units: 21.7, exit_units: 21.7 }
-        - { point: 5, target_compute: 50018.5, target_power_w: 1.398, enter_units: 26.8, exit_units: 26.8 }
-        - { point: 6, target_compute: 52907.8, target_power_w: 1.5073, enter_units: 47.4, exit_units: 47.4 }
-        - { point: 7, target_compute: 58730.4, target_power_w: 1.77, enter_units: 43.5, exit_units: 43.5 }
-        - { point: 8, target_compute: 60867.9, target_power_w: 1.8992, enter_units: 21.7, exit_units: 21.7 }
-        - { point: 9, target_compute: 62843.7, target_power_w: 2.0488, enter_units: 24.3, exit_units: 24.3 }
-        - { point: 10, target_compute: 65479.9, target_power_w: 2.2854, enter_units: 20.5, exit_units: 20.5 }
-        - { point: 11, target_compute: 66783.3, target_power_w: 2.4901, enter_units: 6.4, exit_units: 6.4 }
-    default:
-      lead_mult: 1.0
-      lead_frac: 0.3
-      reserve_pct: 0.1
-      buckets:
-        - { point: 0, target_compute: 10407.8, target_power_w: 0.5645, enter_units: 290.3, exit_units: 290.3 }
-        - { point: 1, target_compute: 37519.0, target_power_w: 1.0519, enter_units: 337.3, exit_units: 337.3 }
-        - { point: 2, target_compute: 41911.9, target_power_w: 1.138, enter_units: 90.5, exit_units: 90.5 }
-        - { point: 3, target_compute: 45963.7, target_power_w: 1.2588, enter_units: 64.0, exit_units: 64.0 }
-        - { point: 4, target_compute: 47881.3, target_power_w: 1.3233, enter_units: 43.4, exit_units: 43.4 }
-        - { point: 5, target_compute: 50018.5, target_power_w: 1.398, enter_units: 53.6, exit_units: 53.6 }
-        - { point: 6, target_compute: 52907.8, target_power_w: 1.5073, enter_units: 94.7, exit_units: 94.7 }
-        - { point: 7, target_compute: 58730.4, target_power_w: 1.77, enter_units: 86.9, exit_units: 86.9 }
-        - { point: 8, target_compute: 60867.9, target_power_w: 1.8992, enter_units: 43.4, exit_units: 43.4 }
-        - { point: 9, target_compute: 62843.7, target_power_w: 2.0488, enter_units: 48.6, exit_units: 48.6 }
-        - { point: 10, target_compute: 65479.9, target_power_w: 2.2854, enter_units: 40.9, exit_units: 40.9 }
-        - { point: 11, target_compute: 66783.3, target_power_w: 2.4901, enter_units: 12.8, exit_units: 12.8 }
-    boost:
-      lead_mult: 2.0
-      lead_frac: 0.6
-      reserve_pct: 0.25
-      buckets:
-        - { point: 0, target_compute: 10407.8, target_power_w: 0.5645, enter_units: 580.7, exit_units: 580.7 }
-        - { point: 1, target_compute: 37519.0, target_power_w: 1.0519, enter_units: 674.7, exit_units: 674.7 }
-        - { point: 2, target_compute: 41911.9, target_power_w: 1.138, enter_units: 181.1, exit_units: 181.1 }
-        - { point: 3, target_compute: 45963.7, target_power_w: 1.2588, enter_units: 128.0, exit_units: 128.0 }
-        - { point: 4, target_compute: 47881.3, target_power_w: 1.3233, enter_units: 86.8, exit_units: 86.8 }
-        - { point: 5, target_compute: 50018.5, target_power_w: 1.398, enter_units: 107.2, exit_units: 107.2 }
-        - { point: 6, target_compute: 52907.8, target_power_w: 1.5073, enter_units: 189.5, exit_units: 189.5 }
-        - { point: 7, target_compute: 58730.4, target_power_w: 1.77, enter_units: 173.8, exit_units: 173.8 }
-        - { point: 8, target_compute: 60867.9, target_power_w: 1.8992, enter_units: 86.8, exit_units: 86.8 }
-        - { point: 9, target_compute: 62843.7, target_power_w: 2.0488, enter_units: 97.3, exit_units: 97.3 }
-        - { point: 10, target_compute: 65479.9, target_power_w: 2.2854, enter_units: 81.9, exit_units: 81.9 }
-        - { point: 11, target_compute: 66783.3, target_power_w: 2.4901, enter_units: 25.6, exit_units: 25.6 }
-  # 预判交叠带: 上升沿/下降沿共用同一组提前量（enter=exit），单位=真机容量单位
-  anticipate:
-    min_dwell_ticks: 20
-    adjacent_only: true
-    mode_mul: { reduce: 0.5, default: 1.0, boost: 2.0 }
+    little: { capacity: 453, freq_khz: [300000, 576000, 748800, 998400, 1209600, 1324800, 1516800, 1612800, 1708800], power_w: [0.3871, 0.5836, 0.6022, 0.7581, 0.7721, 0.8973, 0.8745, 0.9492, 1.0784], single_core_power_w: [0.0645, 0.0973, 0.1004, 0.1263, 0.1287, 0.1495, 0.1458, 0.1582, 0.1797] }
+    big: { capacity: 1024, freq_khz: [300000, 652800, 825600, 979200, 1132800, 1363200, 1536000, 1747200, 1843200, 1996800, 2054400, 2169600, 2208000, 2304000], power_w: [0.1774, 0.2635, 0.3640, 0.3843, 0.4488, 0.5581, 0.6621, 0.8181, 0.8208, 0.9704, 1.0453, 1.2488, 1.2070, 1.4117], single_core_power_w: [0.0887, 0.1318, 0.1820, 0.1921, 0.2244, 0.2791, 0.3311, 0.4091, 0.4104, 0.4852, 0.5226, 0.6244, 0.6035, 0.7058] }
 # <<< frontier_policy <<<

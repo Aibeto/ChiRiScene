@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# clean-cache.sh: [meta] [menu] [targets] [guard] [run]
+# clean-cache.sh: [meta] [menu] [targets] [cross] [guard] [run]
 # ChiRi 缓存清理, Arch 本地配合 build-arch.sh 使用,只动仓内白名单路径,devimpbin/ 永不触碰
 set -euo pipefail
 
@@ -52,6 +52,35 @@ show_plan() {  # $1=含/不含 output; 其余=清单行
     c_ylw "devimpbin/ 不在清单内,永不触碰"
 }
 
+# [cross] 交叉编译目标缓存（换工具链后 E0514 的定向修法）
+#
+#   `cargo --target <triple>` 会在 target/ 下建同名三元组目录。换工具链后,这些目录里的
+#   .rmeta 由旧 rustc 生成,新 rustc 复用会直接报
+#     E0514: found crate compiled by an incompatible version of rustc
+#   典型表现是 zip/anyhow/clap 等**所有**依赖一起报错,看着像代码坏了,实为缓存作废。
+#   只清这些三元组目录即可修复,host 的 target/debug 不必重建(省一次全量编译)。
+cross_targets() {
+    local d name
+    for d in target/*/; do
+        [[ -d "$d" ]] || continue
+        name="${d%/}"; name="${name##*/}"
+        case "$name" in debug|release|flycheck0) continue ;; esac
+        [[ "$name" == *-* ]] || continue   # 只认三元组形态,防误列其它子目录
+        printf 'target/%s\n' "$name"
+    done
+}
+
+# 当前 rustc 二进制的安装时刻(秒)。缓存目录早于它 = 极可能由旧工具链生成
+rustc_mtime() { stat -c %Y "$(rustc --print sysroot 2>/dev/null)/bin/rustc" 2>/dev/null || echo 0; }
+
+stale_mark() {  # $1=缓存目录
+    local rm dm
+    rm="$(rustc_mtime)"
+    [[ "$rm" -gt 0 ]] || { printf '未知'; return; }
+    dm="$(stat -c %Y "$1" 2>/dev/null || echo 0)"
+    if [[ "$dm" -lt "$rm" ]]; then printf '旧工具链'; else printf 'ok'; fi
+}
+
 # [guard] build-arch.sh 崩溃时原 module/ 寄存在 trash/module.orig.*,清 .cache 等于销毁唯一原件,命中则拒绝清理
 guard_module_backup() {
     local b
@@ -69,6 +98,7 @@ confirm_wipe() {  # $1=仓内相对路径
     [[ -e "$p" ]] || return 0
     case "$p" in  # 白名单: 只允许清单内的固定路径,杜绝变量拼接误删
         .cache|.cargo-home|.npm-cache|webui/node_modules|target|output) ;;
+        target/*-*) ;;   # 交叉编译三元组目录(见 [cross]),必须含 '-',不接受 target/debug 之类
         *) die "拒绝清危险路径: $p" ;;
     esac
     rm -rf -- "$p"
@@ -79,9 +109,38 @@ confirm_wipe() {  # $1=仓内相对路径
 main() {
     ask MODE "清哪一类?" \
         "只清构建缓存和临时文件(.cache + target)" \
-        "清所有缓存(构建 + registry + npm + webui 依赖)"
-    local -a pool
-    if [[ "$MODE" == 清所有* ]]; then pool=("${TARGETS_ALL[@]}"); else pool=("${TARGETS_BUILD[@]}"); fi
+        "清所有缓存(构建 + registry + npm + webui 依赖)" \
+        "只清交叉编译目标缓存(换工具链后修 E0514,不动 host 缓存)"
+    local -a pool=()
+    local cross_only=0
+    case "$MODE" in
+        只清交叉*) cross_only=1 ;;
+        清所有*)   pool=("${TARGETS_ALL[@]}") ;;
+        *)         pool=("${TARGETS_BUILD[@]}") ;;
+    esac
+
+    # 交叉缓存模式: 与 output/ 无关,单独走一条更短的流程
+    if (( cross_only )); then
+        local -a cross=()
+        mapfile -t cross < <(cross_targets)
+        if (( ${#cross[@]} == 0 )); then
+            c_ylw "target/ 下没有交叉编译目标缓存,无需清理"
+            exit 0
+        fi
+        echo
+        echo "== 交叉编译目标缓存 =="
+        printf '  当前工具链: %s\n' "$(rustc -V 2>/dev/null || echo '读取失败')"
+        local p
+        for p in "${cross[@]}"; do
+            printf '  %-34s %8s  %s\n' "$p/" "$(du_h "$p")" "$(stale_mark "$p")"
+        done
+        c_ylw "「旧工具链」= 该缓存早于当前 rustc 的安装时刻,复用必然报 E0514"
+        ask GO "确认清理上述交叉缓存?" "确认" "取消"
+        [[ "$GO" == 确认 ]] || { c_ylw "已取消"; exit 0; }
+        for p in "${cross[@]}"; do confirm_wipe "$p"; done
+        c_grn "== 清理完成 =="
+        return 0
+    fi
 
     ask WITH_OUTPUT "含 output/(模块目录与产物 zip)?" "不含" "含"
     local inc_out="${WITH_OUTPUT:0:1}"   # 取首字: 含 / 不

@@ -14,15 +14,24 @@ bash scripts/build-arch/clean-cache.sh    # 清理缓存(交互选择范围)
 
 ### clean-cache.sh
 
-两档范围,产物另算,只删仓库内的白名单路径:
+三档范围,产物另算,只删仓库内的白名单路径:
 
 | 范围 | 内容 |
 |---|---|
 | 只清构建缓存 | `.cache/`(临时文件+预构建)、`target/` |
 | 清所有缓存 | 上一行 + `.cargo-home/`、`.npm-cache/`、`webui/node_modules/` |
+| 只清交叉编译缓存 | `target/<三元组>/`(如 `target/aarch64-linux-android/`),保留 host 的 `target/debug`、`target/release`、`target/flycheck0` |
 | 可选 | `output/`(模块目录与产物 zip) |
 
-`devimpbin/` 永不触碰,路径走白名单 case。如果 `.cache/.../trash/module.orig.*` 还在(说明上次构建异常中断,`module/` 可能是剥过注释的副本),脚本拒绝清理并给出恢复命令。清掉 `.cargo-home`/`.npm-cache`/`webui/node_modules` 后依赖要重下,所以只在「清所有缓存」里出现。
+**交叉缓存档专治 `E0514`**:换过 rustc 后(本机同时装着 stable/nightly/旧版),`target/<三元组>/` 里的 `.rmeta` 由旧编译器生成,新编译器复用会报
+
+```
+E0514: found crate compiled by an incompatible version of rustc
+```
+
+典型表现是 `zip`/`anyhow`/`clap` 等**所有**依赖一起报错,看着像代码坏了,实际只是缓存作废。这一档只删三元组目录、host 缓存不动,省掉一次全量重编;脚本按「缓存目录 mtime 早于当前 rustc 安装时刻」标出「旧工具链」,并打印当前 `rustc -V` 便于核对。
+
+`devimpbin/` 永不触碰,路径走白名单 case(`target/*-*` 必须含 `-`,所以 `target/debug` 之类进不来)。如果 `.cache/.../trash/module.orig.*` 还在(说明上次构建异常中断,`module/` 可能是剥过注释的副本),脚本拒绝清理并给出恢复命令。清掉 `.cargo-home`/`.npm-cache`/`webui/node_modules` 后依赖要重下,所以只在「清所有缓存」里出现。
 
 ## 依赖怎么补
 

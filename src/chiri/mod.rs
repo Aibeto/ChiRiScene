@@ -179,11 +179,13 @@ pub mod diag_cost;
 mod diag_slice;
 pub mod diag_worker;
 pub mod energy_cost;
+pub mod energy_model;
 mod fas_focus;
 pub mod fas_manager;
 pub mod fast;
 pub mod governor;
 pub mod gpu;
+pub mod placement;
 pub mod touch_detect;
 pub mod tuned;
 

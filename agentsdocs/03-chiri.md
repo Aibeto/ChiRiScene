@@ -111,127 +111,78 @@ WebUI 侧：
 
 - **CLG 高位升频门槛 `[high_zone]`（2026-10-13 新增）**：高位区（perf ≥ `high_zone_gate`）升频除 util×headroom 外还需「≥`high_zone_count` 个核且每核 util ≥`high_zone_util`」共同确认，防单核毛刺把上限推上去（修前高位只受 util×headroom 驱动、到达路径太松）。四参数（`CpuLoadGovernorConfig`，serde default）：`high_zone_gate` 缺省 0.85（perf ≥ 该值进入高位区）、`high_zone_count` 缺省 0（**0 = 关闭**）、`high_zone_util` 缺省 0.90（单核达标占用）、`high_zone_hold_ticks` 缺省 20（被连续阻塞满 N tick 强制放行一次，防错配永久卡死）；normalize 把 gate/util 钳 [0,1]、count > 0 才生效。`ClusterState` 增 `high_zone_wait` + `high_zone_hits()`（本簇 util ≥ 阈值的核数）；`on_load_update` 在 target 计算后插门槛块：old_perf ≥ gate 且 candidate > old_perf 时查 hits —— 达标即清 wait 放行；未达标则 `high_zone_wait += 1`，未到 `hold_ticks` 就**阻塞本 tick、冻结状态早退**（日志 `dev_tgt_perf = old_perf`、`decision = "hz_hold"`，不进 up/down 分支、不动 `up_wait`/`down_wait`），到 `hold_ticks` 强制放行一次并清零重新计数；**降频方向零影响**。门槛只压「决策意图」：不回写 `current_perf`、不碰写频 / 热钳 / 触摸 / CLG-PF 路径，故与「随时可到最高频」硬口径相容（重放自检断言 2000 tick 内 perf==1.0、freq==hw_max，阻塞下靠 hold 兜底收敛）。**回退 = 删三行 `high_zone_*`（`count` 归 0 即关闭）**。8550 reduce/default/boost 三段全部启用 `gate 0.85 / count 2 / util 0.90`（big 4 核取 2 = 50%；little 3 核取 2 = 67%，宁可略紧防 A510 贴顶；boost `perf_init 0.60` 起步即过 gate）。工具链：改 `on_load_update` 决策函数须同步更新 replay 三件套（`scripts/tests/clg_replay.rs` 模板 `ClusterState` + replay 版 `high_zone_hits` + `scripts/devimp/replay_clg.py` fields 提取），否则 scratch 编译失败。
 
-### 稳态下探（T11）与帕累托前沿落点（CLG-PF）
+### 稳态下探（T11）与相对能效模型（EEM）
 
 - **稳态下探（T11，2026-09-28 新增）**：`steady_decay_*`（CLG 与特调各一份，缺省 `enabled=true`）。语义 = 对「写侧性能偏移」的**限幅积分控制**，被控量是 util：目标水位 `T = up_threshold × steady_decay_target_ratio`（缺省 0.90），util 高于 `T+band` 就回收（步长 ×2 防过冲）、低于 `T−band` 就加深（步长 `steady_decay_step`，缺省 0.01）、死区内保持；`steady_streak` 需连续 `steady_decay_stable_ticks`（缺省 12，≈2s）稳定才建立，**负载上行（Δutil > band）/ `util ≥ up_threshold` / 极低负载立即清零**。偏移只在 `flush()` 里从 `eff_perf` 减去（再 `.max(perf_floor)`），**绝不回写 `current_perf`**——否则会与升频分支的 `target_perf > old_perf` 比较打架产生振荡；自限性来自「压频 → 真实 util 被 sched_switch 记账反馈抬高 → 触阈值即清零」。为什么不做「稳态就无脑累加」：那会形成 2~4s 的频率锯齿（正是 R6 要防的震荡）。配套特调 `up_confirm_ticks`（缺省 2）= 严格升频审批，目标比当前高时需连续 N tick 才抬升（CLG 侧本就有 `up_rate_limit_ticks`）。全部参数可在 feature.yaml / tuned_profiles.yaml 覆盖。**8550 三模式取点（2026-09-28）**：`reduce` `steady_decay_target_ratio: 0.80`（T = 0.90×0.80 = 0.72，省电档取点更左）、`default` `0.90`（T = 0.79）、`boost` 直接 `steady_decay_enabled: false`——boost 的 `perf_ceil` 拆前拆后都是 1.0，关闭下探后其行为与天花板拆除前逐位一致，且避免 `up_threshold: 0.55` 导致 T = 0.50 把常态负载也下探掉（削响应）。
 
-- **帕累托前沿落点（CLG-PF，2026-09-28 新增，8550 / zumapro）**：结果向量表在 `module/config/sm8550/soc.yaml` 的 `frontier_policy` 受控生成块内（`scripts/frontier_policy.py` 离线产出，块外勿手改，改表必须重跑脚本并过复算锚点）。Rust 侧 `SocConfig.frontier_policy` → `common::soc_frontier_policy()`（段缺失或 `enabled != true` → None）。**其它 SoC 无该段、天然走原比例路径**（口径：具备逐档能效模型与实测 capacity 的机型才启用——2026-10-20 批量适配后为 37 机，仅 `sm8475` / `sm8650` 无段，见 `02-convention.md`）。**桶表单调性是启用前提**：`FrontierTable::from_policy()` 摊平后断言 `lo_units` 非严格非降，坏表打 `frontier-buckets-not-monotone` 并**整表拒用**（回退比例路径）——因为 `bucket_for_demand()` 是二分查表，非单调数组的结果未定义（2026-10-20 `sm8350` 事故：生成器按两套不同源的算力排序，产出过 `lo_units` 乱序的表）。落点不变式：`target_freq = min(ratio_freq, pf_freq)`，**只允许下调、绝不上抬**，且仅在稳态（`steady_streak ≥ steady_decay_stable_ticks`）时查表；缺容量 / 桶越界 / 该簇无目标一律回退比例路径并打一次性 warn。需求口径 = `Σ(各核 util × 该核 capacity)`（真机 `cpu_capacity` 优先，缺失按 `soc_capacity_for_group` 回退，再缺整段回退）；桶边界与三簇目标频点都是**真机容量单位 / kHz**，查到的 kHz 仍须 floor 对齐到 `available_freqs`。PF 生效时日志前缀打 `CLG-PF`，否则打 `CLG`。**查表口径（2026-09-28）**：桶表在 `common::frontier_table()`（OnceLock）摊平成二分数组（桶边界 + 逐桶三簇目标 kHz），进程内只建一次；逐桶落点（floor 对齐到各簇真实频率表）由 `common::frontier_aligned()` 按「核心组 + 频率表」进程级缓存——worker 首次接管取表，**之后每 tick 只做「二分找桶 + 取数组」，worker 重建（息屏 doze / 模式热切换）复用缓存不重算**（对齐依赖真机 `scaling_available_frequencies`，故不是纯编译期表）。`clg-pf-enabled` 加进程级一次性门，只在首次接管打一条，不随每次重建刷。对外接触点：daemon 启动写 `pf.chr`（`1` = 启用，当前 8550 与 zumapro），WebUI 据此把 CLG 家族名显示为 `CLG-PF`。**已知限制**：`model_fingerprint` 只作日志与离线对账标识，**运行期不做硬校验**（代码侧无期望值可比，切勿把它当成运行期断言或一致性门槛）；`modes` / `anticipate`（预判交叠带）已解析但**运行期未消费**。
+### 相对能效模型（EEM）：调频封顶 + 线程迁移（2026-10-22 重构，取代 CLG-PF 与 FDP）
 
-- **CLG-PF 生成器复算锚点（2026-09-28，扩表后重跑全过）**：`scripts/frontier_policy.py` 复算 7 项锚点全过，关键三项数值为 **46 点前沿**、**起手 3652.8 Mdmips/W**、**prime 冲顶段 599.946**——改表（或升级 `mdocs/sm8550/sm8550-freq-power.md` §3）后必须重跑脚本并逐项核对这 7 项锚点（可用 `--check` 逐字节对账），**两次运行必须逐字节一致**（确定性产出，块外逐字保留、块内禁手改）。生成器扩展内容：每个需求桶带 `lo_units/hi_units`（真机容量单位）与 `little_khz/big_khz/prime_khz`；`model_fingerprint` 移入块内；新增 `--disable`；`per_cluster.<簇>` 另带**逐档簇功耗 `power_w`**（与 `freq_khz` 同下标对齐，生成时断言档位数一致）供 FDP 成本模型使用。表的**唯一权威链是「文档 §3 → 生成器 → soc.yaml → 运行期」，严禁手抄进 Rust**。
+> **一句话**：绝对能效曲线不再参与任何决策。单核功耗与单核算力各自归一成**相对向量**，
+> 之后全部比较都在无量纲空间里做：**同算力下取更低功耗**，甜点（1 单位功耗换 1 单位算力）
+> 是「加核 vs 升频」的判据，线程迁移一律**先扩后缩**。
 
-- **稳态下探 / CLG-PF 的两条不变式（2026-09-28 审查后补）**：① CLG-PF 在**触摸窗口内与 decay 同口径关闭**（触摸时 `pf_target = None`）——否则 `min(ratio_freq, pf_freq)` 会把刚抬到触摸 floor 的落点拉回低频桶，抵消触摸升频；② 某档设 `steady_decay_enabled: false`（本仓 = 8550/8475/8998/根兜底的 `boost`，判据：boost 对功耗宽松，`up_threshold` 0.55~0.65 时 T 会落进常态负载区、削掉响应优势）会同时把 `steady_streak` 钉在 0，**该档的 CLG-PF 一并失效**——两者共用 `steady_streak` 作稳态判据，属已知耦合。
+- **为什么推翻旧 PF（根因，勿再犯）**：旧 `demand_buckets` 桶表的**两个轴都假设整簇满载**——
+  功耗轴 `n×active − (n−1)×净idle`、算力轴 `n × cap × f/f_max`。但调度器搬的是**线程**：
+  一个线程跑在 6 核簇上是「1 核忙、5 核空闲」，簇频照样拉满。sm8750 big 顶档据此高估 **5.85×**
+  （模型 6×3.819=22.91 W vs 实际 0.095+3.819=3.91 W），且首桶 `lo_units`=979 高于单线程满打满算的
+  762 → 单线程需求**落在首桶之下**、`bucket_for_demand` 返回 None → 前沿对单线程**从不生效**。
+  两轴同比例高估使边际能效恰好不变，所以这个 bug 长期无症状。
+- **数据层**：`soc.yaml` 的 `frontier_policy.per_cluster.<簇>` 只保留 `capacity` / `freq_khz` /
+  `power_w`（簇级，溯源用）/ **`single_core_power_w`**（单核动态功耗，运行期唯一消费项）。
+  `demand_buckets` / `modes` / `anticipate` / `frontier` / `anchors` **已全部移除**（生成器同步）。
+  `single_core_power_w` 由 `scripts/frontier_policy.py` 用 `power_w ÷ 簇核数` 生成——**口径显式分列**
+  就是为了根绝「单核/整簇混用」（历史事故源）。缺该字段时 `energy_model` 回退到 `power_w ÷ n`。
+- **两套向量，用途严格分开**（`src/chiri/energy_model.rs`）：
+  - `cap_rel/pow_rel`：**簇内**归一（首档扣 0、末档拉到 1），**只用于求甜点**。纯形状量，任何正常数缩放都不改结论。
+  - `cap_glob/pow_glob`：**跨簇**统一标定（功耗 ÷ 全 SoC 最大单核**绝对**功耗、算力 ÷ 最大单核 capacity），
+    **用于跨簇比较**。⚠ **绝不能扣首档基线**：首档功耗就是该簇静态开销，扣掉等于让「开一颗核」免费，
+    prime 会因动态增量小而永远胜出（回归 `cross_cluster_keeps_static_term` 锁死这条）。
+- **甜点判据**：`Δcap_rel/Δpow_rel` 最后一次 ≥ 1.0 的档。**必须用严格 `dp <= 0` 判零增量，不能用
+  `f32::EPSILON` 这类绝对阈值**——相对向量整体缩放后增量会同比例变小，绝对阈值会把「不免费」误判成
+  「免费」、甜点随缩放漂移（回归 `sweet_point_is_scale_invariant` 已证）。实测甜点：sm8750 big 1786/3533 MHz、
+  prime 1958/4320 MHz；sm8550 little 1018/2016、big 1402/2803、prime 1709/3187。
+- **成本口径按忙核数**：`cost(gear,k) = pow[gear] × k`、`supply(gear,k) = cap[gear] × k`，
+  `k` = 真正承接工作的核数。这是相对旧 PF 的**根本修正**（不再假设整簇满载）。
+- **调频侧（CLG，`eem_target_freq`）**——三分支，仍守 `target = min(ratio_freq, eem)` 只降不升：
+  1. **甜点档就够用** → 封顶在甜点（零损失：需求本就能满足，再升频纯烧电）；
+  2. **本簇占用达 `ceil(n/2)` 核当量** → 允许越过甜点（多核共享同一档位，升频收益覆盖全簇；
+     此时迁移也无处可去）。6 核 big 门槛 3.0（单线程最多 1.0 → 单线程永不单独触发）、
+     2 核 prime 门槛 1.0（单线程跑满即触发，符合物理：频率域共享、别无他法）；
+  3. **别处更便宜** → 仍封顶甜点，把缺口留给 affinity 侧迁移。
+  **抗饥饿**：封顶且需求确实超出该档供给时累计 `eem_press_streak`，连续超
+  `EEM_CAP_RELEASE_TICKS`(10 tick=10s) 即放弃封顶回比例路径——迁移动不了时不能长期锁性能。
+- **迁移侧（`src/chiri/placement.rs` + `affinity::eem_place_round`）**——**不分前后台**：
+  所有被采样线程（`util_pct ≥ eem_min_util_pct`，缺省 8%）都参与，`is_key` 除外（关键线程由 boost 独占）。
+  * **只越过甜点才迁**：甜点以内频率维度还没用尽，迁移只会打断缓存局部性。
+  * **目的地必须接得住**：`dst_load + demand/dst_cap ≤ 1.0` 才迁——只看成本不看目的地负载，
+    会把所有线程堆到「模型最便宜」的那颗核上，结果该核过载顶频、反而更费电。
+  * **「拉核分摊」的正确层级**：**不在线程放置侧做**。单个线程同时只能占一颗核，加宽它的掩码
+    只是让内核在核间弹跳、算力不会变多（曾按「加宽窗口 + k 核重算档位」实现，会把所需频率
+    凭空砍半，2026-10-22 审查移除）。分摊由两处实现：① CLG 的 `supply(gear,k)=cap[gear]×k`
+    随本簇忙核数增长，同一需求摊到更多核上就落在更低档；② `best_window` 把**不同线程**
+    摊到不同核。数学依据：sm8750 big 上 d=0.7 时 k=3(1152MHz) 比 k=1(3533MHz) 省 **68%**。
+  * **先扩后缩**（`step_range`）：`0-2 → 0-3 → 1-3`。并集掩码先行，线程全程有核可跑，
+    绝不出现「旧核已摘、新核未到」；上行与下行共用同一协议。方向日志口径 = **两端同向移动**才算
+    up/down，单端移动（纯扩张/收缩）= hold。
+  * **三重防震荡**：甜点阈值 + 相对滞回 `SWITCH_HYSTERESIS`(0.15) + 驻留冷却 `MIN_DWELL`(2s，
+    反跳回 ×4)。每轮迁移条数上限 `EEM_MAX_MOVES_PER_ROUND`(4)——同轮负载快照不会因迁移而更新，
+    无上限会让大批线程同时判「同一簇最便宜」而齐涌（FDP 的 `max_inserts` 教训）。
+  * **cpuset 前置**：纯后台线程的组通常只含小核，掩码写到 big/prime 会被内核**静默裁剪**
+    （写返回 0 但掩码没生效）。故跨到更高能级簇时先 `move_group → top-app`，升组失败即本轮放弃。
+  * **写后读回校验**：`set_tid_affinity` 成功后回读掩码，发现越界核被裁剪即记 `clipped=true`
+    且**不更新记账、不发 INFO 迁移日志**——不校验就会把「内核没答应」记成成功迁移。
+- **日志两级**（用户口径）：INFO `affinity-migrate` 只写**线程 + 方向 + 核区间**；
+  devimp `@A act=place` 帧写全量（`dst=<lo>-<hi> value=gain=..,settled=..,reason=..,clipped=..`
+  `reason` 槽写方向 `up/down/hold`）。CLG 侧 tick 日志键 `clg-eem-tick-log`（带 `eem_khz/sweet_khz/cores`）。
+- **与 FDP 的关系**：`eem_placement` 缺省 **true**（`apply` 里 `&& energy_model::available()` 自动兜底，
+  无模型机型静默回退），EEM 开启时 **FDP 自动让位**（两套成本模型口径不同，同轮同时决策会互相覆盖）。
+  `fdp_*` 配置保留但不再生效，仅作回退路径留痕。sm8550 / zumapro / sm8750 已显式 `eem_placement: true`。
+- **验证能力**：`YUMI_SKIP_EBPF=1 cargo check` 可在开发机做**全仓类型检查**（`screen_detect.rs` 的
+  `__system_property_get` 已有 `#[cfg(not(target_os="android"))]` 桩）。离线回归
+  `scripts/tests/energy_model_regression.rs`（29 项）覆盖甜点判据、缩放不变性、静态项口径、
+  先扩后缩、方向判定、选核、k 核分摊数学关系。
 
-### Thermal 热保护（ChiRi 专属）
-
-- chiri `Config` 顶层 `Thermal` 段（`ThermalGuardConfig`，`from_file` 时 normalize）。电池温度为主参考、CPU 温度仅极端参考：电池温度节点 `/sys/class/power_supply/battery/temp` 的**原始刻度单位因内核/厂商而异，禁止硬编码除数**——`utils::detect_battery_temp_scale()` 启动时预识别一次，按「唯一落进 5~60°C 合理窗口」的解释定档（0.1°C / 毫摄氏度 / 直读 °C，多解时 tenths 优先），结果经 `OnceLock` 缓存，CLG 热保护（`utils::read_battery_temp_celsius`）与 FAS 温度护栏（`utils::battery_temp_divisor`，FasManager 每次刷新现取、勿再固化）共用同一结论。历史事故：CLG 曾硬编码 /1000 而 FAS 硬编码 /10 两处口径不一致，8550 实测恒读 0.4°C（真实约 20~50°C），电池软/硬限（41/45°C）永不触发、主参考彻底失效；探测不出（节点缺失/读数未就绪）时退化为仅 CPU 温度并打 `clg-thermal-no-battery` / `battery-temp-scale-unknown`。该节点反映整机持续发热且不随游戏瞬时负载抖动，阈值 41/45°C；CPU 温度阈值 90/95°C——soc_max 等合成温区在大型游戏高负载下常态 85°C+，阈值过低（旧值 75/85）会让 8475 实测 84% 时间处于压制、比官调更卡，软件压制只在接近内核 ~95°C 温控起控点时参与。
-
-- 温度输入必须滤波（`mod.rs::TempFilter`，1s snap 块内对原始读数应用）：物理范围门（电池 -10..70 / CPU 5..110）+ 毛刺丢弃（相对上次输出跳变 >10/12°C 视为 soc_max 合成温区切换热点，实测 2s 内 91.5→57.2°C）+ 3 样本中值 + 斜率限制（电池 ±1 / CPU ±3°C/样本）。不滤波会让热保护 cap 以 ~8s 周期在 40/70/100 间 bang-bang 振荡，每次跳变把 current_perf 砸回低位再缓慢爬升，高负载游戏周期性掉帧。
-
-- 压制解除带斜坡（`THERMAL_UNPRESS_STEP=0.15`）：压制加深立即生效，解除方向每采样周期（2s）最多恢复 0.15，8s 级渐进；立即全量解除会让温度马上反弹再触发深压，重现振荡。
-
-- **恒钳开关 `clamp_heavy`（2026-09-26 契约）**：`Thermal.clamp_heavy: bool`（serde 默认 `true`），`Config::load` 同步到 CLG（启动与热重载均生效）；`true` = cap 窗口内所有簇恒钳写频目标、下条 `free_above` 豁免档被忽略，`false` = 精确回退旧 `free_above` 豁免行为。开关只改钳制判据，仍**只钳写频、不回写 `current_perf`**。8550 feature.yaml 已置 `true`；行为级证据为 `clamp_apply` 跃迁事件（bind/unbind 状态跃迁时、`diag_active()` 门控内）。
-- 压制带豁免档 `free_above`（8550 0.95 / 8475、8998 0.80；normalize 见下，仅 `clamp_heavy=false` 时生效）：热压制只落在 `(soft_perf_cap, free_above)` 区间，Worker flush 中 `current_perf < free_above` 才 `min(cap)`，且**只钳写频、不回写 `current_perf`**（回写会让状态卡死在 cap：升频步长够不到豁免档时永远被压回，「持续高负载涨过豁免档」就不成立）。decision 状态照常向 target 平滑，持续高负载可平滑涨过豁免档拿全速，任何温度下都能到达硬件最高频，过热兜底交给系统/内核温控；但压制意图保留：中低负载区间仍被压在 cap 以下，减少发热积累。**豁免档必须严格大于 soft_perf_cap**（相等 = 压制带为空、软限档完全空转），normalize 对「过低或相等」统一抬到 `soft_perf_cap + 0.10`；也不要贴 1.0，否则持续高负载涨不过豁免档。
-- **热态 tuned 响应（2026-09-27 契约，P0-3）**：`Thermal.tuned_resp_enabled`（默认 true）+ `tuned_thermal_floor`（默认 0.55）；cap 除 CLG 外还经 `tuned::set_thermal_cap()` 下发到 tuned 执行器（进程级 `AtomicU32` 镜像，与 CLG 同口径、同点写入），`on_load_update` 每 tick 读一次，热重载经 `Config::load` 的 `set_thermal_response()` 同步开关与下限。tuned 侧有效上限 = `min(档位天花板, max(cap, floor))`：`cap >= floor` 时退化为 `min(天花板, cap)`，无压制（cap=1.0）时结果就是档位天花板本身、行为零变化。**只看 cap 是否低于该簇天花板**——软限 0.85 对播放态是 no-op（little 0.55 / big 0.75 / prime 0.50 全部 <= 0.85），真正咬住的是中档 0.60 与硬档；用 `max(cap, floor)` 而非直接套 cap，是因为硬档 0.40 直接砍到播放态有掉帧风险，而播放态帧信号只服务**离线**判读（见 FAS 帧源门控条）。验证看 tuned tick 行的 `cur_max` 与 status.csv 的 `batt_power_w`（按 package 均值）。
-
-- scheduler_ipc 启动时探测一次传感器（CPU `find_cpu_temp_path()` 缺失打点 `clg-thermal-no-sensor`），事件循环内每 2s（`THERMAL_CHECK_INTERVAL`）采样双温度，但**限幅判定只取电池温度**（2026-10-04 定案：原实现两路各自判档后取较小值，现只构造电池阶梯参与四级判定，`mod.rs::eval_thermal_cap` + `ThermalLadder` 的入参恒为电池温度），CPU 温度只落到 snap / status.csv / `thermal_change` 事件文本；`feature.yaml` 的 `cpu_*_temp_c` 随之不再影响 cap，`config.rs` 的 `[hyst_invariant]` 也只对电池阶梯取 room：>= 硬限压 hard_cap（默认 0.40）；>= 中限压 mid_cap（默认 0.60）；>= 软限压 soft_cap（默认 0.70，8550 为 0.85）；回落到各自回滞线以下才解除（软档 = 软限 − `hysteresis_c`）。**每级的上/下两条边都带回滞**（2026-09-27 修）：退出该级必须降到「该级阈值 − 该级回滞」以下，判据里的 `current <= 本级 cap` 表示「上周期仍压在本级或更深」，故退档只能逐级回退、不会跨级跳；**中/硬档各有独立回滞**（`hysteresis_mid_c` / `hysteresis_hard_c`，字段缺省均与 `hysteresis_c` 同值 3；机型实值按「中/硬」分别为 8550 = 1.5/2、8475 = 2/2、8998 = 2/2）——中档原与软档共用 3，解除点 43−3=40°C **低于软档跳闸点 41°C**，中档一咬住即跳过软档、必须一路冷过 40°C 才恢复（2026-09-28 实测：cap=60 共 5152 s，其中 2556 s 落在 batt 40~41°C 桶，另有 2216 s 是「温度从 43 降到 40、cap 一动不动」；**2026-10-01 复核已生效**：改 `hysteresis_mid_c: 1.5` 后 cap=60 温度带 min 41℃、驻留 1251 s，解除后直接交软档 0.85、不再跨档跳过）；normalize 依不变量「本级解除点不得低于下一档跳闸点」强制 `中限 − hysteresis_mid_c >= 软限`、`硬限 − hysteresis_hard_c >= 中限`（越界钳到上限 + warn）。硬档改前→软档这条边**无回滞**，batt 一降到 44.9°C 就从 0.40 跳回 0.85，2026-09-27 批次2 在 75 分钟内 5 次进硬档、两次 60s 内重入（最近相隔 2.0 s）。四级阈值/cap 的单调性（`soft < mid < hard`、`hard_cap <= mid_cap <= soft_cap`）由 `ThermalGuardConfig::normalize` 越界**钳到最近合法值 + warn**（`thermal-config-clamped`，不 panic）。硬限兜底判据是 `hard < soft + 1.0`（**不是** `hard <= soft`）：mid 的钳制区间为 `(soft+0.5, hard-0.5)`，硬限只比软限高不到 1°C 时（如 batt 44.9/45.0）旧判据不兜底，`f32::clamp` 因 `min > max` **panic**，`Config::load` 崩溃经 watchdog 变重启循环（2026-09-27 修；`thermal_clamp_warn` 另加 `hi < lo` 时夹成 `hi = lo` 的兜底）。cap 或豁免档变化时经 `cpu_governor.set_thermal_limits(cap, free_above)`（f32 bit pattern 存 `AtomicU32`，启动即同步一次豁免档）下发，debug 打点 `clg-thermal-cap`（含电池/CPU 温度，缺失显示 "-"）；同一份 cap 经 `tuned::set_thermal_cap(cap)` 另发一份给 tuned 执行器（见下条）。
-
-- 仅作用于 CLG 接管的模式，fast/akmode 不受影响。
-
-- **cap 是 perf 索引、不是硬件频率百分比（2026-10-11 口径）**：热档 cap 经 `find_floor_freq(cl, cap)` **向下取档**落到实际 kHz，所以 cap=0.85 的实际写频天花板是 little 1670400（hw 的 83.0%）/ big 2457600（87.7%）/ prime 2726400（85.6%），cap=0.60 → 1228800/1785600/2092800，cap=0.40 → 902400/1401600/1593600——**三簇各不相同，不能按 cap×hw_max 换算**，离线脚本口径 `floor_freq(cl,perf)=lo+perf·(hi−lo)` 向下取档。由此派生的铁律：**「进入某档 ≠ 已被压制」**——cap=85 窗口内真正被钉在天花板的时间只占 6.6%(big)/13.2%(little)/8.3%(prime)，其余约九成的秒 CLG 本来就只想要 85% 以下（`freq/max` 均值仅 0.446/0.503/0.298）；全包 `cur_freq > 天花板` 恒为 0.0%。判断「有没有被压」必须走写频/读回/实际频率三层，不能只看档位。
-
-- **热模型与触档延后折算（2026-10-11 实测，离线）**：`dT/dt [℃/min] = 0.0600 · P_batt [W] − 0.0517`（P0 = 3.29W，r² = 0.20，n = 504 窗口，各批斜率 0.024–0.094），即**整机平均功耗每降 1W、升温速率降 0.060℃/min ≈ 3.6℃/h**；实测 37→41℃ 斜坡 27.7min @5.050W（0.1444℃/min）与 28.1min @4.551W（0.1425℃/min）。折算式 `Δt = (41−37)/(r + b·ΔP) − 27.7 min`，b = 0.0600：**整机 −0.5W ⇒ 触档延后 +7.4min（区间 +2.6~+13.6min）**，−0.2W ⇒ +2.6min，−0.3W ⇒ +4.1min（−1.0W 的 +20min 已超出线性区，不采信）。CPU 侧收益换算整机用 `ΔP_batt ≈ ΔP_cpu × 3.3~3.7`（放电期 CPU 动态功耗只占整机 27–30%，充电期仅 2–5% ⇒ 充电期不可折算，发热主体是充电流通路 7.3–25.2W）。**两种收益形态不许混谈**：「延后」（确定性，每段起点后移）与「整段避免」（需要 ΔP ≥ −1W 级别或更长低功耗窗口，**不要按避免次数承诺收益**）。不确定性须随结论给出：b 的批间散布 4×、r² 仅 0.20（结论只到「量级/方向可信、绝对值 ±3 倍」）、`soc.yaml` 的 `power_w` 只含动态项（保护代价 5.2kJ ≈ 1.43Wh/39.8h 是下界）。
-
-- **75/55 不是独立档位，是解除方向的斜坡台阶（2026-10-11 实测）**：解除方向由 `THERMAL_UNPRESS_STEP=0.15` 每 2s 热块抬一次（`mod.rs:3537-3541`），0.60 →(2s) 0.75 →(2s) 0.85、0.40 →(2s) 0.55 →(2s) 0.60，故 75/55 是「解除限速」的**确定性中间台阶**而非抖动/震荡——实测 6 个批次各恰好 1 个 2s 的 75 档、仅 1 批出现 55 档 3s，7 次 75→85 间隔全为 +2.0s、55→60 为 +2.1s。**把它当档位统计会误判为「系统性抖动」**；且 0.85 → 1.0 只需一步（+0.15 正好到 1.0），所以软档解除不产生中间台阶（这就是只有 75/55、没有 70/90/95 的原因）。四级跳闸/解除实测（8550，31 个 `thermal_change` 事件）：跳闸 100→85 @41.0℃、85→60 @43.0℃、60→40 @45.0℃；解除 60→75 @41.4℃（阈值 43−1.5=41.5）、40→55 @42.9℃（45−2=43）、85→100 @37.8/37.9℃（41−3=38）——**解除点全部严格低于各自理论阈值，从不跨级跳改**。档位占比须**按充放分离**：全包非 100 档 8.62%，但放电期仅 4.03%、充电期高达 48.95%⇒ 「热压制是背景」只对充电成立，把 8.62% 当「被热压的时间」会高估放电场景 2 倍以上。**回退/调参锚点**：`clamp_heavy` 必须保持 true（实测被钳样本 61–70% 落在 (0.95,1.0] 旧豁免带内，关掉即损失约 2/3 实效）；`hysteresis_c` 保持 3 不收紧（38–40℃ 滞后带内 policy0 钉死率 12.6%，高于 40–41 的 8.6% 与 41–43 的 9.4%，收紧无收益还会增加重触发）；`batt_mid_temp_c` 不可单独上调（mid 43→44 会让 hard−mid 缩到 1.0 < `hysteresis_hard_c`=2，normalize 静默把硬档回滞降到 1.0、0.40 段抖动回归，要改必须同时把 `batt_hard_temp_c` 抬到 46）；`free_above` 在 `clamp_heavy=true` 下是**死配置**、与 cap 档并列极易误读为「95% 以上不钳」。
-
-### 触摸升频（事件驱动，ChiRi 专属）
-
-- **2026-09-20 起恢复启用**（2026-09-18 曾按用户要求临时停用）：`cpu_load_governor.rs` 的 `TOUCH_BOOST_SUSPENDED = false`，`on_touch()` 正常工作（升频窗口 + Worker 唤醒 + 打点），各模式参数由 `feature.yaml` 的 `touch_boost_enabled/ms/tiers` 决定。`apply_disable_touch_boost`（屏蔽内核 cpu_boost）**照常生效**，所以触摸时既有 ChiRi 升频、内核升频仍被屏蔽。触摸检测线程照常运行（poll 开销可忽略，daemon.log 的 debug `touch-event-received` 仍会打，便于确认事件源活着）。长期关闭应删配置/删链路，不要留常量。8550 2026-09-26 `touch_boost_tiers: 3→2`（floor 0.50→0.45 ≈1.4GHz）【待观察定稿：滑动/打字流畅度实测，不行回 3 档；2026-09-28 口径不做 A/B】；背景量化：touch=1 时 policy3 均 1.41GHz vs 无触摸 0.94GHz、触摸占 big tick 22%（QQ 45%）；触摸地板只在 Worker flush clamp 生效、不反映在 tgt 列（勿按 tgt 列全量推断地板命中）。
-
-- `touch_detect.rs` 线程读 `/dev/input/event*`（`libc::poll` + 解析 64 位 `input_event` 24 字节，`BTN_TOUCH==1` 或 `ABS_MT_TRACKING_ID>=0` 判定触摸按下），触摸按下时经独立事件通道 `mpsc::sync_channel::<()>` 发送事件（非阻塞 `try_send`）。
-
-- scheduler_ipc 每次醒来先 drain `touch_rx`，收到事件即 `on_touch()` 更新共享 `AtomicTouchState`（f32 性能比 floor 以 bit pattern 存入 `AtomicU32`，窗口时长与写入时刻毫秒数各存一个 `AtomicU32`），并广播空负载包唤醒全部 Worker（经 Worker 负载通道 `try_send(Vec::new())`，recv_timeout 即时返回、Worker 只 flush 不决策）。大核 Worker 在本次 flush 中读取共享状态、把性能上限抬到 `touch_boost_floor`，不等待下一个 160ms 负载决策 tick（触摸延迟 ≈ `EVENT_POLL_MS=100ms` + 唤醒 flush，不含 Worker tick 间隔）。
-
-- 配置项 `touch_boost_enabled/ms/tiers` 每模式独立，`enabled=false` 即关闭（normalize 会把 ms 置 0）。
-
-- 屏蔽系统触摸升频：`chiri/scheduler.rs::apply_disable_touch_boost` 写 0 到 `/sys/module/cpu_boost/parameters/` 的 `input_boost_enabled / sched_boost_on_input / input_boost_ms / boost_ms`（按存在性尝试，无节点静默跳过）；`start_scheduler_thread` 启动时即调用一次 `apply_system_tweaks()`。**DOWN 停摆期间这些调整一并不下、且要把已写的还原回系统**：它们的下发与还原统一由 `CpuScheduler` 负责——首次写节点前记原值快照（`[snapshot]`，重复下发不覆盖；IO `queue/scheduler` 当前值带方括号要剥壳），DOWN 进入时 `restore_system_tweaks()` 逐个写回、退出时补发；判定收口在 `apply_system_tweaks` 内部并用静态互斥闸 `tweaks_gate()` 与还原互斥（详见 `02-convention.md` 的 DOWN 小节）。新增一次性系统调整必须走 `snapshot_write` / `snapshot_nodes`，否则它在停摆期无从还原。
-
-### 息屏省电与屏幕状态
-
-- scenemode（息屏超时省电，2026-09 曾短暂暂停后恢复）：chiri `Config` 的 `scenemode`（Mode 段，默认 `enabled:true`、`perf_ceil` 极低封顶、`up_threshold=1.0` 不主动升频）与顶层 `scene_mode_delay_secs`（默认 3000s = 50 分钟，五机型 `module/config/{8475,8550,8650,8998,zumapro}/feature.yaml` 现值均为 3000，`src/chiri/config.rs::default_scene_mode_delay_secs()` 缺省同为 3000、注释写「50 分钟」；运行期取 `config.scene_mode_delay_secs.max(60)` 兜底）。`mod.rs` 息屏时记录 `screen_off_at`，`SystemLoadUpdate` 分支在息屏超时且**非特调、无任意 FAS 实例**（`fas_mgr.has_any_instance()`，活跃与后台保留实例都算存在——CLG 绝不能接管 FAS，保留实例 60s TTL reap 后自动放行）时一次性把 CLG 热切到 scenemode（scenemode 未启用则 release 回系统默认），亮屏自动恢复原模式。**进入 scenemode 时是否下线核心由 `CoreCtl.scenemode_offline` 门控**（2026-10-01 前该字段**未接线**、由 `enabled` 无条件驱动 = 恒下线；现已接线为真门控，缺省 true 保持旧行为）。true = **下线 little 簇除引导核外的全部核**（2026-09-28 由「只下线 prime」改来：原策略把后台负载全挤到 3 个小核，实测息屏期 little 反复被顶满 100% → 触发 saturation 保护退回 reduce）+ `max_cpus` 钳到 `keep` + big / prime 常驻低频（频率上限由 scenemode CLG 配置压制）+ **编号最大的大核独占**给调度服务 + 抑制 boost，CPU 侧待机功耗下降；**false = 不下线任何核，保留全核，仅靠 `perf_ceil`(0.12) + uclamp 压制**（8550 于 2026-10-01 置 false：下线到单核 CPU0 后同样被顶满、26 次进入中 20 次被饱和保护撤销）。**常驻核（little 引导核 ∪ 全部 big）持续顶满上限则饱和退回 reduce 并 300s 冷却**（判据取每核 util 最大值，换常驻核不影响它生效，只是对象从 little 变成 big）。
-
-- 息屏 doze 天花板 0.30：`ScreenStateChange(false)` 生成的 doze 配置 `perf_ceil` 钳到 0.30（原 0.40），配合动态上限后后台突发（sync/JobScheduler）借力受限、空闲间隙照常降到地板频，压制"口袋发热"；5 分钟后 scenemode 进一步压到 0.12（2026-09-20 全局省电调整，原 0.15）。特调与 FAS（活跃时）息屏保持接管、跳过 doze（见 FAS 小节）。
-
-- **FAS 息屏省电已完全移除（2026-09，删除而非暂停）**：FAS 与屏幕状态完全解耦——① `ScreenStateChange(false)` 不再释放 FAS（fas 活跃时息屏走"保持接管"分支，与特调同语义；仅 FAS 失效后走 doze）；② 亮屏恢复分支的 fas arm 对 **FAS 失效场景激活 CLG default**（300s 冷却期内 1s 兜底被 `fas_cooldown` 门控短路，此处是退出 doze/scenemode 低性能配置的唯一恢复路径；FAS 活跃时空操作——CLG 绝不能接管 FAS 已接管的 CPU）；③ ModeChange 息屏进入 fas 的特殊分支删除；④ fas 全时段 boost（`apply_affinity_and_corectl` 不再按 screen_on 回退 normal）；⑤ FAS 兜底激活与 FrameUpdate 喂帧的 is_screen_on 门控删除；⑥ **FAS 优先于 scenemode**：兜底激活 FAS 前若 `scene_mode_active` 先退出 scenemode（恢复全部在线核，守卫「FAS 实例存在 ⇒ 非 scenemode」不变量），scenemode 入口按 `has_any_instance()` 门控。`scheduler-fas-screen-release` i18n key 已随代码删除。
-
-- cpuidle governor 默认启用 menu：8550/8475/8998 的 `feature.yaml` 将 `CpuIdleScalingGovernor` 置 true、`CpuIdle.current_governor` 置 "menu"（menu 按预期空闲时长选最深 C 状态，降低空闲功耗），内核无 menu 时写入失败静默跳过、无副作用。
-
-- **屏幕状态判定（2026-09-26 起，现役）**：读 Android 系统属性 `debug.tracing.screen_state`（框架在亮/灭屏时写 0/1）。判定口径（用户定）：**当前值 == 息屏判定值即息屏，其余一切值（含缺失/异常）一律亮屏**——息屏判定值 = meta.yaml `screen_off_value`（缺省 1，WebUI 配置页高级设置可改）。每次读数打 trace 日志（现值与判定）；属性缺失 warn 一条（去重）。轮询线程 `screen_detect.rs [prop] monitor_screen_state_property` 变化即更新 arc 并直推 `DaemonEvent::ScreenStateChange`：周期 **150ms**（2026-09-28 由 500ms 提速，属性读是 bionic 共享内存读、µs 级）+ **300ms 去抖**（同一新值连续 2 个周期才上报，吃掉单次毛刺），故**亮屏→退出 scenemode 的感知延迟 ≤450ms**（150ms 轮询 × 2 次去抖确认，最坏再被最小翻转间隔挡一轮；退出动作本身实测同秒完成）；`update_state_if_changed` 另有**统一最小翻转间隔 200ms**（任何来源在 200ms 内的第二次翻转延后——去抖只覆盖轮询线程，挡不住 `verify_screen_state`（app_detect 主循环每轮）这条独立采样路径，两者叠加抑制「同一秒内息屏→亮屏」的抖动，每次抖动都要走一整轮 doze 切换 + CLG 重建）。原始值经 `read_screen_prop_raw()` 由 1s 采样写入 status.csv 末列 `screen_prop`（缺失 "-"，无事件可听只能轮询）。daemon 侧 `common::SCREEN_OFF_VALUE` 原子量由 `Config::load` 同步；非法值在 parse_disk_meta 回退默认 1（不判整文件非法）。安装脚本 customize.sh 的 [screen-detect] 段（不保留配置路径）在安装期 getprop 实测为 1 时把 meta.yaml 翻转成 0——模板默认「1=息屏」与该属性原生口径「1=亮屏」相反时的自动校正。
-
-- **sysfs 投票检测已 [PAUSED]（2026-09-26）**：原 backlight/leds/fb/lcd/drm 五类节点枚举 + 全节点多数票仲裁（`enumerate_screen_nodes`/`tally_screen_nodes`/`screen_off_confirmed`）整体块注释在 `screen_detect.rs`（grep `PAUSED` 定位，注意块注释里的 sysfs 通配路径已改写成不含 `/*` 的写法，Rust 块注释嵌套会吃掉配对）。恢复 = 解开该块 + 还原 `update_state_if_changed` 投票块与 uevent 的 power/backlight/leds 分支（uevent 线程现仅服务 CPU hotplug：`CPU_HOTPLUG_DIRTY`，函数参数带下划线待还原）。
-
-- 屏幕事件去重守卫不变：属性轮询线程与 app_detect 的 verify 兜底可能对同一次切换各发一次事件，两套调度器的 ScreenStateChange 分支开头的 `screen_on == is_screen_on` 去重守卫必须保留——新增屏幕事件生产点同样必须维持该守卫。
-
-- **scenemode 长息屏兜底（2026-09-11 补丁）**：进入门槛 `standby_max >= SCENEMODE_SAT_UTIL(0.75)` 在后台常驻负载下会整夜拒绝进入（实测小核 util 长期 60-70%、峰值触 0.75）。现息屏时长 ≥4×`scene_mode_delay_secs` 时绕过负载门槛进入 scenemode——短息屏仍按原门槛防「进→10s 饱和退出→300s 冷却」拉锯；门槛的防拉锯语义只对短息屏成立。
-
-- **scenemode 自锁链（2026-10-11 归因）**：scenemode「不是没生效，而是进去了也白进」——25 次进入全部 delay_hit、全部 mode=default，**18 次（72%）在 10s 饱和判据下被撤销**，撤销不是「真的负载高」，而是 `perf_ceil=0.12` 把 little 钉在 **307200 kHz（簇最低 OPP，占 scenemode 期间 96%）→ util 反比抬满**（P=0.12 时 little util p50 0.65 / p90 1.00 / mean 0.66，而 doze P=0.20 时 p50 仅 0.36）→ 撞上**与进入门槛共用同一个 `SCENEMODE_SAT_UTIL = 0.75` 常量**的退出门槛（且进入侧是单 tick 无去抖快照）→「进→~10s 饱和退出→300s 冷却」的**自锁**。结构性缺陷即源码注释自述的那条：常驻簇仍顶满时进入必然在约 10s 后被判饱和退出。边际口径：scenemode 相对 doze 的**全部边际只在 little 簇天花板 441600→307200**，big/prime 两簇在两档下决策频率上限本来就相同（499200/595200），故相对 doze 的净省电落在噪声内（discharging 16 段配对 Δbatt 中位 +8mW、95%CI ±71mW，折算 ±0.3Wh 量级）；真正的损失是 **scenemode 只覆盖息屏墙钟的 30.58%** 与 **被撤销后累计 22.18h 困在 doze（P=0.20）**。注意日志口径：`scene_hold` 每息屏段最多记 1 条（`scene_hold_logged` 去重，实测仅 6 条），真实被门槛挡住的次数远高于日志条数。**回退/缓解方向**：① 把进入门槛与退出门槛的 0.75 解耦（进入侧降门槛或加去抖）；② 修「钉最低 OPP → util 反比抬满」的自激（勿把 perf_ceil 一味下压）。
-
-- **取消二段式息屏的定案做法（2026-10-11 用户口径）**：目标是「取消 doze（二段式）」时，**只删那 4 行息屏专用覆盖**（`perf_ceil.min(0.30)` / `perf_floor 0.0` / `smoothing_up 0.10` / `touch_boost=false`，出现在 `mod.rs:3326/:3728/:4226` 共 3 组 12 行），**基座 CLG 配置段仍是 `reduce`（`mod.rs:3723` 不动）**，即息屏后 CLG = reduce 参数原样。**不许走「删构造 + 换 `get_clg_cfg("default")`」那条路**：它会连带改 7 个与取消二段式无关的字段（`up/down_threshold / down_fast / steady_decay / headroom / spike_decay / spike_jump`）并引入 `little 0.95`——教训是**参数叠加式设计，取消它的正确方式是「删叠加」，不是「换底层」**，换底层会把与目标无关的参数差异一起带进来；删叠加后窗口内也是 reduce 参数，饱和退出（仍退回 reduce）天然一致、不存在错位。**硬约束（升级自用户口径，写进 R2 行）**：**任何模式下都必须保留「随时可到硬件最高频」的能力**——本项不改变 `reduce` 的 `perf_ceil 1.00`，也不在窗口内引入任何新上限。另澄清：FAS 活跃时息屏走「保持接管」分支（`mod.rs:3714`）本来就进不到 doze，本项只影响 FAS **失效**后的路径（`mod.rs:3320-3330`）。回退 = 把删掉的 4 行覆盖按原值写回（或 `scenemode.enabled: false` 整体关闭）。
-
-### 极速模式（fast）
-
-- vector 档用专属锁频器、不读 yaml、停用 CLG：`src/chiri/fast.rs` 的 `FastLock` 与 CLG 完全独立，vector 档下由 `mod.rs` 的 scheduler\*ipc 先 `cpu_governor.release()` 再 `fast_lock.init()` 接管（**六个入口都不能漏**：启动 / 亮屏恢复 / ModeChange / ConfigReload / DOWN 退出 / panic 自愈——vector 不注册 CLG 参数，漏掉就是频率零接管且无任何告警）。**frozen（待春归）复用同一条通路、共享这六个入口**，差别只在 `fast_lock.init(true)` 锁到**硬件最低频**（vector 是最高频）；额外地，frozen 会停掉一切额外开销：devimp 诊断日志与 status.csv 停写（闸门在 `logger.rs` 的 `diag_active()` 与 `status_log_snapshot()`，只保留 daemon.log 便于排错）——frozen 下 main\_ 与 aff\_（含 `@S` 快照）同停（同一 `diag_active()` 闸门），线程亲和/绑核与 core_ctl 由 rhine 的 `thread_bind: false` 交还系统（不再迁移线程）。
-
-- `FastLock::init()` 遍历 `get_cpu_policies()`、快照原始状态、写默认调速器（同 `[cpu_governors]` 选型）、把 min=max 锁到 target（vector=含 boost 硬件最高频、frozen=硬件最低频）；`tick()` 每 5 秒重写一次 **target** 作异常兜底收敛（默认无竞争者，节点被改写属异常态——残留旧模块、手动调试、内核异常态；2026-09-22 修：原误写 hw_max，frozen 每 5 秒被拉回最高频=失效）；`release()` 恢复接管前的 governor/min/max。
-
-- `mod.rs` 事件循环中 `fast_lock.tick()` 在每次 `recv_timeout` 唤醒时调用；模式切换/息屏 doze/亮屏恢复/看门狗超时/panic 收尾均正确 release fast_lock。
-
-- `vector:` 段的分布与继承（2026-10-01 复核）：**8475 的 `feature.yaml` 有自己的 `vector:` 段；8550/8998 没有**，共享 `config/feature.yaml`（根）有。该档由 `fast_lock` 硬锁最高频、不读 CLG 参数。**2026-10-01 起 `feature.yaml` 取值改为「根为基底 + SoC 按字段深合并」**（见 `agentsdocs/02-convention.md` 配置节），故 8550/8998 现从根继承到 `vector:` 段——是否影响极速档行为待真机复核；akmode 已改为**无档位连续控制**（见 `mdocs/tuned_profiles-example.yaml`），不受影响。
-
-### CPU 亲和与线程迁移（Affinity，ChiRi 专属）
-
-- `src/chiri/affinity.rs` 的 `AffinityManager`（消费 `SysPathExist` 已探测但此前无人使用的 cpuset/cpuctl 能力位）。
-
-- boost 类模式（boost/vector/特调，判定口径统一在 `chiri/mod.rs::is_boost_mode`；fas 模式亮屏在 `apply_affinity_and_corectl` 调用点同样并入 boost——FAS 只管调频、线程摆放沿用 boost 布局，息屏 FAS 释放后回退 normal，与 akmode 息屏保持 boost 不同）下：`/dev/cpuset/top-app`、`foreground` 的 `cpus` 收窄到大核+超大核（区间用 `common::chiri_core_ranges()`，不硬编码）；`background/system-background/restricted` 压到小核。
-
-- 可选写 `/dev/cpuctl/top-app/cpu.uclamp.min`（配置 `Affinity.top_app_uclamp_min_pct`，默认 0 关闭——uclamp.min 会让 schedutil 独立于 CLG 抬频，避免与动态上限语义打架）。
-
-- 可选写 `/dev/cpuctl/top-app/cpu.uclamp.max`（配置 `Affinity.top_app_uclamp_max_pct`，任务级性能上限钳制、EAS 原生感知，比 scaling_max_freq 硬顶更细）。按机型配置：8550/8475 配 85，8998 内核 4.4 配 0 关闭。运行时内核版本识别兜底纠正：`kernel_version()` 解析 `/proc/sys/kernel/osrelease`，< 5.3（uclamp 主线引入版本）或节点缺失或写入回读无效（防厂商半成品 backport 静默忽略）任一不满足即置 Unsupported 永久跳过并 warn 打点 `affinity-uclamp-unavailable`，判定结果缓存避免重复探测。
-
-- **后台降权（2026-09-18 加；配置 `Affinity.background_uclamp_max_pct`，默认 50，0 = 关闭）**：写 `background` 与 `restricted` 两组的 `cpu.uclamp.max`（**刻意不含 system-background**——系统后台含媒体/音频等服务，画中画、后台播放等可感知场景保守跳过），把后台任务的 util 需求钳低（50 = 512）——EAS 放置与 schedutil 频率随之回落、优先落小核，**不禁止使用大核**（空闲时仍会被 EAS 调度上去）。boost/normal 两态在 `apply` 汇合点持续写（「始终压低后台、给 UI/视频让路」），幂等；`release()`/关闭总闸时写回内核默认 `max`。目标形态：UI（top-app/foreground 收窄 + 线程钉核）与视频（playback 特调 / 前台进程天然在 foreground）优先，后台运算/内容计算只做软降权。与下一条后台 promote 的关系：promote 仍会把「忙」后台线程送 big（能效兜底），但其 uclamp 需求已被压住，占核权重有限——如需彻底禁止后台升核，把 promote 门槛收紧或加开关（未做）。
-
-- 线程层（按核心粒度放置，`pin_foreground_threads=true` 启用，每 2s 再平衡一轮、前台 PID/boost 变化立即触发）——**开销控制优先，不做逐线程每轮读 stat**：
-  - 前台（fg_pid 由 app_detect 提供）：每轮 1 次 `read_dir /proc/<pid>/task`，仅对**新增**线程读一次 stat 判定关键/建档；存量线程的 home 合法性仅用缓存的逐核 util 与在线位图判断（合法范围 = prime ∪ big 全部性能核，含溢出落点）。**主池/溢出两级选核**（`pick_core_pref`）：关键线程（tid==pid 或 comm 命中 RenderThread/GLThread/GameThread/UnityMain/UnityGfxDeviceW 白名单）主池 = prime、溢出 = big（超大核全被钉才回落大核，UnityMain 等白名单线程直接绑定超大核）；普通线程主池 = big、溢出 = prime（**大核钉满后自动启用超大核**，修复"多个重负载挤单一大核而超大核闲置"）。boost + 亮屏才钉，否则恢复全核；已消失线程下一轮即清理释放钉核计数。
-  - **default（非 boost）轻量前台保护**：8550 实测日常 default 模式下后台压小核 + EAS 把前台任务也堆在小核，little p50=88~99% 排队而 prime p50≈0% 空转、大核半闲（后台 promote 只救后台组线程，前台关键线程无人救援）。little 高水位（`LITTLE_HIGH_WATER` 0.70，迟滞 <`KEY_BIND_RELEASE_WATER` 0.50 解除，boost/息屏强制解除）时把前台关键线程组绑定到 big∪prime（reason `normal_press`），不钉单核、不占钉核计数。**非关键前台线程按窗口 util 升核**：压力窗口内每轮限量采样（`FG_SCAN_WINDOW` 32，游标轮转，窗口外零采样零写入），连续两窗 util ≥ `FG_BUSY_UTIL_PCT`(30%) 绑到 big∪prime（reason `normal_busy`），跌到 `FG_BUSY_RELEASE_UTIL_PCT`(15%) 以下连续 `DEMOTE_STREAK` 轮才回落——绑定/释放水位构成滞回，避免 5~30% 的中等负载线程长期滞留性能核反而抬高功耗（勿把释放水位改回 `DEMOTE_UTIL_PCT` 的 5%）。组绑定状态用单一枚举 `GroupBind`（None/Key/Busy）表达，绑/放只改一个字段，勿改回 `group_pinned + busy_bound` 两个需手工同步的布尔量。两窗忙判定由 `busy_window_update` 供前台/后台共用，勿各写一份；boost 布局接管时无缝衔接（掩码一致）。
-
-  - **组绑定释放臂必须覆盖压力窗口外（2026-09-24/25 修复）**：Busy 绑定的回落原只在 promote 路径内、被 key_pressure 门控——压力一落，Busy 线程带着 big∪prime 收窄掩码滞留（实测 95min 末帧 1115 条 pin=1/home=-1、aff 116MB/128MB）。修复 = 释放臂放宽为 `group_bind != GroupBind::None` 且 `!key_pressure`（2s 周期块兜底轮询），`restore_group_mask` 幂等（None 早退零写入）。教训见 04。
-
-  - 后台动态亲和（**不把后台全压小核**——小核过载能效灾难）：忙线程 promote 到 big、回落 demote。候选 TID 从三个后台 cpuset 的 `tasks` 文件读取（**不做 /proc 全量枚举**），每 2 轮刷新、按游标分片每轮只深扫 64 个；窗口 util = ticks 差分，**两窗防抖**（上次采样忙且本次仍忙、期间采到低负载即清标记）即 promote，不依赖采样间隔。promote 先把 TID 移入 top-app（cpuset v1 按 TID 记账）再按当前核心占用选核钉定（`pick_core_pref`：big 有未钉核只看 big、钉满溢出 prime，与前台普通线程同口径——游戏场景 big 是关键线程主场，后台忙线程不挤占但也不排队）。已 promote 线程每 2 轮复查：util 连续 3 次 < 5% → demote；线程仍忙（≥5%）且所在核心 util > 70%（`CORE_OVERLOAD_UTIL`）→ 换低占用核（`bg_overload`，带 4s 迁移防抖）。过载重钉统一口径（前台 `home_overload` / 后台 `bg_overload` 共用）：**候选 = 全性能池（big∪prime）最低分核 + 双滞回**（分数差 ≥ `OVERLOAD_MARGIN` 且目标核 util 严格低于 home）+ 反跳回冷却（`RETURN_COOLDOWN` 16s 禁回刚迁离核）。旧「big 池内选核 + 目标核 util ≤ 70% 硬门槛」在整体高载时必然静止——8475 实测 FAS 下大核 86-90% 排队、prime 空转 45%、26 分钟 85 次 `overload_hold`；全员过载时把负载摊向低载核（含 prime）仍有收益，乒乓由防抖+冷却兜底。**后台迁移仅亮屏**。
-
-  - 在线核位图每 4 轮读一次并缓存（核热插拔不频繁）；place/core 行已随 aff\_ 拆分移除（2026-09-22）。
-
-  - **多应用快速切换**：每轮再平衡开头按 pid 归属立即清理旧前台线程（`pid>0 且 ≠ 当前 fg_pid` → 解钉恢复全核），不等 30s 失联——否则旧应用转后台后（Android 会短暂把它留在 top-app/foreground cpuset）其单核掩码与大核相交继续生效，8550 仅一颗 prime 会让新旧前台关键线程同核互踩，连续切换还会令 core_pinned 计数漂移累积。过滤器幂等、零文件 IO；后台 promote 线程（pid==0）不受影响。模式变化的切换经 ModeChange → force 立即重平衡；同模式切换（无事件）依赖 2s 周期块发现，钉核延迟 ≤2s（可接受，切换清理在同一轮完成，新前台钉核时 core_pinned 已准确）。
-
-  - 选核算法：score = 逐核 util（最近 SystemLoadUpdate 快照，即核心当前占用）+ 钉核计数 × 0.4（`PINNED_WEIGHT`，权重过弱会让 util 快照滞后时第二个重线程挤入"看似空闲"的核造成同核轮转卡顿），取候选 ∩ 在线核最低分核（离线核 util 恒 0.0、与空闲不可区分，钉到「唯一允许核为离线」会让线程有效可运行集为空而冻结，必须排除）；home 核过载（核 util > 70%，`CORE_OVERLOAD_UTIL`，前后台共用）或 home 离线在 **8s** 重钉防抖（`REPIN_DEBOUNCE`，promote/demote 保持 4s `MIN_MIGRATE_INTERVAL` 不影响负载响应）窗口外重钉，选回同核不写避免空迁移。
-
-  - 掩码用 `mem::zeroed::<cpu_set_t>()` 分配保证对齐（`vec![0u8]` 强转是未对齐指针的脆弱实践），`libc::CPU_SET` 置位并带容量边界防护。
-
-  - **`normal_fg_exclude_little: true`（8550，2026-10-01 启用，非 boost 时 top-app 掩码剔除 little）**：`src/chiri/affinity.rs:1038` 在 `cfg.normal_fg_exclude_little && sys.cpuset_top_app_exist` 时把 little 从 top-app 的 cpus 掩码里剔除。理由两条：① **A510 能效差**（同样的活放到 little 上更费电）；② **DT 能耗模型低估其真实能耗**（coeff 251），于是 **EAS 会把 64 位前台线程吸进 little**——与「抬 `per_cluster.little.up_threshold` 到 0.95」是同一根因的两种表达，本项是 cpuset 侧的硬剔除。依据：本包亮屏 UI 功耗偏高（launcher 亮屏 2.61 W vs 基线 1.9~2.4 W）。`normal_fg_exclude_little` 缺省 `false`（`config.rs:1533`），8650/zumapro 的 feature.yaml 仅留注释未置值。**原 TODO「待内核信息（32 位核位图 / A710 核位）」按用户口径作废**：本机 A710/X3 **不直接执行 AArch32**，32 位程序经系统原生桥（转译层）落 64 位代码 ⇒ **全核可跑**，无需按核位宽针对性放行（与 A6 `aarch32_clusters` 缺省留空的口径同源）。回退 = `normal_fg_exclude_little: false`（与未配置等价）。
-
-  - 稳态（前台线程集不变、后台空闲）单轮 ≈ 1 read_dir + 0\~64 stat + 低频辅助文件读——相对「逐线程每轮全读 stat」约省 >50% 文件 I/O。
-
-- 黑名单（全部编译嵌入、不外透）：`src/chiri/affinity_blacklist.yaml` 经 include_str! 打包（common.rs 的 `parse_affinity_blacklist` 解析、OnceLock 缓存），格式：每行一条精确进程名/包名或 `re:` 前缀正则（同特调白名单语法，含 com.example 注释示例），文件内含**系统进程默认名单**（system_server/surfaceflinger/logd/lmkd/zygote 等，勿删）；内置兜底：空 cmdline（内核线程）与 `/` 开头（native 二进制路径）一律黑名单。命中进程全部线程保持全核、不做任何迁移，`is_affinity_blacklisted` 另在逐线程层面兜底（防应用进程内的系统服务线程被误迁）。
-
-- normal/doze 布局：top-app/foreground/uclamp 恢复快照，后台保持压小核 + bg uclamp 降权持续（两态都写）；boost 退出/开关关闭/调度线程收尾 `release()` 全量还原（已钉线程恢复全核，经 `demote_tid_group` 写回进程当前 cpuset 组）。同模式 App 切换不发 ModeChange 事件，靠 scheduler_ipc 2s 周期刷新兜底重迁移（manager 内部按 KIND/PID/boost 去重）。
-
-- **恢复写失败保留状态（2026-09-23）**：`unpin_core`/`cleanup_thread`/`demote` 的内核写失败且非 ESRCH 时**保留状态**（home/钉核计数/moved_group/条目）待 departed、gone、stale 等清理路径重试，成功或 ESRCH（线程消亡、无从重试）才清；改回「写失败仍清状态」会让内核掩码/组归属与状态表永久分叉（掩码仍单核而状态记全核，再无重试路径）。stat comm 解析口径同日修正：`sample_one_tid` 以首 '(' 与末 ')' 定界 comm（旧 `text[1..close]` 把「tid 尾部+` (`」混进 comm，`KEY_THREAD_COMMS` 与 `affinity_blacklist` 的精确匹配恒不命中；修复后关键线程白名单/黑名单逐线程兜底恢复生效）。
-
-- 配置段 `Affinity`（enabled/top_app_uclamp_min_pct/top_app_uclamp_max_pct/pin_foreground_threads/background_uclamp_max_pct），三份 SoC yaml 已带（背景降权默认 50；root feature.yaml 无 Affinity 段、走 serde 默认）。
-
-- **A6 位宽感知的落点口径（2026-09-28）**：`aarch32_clusters` **缺省留空 = 不限制**——主流系统带转译层，32 位程序的线程实际能跑在任意簇上，预测式拦截会把它们误锁在小核（用户口径：全核可跑）。只有确认系统**无转译层**的机型才填（如 `["little"]`），填了才在写掩码前拦截「32 位线程 → 不含 AArch32 的簇」、不发起必然被内核拒的调用。位宽判定（`/proc/<tid>/exe` 的 ELF `EI_CLASS`，首见建档读一次）与 `elf32` 观测帧照常保留；内核真拒时的 `EINVAL → pin_incapable` 兜底也照常，所以「无转译 + 未填白名单」仍会被兜住，只是要多试一次。
-
-- **A10 掩码写去重与记账（2026-09-28 审查后补）**：`write_dedup` 开启时，同 tid 同目标在 `repin_debounce` 内的重复写被 `mask_write_skip` 跳过（差分行按 `recent` 判据，组掩码另有 `state_match`）。**记账必须覆盖所有改掩码的路径**：`pin_core` 记核号、`restore_group_mask` / `unpin_core` 记 `MASK_TAG_FULL`、组绑定记 `MASK_TAG_PERF`。漏记 `unpin_core` 会让解钉后 `last_mask_write` 仍停在最后一次单核钉定上，使冷却期内的重钉被误判成「刚写过同一核」而整条丢弃（既不写内核也不更新 `home`，与真实掩码分叉）；`restore_group_mask` 命中 A10 跳过时掩码已确为全核，必须**一并清 `group_bind`**，否则 bound 判定悬挂到下一个冷却期。该机制**不主动纠偏**：内核侧被框架/外部改写的掩码要等本层下次决定写才覆盖（uclamp 有 60s 重断言，掩码路径没有）。
-
-### FDP：前沿主导的放置内核（ChiRi 专属，2026-09-28）
+### FDP：前沿主导的放置内核（**已被 EEM 取代，2026-10-22**；仅作回退路径与历史留痕）
 
 - **一句话**：后台/批处理线程 promote 时不再按「簇名气（big 优先、钉满溢出 prime）」选目的簇，而是算**双边净收益** `net = [P_src(让出后) − P_src(现状)] + [P_dst(承接后) − P_dst(现状)]`，只有 `net ≤ −fdp_cost_hysteresis_w` 才迁——等价于「**等算力下把这份算力放到边际 mW/Mdmips 更低的地方**」。❌ 不用单边 `ΔP(dst)` 选最小者（其增量恒 ≥ 0，与「不搬」比永远更差，会退化成永不动作）。
 - **数据不手抄、单点真相**：`src/chiri/energy_cost.rs` 直接读 `soc_frontier_policy().per_cluster.<簇>.{capacity, freq_khz, power_w}`；逐档簇功耗由 `scripts/frontier_policy.py` 从 `mdocs/sm8550/sm8550-freq-power.md` §3 生成进 `sm8550/soc.yaml` 的受控块（生成时断言「文档档位数 == soc.yaml 档位数」，不一致拒绝落表）。**无该段的 SoC**（无 capacity / 无 `per_cluster` 功耗表）→ 调用方先经 `energy_cost::fdp_available()` 判定，缺数据即**回退原 A3 放置路径**（不是把后台 promote 整段停掉）。表是纯动态项、不含漏电，只作相对排序。**两机表不同源**：8550 是按 `Cx·f·V²` 推算的，zumapro 是 PMIC ODPM 实测净能量并做过漏电校正（`cluster_W = n×active − (n−1)×idle`）；两者都只进相对比较，不可跨机比绝对值。

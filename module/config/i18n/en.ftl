@@ -188,9 +188,8 @@ clg-config-reloaded = [CLG] config hot-reloaded | up={ $up } down={ $down } floo
 clg-perf-clamped = [CLG] config perf_floor > perf_ceil ({ $floor } > { $ceil }), clamped perf_floor to perf_ceil
 clg-restore = [CLG] P{ $pid } restored | governor={ $governor } min={ $min } kHz max={ $max } kHz
 clg-tick-log = [CLG] P{ $pid } util={ $util }% perf={ $perf } freq={ $freq }kHz boost={ $boost }kHz decay={ $decay }
-clg-pf-tick-log = [CLG-PF] P{ $pid } util={ $util }% perf={ $perf } freq={ $freq }kHz decay={ $decay } pf={ $pf_khz }kHz
-clg-pf-enabled = [CLG-PF] Pareto frontier lookup enabled | fingerprint={ $fp } buckets={ $buckets }
-clg-pf-fallback = [CLG-PF] frontier table unavailable ({ $reason }), falling back to ratio path (once)
+clg-eem-enabled = [CLG-EEM] relative efficiency model enabled | fingerprint={ $fp } sweet={ $sweet }kHz cores={ $cores }
+clg-eem-tick-log = [CLG-EEM] P{ $pid } util={ $util }% perf={ $perf } freq={ $freq }kHz decay={ $decay } eem={ $eem_khz }kHz sweet={ $sweet_khz }kHz cores={ $cores }
 clg-writer-invalid = [CLG] P{ $pid } sysfs writer invalid (max_valid: { $max_valid }, min_valid: { $min_valid }), skipping
 clg-freq-set = [CLG] P{ $pid } freq change: { $old_khz }MHz -> { $new_khz }MHz
 clg-freq-write-failed-cached = [CLG] P{ $pid } freq write failed, keeping cached { $cached_khz }MHz (target { $target_khz }MHz)
@@ -341,6 +340,9 @@ rhine-lock-note-no-backup = rhine-back.chr was missing, rebuilt from built-in de
 # --- Affinity (CPU affinity & thread migration) ---
 affinity-boost-applied = [Affinity] boost layout applied: top-app/foreground → { $big }, background groups → { $little }
 affinity-normal-restore = [Affinity] normal affinity layout restored
+
+affinity-eem-released = [Affinity] relative efficiency placement disabled, restored { $n } thread masks
+affinity-migrate = [Affinity] thread { $tid } ({ $comm }) migrate { $dir } cores { $cores }
 affinity-promoted = [Affinity] background thread { $tid } promoted to big core (util { $util }%)
 affinity-fdp-promoted = [Affinity] FDP: background thread { $tid } migrated to { $dst } (net benefit { $net_mw } mW)
 affinity-demoted = [Affinity] background thread { $tid } demoted back to the little cluster (util { $util }%)

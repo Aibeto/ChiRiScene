@@ -454,7 +454,7 @@ fn log_module_version() {
             }
         }
     }
-    let soc = common::matched_soc_hint().unwrap_or("-");
+    let soc = common::matched_soc_config_name().unwrap_or("-");
     let kernel = fs::read_to_string("/proc/sys/kernel/osrelease")
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|_| "-".to_string());
@@ -1185,7 +1185,7 @@ fn diag_meta() -> &'static String {
         if !s.is_empty() {
             sdk = s;
         }
-        let soc = common::matched_soc_hint().unwrap_or("-");
+        let soc = common::matched_soc_config_name().unwrap_or("-");
         let kernel = fs::read_to_string("/proc/sys/kernel/osrelease")
             .map(|s| s.trim().to_string())
             .unwrap_or_else(|_| "-".to_string());
@@ -1762,7 +1762,7 @@ pub fn main_event(kind: &str, pkg: &str, reason: &str) {
 // [aff_writer]
 /// aff_ 帧格式说明（文件头只写可解析 schema，`#` 行解析跳过；正文按行首定界：@A 单行动作帧、@S 快照帧按帧头 ntop+nfg 计数定界）
 const AFF_HEADER: &str = "# aff_ 线程数据文件（帧式文本，2026-09-28 字段级差分版）\n\
-# @A ts=<MMDD-HHmmss> act=<pin|restore|move_group|cpuset_cpus|uclamp|corectl|bind_release|self_pin|self_unpin|elf32|fdp> pid=<i32> tid=<i32> pkg=<str> comm=<str> dst=<str> value=<str> result=<ok|e{errno}> reason=<str>\n\
+# @A ts=<MMDD-HHmmss> act=<pin|restore|move_group|cpuset_cpus|uclamp|corectl|bind_release|self_pin|self_unpin|elf32|fdp|place> pid=<i32> tid=<i32> pkg=<str> comm=<str> dst=<str> value=<str> result=<ok|e{errno}> reason=<str>\n\
 # @S ts=<MMDD-HHmmss> ntop=<进程行数> nfg=<线程行数>[ full=1]\n\
 # p <rank> <pid> <pkg|comm> u=<整数util%> mask=<允许核hex> home=<核|-1>\n\
 # t <pid> <tid>[ comm][ u=][ core=][ home=][ pin=][ uclamp=]";

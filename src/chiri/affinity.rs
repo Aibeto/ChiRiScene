@@ -4,6 +4,8 @@
 /// 线程层前台关键线程组绑定、普通线程单核钉定（优先 big、满溢 prime）、后台忙线程 promote 到 big、demote 回落，过载重钉带分数滞回 + 反跳回冷却双闸防 8s 乒乓；选核 score = 逐核 util + 钉线程数×pinned_weight（缺省 0.4），黑名单 affinity_blacklist.yaml 编译嵌入
 use crate::chiri::config::{AffinityConfig, AffinityTuningConfig};
 use crate::chiri::energy_cost;
+use crate::chiri::energy_model;
+use crate::chiri::placement;
 use crate::common::CoreGroup;
 use crate::utils::{FastReader, SysPathExist};
 use log::{debug, error, info, warn};
@@ -187,6 +189,11 @@ pub(crate) const FDP_COST_HYSTERESIS_W: f32 = 0.02;
 pub(crate) const FDP_MAX_INSERTS_PER_ROUND: u32 = 2;
 /// FDP 目的簇落点频率上限比例（缺省 0.85）：迁入后该簇模型工作频率不得高于 该值 × 该簇最高频
 pub(crate) const FDP_DST_FREQ_CAP_RATIO: f32 = 0.85;
+
+/// [eem] 每轮最多发起的线程迁移数：同轮内负载快照不会因迁移而更新，
+/// 无上限会让大批线程同时判「同一簇最便宜」而齐涌（FDP 的 `max_inserts` 教训）。
+/// 4 条 / 2s 周期 = 每秒最多 2 条；迁移是慢动作，不需要更快。
+const EEM_MAX_MOVES_PER_ROUND: u32 = 4;
 
 const KEY_THREAD_COMMS: [&str; 5] = [
     "RenderThread",
@@ -374,15 +381,29 @@ fn set_groups_cpus_tracked(groups: &[&str], value: &str, snapshot: &mut Vec<(Str
 }
 
 /// 小核列表（babel 的后台组）
+/// **空区间兜底**：两簇 SoC（SM8750/sun）没有小核簇，little 是 start == end 的空区间，
+/// 此时 `end - 1` 会 usize 下溢、`format!` 出 "6-5" 这种非法 cpuset 值（写下去必 EINVAL）。
+/// 没有小核可用时退化为 big 组——后台仍要落到某些核上，big 是唯一可选项。
 fn little_list() -> String {
     let r = crate::common::chiri_core_ranges().little;
-    format!("{}-{}", r.start, r.end - 1)
+    if r.start < r.end {
+        format!("{}-{}", r.start, r.end - 1)
+    } else {
+        big_list()
+    }
 }
 
 /// 小核前两颗（contingency 的后台收敛目标：0-1 两颗小核）
+/// 空/单核 little 同样退化到 big 组前两颗，理由同 [`little_list`]
 fn little_pair_list() -> String {
     let r = crate::common::chiri_core_ranges().little;
-    format!("{}-{}", r.start, r.start + 1)
+    if r.start + 1 < r.end {
+        format!("{}-{}", r.start, r.start + 1)
+    } else {
+        let b = crate::common::chiri_core_ranges().big;
+        // big 也空属「配置错误」而非真实机型，saturating_sub 只为杜绝下溢 panic
+        format!("{}-{}", b.start, (b.start + 1).min(b.end.saturating_sub(1)))
+    }
 }
 
 /// 大核列表（babel 的系统进程组）
@@ -805,6 +826,15 @@ struct ThreadState {
     elf32: bool,
     /// 写去重：最近一次掩码写入的 (目标 tag, 时刻)；同 tag 在 repin_debounce 内不再重写
     last_mask_write: Option<(u64, Instant)>,
+    /// [eem] 最近一次采样到的窗口 util%（0..100）：放置内核的需求来源
+    util_pct: f32,
+    /// [eem] 最近一次采样到的**当前所在核**（`/proc/<tid>/stat` 的 processor，-1 = 未采到）：
+    /// 首次接管时用它确定起始簇（此时既没有 `home` 也没有记账簇）
+    last_cpu: i32,
+    /// [eem] 本线程当前占用的连续核区间（None = 尚未接管）
+    eem_window: Option<placement::Window>,
+    /// [eem] 当前所在簇（None = 未接管；与 `eem_window` 成对维护）
+    eem_cluster: Option<CoreGroup>,
     starttime: Option<u64>,
     normal_bind_retry: InvalidMaskRetry,
 }
@@ -886,6 +916,16 @@ pub struct AffinityManager {
     fdp_dst_freq_cap_ratio: f32,
     /// FDP 本轮各目的簇已迁入条数（[big, prime]，每轮 rebalance 清零）：同轮防 burst 的硬配额
     fdp_inserts: [u32; 2],
+    /// [eem] 放置引擎：逐 tid 记账（区间状态机 + 冷却），不分前后台
+    eem: placement::Engine,
+    /// [eem] 总开关（apply 刷新，缺省 false = 逐位回到既有放置路径）
+    eem_placement: bool,
+    /// [eem] 相对成本改善阈值（0..1）
+    eem_hysteresis: f32,
+    /// [eem] 参与门槛（util%）
+    eem_min_util_pct: f32,
+    /// [eem] 各 CPU 容量（真机 cpu_capacity 优先，缺则 soc.yaml [capacity]）：进程内一次解析
+    core_caps: Vec<Option<u32>>,
 }
 
 impl AffinityManager {
@@ -927,6 +967,11 @@ impl AffinityManager {
             fdp_max_inserts_per_round: FDP_MAX_INSERTS_PER_ROUND,
             fdp_dst_freq_cap_ratio: FDP_DST_FREQ_CAP_RATIO,
             fdp_inserts: [0, 0],
+            eem: placement::Engine::new(),
+            eem_placement: false,
+            eem_hysteresis: energy_model::SWITCH_HYSTERESIS,
+            eem_min_util_pct: 8.0,
+            core_caps: Vec::new(),
         }
     }
 
@@ -994,10 +1039,26 @@ impl AffinityManager {
         self.fdp_cost_hysteresis_w = cfg.fdp_cost_hysteresis_w;
         self.fdp_max_inserts_per_round = cfg.fdp_max_inserts_per_round;
         self.fdp_dst_freq_cap_ratio = cfg.fdp_dst_freq_cap_ratio;
+        // [eem] 相对能效放置（不分前后台）：开关与阈值热重载即生效。
+        // **关闭时必须归还掩码**：EEM 会把线程写成 1 核窗口，关掉后若没人还原，
+        // 该线程会永久卡在那个窄掩码上（既有 pin/promote 路径不会主动扫它）。
+        let want_eem = cfg.eem_placement && energy_model::available();
+        if self.eem_placement && !want_eem {
+            self.eem_release_all();
+        }
+        self.eem_placement = want_eem;
+        self.eem_hysteresis = cfg.eem_hysteresis;
+        self.eem_min_util_pct = cfg.eem_min_util_pct;
 
         let ranges = crate::common::chiri_core_ranges();
         let boost_list = format_cpu_list(ranges.big.clone().chain(ranges.prime.clone()).collect());
-        let little_list = format_cpu_list(ranges.little.clone().collect());
+        // 空 little（两簇 SoC）→ format_cpu_list 返回空串，写 cpuset.cpus 会 EINVAL；
+        // 退化到 little_list() 的同一口径（big 组），与 babel 静态分组保持一致
+        let little_list = if ranges.little.start < ranges.little.end {
+            format_cpu_list(ranges.little.clone().collect())
+        } else {
+            little_list()
+        };
 
         let old_kind = self.applied_kind;
         if boost {
@@ -1293,6 +1354,14 @@ impl AffinityManager {
         pkg: &str,
         reason: &str,
     ) {
+        // [eem] EEM 接管时禁止**自动负载均衡类**的单核钉定：钉定会把线程压到 1 核，
+        // 覆盖掉 EEM 的连续区间掩码，且 `home` 记账与 `eem_window` 会分叉（两套状态互相踩）。
+        // 迁移决策统一由 `eem_place_round` 负责；仍保留**显式策略**路径：
+        //   * `fg_pin`（boost 期把前台线程钉到性能核）
+        //   * `home_overload`（前台线程所在核过载时的紧急换核）
+        if self.eem_placement && !matches!(reason, "fg_pin" | "home_overload") {
+            return;
+        }
         let now = Instant::now();
         // 32 位线程钉到无 AArch32 的簇必然 EINVAL——不发起 syscall，按 e0 口径打点（首次才打）并标记不可钉
         if !self.mask_write_allowed(tid, &[core]) {
@@ -1451,6 +1520,9 @@ impl AffinityManager {
         if let Some(state) = self.threads.get_mut(&tid) {
             state.normal_bind_retry.clear();
         }
+        // [eem] 线程退出即清放置记账：否则 HashMap 随 tid churn 无界增长，
+        // 且 tid 复用会继承上一条线程的窗口/冷却状态（决策失真）。
+        self.eem.forget(tid);
         let (moved, orig, home, pid, group_bind) = match self.threads.get(&tid) {
             Some(st) => (
                 st.moved_group,
@@ -1673,6 +1745,10 @@ impl AffinityManager {
                                 last_mask_write: None,
                                 starttime: None,
                                 normal_bind_retry: InvalidMaskRetry::default(),
+                                util_pct: 0.0,
+                                last_cpu: -1,
+                                eem_window: None,
+                                eem_cluster: None,
                             });
                             // 归属变化（前台换 PID 后复用 tid，或后台候选被前台收养）视作新线程：`!is_fg` 覆盖后者——后台候选身份仍是后台，收养后必须按前台身份重新采样
                             if !st.is_fg || st.pid != fg_pid {
@@ -1876,6 +1952,23 @@ impl AffinityManager {
                             .collect();
                         self.cleanup_threads(&gone, "gone");
 
+                        // —— [eem] 前台线程 util 采样：不分前后台的前提 ——
+                        // 旧路径只在「little 高水位 + 非关键线程」时才采样前台 util，
+                        // EEM 若要覆盖前台就必须每轮采到它们的需求，否则 util_pct 恒 0、
+                        // 前台线程永远不会进入放置决策（等于只对后台生效）。
+                        if self.eem_placement {
+                            let clk = clk_tck();
+                            for tid in &seen {
+                                if let Some(s) = sample_one_tid(*tid)
+                                    && let Some(u) = self.window_util(*tid, s.ticks, now, clk)
+                                    && let Some(st) = self.threads.get_mut(tid)
+                                {
+                                    st.util_pct = u;
+                                    st.last_cpu = s.processor;
+                                }
+                            }
+                        }
+
                         // —— default 小核高水位：非关键前台线程升核（限量采样）——
                         if key_pressure && !scan_pool.is_empty() {
                             self.promote_busy_foreground(&scan_pool, &perf_pool, fg_pid, now);
@@ -1909,6 +2002,10 @@ impl AffinityManager {
                 for tid in promoted {
                     if let Some(s) = sample_one_tid(tid) {
                         let util = self.window_util(tid, s.ticks, now, clk).unwrap_or(0.0);
+                        if let Some(st) = self.threads.get_mut(&tid) {
+                            st.util_pct = util;
+                            st.last_cpu = s.processor;
+                        }
                         // tid 来自上方收集且循环内无删除，正常不可达；防御性跳过不中止整轮
                         let low = match self.threads.get_mut(&tid) {
                             Some(st) => {
@@ -2024,7 +2121,10 @@ impl AffinityManager {
                         && big_max > self.tuning.big_high_water;
                     // FDP 数据面就绪 = 开关 + 本 SoC 具备 capacity 与逐档功耗表：**与下方准入同源**，勿只看开关——
                     // 数据缺失时 FDP 整段回退，若 big 饱和保护已按「FDP 会兜住」让位，两重保护会同时失效
-                    let fdp_ready = self.fdp_enabled && energy_cost::fdp_available();
+                    // [eem] EEM 接管时 FDP 让位：两套成本模型口径不同（FDP 用绝对瓦数、
+                    // 只服务后台 promote；EEM 用相对向量、不分前后台），同轮同时决策会互相覆盖。
+                    let fdp_ready =
+                        self.fdp_enabled && !self.eem_placement && energy_cost::fdp_available();
                     // FDP 就绪时不让 big_pressure 一票否决 promote：FDP 自己的「迁入后模型频率 ≤ 0.85×该簇最高频」护栏已覆盖「别往已热的簇塞」
                     // 否则 bg_promote_exclude_prime=false 想把后台分流到 prime 时，恰好在「big 已热」这个最该分流的场景被整体闸掉，prime 分支近乎不可达；取局部量是为了在下方 `self.threads.get_mut` 的借用期内不再借 self
                     let fdp_handles_big_pressure = fdp_ready;
@@ -2098,6 +2198,10 @@ impl AffinityManager {
                                         last_mask_write: None,
                                         starttime: s.starttime,
                                         normal_bind_retry: InvalidMaskRetry::default(),
+                                        util_pct: 0.0,
+                                        last_cpu: -1,
+                                        eem_window: None,
+                                        eem_cluster: None,
                                     },
                                 );
                                 continue;
@@ -2223,7 +2327,10 @@ impl AffinityManager {
                                 }
                                 if let Some(st) = self.threads.get_mut(tid) {
                                     st.moved_group = move_res.is_ok();
-                                    st.promoted = true;
+                                    // EEM 接管时不置 promoted：promoted 复查的入口条件是
+                                    // `home >= 0`（单核钉定产物），而 EEM 不钉核，
+                                    // 置了只会让 demote 复查每轮空转、永远清不掉这个标记。
+                                    st.promoted = !self.eem_placement;
                                 }
                                 self.pin_core(*tid, core, -1, 0, "-", "bg_busy");
                                 let islot = usize::from(matches!(move_plan.dst, CoreGroup::Prime));
@@ -2300,6 +2407,14 @@ impl AffinityManager {
             }
         }
 
+        // —— [eem] 相对能效放置：不分前后台，统一按「同算力取更低功耗」动态迁移 ——
+        // 位置在失联清理之前：本轮刚采到的 util 立刻参与决策，本轮退出/失联的线程由清理兜底。
+        // 与既有 pin/promote/demote 并存但互斥：EEM 接管时那些路径只做显式策略（boost/触摸/组绑定），
+        // 普通放置决策一律走 EEM，避免两套机制对同一线程给出矛盾落点。
+        if self.eem_placement && screen_on && !boost && !self.core_utils.is_empty() {
+            self.eem_place_round(now);
+        }
+
         // —— 失联清理 ——
         let stale: Vec<i32> = self
             .threads
@@ -2328,6 +2443,290 @@ impl AffinityManager {
                 );
             }
         }
+    }
+
+    /// [eem] 相对能效放置的一轮：对**所有**已建档线程（不分前后台）做「同算力取更低功耗」的动态迁移。
+    ///
+    /// 与旧路径的关键差异：
+    /// * **不分前后台**：因为有平滑迁移（先扩后缩），前台线程也能安全换核，不必只对后台动刀；
+    /// * **迁移优先于升频**：越过甜点才发起迁移，甜点以内交给 CLG 的 `eem_target_freq` 封顶；
+    /// * **先扩后缩**：所有区间变更都走 `placement::Engine` 的两拍协议，从不出现空窗口。
+    ///
+    /// 日志两级（用户口径）：
+    /// * INFO：只写「线程 + 方向」，一行一次迁移（`affinity-migrate`）
+    /// * devimp：`@A act=place` 帧写全量细节（簇、区间、成本、收益、原因）
+    fn eem_place_round(&mut self, now: Instant) {
+        // 容量表：进程内一次解析（真机 cpu_capacity 优先，回退 soc.yaml [capacity]）
+        if self.core_caps.is_empty() {
+            let max_cpu = crate::common::chiri_core_ranges()
+                .prime
+                .end
+                .max(crate::common::chiri_core_ranges().big.end)
+                .max(crate::common::chiri_core_ranges().little.end);
+            let mut caps = Vec::with_capacity(max_cpu);
+            for cpu in 0..max_cpu {
+                let c = std::fs::read_to_string(format!(
+                    "/sys/devices/system/cpu/cpu{cpu}/cpu_capacity"
+                ))
+                .ok()
+                .and_then(|s| s.trim().parse::<u32>().ok())
+                .filter(|&v| v > 0)
+                .or_else(|| {
+                    crate::common::core_group_of(cpu as u32)
+                        .and_then(crate::common::soc_capacity_for_group)
+                });
+                caps.push(c);
+            }
+            self.core_caps = caps;
+        }
+        let online = energy_model::online_clusters();
+        if online.is_empty() {
+            return;
+        }
+        // 本轮候选：util 达门槛、非关键线程、且**未被显式钉核**。
+        // * 关键线程（`is_key`）由 boost / 组绑定独占；
+        // * `home >= 0` = 被 `fg_pin` / `home_overload` 钉在单核上，那是显式策略，
+        //   EEM 再改它的掩码只会与钉定路径互相覆盖。
+        let cands: Vec<(i32, f32)> = self
+            .threads
+            .iter()
+            .filter(|(_, st)| !st.is_key && st.home < 0 && st.util_pct >= self.eem_min_util_pct)
+            .map(|(tid, st)| (*tid, st.util_pct))
+            .collect();
+        if cands.is_empty() {
+            return;
+        }
+        // 三簇当前频率：整轮只读一次（每线程各读一次是纯浪费）
+        let cur_freqs = energy_cost::read_cluster_freqs();
+        // 本轮已提交的迁移条数上限：成本项只在跨轮才反映真实负载，
+        // 同轮内几十条线程会一起判「同一个簇最便宜」而齐涌，必须按轮封顶。
+        let mut budget = EEM_MAX_MOVES_PER_ROUND;
+        let mut actions: Vec<placement::Action> = Vec::new();
+        for (tid, util_pct) in cands {
+            // 需求：util% × 该线程**当前所在核**的 capacity（缺失按本簇 capacity 兜底）
+            let (cluster, home, last_cpu) = match self.threads.get(&tid) {
+                Some(st) => (st.eem_cluster, st.home, st.last_cpu),
+                None => continue,
+            };
+            // 起始核：显式钉核 > 记账窗口 > 采样到的当前所在核。
+            // 最后一档不能省：首次接管的线程既无 `home` 也无记账簇，缺了它就会被
+            // 直接跳过——EEM 对「新出现的线程」永不生效（2026-10-22 审查发现）。
+            let core = if home >= 0 {
+                home as usize
+            } else if let Some(c) = cluster {
+                placement::cluster_pool(c).first().copied().unwrap_or(0)
+            } else if last_cpu >= 0 {
+                last_cpu as usize
+            } else {
+                continue;
+            };
+            let cap = self
+                .core_caps
+                .get(core)
+                .copied()
+                .flatten()
+                .map(|c| c as f32)
+                .or_else(|| {
+                    cluster
+                        .and_then(crate::common::soc_capacity_for_group)
+                        .map(|c| c as f32)
+                });
+            let Some(cap) = cap else { continue };
+            let demand = energy_model::thread_demand(util_pct, cap);
+            if demand <= 0.0 {
+                continue;
+            }
+            // 当前所在簇：优先记账值，其次由 home 反推
+            let cur_cluster = cluster.or_else(|| crate::common::core_group_of(core as u32));
+            let Some(cur_cluster) = cur_cluster else {
+                continue;
+            };
+            let pool = placement::cluster_pool(cur_cluster);
+            if pool.is_empty() {
+                continue;
+            }
+            // 当前窗口：记账值，否则以 home 为中心取 1 核
+            let window = self
+                .threads
+                .get(&tid)
+                .and_then(|st| st.eem_window)
+                .unwrap_or_else(|| placement::Window::new(core, core));
+            // 是否越过甜点：当前频点对应的档 > 甜点档
+            let past_sweet = energy_model::curve(cur_cluster).is_some_and(|cv| {
+                let now_khz = cur_freqs[match cur_cluster {
+                    CoreGroup::Little => 0,
+                    CoreGroup::Big => 1,
+                    CoreGroup::Prime => 2,
+                }]
+                .unwrap_or(0);
+                // 当前频点 → 档位下标（≤ 该频点的最大档）
+                let gear = (0..cv.len())
+                    .filter(|&i| cv.freq_khz(i) <= now_khz)
+                    .next_back()
+                    .unwrap_or(0);
+                gear > cv.sweet()
+            });
+            let subject = placement::Subject {
+                demand,
+                cluster: cur_cluster,
+                window,
+                past_sweet,
+            };
+            // 建档（首次以当前窗口为稳态）
+            self.eem.ensure(tid, cur_cluster, window, now);
+            if let Some(a) = self.eem.tick(
+                tid,
+                &subject,
+                &self.core_utils,
+                &online,
+                self.eem_hysteresis,
+                now,
+            ) {
+                actions.push(a);
+                budget = budget.saturating_sub(1);
+                if budget == 0 {
+                    break;
+                }
+            }
+        }
+        // 落盘：全部决策算完再写 sysfs（避免边算边改导致同轮输入漂移）
+        for a in actions {
+            let (pid, comm) = match self.threads.get(&a.tid) {
+                Some(st) => (st.pid, st.comm.clone()),
+                None => continue,
+            };
+            // 32 位线程不能上无 AArch32 的簇
+            if !self.mask_write_allowed(a.tid, &a.mask) {
+                continue;
+            }
+            // cpuset 前置：纯后台线程的组通常只含小核，掩码写到 big/prime 会被内核静默裁剪。
+            // 故跨到更高能级簇时先把线程升组到 top-app（与既有 promote 同一目的地，
+            // 退出由 demote / 失联清理负责还原）——不升组就是「白算一次、日志报 clipped」。
+            let dst_group = a.switch_cluster.and_then(|c| match c {
+                CoreGroup::Little => None,
+                CoreGroup::Big | CoreGroup::Prime => Some(GROUP_TOP_APP),
+            });
+            if let Some(group) = dst_group
+                && let Some(st) = self.threads.get(&a.tid)
+                && !st.is_fg
+                && !st.moved_group
+            {
+                let mv = self.move_tid_group(a.tid, group);
+                if crate::logger::diag_active() {
+                    crate::logger::aff_action(
+                        "move_group",
+                        pid,
+                        a.tid,
+                        "-",
+                        &comm,
+                        group,
+                        "-",
+                        &io_result_tag(&mv),
+                        "eem_promote",
+                    );
+                }
+                if mv.is_ok()
+                    && let Some(st) = self.threads.get_mut(&a.tid)
+                {
+                    st.moved_group = true;
+                } else if mv.is_err() {
+                    // 升组失败：本线程本轮放弃（掩码一定被裁剪，写它没有意义）
+                    continue;
+                }
+            }
+            let res = set_tid_affinity(a.tid, &a.mask);
+            // 写后读回：cgroup cpuset 会**静默裁剪**越界核（写返回 0 但掩码没生效）。
+            // 不校验就会把「内核没答应」记成成功迁移，日志与事实分叉。
+            let effective = res.as_ref().ok().and_then(|_| read_tid_mask(a.tid));
+            let clipped = match (&res, &effective) {
+                (Ok(()), Some(got)) => a.mask.iter().any(|c| !got.contains(c)),
+                _ => false,
+            };
+            // INFO：只写线程 + 方向（用户口径）
+            if res.is_ok() && !clipped {
+                info!(
+                    "{}",
+                    t_with_args(
+                        "affinity-migrate",
+                        &fluent_args!(
+                            "tid" => a.tid.to_string(),
+                            "comm" => comm.clone(),
+                            "dir" => a.dir.as_str().to_string(),
+                            "cores" => format!("{}-{}", a.mask.first().copied().unwrap_or(0), a.mask.last().copied().unwrap_or(0))
+                        )
+                    )
+                );
+            }
+            // devimp：全量细节
+            if crate::logger::diag_active() {
+                crate::logger::aff_action(
+                    "place",
+                    pid,
+                    a.tid,
+                    "-",
+                    &comm,
+                    &format!(
+                        "{}-{}",
+                        a.mask.first().copied().unwrap_or(0),
+                        a.mask.last().copied().unwrap_or(0)
+                    ),
+                    &format!(
+                        "gain={:.3},settled={},reason={},clipped={}",
+                        a.gain, a.settled, a.reason, clipped
+                    ),
+                    &io_result_tag(&res),
+                    a.dir.as_str(),
+                );
+            }
+            // 记账：真正生效（写成功且未被 cpuset 裁剪）才更新窗口/簇
+            // 记账只在**收敛步**做：过渡步写的是「旧∪新」并集，不是目标区间，
+            // 拿它当窗口镜像会让下一轮的 direction/宽度判断都基于一个过宽的假窗口。
+            if res.is_ok()
+                && !clipped
+                && a.settled
+                && let Some(st) = self.threads.get_mut(&a.tid)
+            {
+                st.eem_window = Some(placement::Window::new(
+                    a.mask.first().copied().unwrap_or(0),
+                    a.mask.last().copied().unwrap_or(0),
+                ));
+                st.eem_cluster =
+                    crate::common::core_group_of(a.mask.first().copied().unwrap_or(0) as u32);
+            }
+        }
+    }
+
+    /// [eem] 关闭 EEM 时把被接管的线程掩码还原成「全核」并清记账。
+    ///
+    /// 不还原的后果：EEM 把线程写成 1 核窗口后若开关被热重载关掉，既有 pin/promote
+    /// 路径**不会主动扫**这些线程，它们会永久卡在窄掩码上（性能塌陷且无日志）。
+    fn eem_release_all(&mut self) {
+        let max_cpu = {
+            let r = crate::common::chiri_core_ranges();
+            r.prime.end.max(r.big.end)
+        };
+        let all: Vec<usize> = (0..max_cpu).collect();
+        let tids: Vec<i32> = self
+            .threads
+            .iter()
+            .filter(|(_, st)| st.eem_window.is_some())
+            .map(|(tid, _)| *tid)
+            .collect();
+        let n = tids.len();
+        for tid in tids {
+            if self.mask_write_allowed(tid, &all) {
+                let _ = set_tid_affinity(tid, &all);
+            }
+            self.eem.forget(tid);
+            if let Some(st) = self.threads.get_mut(&tid) {
+                st.eem_window = None;
+                st.eem_cluster = None;
+            }
+        }
+        info!(
+            "{}",
+            t_with_args("affinity-eem-released", &fluent_args!("n" => n.to_string()))
+        );
     }
 
     /// default 小核高水位下的非关键前台线程升核（normal_busy），仅压力窗口内调用（窗口外零采样零写入）；每轮最多采样 FG_SCAN_WINDOW 个（游标轮转）限制文件 IO

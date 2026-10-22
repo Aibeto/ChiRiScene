@@ -286,16 +286,17 @@ FAS 白名单内的游戏（明日方舟：终末地、王者荣耀等）前台�
 
 ### 主要项目
 
-| Project                                  | License                          | Repository                                                            | Platform |
-| :--------------------------------------- | :------------------------------- | :-------------------------------------------------------------------- | :------- |
-| imacte/yumi                              | GPL v3.0                         | [GitHub](https://github.com/imacte/yumi)                              | ALL      |
-| Sutoliu/AppOptR                          | GPL v3.0                         | [Gitee](https://gitee.com/sutoliu/AppOptR)                            | ALL      |
-| torvalds/linux                           | GPL v2.0 WITH Linux-syscall-note | [GitHub](https://github.com/torvalds/linux)                           | SM8550   |
-| AYNTechnologies/linux                    | GPL v2.0 WITH Linux-syscall-note | [Github](https://github.com/AYNTechnologies/linux)                    | SM8550   |
-| OnePlusOSS/android_kernel_oneplus_sm8550 | GPL v2.0 WITH Linux-syscall-note | [GitHub](https://github.com/OnePlusOSS/android_kernel_oneplus_sm8550) | SM8550   |
-| OnePlusOSS/android_kernel_oneplus_sm8650 | GPL v2.0 WITH Linux-syscall-note | [GitHub](https://github.com/OnePlusOSS/android_kernel_oneplus_sm8650) | SM8650   |
-| kdrag0n/freqbench                        | MIT                              | [GitHub](https://github.com/kdrag0n/freqbench)                        | part     |
-| kerneltoast/freqbench                    | MIT                              | [GitHub](https://github.com/kerneltoast/freqbench)                    | part     |
+| Project                                  | License                         | Repository                                                            | Platform |
+| :--------------------------------------- | :------------------------------ | :-------------------------------------------------------------------- | :------- |
+| imacte/yumi                              | GPL v3.0                        | [GitHub](https://github.com/imacte/yumi)                              | ALL      |
+| Sutoliu/AppOptR                          | GPL v3.0                        | [Gitee](https://gitee.com/sutoliu/AppOptR)                            | ALL      |
+| torvalds/linux                           | GPL-2.0 WITH Linux-syscall-note | [GitHub](https://github.com/torvalds/linux)                           | SM8550   |
+| AYNTechnologies/linux                    | GPL-2.0 WITH Linux-syscall-note | [Github](https://github.com/AYNTechnologies/linux)                    | SM8550   |
+| OnePlusOSS/android_kernel_oneplus_sm8550 | GPL-2.0 WITH Linux-syscall-note | [GitHub](https://github.com/OnePlusOSS/android_kernel_oneplus_sm8550) | SM8550   |
+| OnePlusOSS/android_kernel_oneplus_sm8650 | GPL-2.0 WITH Linux-syscall-note | [GitHub](https://github.com/OnePlusOSS/android_kernel_oneplus_sm8650) | SM8650   |
+| OnePlusOSS/android_kernel_oneplus_sm8750 | GPL-2.0 WITH Linux-syscall-note | [GitHub](https://github.com/OnePlusOSS/android_kernel_oneplus_sm8750) | SM8750   |
+| kdrag0n/freqbench                        | MIT                             | [GitHub](https://github.com/kdrag0n/freqbench)                        | part     |
+| kerneltoast/freqbench                    | MIT                             | [GitHub](https://github.com/kerneltoast/freqbench)                    | part     |
 
 ### 补丁
 
@@ -309,9 +310,9 @@ FAS 白名单内的游戏（明日方舟：终末地、王者荣耀等）前台�
 | :----------------- | :------- | :----------------------------------------------------------- |
 | LittleYouran_CTS_3 | GPL v3.0 | [GitHub](https://github.com/LittleYouran/LittleYouran_CTS_3) |
 | socpk              |          | [socpk](https://www.socpk.com)                               |
-| nanoreview.net     |          | [nanoreview](https://nanoreview.net)                     |
-| GSMArena           |          | [gsmarena](https://www.gsmarena.com)                     |
-| Wikipedia          | CC BY-SA | [wikipedia](https://en.wikipedia.org)                    |
+| nanoreview.net     |          | [nanoreview](https://nanoreview.net)                         |
+| GSMArena           |          | [gsmarena](https://www.gsmarena.com)                         |
+| Wikipedia          | CC BY-SA | [wikipedia](https://en.wikipedia.org)                        |
 
 <!-- | dieshot            |          | [Kurnal Insights](kurnal-insights.com)                       | -->
 

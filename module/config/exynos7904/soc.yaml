@@ -67,78 +67,11 @@ cpu_governors: [uag, walt, schedutil, performance]
 frontier_policy:
   enabled: true
   model_fingerprint: "335bf75cb757a8a7"
-  # TODO 待拍板: reserve_pct（流畅度下界）与 lead_frac（预判基准提前量）仍为占位值；
-  # 真机观察后重跑本脚本覆盖（--reserve / --lead-frac），不要手改本块。
-  # 无独立公布值可对账：本机型不设 anchors 段（实测折算表，逐档见能效模型文档 §3）
-  # 前沿点（8 点；compute=CMdmips(CoreMark 实测折算)、power=W）
-  frontier:
-    - { compute: 18619.7, power_w: 0.4787 }
-    - { compute: 34193.6, power_w: 1.0361 }
-    - { compute: 36434.0, power_w: 1.1803 }
-    - { compute: 38454.2, power_w: 1.3195 }
-    - { compute: 42975.3, power_w: 1.7525 }
-    - { compute: 45205.8, power_w: 1.9779 }
-    - { compute: 48568.3, power_w: 2.4167 }
-    - { compute: 49678.5, power_w: 2.673 }
-  # 各簇频表 + 逐档**簇功耗**(W)：功耗列由 devimpbin/batch_ingest.py 从 freqbench_tensor
-  # 实测折算（净动态、已做漏电校正），**只能用于相对排序**；档位与 freq_khz 逐档对齐。
+  # 无独立公布值可对账（实测折算表，逐档见能效模型文档 §3）
+  # 各簇**单核**能效曲线：相对能效模型（energy_model）的唯一数据源。
+  # power_w = 簇功耗（溯源用）；single_core_power_w = 单核动态功耗（运行期消费）。
+  # 运行期只取**形状**（归一成 0→1 相对向量），绝对瓦数不参与任何比较。
   per_cluster:
-    little: { capacity: 554, freq_khz: [449000, 546000, 676000, 757000, 839000, 902000, 1014000, 1144000, 1248000, 1352000, 1482000, 1586000], power_w: [0.2036, 0.4025, 0.5078, 0.5254, 0.5657, 0.6088, 0.5988, 0.6997, 0.7610, 0.9002, 1.1402, 1.3332] }
-    big: { capacity: 1024, freq_khz: [936000, 1144000, 1352000, 1560000, 1664000, 1768000], power_w: [0.2751, 0.4193, 0.6447, 0.9407, 1.0835, 1.3398] }
-  # 需求桶: lo_units/hi_units 是真机容量单位边界；三簇 kHz 是查表落点（运行期仍需 floor 对齐）
-  demand_buckets:
-    - { point: 0, lo_units: 2025.3, hi_units: 2862.6, little_khz: 449000, big_khz: 936000, prime_khz: 0, target_compute: 18619.7, target_power_w: 0.4787, margin_mdmips_per_w: 27940.3 }
-    - { point: 1, lo_units: 2862.6, hi_units: 3820.3, little_khz: 1248000, big_khz: 936000, prime_khz: 0, target_compute: 34193.6, target_power_w: 1.0361, margin_mdmips_per_w: 15536.8 }
-    - { point: 2, lo_units: 3820.3, hi_units: 4049.8, little_khz: 1248000, big_khz: 1144000, prime_khz: 0, target_compute: 36434.0, target_power_w: 1.1803, margin_mdmips_per_w: 14512.9 }
-    - { point: 3, lo_units: 4049.8, hi_units: 4404.0, little_khz: 1352000, big_khz: 1144000, prime_khz: 0, target_compute: 38454.2, target_power_w: 1.3195, margin_mdmips_per_w: 10441.3 }
-    - { point: 4, lo_units: 4404.0, hi_units: 4769.6, little_khz: 1586000, big_khz: 1144000, prime_khz: 0, target_compute: 42975.3, target_power_w: 1.7525, margin_mdmips_per_w: 9895.7 }
-    - { point: 5, lo_units: 4769.6, hi_units: 5070.8, little_khz: 1586000, big_khz: 1352000, prime_khz: 0, target_compute: 45205.8, target_power_w: 1.9779, margin_mdmips_per_w: 7662.9 }
-    - { point: 6, lo_units: 5070.8, hi_units: 5311.8, little_khz: 1586000, big_khz: 1664000, prime_khz: 0, target_compute: 48568.3, target_power_w: 2.4167, margin_mdmips_per_w: 4331.6 }
-    - { point: 7, lo_units: 5311.8, hi_units: 5372.0, little_khz: 1586000, big_khz: 1768000, prime_khz: 0, target_compute: 49678.5, target_power_w: 2.673, margin_mdmips_per_w: 0.0 }
-  # 三模式结果向量（lead_mult 已定: reduce 0.5 / default 1.0 / boost 2.0）
-  modes:
-    reduce:
-      lead_mult: 0.5
-      lead_frac: 0.15
-      reserve_pct: 0.0
-      buckets:
-        - { point: 0, target_compute: 18619.7, target_power_w: 0.4787, enter_units: 125.6, exit_units: 125.6 }
-        - { point: 1, target_compute: 34193.6, target_power_w: 1.0361, enter_units: 143.7, exit_units: 143.7 }
-        - { point: 2, target_compute: 36434.0, target_power_w: 1.1803, enter_units: 34.4, exit_units: 34.4 }
-        - { point: 3, target_compute: 38454.2, target_power_w: 1.3195, enter_units: 53.1, exit_units: 53.1 }
-        - { point: 4, target_compute: 42975.3, target_power_w: 1.7525, enter_units: 54.8, exit_units: 54.8 }
-        - { point: 5, target_compute: 45205.8, target_power_w: 1.9779, enter_units: 45.2, exit_units: 45.2 }
-        - { point: 6, target_compute: 48568.3, target_power_w: 2.4167, enter_units: 36.1, exit_units: 36.1 }
-        - { point: 7, target_compute: 49678.5, target_power_w: 2.673, enter_units: 9.0, exit_units: 9.0 }
-    default:
-      lead_mult: 1.0
-      lead_frac: 0.3
-      reserve_pct: 0.1
-      buckets:
-        - { point: 0, target_compute: 18619.7, target_power_w: 0.4787, enter_units: 251.2, exit_units: 251.2 }
-        - { point: 1, target_compute: 34193.6, target_power_w: 1.0361, enter_units: 287.3, exit_units: 287.3 }
-        - { point: 2, target_compute: 36434.0, target_power_w: 1.1803, enter_units: 68.8, exit_units: 68.8 }
-        - { point: 3, target_compute: 38454.2, target_power_w: 1.3195, enter_units: 106.3, exit_units: 106.3 }
-        - { point: 4, target_compute: 42975.3, target_power_w: 1.7525, enter_units: 109.7, exit_units: 109.7 }
-        - { point: 5, target_compute: 45205.8, target_power_w: 1.9779, enter_units: 90.4, exit_units: 90.4 }
-        - { point: 6, target_compute: 48568.3, target_power_w: 2.4167, enter_units: 72.3, exit_units: 72.3 }
-        - { point: 7, target_compute: 49678.5, target_power_w: 2.673, enter_units: 18.1, exit_units: 18.1 }
-    boost:
-      lead_mult: 2.0
-      lead_frac: 0.6
-      reserve_pct: 0.25
-      buckets:
-        - { point: 0, target_compute: 18619.7, target_power_w: 0.4787, enter_units: 502.4, exit_units: 502.4 }
-        - { point: 1, target_compute: 34193.6, target_power_w: 1.0361, enter_units: 574.6, exit_units: 574.6 }
-        - { point: 2, target_compute: 36434.0, target_power_w: 1.1803, enter_units: 137.7, exit_units: 137.7 }
-        - { point: 3, target_compute: 38454.2, target_power_w: 1.3195, enter_units: 212.5, exit_units: 212.5 }
-        - { point: 4, target_compute: 42975.3, target_power_w: 1.7525, enter_units: 219.4, exit_units: 219.4 }
-        - { point: 5, target_compute: 45205.8, target_power_w: 1.9779, enter_units: 180.7, exit_units: 180.7 }
-        - { point: 6, target_compute: 48568.3, target_power_w: 2.4167, enter_units: 144.6, exit_units: 144.6 }
-        - { point: 7, target_compute: 49678.5, target_power_w: 2.673, enter_units: 36.1, exit_units: 36.1 }
-  # 预判交叠带: 上升沿/下降沿共用同一组提前量（enter=exit），单位=真机容量单位
-  anticipate:
-    min_dwell_ticks: 20
-    adjacent_only: true
-    mode_mul: { reduce: 0.5, default: 1.0, boost: 2.0 }
+    little: { capacity: 554, freq_khz: [449000, 546000, 676000, 757000, 839000, 902000, 1014000, 1144000, 1248000, 1352000, 1482000, 1586000], power_w: [0.2036, 0.4025, 0.5078, 0.5254, 0.5657, 0.6088, 0.5988, 0.6997, 0.7610, 0.9002, 1.1402, 1.3332], single_core_power_w: [0.0339, 0.0671, 0.0846, 0.0876, 0.0943, 0.1015, 0.0998, 0.1166, 0.1268, 0.1500, 0.1900, 0.2222] }
+    big: { capacity: 1024, freq_khz: [936000, 1144000, 1352000, 1560000, 1664000, 1768000], power_w: [0.2751, 0.4193, 0.6447, 0.9407, 1.0835, 1.3398], single_core_power_w: [0.1376, 0.2097, 0.3224, 0.4703, 0.5417, 0.6699] }
 # <<< frontier_policy <<<

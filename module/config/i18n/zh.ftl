@@ -188,9 +188,8 @@ clg-config-reloaded = [CLG] 配置已热重载 | 升频={ $up } 降频={ $down }
 clg-perf-clamped = [CLG] 配置 perf_floor > perf_ceil ({ $floor } > { $ceil })，已将 perf_floor 限制为 perf_ceil
 clg-restore = [CLG] P{ $pid } 已恢复 | governor={ $governor } min={ $min } kHz max={ $max } kHz
 clg-tick-log = [CLG] P{ $pid } 利用率={ $util }% perf={ $perf } 频率={ $freq }kHz boost={ $boost }kHz decay={ $decay }
-clg-pf-tick-log = [CLG-PF] P{ $pid } 利用率={ $util }% perf={ $perf } 频率={ $freq }kHz decay={ $decay } pf={ $pf_khz }kHz
-clg-pf-enabled = [CLG-PF] 帕累托前沿查表已启用 | 指纹={ $fp } 桶数={ $buckets }
-clg-pf-fallback = [CLG-PF] 前沿表不可用 ({ $reason })，回退比例路径 (只此一次)
+clg-eem-enabled = [CLG-EEM] 相对能效模型已启用 | 指纹={ $fp } 甜点={ $sweet }kHz 本簇核数={ $cores }
+clg-eem-tick-log = [CLG-EEM] P{ $pid } 利用率={ $util }% perf={ $perf } 频率={ $freq }kHz decay={ $decay } eem={ $eem_khz }kHz 甜点={ $sweet_khz }kHz 核数={ $cores }
 clg-writer-invalid = [CLG] P{ $pid } sysfs 写入器无效 (max_valid: { $max_valid }, min_valid: { $min_valid })，已跳过
 clg-freq-set = [CLG] P{ $pid } 频率调整: { $old_khz }MHz -> { $new_khz }MHz
 clg-freq-write-failed-cached = [CLG] P{ $pid } 频率写入失败，保持缓存值 { $cached_khz }MHz (目标 { $target_khz }MHz)
@@ -341,6 +340,9 @@ rhine-lock-note-no-backup = rhine-back.chr 缺失，已用内置默认值补一�
 # --- Affinity（CPU 亲和与线程迁移）---
 affinity-boost-applied = [Affinity] boost 布局已应用: top-app/foreground → { $big }，后台分组 → { $little }
 affinity-normal-restore = [Affinity] 已恢复正常亲和布局
+
+affinity-eem-released = [Affinity] 已关闭相对能效放置，还原 { $n } 条线程掩码
+affinity-migrate = [Affinity] 线程 { $tid } ({ $comm }) 迁移 { $dir } 核区间 { $cores }
 affinity-promoted = [Affinity] 后台线程 { $tid } 已提升到大核 (util { $util }%)
 affinity-fdp-promoted = [Affinity] FDP：后台线程 { $tid } 迁至 { $dst } (净收益 { $net_mw } mW)
 affinity-demoted = [Affinity] 后台线程 { $tid } 已降回小核组 (util { $util }%)

@@ -39,6 +39,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 BLOCK_BEGIN = "# >>> frontier_policy (generated) >>>"
+# 迁移期兼容：旧文件的受控块标记（统一后不再写入，只在读取时识别）
+BLOCK_LITE_BEGIN = "# >>> frontier_policy_lite (generated) >>>"
+BLOCK_LITE_END = "# <<< frontier_policy_lite <<<"
 BLOCK_END = "# <<< frontier_policy <<<"
 
 CLUSTERS = ("little", "big", "prime")
@@ -82,6 +85,21 @@ SOC_PROFILES = {
         "power_comment": [
             "  # 各簇频表 + 逐档**簇功耗**(W)：功耗列直接取文档 §3 簇级表，供放置成本模型做边际比较；",
             "  # 两列等长且逐档对齐（同下标 = 同一档）。功耗只含动态项、不含漏电，**只能用于相对排序**。",
+        ],
+    },
+    # sm8750（骁龙 8 Elite / OnePlus 13 PJZ110）：**只有参考能效曲线**，无 §3 实测表
+    # → 必须配 --from-reference 使用；此时 doc 仅作占位（该模式不读它，改读 soc.yaml 的
+    #   frontier_policy.per_cluster）。anchors 留空 = 无公布值可对账，不编造期望。
+    "sm8750": {
+        "doc": ROOT / "mdocs" / "sm8750" / "sm8750-freq-power.md",
+        "soc": ROOT / "module" / "config" / "sm8750" / "soc.yaml",
+        "out_new": ROOT / "module" / "config" / "sm8750" / "frontier_policy.yaml",
+        "prime_top_from_khz": None,
+        "anchors": {},
+        "compute_unit": "capacity×f/f_max（参考口径）",
+        "power_comment": [
+            "  # 各簇频表 + 逐档**参考**功耗(W)：取自能效曲线V2 图表的单核整机功耗差，",
+            "  # 非簇级实测、不含漏电；只用于簇内相对排序，**不可当绝对功耗预算**。",
         ],
     },
     "zumapro": {
@@ -151,6 +169,78 @@ def resolve_profile(soc: str):
     if soc in SOC_PROFILES:
         return SOC_PROFILES[soc]
     return generic_profile(soc)
+
+
+# [parse_reference] ---------------------------------------------------------
+
+def reference_capacity_map(soc_path: Path):
+    """从 frontier_policy.per_cluster 读各簇 capacity（[capacity] 段缺失时的兜底）"""
+    raw = soc_path.read_text(encoding="utf-8")
+    m_blk = re.search(r"^frontier_policy(?:_lite)?:\s*$", raw, re.M)
+    if not m_blk:
+        return {}
+    rest = raw[m_blk.end():]
+    stop = re.search(r"^[A-Za-z_]", rest, re.M)
+    text = rest[: stop.start()] if stop else rest
+    out = {}
+    for cluster in CLUSTERS:
+        m = re.search(rf"^\s*{cluster}:\s*\{{(.*?)\}}\s*$", text, re.M)
+        if not m:
+            continue
+        cm = re.search(r"capacity:\s*(\d+)", m.group(1))
+        if cm:
+            out[cluster] = int(cm.group(1))
+    return out
+
+
+def parse_reference_tables(soc_path: Path, cores=None):
+    """从 soc.yaml 的 `frontier_policy.per_cluster` 读参考曲线 → 与 §3 表同形的三元组
+
+    输出结构与 `parse_cluster_tables()` **完全一致**：[(freq_khz, power_w, compute), ...]，
+    因此下游 `enumerate_frontier` / `lower_hull` / `build_buckets` / `build_modes`
+    一行都不用改——「参考曲线」与「实测表」在下游是同一种输入。
+
+    算力列口径 = 单核算力 capacity × f / f_max（与文档 §3 的 Mdmips 列同构，
+    单位不同不影响前沿形状，因为 hull 只用总算力与总功耗的**相对**几何）。
+    power_w 为参考模型的单核整机功耗差（图表口径），按簇内相对形状参与排序。
+    """
+    raw = soc_path.read_text(encoding="utf-8")
+    # 必须先截取 frontier_policy 段：topology 里也有 little/big/prime 同名键，
+    # 全文件正则会先命中 topology（{ start, end }），把参考曲线整段读空。
+    # 统一后段名就是 `frontier_policy`；旧文件可能还叫 `frontier_policy_lite`，一并接受（迁移期）
+    m_blk = re.search(r"^frontier_policy(?:_lite)?:\s*$", raw, re.M)
+    if not m_blk:
+        raise SystemExit(f"{soc_path} 里没有 frontier_policy 段（参考曲线无处可取）")
+    rest = raw[m_blk.end():]
+    stop = re.search(r"^[A-Za-z_]", rest, re.M)
+    text = rest[: stop.start()] if stop else rest
+    out = {}
+    for cluster in CLUSTERS:
+        m = re.search(rf"^\s*{cluster}:\s*\{{(.*?)\}}\s*$", text, re.M)
+        if not m:
+            continue
+        body = m.group(1)
+        fm = re.search(r"freq_khz:\s*\[([^\]]*)\]", body)
+        pm = re.search(r"power_w:\s*\[([^\]]*)\]", body)
+        cm = re.search(r"capacity:\s*(\d+)", body)
+        if not fm or not pm:
+            continue
+        freqs = [int(x) for x in re.findall(r"\d+", fm.group(1))]
+        powers = [float(x) for x in re.findall(r"-?\d+(?:\.\d+)?", pm.group(1))]
+        if not freqs or len(freqs) != len(powers):
+            raise SystemExit(f"参考曲线不齐: {cluster} freq={len(freqs)} power={len(powers)}")
+        f_max = freqs[-1]
+        cap = int(cm.group(1)) if cm else 1024
+        # 算力列必须是**簇级**（= 单核 capacity×f/f_max × 该簇核数），与 §3「簇算力」列同口径。
+        # 只用单核值会让 enumerate_frontier 跨簇求和时把多核簇少算数倍，前沿序被扭曲。
+        n = (cores or {}).get(cluster, 1) or 1
+        out[cluster] = [(f, p, n * cap * f / f_max) for f, p in zip(freqs, powers)]
+    if not out:
+        raise SystemExit(
+            f"{soc_path} 里没有 frontier_policy.per_cluster 数据："
+            "先用 scripts/curve_anchor.py 写入参考曲线"
+        )
+    return out
 
 
 # [parse_doc] ---------------------------------------------------------------
@@ -247,9 +337,11 @@ def parse_soc(path: Path):
     重复运行时不能让它污染 cap/freq 取值。再按段取，避免抓到 [idle] 段的整数键。
     """
     text = path.read_text(encoding="utf-8")
-    b, e = text.find(BLOCK_BEGIN), text.find(BLOCK_END)
-    if b >= 0 and e >= 0:
-        text = text[:b] + text[e + len(BLOCK_END):]
+    # 两套受控块都要剥（新标记 + 迁移期旧标记），否则块内 per_cluster 的同名键会污染段解析
+    for begin, end in ((BLOCK_BEGIN, BLOCK_END), (BLOCK_LITE_BEGIN, BLOCK_LITE_END)):
+        b, e = text.find(begin), text.find(end)
+        if b >= 0 and e >= 0:
+            text = text[:b] + text[e + len(end):]
     cap_text = section_lines(text, "capacity")
     freq_text = section_lines(text, "freq_khz")
     topo_text = section_lines(text, "topology")
@@ -258,6 +350,11 @@ def parse_soc(path: Path):
         m = re.search(rf"^\s*{c}:\s*(\d+)\s*$", cap_text, re.M)
         if m:
             cap[c] = int(m.group(1))
+    # [capacity] 段可缺失（无 DT 平台刻意留空，真机 sysfs 才是权威）：此时回退取
+    # frontier_policy.per_cluster.<簇>.capacity。不补这一层的话 cap 全 0 会让
+    # build_buckets 的 lo_units 全为 0、桶表退化成单桶（运行期二分永远命中同一桶）。
+    if not cap:
+        cap.update(reference_capacity_map(path))
     freqs = {}
     for c in CLUSTERS:
         m = re.search(rf"^\s*{c}:\s*\[(.*?)\]", freq_text, re.S | re.M)
@@ -463,37 +560,43 @@ def fingerprint(tables, cap, freqs):
     return h.hexdigest()[:16]
 
 
-def render_block(tables, cap, freqs, hull, buckets, modes, enabled, prof):
+def render_block(tables, cap, freqs, enabled, prof, from_reference=False, cores=None, checks=None):
     # cores 未入参：本块只渲染 per_cluster 的 capacity/freq/power 与前沿/桶表，核数已折算进
     # combo_units（build_buckets 阶段），落块不需要它（a818354 曾传入但函数体内未使用）
     fp = fingerprint(tables, cap, freqs)
+    cores = cores or {}
     L = []
+    # 受控块标记（统一后只有一套；旧 Lite 标记仅用于读取迁移期文件）
     L.append(BLOCK_BEGIN)
     L.append("# 由 scripts/frontier_policy.py 生成；受控块替换，块外内容请勿手改本块")
-    L.append(f"# 口径: 能效模型 {prof['doc'].relative_to(ROOT)} §3 簇级表 + 本文件 capacity/freq_khz")
+    if from_reference:
+        L.append(
+            "# 口径: **参考**能效曲线（本文件 frontier_policy.per_cluster 的 freq_khz/power_w）"
+            " + capacity×f/f_max 算力；"
+        )
+        L.append(
+            "#       前沿/下凸包/需求桶/三模式算法与标准版**逐行相同**，差别只在功耗列的来源（参考模型 vs §3 实测）"
+        )
+    else:
+        L.append(f"# 口径: 能效模型 {prof['doc'].relative_to(ROOT)} §3 簇级表 + 本文件 capacity/freq_khz")
     L.append("# 运行期: 只查表落点与逐档功耗（不重算 Cx·f·V²）；表缺失/指纹不符/桶越界 → 回退既有参数组")
     L.append("frontier_policy:")
     L.append(f"  enabled: {str(enabled).lower()}")
     L.append(f'  model_fingerprint: "{fp}"')
-    L.append("  # TODO 待拍板: reserve_pct（流畅度下界）与 lead_frac（预判基准提前量）仍为占位值；")
-    L.append("  # 真机观察后重跑本脚本覆盖（--reserve / --lead-frac），不要手改本块。")
-    anchor_rows = check_anchors(hull, tables, prof["anchors"], prof["prime_top_from_khz"])
-    if anchor_rows:
-        L.append("  # 复算自检锚点（与文档 §5/§7 公布值对账，容差 3%）")
-        L.append("  anchors:")
-        for name, got, want, ok in anchor_rows:
-            L.append(f"    - {{ name: \"{name}\", got: {round(got, 3)}, want: {want}, ok: {str(ok).lower()} }}")
+    # 对账结果只作**注释留痕**：相对能效模型不消费锚点（它只用曲线形状），
+    # 但保留公布值对照便于事后发现口径漂移。
+    rows = checks or []
+    if rows:
+        L.append("  # 复算对账（与文档公布值，容差 3%）：只作留痕，运行期不消费")
+        for name, got, want, ok in rows:
+            L.append(f"  #   [{'OK' if ok else 'FAIL'}] {name}: got={round(got, 3)} want={want}")
     else:
-        L.append("  # 无独立公布值可对账：本机型不设 anchors 段（实测折算表，逐档见能效模型文档 §3）")
-    L.append(f"  # 前沿点（{len(hull)} 点；compute={prof['compute_unit']}、power=W）")
-    L.append("  frontier:")
-    for x, y, _ in hull:
-        L.append(f"    - {{ compute: {round(x, 1)}, power_w: {round(y, 4)} }}")
-    for ln in prof["power_comment"]:
-        L.append(ln)
+        L.append("  # 无独立公布值可对账（实测折算表，逐档见能效模型文档 §3）")
+    L.append("  # 各簇**单核**能效曲线：相对能效模型（energy_model）的唯一数据源。")
+    L.append("  # power_w = 簇功耗（溯源用）；single_core_power_w = 单核动态功耗（运行期消费）。")
+    L.append("  # 运行期只取**形状**（归一成 0→1 相对向量），绝对瓦数不参与任何比较。")
     L.append("  per_cluster:")
     for c in CLUSTERS:
-        # 缺席簇（单簇/双簇 SoC）不落 per_cluster：查表侧按「0 = 表未提供」处理，写空数组反而误导
         if not tables.get(c):
             continue
         if len(tables[c]) != len(freqs.get(c, [])):
@@ -503,59 +606,30 @@ def render_block(tables, cap, freqs, hull, buckets, modes, enabled, prof):
             )
         freqs_txt = ", ".join(str(f) for f, _, _ in tables[c])
         power_txt = ", ".join(f"{p:.4f}" for _, p, _ in tables[c])
+        n_core = max(int(cores.get(c, 1)), 1)
+        single_txt = ", ".join(f"{p / n_core:.4f}" for _, p, _ in tables[c])
         L.append(
             f"    {c}: {{ capacity: {cap.get(c, 0)}, freq_khz: [{freqs_txt}],"
-            f" power_w: [{power_txt}] }}"
+            f" power_w: [{power_txt}], single_core_power_w: [{single_txt}] }}"
         )
-    L.append("  # 需求桶: lo_units/hi_units 是真机容量单位边界；三簇 kHz 是查表落点（运行期仍需 floor 对齐）")
-    L.append("  demand_buckets:")
-    for b in buckets:
-        L.append(
-            "    - { point: %d, lo_units: %s, hi_units: %s, little_khz: %d, big_khz: %d, prime_khz: %d,"
-            " target_compute: %s, target_power_w: %s, margin_mdmips_per_w: %s }"
-            % (b["point_index"], b["lo_units"], b["hi_units"], b["little_khz"], b["big_khz"],
-               b["prime_khz"], b["target_compute"], b["target_power_w"],
-               b["margin_mdmips_per_w"])
-        )
-    L.append("  # 三模式结果向量（lead_mult 已定: reduce 0.5 / default 1.0 / boost 2.0）")
-    L.append("  modes:")
-    for mode in ("reduce", "default", "boost"):
-        m = modes[mode]
-        L.append(f"    {mode}:")
-        L.append(f"      lead_mult: {m['lead_mult']}")
-        L.append(f"      lead_frac: {m['lead_frac']}")
-        L.append(f"      reserve_pct: {m['reserve_pct']}")
-        L.append("      buckets:")
-        for r in m["buckets"]:
-            L.append(
-                "        - { point: %d, target_compute: %s, target_power_w: %s,"
-                " enter_units: %s, exit_units: %s }"
-                % (r["point_index"], r["target_compute"], r["target_power_w"],
-                   r["enter_units"], r["exit_units"])
-            )
-    L.append("  # 预判交叠带: 上升沿/下降沿共用同一组提前量（enter=exit），单位=真机容量单位")
-    L.append("  anticipate:")
-    L.append("    min_dwell_ticks: 20")
-    L.append("    adjacent_only: true")
-    L.append("    mode_mul: { reduce: 0.5, default: 1.0, boost: 2.0 }")
     L.append(BLOCK_END)
     return "\n".join(L) + "\n"
 
 
 # [check] -------------------------------------------------------------------
 
-def existing_block(path: Path):
+def existing_block(path: Path, begin=BLOCK_BEGIN, end=BLOCK_END):
     if not path.exists():
         return None
     text = path.read_text(encoding="utf-8")
-    b = text.find(BLOCK_BEGIN)
-    e = text.find(BLOCK_END)
+    b = text.find(begin)
+    e = text.find(end)
     if b < 0 or e < 0:
         return None
-    return text[b:e + len(BLOCK_END)] + "\n"
+    return text[b:e + len(end)] + "\n"
 
 
-def write_block(path: Path, block: str):
+def write_block(path: Path, block: str, begin=BLOCK_BEGIN, end=BLOCK_END):
     """受控块替换: 块内替换、块外逐字保留；无标记块时只追加
 
     尾部空行处理: 块后若残留一个换行则吃掉，避免每轮多留一个空行（保证重复写幂等）。
@@ -568,9 +642,9 @@ def write_block(path: Path, block: str):
         text = path.read_text(encoding="utf-8")
     else:
         text = ""
-    b, e = text.find(BLOCK_BEGIN), text.find(BLOCK_END)
+    b, e = text.find(begin), text.find(end)
     if b >= 0 and e >= 0:
-        tail = text[e + len(BLOCK_END):]
+        tail = text[e + len(end):]
         if tail.startswith("\n"):
             tail = tail[1:]
         new = text[:b] + block + tail
@@ -624,6 +698,10 @@ def main(argv=None):
                     help="预判基准提前量（占需求桶跨度比例）TODO 待拍板")
     ap.add_argument("--reserve", type=float, default=None,
                     help="统一覆盖三模式的流畅度下界 reserve_pct（TODO 待拍板）")
+    ap.add_argument("--from-reference", action="store_true",
+                    help="功耗列取本机 soc.yaml 的 frontier_policy.per_cluster 参考曲线"
+                         "（而非 mdocs §3 实测表），算力列按 capacity×f/f_max 生成；"
+                         "下游前沿/桶/模式算法与实测路径**完全相同**")
     ap.add_argument("--disable", action="store_true",
                     help="生成的块写 enabled: false（该 SoC 回退既有参数组，不查表）")
     args = ap.parse_args(argv)
@@ -637,11 +715,18 @@ def main(argv=None):
     if prof is None:
         raise SystemExit(f"没有 {args.soc} 的档案：手写档案见 [soc] 段，或先跑 devimpbin/batch_ingest.py 产出 mdocs/<soc>/ 文档")
 
-    for p in (prof["doc"], prof["soc"]):
+    # --from-reference 不读 mdocs 文档（功耗列来自 soc.yaml 的参考曲线），故只校验 soc.yaml
+    need = (prof["soc"],) if args.from_reference else (prof["doc"], prof["soc"])
+    for p in need:
         if not p.exists():
             raise SystemExit(f"缺少输入: {p}")
 
-    tables = parse_cluster_tables(prof["doc"])
+    if args.from_reference:
+        # 核数先取（算力列要按簇级折算），随后 parse_soc 会再取一次（含 capacity/freqs）
+        _, _, cores_pre = parse_soc(prof["soc"])
+        tables = parse_reference_tables(prof["soc"], cores=cores_pre)
+    else:
+        tables = parse_cluster_tables(prof["doc"])
     # 算力列先修单调：非单调列会让 hull 序与 combo_units 序互相矛盾 → 桶表 lo_units 非单调
     tables, compute_fixes = monotone_compute(tables)
     if compute_fixes:
@@ -660,21 +745,18 @@ def main(argv=None):
     if no_cores:
         print(f"⚠ [topology] 有簇表却缺核数: {no_cores}", file=sys.stderr)
 
+    # 下凸包只用于**对账留痕**（与文档公布值比对，结果以注释形式落块）。
+    # 相对能效模型（energy_model）不再消费前沿点/桶表/模式向量——它们在 2026-10-22
+    # 重构中移除，因为两轴都假设「整簇满载」，与按线程迁移的物理口径冲突。
     combos = enumerate_frontier(tables)
-    # 下凸包几何只吃 (总算力, 总功耗)，但把频率三元组带出（第三维）供运行期查表
     hull = lower_hull([(x, v[0], v[1]) for x, v in combos.items()])
     checks = check_anchors(hull, tables, prof["anchors"], prof["prime_top_from_khz"])
     n_combos = len(combos)
-    buckets = build_buckets(hull, cap, freqs, cores)
-    reserve = dict(DEFAULT_RESERVE)
-    if args.reserve is not None:
-        reserve = {k: args.reserve for k in reserve}
-    modes = build_modes(buckets, args.lead_frac, reserve)
-    block = render_block(tables, cap, freqs, hull, buckets, modes, not args.disable, prof)
+    block = render_block(tables, cap, freqs, not args.disable, prof, from_reference=args.from_reference, cores=cores, checks=checks)
 
     print(f"SoC: {args.soc}")
     print(f"输入: {prof['doc'].relative_to(ROOT)} / {prof['soc'].relative_to(ROOT)}")
-    print(f"档位: {counts}  核数: {cores}  组合: {n_combos}  前沿点: {len(hull)}  桶: {len(buckets)}")
+    print(f"档位: {counts}  核数: {cores}  组合: {n_combos}  前沿点: {len(hull)}（仅对账，不落表）")
     print(f"指纹: {fingerprint(tables, cap, freqs)}")
     print("复算对账（容差 3%）:")
     for name, got, want, ok in checks:
@@ -685,7 +767,10 @@ def main(argv=None):
 
     target = prof["out_new"] if args.target == "new" else prof["soc"]
     if args.check:
-        cur = existing_block(target)
+        cur = existing_block(
+            target, BLOCK_BEGIN,
+            BLOCK_END,
+        )
         if cur is None:
             print(f"--check: {target.relative_to(ROOT)} 内没有生成块（尚未落表）")
             return 1
@@ -698,7 +783,10 @@ def main(argv=None):
         if bad and not args.force:
             print("拒绝落表：锚点对账未过（确认口径无误后用 --force 强制写入）", file=sys.stderr)
             return 2
-        write_block(target, block)
+        write_block(
+            target, block, BLOCK_BEGIN,
+            BLOCK_END,
+        )
         print(f"已写入: {target.relative_to(ROOT)}（受控块替换，块外未动）")
     else:
         print("--- dry-run（--write 才落盘）---")

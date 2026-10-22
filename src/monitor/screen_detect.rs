@@ -337,8 +337,16 @@ pub fn read_screen_prop_raw() -> Option<String> {
     // PROP_VALUE_MAX = 92（Android 系统属性单值上限）
     let mut buf = [0u8; 92];
     let name = c"debug.tracing.screen_state";
+    // [host_stub] `__system_property_get` 只存在于 bionic：宿主平台（`cargo check` / 单测）一律
+    // 按「属性缺失」返回 0，语义与真机读不到属性时一致，使全仓可在开发机做类型检查
+    #[cfg(target_os = "android")]
     // SAFETY: name 为 NUL 结尾常量、buf 定长缓冲；__system_property_get 只在缓冲内写并返回实际长度，无别名访问
     let len = unsafe { libc::__system_property_get(name.as_ptr(), buf.as_mut_ptr()) };
+    #[cfg(not(target_os = "android"))]
+    let len = {
+        let _ = name;
+        0i32
+    };
     if len <= 0 {
         if !PROP_MISSING_LOGGED.swap(true, Ordering::Relaxed) {
             warn!("screen-detect: debug.tracing.screen_state missing; treated as screen-on");

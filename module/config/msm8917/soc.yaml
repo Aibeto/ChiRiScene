@@ -48,52 +48,10 @@ cpu_governors: [uag, walt, schedutil, performance]
 frontier_policy:
   enabled: true
   model_fingerprint: "edb50620721b05e3"
-  # TODO 待拍板: reserve_pct（流畅度下界）与 lead_frac（预判基准提前量）仍为占位值；
-  # 真机观察后重跑本脚本覆盖（--reserve / --lead-frac），不要手改本块。
-  # 无独立公布值可对账：本机型不设 anchors 段（实测折算表，逐档见能效模型文档 §3）
-  # 前沿点（3 点；compute=CMdmips(CoreMark 实测折算)、power=W）
-  frontier:
-    - { compute: 12469.6, power_w: 0.8491 }
-    - { compute: 14215.0, power_w: 1.0434 }
-    - { compute: 18206.0, power_w: 1.8436 }
-  # 各簇频表 + 逐档**簇功耗**(W)：功耗列由 devimpbin/batch_ingest.py 从 freqbench_tensor
-  # 实测折算（净动态、已做漏电校正），**只能用于相对排序**；档位与 freq_khz 逐档对齐。
+  # 无独立公布值可对账（实测折算表，逐档见能效模型文档 §3）
+  # 各簇**单核**能效曲线：相对能效模型（energy_model）的唯一数据源。
+  # power_w = 簇功耗（溯源用）；single_core_power_w = 单核动态功耗（运行期消费）。
+  # 运行期只取**形状**（归一成 0→1 相对向量），绝对瓦数不参与任何比较。
   per_cluster:
-    little: { capacity: 1024, freq_khz: [960000, 1094400, 1248000, 1401000], power_w: [0.8491, 1.0434, 1.4769, 1.8436] }
-  # 需求桶: lo_units/hi_units 是真机容量单位边界；三簇 kHz 是查表落点（运行期仍需 floor 对齐）
-  demand_buckets:
-    - { point: 0, lo_units: 2806.7, hi_units: 3003.1, little_khz: 960000, big_khz: 0, prime_khz: 0, target_compute: 12469.6, target_power_w: 0.8491, margin_mdmips_per_w: 8983.0 }
-    - { point: 1, lo_units: 3003.1, hi_units: 3647.8, little_khz: 1094400, big_khz: 0, prime_khz: 0, target_compute: 14215.0, target_power_w: 1.0434, margin_mdmips_per_w: 4987.5 }
-    - { point: 2, lo_units: 3647.8, hi_units: 4096.0, little_khz: 1401000, big_khz: 0, prime_khz: 0, target_compute: 18206.0, target_power_w: 1.8436, margin_mdmips_per_w: 0.0 }
-  # 三模式结果向量（lead_mult 已定: reduce 0.5 / default 1.0 / boost 2.0）
-  modes:
-    reduce:
-      lead_mult: 0.5
-      lead_frac: 0.15
-      reserve_pct: 0.0
-      buckets:
-        - { point: 0, target_compute: 12469.6, target_power_w: 0.8491, enter_units: 29.5, exit_units: 29.5 }
-        - { point: 1, target_compute: 14215.0, target_power_w: 1.0434, enter_units: 96.7, exit_units: 96.7 }
-        - { point: 2, target_compute: 18206.0, target_power_w: 1.8436, enter_units: 67.2, exit_units: 67.2 }
-    default:
-      lead_mult: 1.0
-      lead_frac: 0.3
-      reserve_pct: 0.1
-      buckets:
-        - { point: 0, target_compute: 12469.6, target_power_w: 0.8491, enter_units: 58.9, exit_units: 58.9 }
-        - { point: 1, target_compute: 14215.0, target_power_w: 1.0434, enter_units: 193.4, exit_units: 193.4 }
-        - { point: 2, target_compute: 18206.0, target_power_w: 1.8436, enter_units: 134.5, exit_units: 134.5 }
-    boost:
-      lead_mult: 2.0
-      lead_frac: 0.6
-      reserve_pct: 0.25
-      buckets:
-        - { point: 0, target_compute: 12469.6, target_power_w: 0.8491, enter_units: 117.8, exit_units: 117.8 }
-        - { point: 1, target_compute: 14215.0, target_power_w: 1.0434, enter_units: 386.8, exit_units: 386.8 }
-        - { point: 2, target_compute: 18206.0, target_power_w: 1.8436, enter_units: 268.9, exit_units: 268.9 }
-  # 预判交叠带: 上升沿/下降沿共用同一组提前量（enter=exit），单位=真机容量单位
-  anticipate:
-    min_dwell_ticks: 20
-    adjacent_only: true
-    mode_mul: { reduce: 0.5, default: 1.0, boost: 2.0 }
+    little: { capacity: 1024, freq_khz: [960000, 1094400, 1248000, 1401000], power_w: [0.8491, 1.0434, 1.4769, 1.8436], single_core_power_w: [0.2123, 0.2609, 0.3692, 0.4609] }
 # <<< frontier_policy <<<

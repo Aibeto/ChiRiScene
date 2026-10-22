@@ -1315,6 +1315,21 @@ pub struct AffinityConfig {
     /// FDP 目的簇落点频率上限比例（缺省 0.85，钳 0.3..=1.0）：迁入后该簇模型工作频率不得高于 `该值 × 该簇最高频`，任何簇贴顶都不允许
     #[serde(default = "d_aff_fdp_dst_freq_cap_ratio")]
     pub fdp_dst_freq_cap_ratio: f32,
+    /// EEM（相对能效模型）放置内核总开关：true 时**不分前后台**，所有被采样的线程
+    /// 都按「同算力取更低功耗」动态选簇/选核，取代 FDP 的「只服务后台 promote」口径。
+    ///
+    /// 缺省 **true**：模型不可用（无 `frontier_policy.per_cluster`）时 `apply` 里
+    /// `&& energy_model::available()` 会自动关掉，逐位回到既有放置路径——即
+    /// 「有模型就接管、没模型就沉默」，不需要每个机型手写开关。
+    /// 写 false 可显式关闭本机型（如放置策略需人工验证的机型）。
+    #[serde(default = "crate::utils::default_true")]
+    pub eem_placement: bool,
+    /// EEM 跨簇/跨窗口切换的相对成本改善阈值（缺省 0.15 = 省不到 15% 不动，防边界抖动）
+    #[serde(default = "d_aff_eem_hysteresis")]
+    pub eem_hysteresis: f32,
+    /// EEM 线程需求门槛（util%，缺省 8）：低于它的线程不参与放置（噪声线程不值得搬迁）
+    #[serde(default = "d_aff_eem_min_util_pct")]
+    pub eem_min_util_pct: f32,
     /// 亲和调优参数（可配化）：缺省值取自 affinity.rs 的同名 const，不写 yaml 时行为不变
     #[serde(default)]
     pub tuning: AffinityTuningConfig,
@@ -1462,6 +1477,14 @@ fn d_aff_fdp_dst_freq_cap_ratio() -> f32 {
     crate::chiri::affinity::FDP_DST_FREQ_CAP_RATIO
 }
 // 缺省值唯一来源 = affinity.rs 的同名 const（改 const 即改缺省，不在两处写数字）
+/// EEM 滞回缺省（唯一数字源 = energy_model::SWITCH_HYSTERESIS）
+fn d_aff_eem_hysteresis() -> f32 {
+    crate::chiri::energy_model::SWITCH_HYSTERESIS
+}
+/// EEM 参与门槛缺省：低于 8% util 的线程视为噪声，不搬迁
+fn d_aff_eem_min_util_pct() -> f32 {
+    8.0
+}
 fn d_aff_promote_util_pct() -> f32 {
     crate::chiri::affinity::PROMOTE_UTIL_PCT
 }
@@ -1529,6 +1552,9 @@ impl Default for AffinityConfig {
             bitwidth_aware: true,
             write_dedup: true,
             fdp_enabled: false,
+            eem_placement: true,
+            eem_hysteresis: d_aff_eem_hysteresis(),
+            eem_min_util_pct: d_aff_eem_min_util_pct(),
             fdp_cost_hysteresis_w: d_aff_fdp_cost_hysteresis_w(),
             fdp_max_inserts_per_round: d_aff_fdp_max_inserts_per_round(),
             fdp_dst_freq_cap_ratio: d_aff_fdp_dst_freq_cap_ratio(),
@@ -1554,6 +1580,16 @@ impl AffinityConfig {
             self.fdp_dst_freq_cap_ratio = d_aff_fdp_dst_freq_cap_ratio();
         }
         self.fdp_dst_freq_cap_ratio = self.fdp_dst_freq_cap_ratio.clamp(0.3, 1.0);
+        // EEM 阈值：非有限回退默认；滞回钳 0..=1（0 = 只要有改善就切，1 = 永不切）、
+        // 参与门槛钳 0..=100
+        if !self.eem_hysteresis.is_finite() {
+            self.eem_hysteresis = d_aff_eem_hysteresis();
+        }
+        self.eem_hysteresis = self.eem_hysteresis.clamp(0.0, 1.0);
+        if !self.eem_min_util_pct.is_finite() {
+            self.eem_min_util_pct = d_aff_eem_min_util_pct();
+        }
+        self.eem_min_util_pct = self.eem_min_util_pct.clamp(0.0, 100.0);
         self.tuning.normalize();
     }
 }

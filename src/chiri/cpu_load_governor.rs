@@ -23,26 +23,15 @@ pub fn set_clamp_heavy(v: bool) {
     CLAMP_HEAVY.store(v, Ordering::Relaxed);
 }
 
-// [frontier_pf] 前沿查表缺数据的一次性告警门（进程级）：表是静态资产、首 tick 即定型，刷日志无意义
-static PF_FALLBACK_WARNED: AtomicBool = AtomicBool::new(false);
-
 // [frontier_pf] 接管提示的一次性门（进程级）：表与指纹都是编译期资产，每个 worker / 每次重建重复打没有信息量
 static PF_ENABLED_LOGGED: AtomicBool = AtomicBool::new(false);
 
-/// 前沿表不可用时打一条 warn（只此一次），说明回退原因（reason = 缺容量/桶越界/该簇无目标）
-fn warn_pf_fallback_once(reason: &str) {
-    if !PF_FALLBACK_WARNED.swap(true, Ordering::Relaxed) {
-        warn!(
-            "{}",
-            t_with_args(
-                "clg-pf-fallback",
-                &fluent_args!("reason" => reason.to_string())
-            )
-        );
-    }
-}
+/// [eem] 甜点封顶的抗饥饿释放窗口（tick；10 tick = 10s）：
+/// 封顶是为了「先让迁移动手」，但迁移可能因 cpuset / 位宽 / 目标簇拥塞而落不了地。
+/// 连续压制超过该窗口即放弃封顶、回到比例路径——宁可多花电，也不把性能长期锁在甜点。
+const EEM_CAP_RELEASE_TICKS: u32 = 10;
 
-/// [frontier_pf] 本簇所属核心组（按受影响 CPU 的最小 ID 归属）：spawn 时定一次，用于取该组的逐桶落点表
+/// [eem] 本簇所属核心组（按受影响 CPU 的最小 ID 归属）：spawn 时定一次，用于取该组的逐桶落点表
 fn pf_group_of(
     affected: &[usize],
     core_ranges: &crate::common::CoreGroupRanges,
@@ -359,9 +348,13 @@ struct CoreGroupWorker {
     /// [frontier_pf] 各 CPU 的容量（真机 cpu_capacity 优先，缺失按核心组回退 soc.yaml [capacity]；再缺 = None）
     /// spawn 时一次性解析并缓存，flush 每 tick 只读；None 项会让 PF 需求折算整段回退比例路径
     core_capacities: Vec<Option<u32>>,
-    /// [frontier_pf] 本簇的逐桶落点（索引 = 需求桶，值 = 已 floor 对齐到 available_freqs 的目标 kHz，0 = 无目标）
-    /// 键为「核心组 + 频率表」的进程级缓存（`common::frontier_aligned`），跨 worker / 跨重建复用，flush 每 tick 只做「二分找桶 + 取数组」；None = 非 PF SoC 走原比例路径
-    pf_aligned: Option<Arc<Vec<u32>>>,
+    /// [eem] 本簇的相对能效曲线（`energy_model::curve`，进程级 OnceLock 共享）；None = 本 SoC 无可用模型 → 走原比例路径
+    eem: Option<&'static crate::chiri::energy_model::Curve>,
+    /// [eem] 本簇拓扑核数（`k` 的上限；与 `affected_cpus.len()` 分开记账，热插拔时后者会变）
+    eem_cores: usize,
+    /// [eem] 甜点封顶「压住但需求确实超了」的连续 tick 数：超过 `EEM_CAP_RELEASE_TICKS`
+    /// 即放弃封顶（迁移动不了时不能把频率长期压在甜点，那是净性能损失）
+    eem_press_streak: u32,
     load_rx: LoadReceiver,
     stop: Arc<AtomicBool>,
     touch: Arc<AtomicTouchState>,
@@ -645,15 +638,17 @@ impl CoreGroupWorker {
         };
         let write_perf = (eff_perf - decay).max(self.cfg.perf_floor);
         let ratio_freq = self.cluster.find_floor_freq(write_perf);
-        // [frontier_pf] 前沿落点只允许下调：target = min(比例路径落点, PF 目标)；非稳态/缺数据/PF 未启用一律 = ratio_freq
-        // 不变式：PF 结果严格劣于等于「比例路径 + 稳态下探」的功耗，PF 只替换「比例→频点」这一步；触摸窗口内关闭，min() 会把刚抬到触摸 floor 的落点拉回低频桶
-        let pf_target = if touch_active {
+        // [eem] 相对能效落点：**只允许下调**，与比例路径取 min。
+        // 语义 = 「甜点封顶」：单线程需求没跨过整簇份额门槛时，频率停在本簇甜点档，
+        // 缺口交给迁移去补（`energy_model` 的核心口径）；跨过门槛才允许越过甜点。
+        // 触摸窗口内关闭（min() 会把刚抬到触摸 floor 的落点压回甜点，破坏触控响应）。
+        let eem_target = if touch_active {
             None
         } else {
-            self.frontier_lookup(core_utils)
+            self.eem_target_freq(core_utils)
         };
-        let target_freq = match pf_target {
-            Some(pf) => ratio_freq.min(pf),
+        let target_freq = match eem_target {
+            Some(t) => ratio_freq.min(t),
             None => ratio_freq,
         };
         // [thermal_clamp] 钳制「生效/解除」跃迁记一条 event（值未变不写，零分配）；生效判据 = 写频目标被 cap 压到 current_perf 之下
@@ -727,7 +722,7 @@ impl CoreGroupWorker {
         }
 
         // 日志摘要：每 25 tick 输出一次；format! 在宏外求值，log_enabled! 门控省掉 INFO 级别下的分配
-        // [frontier_pf] 启用前沿的 SoC（8550）日志前缀用 CLG-PF 区分；非 PF 机型仍打 CLG
+        // [eem] 启用相对能效模型的 SoC 日志前缀用 CLG-EEM 区分；无模型机型仍打 CLG
         *log_counter += 1;
         if *log_counter % 25 == 0 && log::log_enabled!(log::Level::Debug) {
             let pid = self.cluster.policy_id.to_string();
@@ -735,18 +730,24 @@ impl CoreGroupWorker {
             let perf = format!("{:.2}", self.cluster.current_perf);
             let freq = (self.cluster.current_freq / 1000).to_string();
             let decay = format!("{:.2}", self.cluster.steady_decay);
-            if crate::common::soc_frontier_policy().is_some() {
+            if self.eem.is_some() {
                 debug!(
                     "{}",
                     t_with_args(
-                        "clg-pf-tick-log",
+                        "clg-eem-tick-log",
                         &fluent_args!(
                             "pid" => pid,
                             "util" => util,
                             "perf" => perf,
                             "freq" => freq,
                             "decay" => decay,
-                            "pf_khz" => pf_target.map(|f| f / 1000).unwrap_or(0).to_string()
+                            "eem_khz" => eem_target.map(|f| f / 1000).unwrap_or(0).to_string(),
+                            "sweet_khz" => self
+                                .eem
+                                .map(|c| c.sweet_khz() / 1000)
+                                .unwrap_or(0)
+                                .to_string(),
+                            "cores" => self.eem_cores.to_string()
                         )
                     )
                 );
@@ -769,55 +770,89 @@ impl CoreGroupWorker {
         }
     }
 
-    /// [frontier_pf] 本 tick 全局需求（真机容量单位）= Σ(各核 util × 该核 capacity)
-    /// 只累加 util > 0 的核（0 贡献无需容量）；任一贡献核容量缺失（真机 cpu_capacity 与 soc.yaml 兜底都没）→ None（整段回退）
-    fn demand_units(&self, core_utils: &[f32]) -> Option<f32> {
-        // 空切片 = 负载超时 flush（无观测），不是「缺容量」：静默回退，不占用一次性告警
-        if core_utils.is_empty() {
-            return None;
-        }
-        let mut sum = 0.0f32;
-        for (cpu, &u) in core_utils.iter().enumerate() {
-            if u <= 0.0 {
-                continue;
-            }
-            let Some(cap) = self.core_capacities.get(cpu).copied().flatten() else {
-                // 告警带缺失核编号（一次性门，只报首个缺失核）：排障需区分「真机无 cpu_capacity 且 soc.yaml 兜底未命中该核」与「该核不在任何核心组区间」
-                warn_pf_fallback_once(&format!("capacity-missing(cpu={cpu})"));
-                return None;
-            };
-            sum += u * cap as f32;
-        }
-        Some(sum)
-    }
-
-    /// [frontier_pf] 前沿目标频点（spawn 时已 floor 对齐到本簇频率表，tick 内只查索引），失败一律 None → 调用方回退比例路径，只下调的前提由调用方保证
-    /// 缺数据打一次性 warn；非 PF SoC（`pf_aligned` 为 None）静默返回 None
-    fn frontier_lookup(&self, core_utils: &[f32]) -> Option<u32> {
-        let aligned = self.pf_aligned.as_ref()?;
-        // 非稳态：不把落点压向 pf（不算缺数据，不告警）
+    /// [eem] 本簇的能效封顶频点（kHz）——「优先迁移，其次升频」的量化落点。
+    ///
+    /// 判据（依次短路）：
+    /// 1. **甜点档就够用** → 封顶在甜点档。这是零损失优化：需求本来就能被满足，
+    ///    再往上加频只是白烧电。
+    /// 2. **本簇占用已达 `ceil(n/2)` 核当量** → 允许越过甜点。多核并发共享同一档位，
+    ///    升频收益覆盖全簇；此时迁移也无处可去。
+    /// 3. **别处更便宜** → 仍封顶在甜点档，把缺口留给 affinity 侧迁移（模型算出
+    ///    迁到别的簇成本更低时才走这条）。
+    /// 4. 其余（本簇已是最优、且甜点不够用）→ 允许越过甜点，按刚好够用的最低档。
+    ///
+    /// 返回 None = 不干预（无模型 / 非稳态 / 无观测），调用方走原比例路径。
+    fn eem_target_freq(&mut self, core_utils: &[f32]) -> Option<u32> {
+        let curve = self.eem?;
+        // 非稳态不压向甜点：稳态下探与迁移都还没收敛，压频只会让 util 虚高
         if self.cluster.steady_streak < self.cfg.steady_decay_stable_ticks {
             return None;
         }
-        let Some(demand) = self.demand_units(core_utils) else {
-            return None; // 原因（含首个缺失核编号）已在 demand_units 内报出，这里不重复占用一次性告警
-        };
-        // 查表与 aligned 同源（同一次进程级构建）：取不到 = 表不可用，静默回退
-        let table = crate::common::frontier_table()?;
+        // 只算**本簇**：worker 按 policy（单簇）划分，整机口径会让每簇都以为自己要扛全 SoC 需求
+        let demand = crate::chiri::energy_model::demand_units(
+            &self.cluster.affected_cpus,
+            core_utils,
+            &self.core_capacities,
+        )?;
         if !demand.is_finite() {
-            warn_pf_fallback_once("bucket-out-of-range");
             return None;
         }
-        // 需求低于首桶边界 = 负载极低（几何边界，不是表错）：静默回退，别占用一次性告警
-        let bucket = table.bucket_for_demand(demand)?;
-        match aligned.get(bucket).copied() {
-            // 0 = 表未提供该桶该簇的目标（与越界同口径）：回退比例路径
-            Some(khz) if khz > 0 => Some(khz),
-            _ => {
-                warn_pf_fallback_once("cluster-target-missing");
-                None
-            }
+        let group = pf_group_of(&self.cluster.affected_cpus, &self.core_ranges)?;
+
+        // 占用（核当量）：本簇各核 util 之和，1.0 = 占满一颗核
+        let occupied: f32 = self
+            .cluster
+            .affected_cpus
+            .iter()
+            .filter_map(|&c| core_utils.get(c).copied())
+            .map(|u| u.clamp(0.0, 1.0))
+            .sum();
+        let saturated = occupied >= crate::chiri::energy_model::cluster_busy_gate(group);
+
+        // 供给按**忙核数**算：需求是簇内逐核 util×cap 的累加，供给必须用同样多的核去承接，
+        // 否则「6 核各 50%」会被当成「1 核要吃 3 倍算力」而误判成必须升频。
+        let k = (occupied.ceil() as usize).max(1);
+        let allow_above = saturated
+            || curve.gear_below_sweet_for(demand, k).is_none()
+                && !self.cheaper_elsewhere(demand, k, group);
+
+        let gear = crate::chiri::energy_model::gear_for_demand(group, demand, k, allow_above)?;
+        let khz = curve.freq_khz(gear);
+        if khz == 0 {
+            return None;
         }
+        // 抗饥饿：封顶（= 落在甜点档及以下）且需求其实超出该档供给时累计；
+        // 连续压过窗口就放弃封顶，交给比例路径——迁移没落地时不能长期锁性能。
+        let capped = khz <= curve.sweet_khz();
+        let starved = capped && curve.supply(gear, k) < demand;
+        if starved {
+            self.eem_press_streak = self.eem_press_streak.saturating_add(1);
+            if self.eem_press_streak > EEM_CAP_RELEASE_TICKS {
+                self.eem_press_streak = 0;
+                return None;
+            }
+        } else {
+            self.eem_press_streak = 0;
+        }
+        Some(khz)
+    }
+
+    /// 别处是否存在**更便宜**的放置（同算力下成本更低）——是则本簇应封顶在甜点，
+    /// 把线程让给那个簇。只比较「需求刚好够用」的那一档，不越甜点做跨簇比较。
+    fn cheaper_elsewhere(&self, demand: f32, k: usize, group: crate::common::CoreGroup) -> bool {
+        let Some(here) = crate::chiri::energy_model::curve(group) else {
+            return false;
+        };
+        // 与主判据同一 k 口径：本簇这份需求是由 k 颗忙核共同承接的
+        let here_cost = here.cost(here.gear_for(demand, k), k);
+        let online = crate::chiri::energy_model::online_clusters();
+        crate::chiri::energy_model::best_placement(
+            demand,
+            &online,
+            None,
+            crate::chiri::energy_model::SWITCH_HYSTERESIS,
+        )
+        .is_some_and(|p| p.cluster != group && p.cost < here_cost)
     }
 
     /// 判定 cluster 是否覆盖当前 SoC 的大核区间：触摸升频只作用于大核
@@ -999,20 +1034,10 @@ impl CoreGroupWorker {
             core_capacities.push(cap);
         }
 
-        // [frontier_pf] 逐桶落点表：进程级摊平（soc.yaml 编入二进制）+ 本簇频率表的 floor 对齐，键 = 核心组 + 频率表
-        // 同一簇的 worker 重建（息屏/模式热切换）复用同一份、不重算；非 PF SoC 恒 None → flush 走原比例路径、行为逐位不变
-        let pf_aligned = if crate::common::soc_frontier_policy().is_some() {
-            match pf_group_of(&affected, &core_ranges) {
-                // 判不出核心组（区间配置与真机不符）：只此一次告警，PF 整段不生效
-                None => {
-                    warn_pf_fallback_once("unknown-cluster");
-                    None
-                }
-                Some(group) => crate::common::frontier_aligned(group, &cluster.available_freqs),
-            }
-        } else {
-            None
-        };
+        // [eem] 本簇相对能效曲线：进程级 OnceLock（三簇共享），worker 重建不重算；
+        // 无模型（非 frontier SoC / 段损坏）→ None → flush 走原比例路径，行为逐位不变
+        let eem = pf_group_of(&affected, &core_ranges).and_then(crate::chiri::energy_model::curve);
+        let eem_cores = eem.map(|c| c.cores()).unwrap_or(0);
 
         info!(
             "{}",
@@ -1029,18 +1054,21 @@ impl CoreGroupWorker {
             )
         );
 
-        // [frontier_pf] 启用前沿的 SoC（8550）确认一条：表是进程级资产（指纹/桶数与 worker 无关），只在首次接管打一次（非 PF 机型不打）
-        // filter 的判据只在 PF SoC 上求值，一次性门也只在此时翻转，息屏等热切换引起的 worker 重建不再重复刷
-        if let Some(pol) = crate::common::soc_frontier_policy()
-            .filter(|_| !PF_ENABLED_LOGGED.swap(true, Ordering::Relaxed))
+        // [eem] 启用相对能效模型的 SoC 确认一条：模型是进程级资产（指纹与甜点与 worker 无关），
+        // 只在首次接管打一次（无模型机型不打），息屏等热切换引起的 worker 重建不再重复刷
+        if eem.is_some()
+            && let Some(pol) = crate::common::soc_frontier_policy()
+            && !PF_ENABLED_LOGGED.swap(true, Ordering::Relaxed)
         {
+            let sweet = eem.map(|c| c.sweet_khz() / 1000).unwrap_or(0);
             info!(
                 "{}",
                 t_with_args(
-                    "clg-pf-enabled",
+                    "clg-eem-enabled",
                     &fluent_args!(
                         "fp" => pol.model_fingerprint.clone().unwrap_or_else(|| "-".to_string()),
-                        "buckets" => pol.demand_buckets.len().to_string()
+                        "sweet" => sweet.to_string(),
+                        "cores" => eem_cores.to_string()
                     )
                 )
             );
@@ -1058,7 +1086,9 @@ impl CoreGroupWorker {
             },
             core_ranges,
             core_capacities,
-            pf_aligned,
+            eem,
+            eem_cores,
+            eem_press_streak: 0,
             load_rx,
             stop: stop.clone(),
             touch,

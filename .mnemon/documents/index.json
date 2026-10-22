@@ -285,6 +285,36 @@
       "contentHash": "ed45e49162196d1341371a31c746665f6c47b72940abe94f7e9a9e6e71c9e7e3",
       "sizeBytes": 7076,
       "memoryBodyIds": []
+    },
+    {
+      "id": "4d1e4238-94e7-4ee0-a651-939190c60260",
+      "title": "2026-10-22 8e(SM8750/sun) 调度适配 + activity 级规则 + PF-Lite 落地",
+      "description": "OnePlus 13(PJZ110/SM8750, board=sun) 的 ChiRi 适配：两簇 topology、空 little 区间兜底、activity 级规则首版、PF-Lite（参考能效曲线选点）机制与 CLG 接入。含取证结论、阻塞项与验证边界。",
+      "status": "active",
+      "filename": "2026-10-22-8e-sm8750-sun-activity-pf-lite-4d1e4238.md",
+      "relativePath": "documents/active/2026-10-22-8e-sm8750-sun-activity-pf-lite-4d1e4238.md",
+      "sourcePaths": [
+        "module/config/sun/soc.yaml",
+        "module/config/sun/feature.yaml",
+        "module/config/sun/meta.yaml",
+        "module/rules.yaml",
+        "src/common.rs",
+        "src/chiri/frontier_lite.rs",
+        "src/chiri/cpu_load_governor.rs",
+        "src/chiri/affinity.rs",
+        "scripts/frontier_policy_lite.py",
+        "scripts/tests/frontier_lite_regression.rs"
+      ],
+      "sessionIds": [
+        "session-8e259540-4ed5-4c6e-ad67-daa67abbccb5"
+      ],
+      "createdAt": "2026-10-21T21:14:07.078Z",
+      "updatedAt": "2026-10-21T21:14:07.078Z",
+      "lastAccessedAt": "2026-10-21T21:14:07.078Z",
+      "revision": 1,
+      "contentHash": "d1d1ace12866a82b482c92029d35aa5ae78dd407c87b4a4f445e084ce1990799",
+      "sizeBytes": 10167,
+      "memoryBodyIds": []
     }
   ]
 }

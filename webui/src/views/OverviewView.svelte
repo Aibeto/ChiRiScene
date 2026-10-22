@@ -22,7 +22,7 @@
     : t(app.modeInfo.labelKey),
   );
   // 模式家族（CLG/特调/实验室/停摆/FAS），与详细模式分开显示；未运行/无记录时不显示
-  // 本机启用帕累托前沿落点（daemon 写的 pf.chr）时 CLG 家族名显示 CLG-PF，与 daemon 日志前缀同口径
+  // 本机启用相对能效模型（daemon 写的 pf.chr）时 CLG 家族名显示 CLG-EEM，与 daemon 日志前缀同口径
   const familyLabel = $derived(
     modeIdle || app.modeMissing ? ""
     : app.modeInfo.kind === "clg" ? t(clgFamilyKey(app.clgPfEnabled))

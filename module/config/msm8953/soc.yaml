@@ -51,57 +51,10 @@ cpu_governors: [uag, walt, schedutil, performance]
 frontier_policy:
   enabled: true
   model_fingerprint: "2b55226f4bb0cc37"
-  # TODO 待拍板: reserve_pct（流畅度下界）与 lead_frac（预判基准提前量）仍为占位值；
-  # 真机观察后重跑本脚本覆盖（--reserve / --lead-frac），不要手改本块。
-  # 无独立公布值可对账：本机型不设 anchors 段（实测折算表，逐档见能效模型文档 §3）
-  # 前沿点（4 点；compute=CMdmips(CoreMark 实测折算)、power=W）
-  frontier:
-    - { compute: 16934.8, power_w: 0.411 }
-    - { compute: 26929.1, power_w: 0.6769 }
-    - { compute: 43863.5, power_w: 1.4986 }
-    - { compute: 52373.8, power_w: 2.4687 }
-  # 各簇频表 + 逐档**簇功耗**(W)：功耗列由 devimpbin/batch_ingest.py 从 freqbench_tensor
-  # 实测折算（净动态、已做漏电校正），**只能用于相对排序**；档位与 freq_khz 逐档对齐。
+  # 无独立公布值可对账（实测折算表，逐档见能效模型文档 §3）
+  # 各簇**单核**能效曲线：相对能效模型（energy_model）的唯一数据源。
+  # power_w = 簇功耗（溯源用）；single_core_power_w = 单核动态功耗（运行期消费）。
+  # 运行期只取**形状**（归一成 0→1 相对向量），绝对瓦数不参与任何比较。
   per_cluster:
-    little: { capacity: 1024, freq_khz: [652800, 1036800, 1401600, 1689600, 1804800, 1958400, 2016000], power_w: [0.4110, 0.6769, 1.1609, 1.4986, 2.0654, 2.3099, 2.4687] }
-  # 需求桶: lo_units/hi_units 是真机容量单位边界；三簇 kHz 是查表落点（运行期仍需 floor 对齐）
-  demand_buckets:
-    - { point: 0, lo_units: 2652.6, hi_units: 3432.8, little_khz: 652800, big_khz: 0, prime_khz: 0, target_compute: 16934.8, target_power_w: 0.411, margin_mdmips_per_w: 37586.7 }
-    - { point: 1, lo_units: 3432.8, hi_units: 5539.4, little_khz: 1036800, big_khz: 0, prime_khz: 0, target_compute: 26929.1, target_power_w: 0.6769, margin_mdmips_per_w: 20609.0 }
-    - { point: 2, lo_units: 5539.4, hi_units: 7528.8, little_khz: 1689600, big_khz: 0, prime_khz: 0, target_compute: 43863.5, target_power_w: 1.4986, margin_mdmips_per_w: 8772.6 }
-    - { point: 3, lo_units: 7528.8, hi_units: 8192.0, little_khz: 2016000, big_khz: 0, prime_khz: 0, target_compute: 52373.8, target_power_w: 2.4687, margin_mdmips_per_w: 0.0 }
-  # 三模式结果向量（lead_mult 已定: reduce 0.5 / default 1.0 / boost 2.0）
-  modes:
-    reduce:
-      lead_mult: 0.5
-      lead_frac: 0.15
-      reserve_pct: 0.0
-      buckets:
-        - { point: 0, target_compute: 16934.8, target_power_w: 0.411, enter_units: 117.0, exit_units: 117.0 }
-        - { point: 1, target_compute: 26929.1, target_power_w: 0.6769, enter_units: 316.0, exit_units: 316.0 }
-        - { point: 2, target_compute: 43863.5, target_power_w: 1.4986, enter_units: 298.4, exit_units: 298.4 }
-        - { point: 3, target_compute: 52373.8, target_power_w: 2.4687, enter_units: 99.5, exit_units: 99.5 }
-    default:
-      lead_mult: 1.0
-      lead_frac: 0.3
-      reserve_pct: 0.1
-      buckets:
-        - { point: 0, target_compute: 16934.8, target_power_w: 0.411, enter_units: 234.1, exit_units: 234.1 }
-        - { point: 1, target_compute: 26929.1, target_power_w: 0.6769, enter_units: 632.0, exit_units: 632.0 }
-        - { point: 2, target_compute: 43863.5, target_power_w: 1.4986, enter_units: 596.8, exit_units: 596.8 }
-        - { point: 3, target_compute: 52373.8, target_power_w: 2.4687, enter_units: 199.0, exit_units: 199.0 }
-    boost:
-      lead_mult: 2.0
-      lead_frac: 0.6
-      reserve_pct: 0.25
-      buckets:
-        - { point: 0, target_compute: 16934.8, target_power_w: 0.411, enter_units: 468.1, exit_units: 468.1 }
-        - { point: 1, target_compute: 26929.1, target_power_w: 0.6769, enter_units: 1264.0, exit_units: 1264.0 }
-        - { point: 2, target_compute: 43863.5, target_power_w: 1.4986, enter_units: 1193.6, exit_units: 1193.6 }
-        - { point: 3, target_compute: 52373.8, target_power_w: 2.4687, enter_units: 397.9, exit_units: 397.9 }
-  # 预判交叠带: 上升沿/下降沿共用同一组提前量（enter=exit），单位=真机容量单位
-  anticipate:
-    min_dwell_ticks: 20
-    adjacent_only: true
-    mode_mul: { reduce: 0.5, default: 1.0, boost: 2.0 }
+    little: { capacity: 1024, freq_khz: [652800, 1036800, 1401600, 1689600, 1804800, 1958400, 2016000], power_w: [0.4110, 0.6769, 1.1609, 1.4986, 2.0654, 2.3099, 2.4687], single_core_power_w: [0.0514, 0.0846, 0.1451, 0.1873, 0.2582, 0.2887, 0.3086] }
 # <<< frontier_policy <<<

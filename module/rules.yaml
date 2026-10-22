@@ -10,6 +10,40 @@ global_mode: "default"
 app_modes:
 # Activity 级规则：键可写成 `pkg/.SomeActivity`（命中优先于同包名键，示例 `com.tencent.mm/.Chat`）。
 # activity 由全局采样器在屏幕亮且有前台时按 3s 节流采样，普通应用同样生效；采不到时自动回退包名级。
+#
+# 【2026-10-22 首版下放】口径：**保留包名默认规则**（special_tuned.yaml 的 bili→playback、
+# arknights→akmode 等一条不动），只在「性能不足」或「性能过于充裕」的 activity 上加覆盖。
+# 证据 = sm8550 真机 devimp 包（logd_1022-031350，10-21→10-22，55926 条 tick），
+# 判据：over_cores = 组内 util > up_threshold 的核数（性能不足信号），
+#       under_cores = 组内 util < down_threshold 的核数（性能充裕信号），
+#       freq/max = 决策选频 ÷ 硬件上限（贴顶程度）。样本 < 30 tick 的 activity 不入表。
+# 注意：本段一旦出现含 '/' 的键，activity_aware 采样即整体启用（3s 节流 dumpsys），
+# 这是 activity 级规则生效的前提，也是本机制的自耗成本。
+
+  # --- 性能不足：组内多数核已过升频阈值、频率贴顶，默认档跟不上 ---
+  # QQ 公共传输 Fragment：big 组 over 2.07 核/tick、util 0.87、freq/max 0.79（贴顶最狠的一项）
+  com.tencent.mobileqq/.activity.QPublicTransFragmentActivity: boost
+  # QQ 启动页：big over 0.72、util 0.70（启动阶段本身短，但连带的 JIT/资源加载都在这里）
+  com.tencent.mobileqq/.activity.SplashActivity: boost
+  # 小红书首页信息流：util 0.87、over 1.3、选频已到 2.13 GHz
+  com.xingin.xhs/.index.v2.IndexActivityV2: boost
+  # 千牛工作台首页：big over 0.48
+  com.taobao.qianniu/com.qianniu.launcher.business.main.MainActivity: boost
+  # 淘宝主界面：big over 0.45
+  com.taobao.taobao/com.taobao.tao.TBMainActivity: boost
+
+  # --- 性能过于充裕：长稳态、util 低而多数核空闲，可走省电档 ---
+  # 淘宝商品详情页：little under 2.89 / big under 3.84 核/tick，util 仅 0.29-0.31；
+  # 属长停留稳态页，压档不影响可感操作（滑动手势仍由触摸升频兜底）
+  com.taobao.taobao/com.taobao.android.detail.alittdetail.TTDetailActivity: reduce
+
+  # --- 颗粒度细化：同包内按 activity 分化，脱离包名默认档 ---
+  # B 站包名正则 `re:(?i)(bilibili|danmaku\.bili)` 把**全部** activity 锁进 playback，
+  # 但 playback 是给长稳态播放调的（util_smoothing 0.35 强平滑 + headroom 1.05 贴负载），
+  # 首页信息流与搜索页是高频滚动/输入场景，强平滑会让升频滞后 → 只把这两类拉回 default，
+  # 视频详情/Story/播放类 activity 继续走包名默认的 playback（不写即保留）。
+  tv.danmaku.bili/.MainActivityV2: default
+  tv.danmaku.bili/com.bilibili.search2.main.BiliMainSearchActivity: default
 
 # [ignored-apps]
 ignored_apps:
