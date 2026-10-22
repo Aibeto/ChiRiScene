@@ -317,7 +317,8 @@ pub fn demand_units(cpus: &[usize], core_utils: &[f32], core_caps: &[Option<u32>
         let Some(&u) = core_utils.get(cpu) else {
             continue;
         };
-        if !(u > 0.0) {
+        // 显式排 NaN：`u <= 0.0` 对 NaN 恒为 false，会把 NaN 放进来污染累加
+        if !u.is_finite() || u <= 0.0 {
             continue;
         }
         let cap = core_caps.get(cpu).copied().flatten()? as f32;

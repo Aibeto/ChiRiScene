@@ -82,9 +82,36 @@ error: the `-Z` flag is only accepted on the nightly channel of Cargo,
        but this is the `stable` channel
 ```
 
-CI 没这个问题,因为 `dtolnay/rust-toolchain@nightly` 把 runner 的 rustup default 设成了 nightly,环境变量被删也不影响。
+### 现行做法:仓库根 `rust-toolchain.toml`(2026-10-22 起)
 
-`setup_toolchain()` 的做法:在 `.cache/build-arch/trash/toolchain-bin/` 生成 `cargo`/`rustc`/`rustdoc` 三个 wrapper(剥掉 rustup 专有的 `+nightly` 语法后 exec nightly 真实二进制),再把这个目录前置到 PATH。等于在本地复刻「default 就是 nightly」,不改 rustup 全局设置、不动仓库源码,脚本退出即失效。
+**唯一真相 = `rust-toolchain.toml`**。rustup 自己解析这个文件,与 PATH 无关、不受 `env_remove("RUSTUP_TOOLCHAIN")` 影响,所以外层 cargo、`build.rs` 内层 cargo、`cargo clippy`、`cargo fmt` 全部落到同一个编译器。CI 也读同一个文件(`dtolnay/rust-toolchain` 不传 `toolchain` 输入即读它),本机与 CI 天然一致。
+
+```toml
+[toolchain]
+channel = "nightly-2026-10-12"          # 钉日期,不浮动
+components = ["rust-src", "clippy", "rustfmt"]
+targets = ["aarch64-linux-android"]
+profile = "minimal"
+```
+
+升级 = 只改 `channel` → 本机 `rustup show` 拉新工具链 → 跑 `cargo fmt --all --check` + `cargo check --workspace --all-targets` + `cargo clippy` → 再提交。
+
+`setup_toolchain()` 现在只做**前置自检**:文件在不在、`channel` 读不读得到、工具链装没装,不满足就用人话报错并给出安装命令——而不是等到编译中途炸出一堆 E0514。
+
+### 历史:被废弃的 PATH wrapper(勿回退)
+
+2026-10-22 之前是在 `.cache/build-arch/trash/toolchain-bin/` 造一批 exec nightly 真二进制的 shim 再前置 PATH,用来在本地复刻「default 就是 nightly」。这条路有个致命脆弱点:**必须逐个覆盖 `cargo`/`rustc`/`rustdoc`/`cargo-clippy`/`clippy-driver`/`rustfmt`,漏一个就回落到 stable**。
+
+实测漏掉 clippy 时的现象:`cargo check` 明明通过,随后的 `cargo clippy` 却整片报错——
+
+```
+error[E0514]: found crate `zip` compiled by an incompatible version of rustc
+  = help: please recompile that crate using this compiler (rustc 1.99.0 ...)
+```
+
+报的全是 `zip`/`anyhow`/`clap` 这类依赖,极易误判成「缓存坏了」而去 `cargo clean` 重来。`rust-toolchain.toml` 从机制上消灭了这类遗漏,故 wrapper 整段删除。
+
+> 若哪天又看到 E0514:`scripts/build-arch/clean-cache.sh` 第三档「只清交叉编译目标缓存」可定向修复(只删 `target/<三元组>/`,不动 host 缓存)。
 
 ## 预构建拉取
 

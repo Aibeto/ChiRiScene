@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$ROOT"
 CACHE_DIR="$ROOT/.cache/build-arch"
-TRASH_DIR="$CACHE_DIR/trash"                            # 一次性废物(下载包/解压缓冲/工具链 wrapper);仅本目录可随意删
+TRASH_DIR="$CACHE_DIR/trash"                            # 一次性废物(下载包/解压缓冲);仅本目录可随意删
 mkdir -p "$TRASH_DIR"
 export CARGO_HOME="${CARGO_HOME:-$ROOT/.cargo-home}"   # 仓内现成缓存,命中仓库自带 registry
 BPF_LINKER_BIN=""
@@ -21,6 +21,20 @@ c_ylw()  { printf '\033[33m%s\033[0m\n' "$*"; }
 c_dim()  { printf '\033[2m%s\033[0m\n' "$*"; }
 have()   { command -v "$1" >/dev/null 2>&1; }
 die()    { c_red "错误: $*" >&2; exit 1; }
+
+# [toolchain] 通道名：唯一来源是仓库根 rust-toolchain.toml（本机与 CI 同一份）
+#   读不到时回退 nightly 并**显式告警**——不静默改变语义，让人看见分叉风险
+tc_channel() {
+    local f="$ROOT/rust-toolchain.toml" ch
+    if [[ -f "$f" ]]; then
+        ch=$(sed -n 's/^[[:space:]]*channel[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$f" | head -1)
+        [[ -n "$ch" ]] && { printf '%s\n' "$ch"; return; }
+        c_ylw "警告: $f 里没读到 channel,回退 nightly" >&2
+    else
+        c_ylw "警告: 缺 $f,回退 nightly(本机与 CI 可能分叉)" >&2
+    fi
+    printf 'nightly\n'
+}
 
 # [dl] 下载一律带进度/速度/剩余时间,有 tty 用 curl 原生进度条,无 tty 退化为自绘的百分比+速度+ETA 文本
 human_size() {  # 字节 -> 人读;numfmt 缺失时退回 awk 估算
@@ -178,21 +192,21 @@ fetch_ndk() {         # google 官方 r29 zip(约 1.7GB,CI runs-on 同源)
 }
 
 fix_nightly() {
-    rustup toolchain install nightly --component rust-src --profile minimal \
-        || rustup toolchain install nightly --component rust-src \
-        || die "nightly 工具链安装失败(rustup 网络?)"
-    c_grn "nightly 已就绪"
+    rustup toolchain install "$(tc_channel)" --profile minimal \
+        --component rust-src,clippy,rustfmt --target aarch64-linux-android \
+        || die "工具链 $(tc_channel) 安装失败(rustup 网络?)"
+    c_grn "工具链 $(tc_channel) 已就绪"
 }
 
 fix_android_target() {
-    rustup target add aarch64-linux-android --toolchain nightly \
+    rustup target add aarch64-linux-android --toolchain "$(tc_channel)" \
         || die "aarch64-linux-android target 添加失败(rustup 网络?)"
     c_grn "aarch64-linux-android target 已就绪"
 }
 
 fix_rust_src() {
     echo "rustup 开始下载 rust-src(进度由 rustup 显示)"
-    rustup component add rust-src --toolchain nightly \
+    rustup component add rust-src clippy rustfmt --toolchain "$(tc_channel)" \
         || die "rust-src 组件安装失败(走 rustup,不属系统依赖)"
     c_grn "rust-src 已就绪"
 }
@@ -232,11 +246,11 @@ check_deps() {
 
     # rustup 侧的缺失由 rustup 自己补,属工具链组件,不算系统包
     have rustup || { pkg_hint "rustup" "Rust 工具链管理"; die "rustup 缺失者请先装"; }
-    rustup toolchain list | grep -q '^nightly' \
-        || dep_missing nightly "nightly 工具链(CI 同款)" fix_nightly
-    rustup target list --toolchain nightly --installed 2>/dev/null | grep -q '^aarch64-linux-android$' \
+    rustup toolchain list | grep -q "^$(tc_channel)" \
+        || dep_missing nightly "nightly 工具链(CI 同款,$(tc_channel))" fix_nightly
+    rustup target list --toolchain "$(tc_channel)" --installed 2>/dev/null | grep -q '^aarch64-linux-android$' \
         || dep_missing android-target "aarch64-linux-android 目标(交叉编译必需)" fix_android_target
-    rustup component list --toolchain nightly --installed 2>/dev/null | grep -q '^rust-src' \
+    rustup component list --toolchain "$(tc_channel)" --installed 2>/dev/null | grep -q '^rust-src' \
         || dep_missing rust-src "nightly rust-src 组件(build-std/eBPF 必需)" fix_rust_src
 
     have cargo-ndk || ls "$CACHE_DIR/cargo-ndk/bin/cargo-ndk" >/dev/null 2>&1 \
@@ -318,27 +332,27 @@ fetch_unzip() { pkg_hint "unzip"      "解 NDK 的 zip"; }
 fetch_zstd()  { pkg_hint "zstd"       "解 bpf-linker 的 .tar.zst"; }
 fetch_zip()   { pkg_hint "zip"        "最后打包产物"; }
 
-# [toolchain] 把 nightly 钉到 PATH 最前,等效 CI 的「rustup default = nightly」
-#   build.rs:150 会 env_remove("RUSTUP_TOOLCHAIN") 再 spawn cargo,环境变量救不了最内层 eBPF 子构建
-#   本 wrapper 让所有层级 spawn 到的 cargo/rustc 都是 nightly 真实二进制,不改 rustup 全局设置、不改仓库源码,退出即失效
-TC_BIN=""
+# [toolchain] 工具链由仓库根的 rust-toolchain.toml 统一决定（本机与 CI 同一份）
+#
+# 2026-10-22 起不再用 PATH wrapper。旧做法是在 `.cache/build-arch/trash/toolchain-bin/`
+# 造一批 exec nightly 真二进制的 shim 再前置 PATH，原因是本机 rustup default 是 stable，
+# 而 build.rs 会 `env_remove("RUSTUP_TOOLCHAIN")` 后 spawn 裸 `cargo`，环境变量传不下去。
+# 但 wrapper 必须逐个覆盖 `cargo`/`rustc`/`cargo-clippy`/`clippy-driver`/`rustfmt`，
+# 漏一个就回落到 stable —— 实测漏掉 clippy 时 `cargo check` 通过、随后的 `cargo clippy`
+# 拿 stable clippy-driver 读 nightly 的 .rmeta，整片报 E0514，极难定位。
+# `rust-toolchain.toml` 由 rustup 自身解析（不看 PATH、不受 env_remove 影响），
+# 所有入口天然一致，故整段 wrapper 删除。
+#
+# 本函数只做「前置自检 + 人话报错」：文件缺失或工具链没装时立刻失败，
+# 而不是等到编译中途炸出一堆 E0514。
 setup_toolchain() {
-    local real; real=$(rustup which cargo --toolchain nightly) || die "取 nightly cargo 路径失败"
-    real=$(dirname "$real")
-    TC_BIN="$TRASH_DIR/toolchain-bin"; rm -rf "$TC_BIN"; mkdir -p "$TC_BIN"
-    local t
-    for t in cargo rustc rustdoc; do
-        [[ -x "$real/$t" ]] || continue
-        cat > "$TC_BIN/$t" <<EOF
-#!/bin/sh
-# 剥掉 rustup 专有的 +toolchain 语法,直接 exec nightly 真实二进制
-[ "\$1" = "+nightly" ] && shift
-exec "$real/$t" "\$@"
-EOF
-        chmod +x "$TC_BIN/$t"
-    done
-    export PATH="$TC_BIN:$PATH"
-    c_grn "工具链已钉为 nightly ($(cargo --version | cut -d' ' -f2)): 覆盖 rustup default,不改全局设置"
+    [[ -f "$ROOT/rust-toolchain.toml" ]] \
+        || die "缺少 $ROOT/rust-toolchain.toml（本机与 CI 的工具链唯一来源，勿删）"
+    local channel; channel=$(tc_channel)
+    rustup run "$channel" rustc -V >/dev/null 2>&1 || die "工具链 $channel 未安装，请执行:
+      rustup toolchain install $channel --profile minimal \
+          --component rust-src,clippy,rustfmt --target aarch64-linux-android"
+    c_grn "工具链: $channel ($(rustup run "$channel" rustc -V | cut -d' ' -f2)) —— 由 rust-toolchain.toml 决定"
 }
 
 # [lint] 与 CI 等价的格式化/静态检查(可选,cargo fmt 不依赖 NDK)

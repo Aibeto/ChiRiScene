@@ -1,0 +1,23 @@
+# 全局工具链：本机与 CI 的**单一真相**
+#
+# 为什么要这个文件：`target/` 是同一个目录，只要参与构建的编译器不止一种，
+# 旧编译器的 .rmeta 被新编译器复用就会整片报
+#   E0514: found crate that was compiled by an incompatible version of rustc
+# 表现为 zip/anyhow/clap 等**所有**依赖一起炸，看着像代码坏了，实为缓存作废。
+# 2026-10-22 之前本机默认 stable 而 CI/构建脚本用 nightly，就是靠 PATH wrapper
+# 硬掰的；wrapper 漏掉 `cargo-clippy` 时 clippy 仍会回落到 stable，照样炸。
+# 有了本文件，`cargo`/`rustc`/`cargo-clippy`/`clippy-driver`/`rustfmt` 全部由
+# rustup 统一解析到同一个 nightly，不再需要任何 wrapper。
+#
+# 必须钉**日期**而不是浮动 `nightly`：浮动通道会让 rustfmt/clippy 规则随
+# `rustup update` 漂移，本地与 CI 对不上（2026-10-18 用户定）。
+# 升级流程 = 改这里的 channel → 本机 `rustup show` 拉新工具链 → 跑
+# `cargo fmt --all --check` + `cargo check --workspace --all-targets` + `cargo clippy`
+# → 再提交。CI 读同一个文件，不需要第二处改动。
+[toolchain]
+channel = "nightly-2026-10-12"
+# rust-src：build.rs 的 `-Z build-std=core` 编 eBPF 需要；clippy/rustfmt：lint 需要
+components = ["rust-src", "clippy", "rustfmt"]
+# 交叉编译目标（Android arm64）
+targets = ["aarch64-linux-android"]
+profile = "minimal"
