@@ -66,7 +66,7 @@ export default {
   'overview.stop.failed': 'Failed to stop; check the daemon log',
   'overview.stop.unavailable': 'Stopping is unavailable in this environment',
   'overview.stop.recover.reboot': 'Module action.sh not found; only a reboot can restore it',
-  'overview.export.title': 'Export history logs (experimental)',
+  'overview.export.title': 'Export history logs',
   'overview.export.desc': 'Pack the logd history archives to /sdcard/Download',
   'overview.delete.action': 'Delete history logs',
   'overview.delete.confirm.title': 'Delete history logs?',

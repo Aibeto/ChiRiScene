@@ -13,5 +13,10 @@
         "versionCode": 30211,
         "title": "新 CI 已发布",
         "content": "A02-12 已发布。处于 DOWN 模式的设备可以跳过本次更新"
+    },
+    {
+        "versionCode": 30214,
+        "title": "ChiRi 安全响应",
+        "content": "当前版本存在安全问题，请及时关注更新"
     }
 ]

@@ -68,7 +68,7 @@ export default {
   'overview.stop.failed': '关闭失败，请查看运行日志',
   'overview.stop.unavailable': '当前环境无法关闭调度',
   'overview.stop.recover.reboot': '未找到模块 action.sh，恢复只能重启设备',
-  'overview.export.title': '导出历史日志（实验性）',
+  'overview.export.title': '导出历史日志',
   'overview.export.desc': '打包 logd 历史归档到 /sdcard/Download',
   'overview.export.notice.session': '仅含未清除的归档，不含当前日志，如需当前运行时日志请重启调度以终止写入并归档',
   'overview.export.notice.busy': '导出在后台进行，期间不要关闭调度、重启调度或重启设备',
