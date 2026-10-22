@@ -1108,9 +1108,18 @@ pub fn embedded_rules_str() -> &'static str {
 }
 
 /// 解析嵌入的 rules.yaml（运行时唯一规则来源）：解析失败回退 Default 并告警，绝不 panic
+/// [activity_params] 解析成功后统一钳制参数覆盖：`activity_params` 是唯一会被调度层直接消费的规则数值，
+/// 越界值（如 headroom=9、down_hold_ms=99999）若不在此收口，会一路带进写频决策；热重载同走本函数，故钳制只有一处
 pub fn embedded_rules() -> crate::monitor::config::RulesConfig {
-    match serde_yaml::from_str(embedded_rules_str()) {
-        Ok(r) => r,
+    match serde_yaml::from_str::<crate::monitor::config::RulesConfig>(embedded_rules_str()) {
+        Ok(mut r) => {
+            for ov in r.activity_params.values_mut() {
+                ov.normalize();
+            }
+            // 空覆盖（字段全被钳制丢弃 / 只写了 `{}`）与「未配置」等价，清掉避免快照层误判为有效覆盖
+            r.activity_params.retain(|_, ov| !ov.is_empty());
+            r
+        }
         Err(e) => {
             log::warn!("[Rules] Embedded rules parse failed: {e}. Default.");
             crate::monitor::config::RulesConfig::default()

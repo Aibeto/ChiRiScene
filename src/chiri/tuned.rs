@@ -9,6 +9,14 @@ use std::fs;
 
 /// 跨核迁移成本（ns，全局节点）：稳态场景（视频）接管期间调高、退出时恢复
 const MIGRATION_COST_PATH: &str = "/proc/sys/kernel/sched_migration_cost_ns";
+
+/// 特调 tick 周期（ms）：与 `monitor::cpu_monitor` 的 `SAMPLE_MS_TUNED` 同一个值（那边是私有常量，且本文件不应反向依赖 monitor 层）
+/// [sweet_cap] 的越顶放行窗口按它换算 tick → 毫秒；两处不一致会让窗口长度与设定 tick 数不符
+const TUNED_TICK_MS: u64 = 40;
+
+/// [sweet_cap] 「本 SoC 无 EEM 曲线」告警的进程级一次性门：甜点取自 `soc.yaml` 的 frontier_policy，
+/// 无该段的机型每 tick 都会走到缺失分支，不去重就会把日志刷满
+static SWEET_CAP_NO_CURVE_LOGGED: AtomicBool = AtomicBool::new(false);
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
@@ -86,6 +94,10 @@ struct ClusterState {
     last_write_dir: i8,
     /// 上次写频失败：下次写入视为防篡改补写、豁免滞回（重试时序不变）
     last_failed: bool,
+    // [sweet_cap] 甜点封顶的越顶放行状态
+    /// 本簇占用曾达 `sweet_cap_release_units` 因而临时放开封顶时的截止时刻（None = 未放行）
+    /// 放行窗口内经比例路径决策，窗口结束自动回到甜点封顶；`hold_ticks` 为 0 时不置位（低于阈值即收回）
+    sweet_release_until: Option<Instant>,
 }
 
 /// 按 affected_cpus 首个 CPU ID 判定核心组，区间随命中 SoC 变化；由 common::chiri_core_ranges() 统一提供，新增 SoC 只需在那里追加
@@ -123,6 +135,13 @@ pub struct TunedGovernor {
     /// 帧源信号 `monitor::FasSignal`：接管 `playback` 时置位播放态旁路采样谓词，让 fps 探针在非 FAS 会话里也挂帧源做帧间隔直方图
     /// 只置位/清零这一位，不碰 FAS 激活位（它由 FasManager 独占）
     fas_signal: Arc<FasSignal>,
+    // [activity_params]
+    /// 当前 activity 的参数覆盖（进程级快照的本地副本），与 CLG 侧同一通道（`app_detect::current_activity_params`）
+    /// `None` = 无覆盖；`Some` = 与 `self.cfg` 叠加后的有效配置已落在 `self.eff_cfg`
+    /// 只在覆盖**实例变化**时重算（Arc 判等），稳态每 tick 只花一次加锁 + 一次指针比较
+    act_override: Option<Arc<crate::monitor::config::ActivityParamOverride>>,
+    /// 叠加 activity 覆盖后的有效特调参数（无覆盖时与 `self.cfg` 相同）
+    eff_cfg: SpecialTunedConfig,
 }
 
 impl TunedGovernor {
@@ -137,6 +156,9 @@ impl TunedGovernor {
             active: false,
             log_counter: 0,
             fas_signal,
+            // [activity_params] 初值：无覆盖，有效配置 = 特调配置本身（与加该机制前逐位一致）
+            act_override: None,
+            eff_cfg: SpecialTunedConfig::default(),
         }
     }
 
@@ -151,6 +173,9 @@ impl TunedGovernor {
         self.release();
         self.cfg = cfg.clone();
         self.cfg.normalize();
+        // [activity_params] 接管时先按模式原参数派生有效配置（覆盖由首 tick 的 refresh 叠加）
+        self.act_override = None;
+        self.eff_cfg = self.cfg.clone();
         self.mode = mode.to_string();
 
         let policies = crate::chiri::get_cpu_policies();
@@ -345,6 +370,8 @@ impl TunedGovernor {
                 last_write_at: None,
                 last_write_dir: 0,
                 last_failed: false,
+                // [sweet_cap] 接管初不处于越顶放行窗口
+                sweet_release_until: None,
             });
             // [init_release] 本簇走了兜底频率表或初写失败：接管程度不完整但仍在 active，
             // 与完全正常接管在输出数据上同形，必须留痕
@@ -475,6 +502,9 @@ impl TunedGovernor {
     pub fn reload_config(&mut self, cfg: &SpecialTunedConfig) {
         self.cfg = cfg.clone();
         self.cfg.normalize();
+        // [activity_params] 模式参数变了，有效配置要按当前覆盖重算（act_override 置 None 让下一 tick 必重算）
+        self.act_override = None;
+        self.eff_cfg = self.cfg.clone();
         debug!(
             "{}",
             t_with_args(
@@ -495,6 +525,70 @@ impl TunedGovernor {
             .copied()
             .find(|&f| f <= want)
             .unwrap_or_else(|| *freqs.first().unwrap_or(&0))
+    }
+
+    // [sweet_cap] 甜点封顶：把「写侧比例」的天花板从 perf_ceil 改到甜点比例，
+    // 语义 = 「这一簇再往上加频，单位功耗换来的算力已经不值」，而不是按 util 线性外推。
+    /// 取某簇的甜点封顶频率（kHz）；返回 None = 本簇不封顶（`sweet_cap: off` 或 data 缺失）
+    ///
+    /// `auto` 走 EEM 曲线（`energy_model::curve` 的甜点档，跨机型自适配，数据来自 soc.yaml 的
+    /// `frontier_policy.per_cluster`）；曲线缺失（该机型无 frontier_policy）时返回 None 而不是
+    /// 猜一个比例——「不封顶」是安全侧，错了只是没省电，不会削性能。
+    /// `ratio` 不看曲线，直接按 `sweet_cap_ratio × 硬件最高` floor 对齐，给无实测曲线的机型兜底。
+    ///
+    /// 返回值一定已落在本 policy 的频率表内（floor 对齐），调用方直接与比例路径的 target 取 min。
+    fn sweet_cap_freq(
+        override_mode: crate::chiri::config::SweetCapMode,
+        ratio: f32,
+        core_name: &str,
+        mode_name: &str,
+        freqs: &[u32],
+    ) -> Option<u32> {
+        use crate::chiri::config::SweetCapMode;
+        match override_mode {
+            SweetCapMode::Off => None,
+            SweetCapMode::Ratio => {
+                if freqs.is_empty() {
+                    return None;
+                }
+                Some(Self::freq_for_ratio(freqs, ratio))
+            }
+            SweetCapMode::Auto => {
+                let group = match core_name {
+                    "little" => crate::common::CoreGroup::Little,
+                    "big" => crate::common::CoreGroup::Big,
+                    "prime" => crate::common::CoreGroup::Prime,
+                    _ => return None,
+                };
+                let Some(curve) = crate::chiri::energy_model::curve(group) else {
+                    // 本 SoC 无 frontier_policy（EEM 曲线缺失）：甜点无处可取。
+                    // 安全侧 = 不封顶（只是不省电，不削性能），但必须留痕一次，
+                    // 否则「配了 sweet_cap:auto 却不生效」在日志里完全不可见；进程级去重，不每 tick 刷
+                    if !SWEET_CAP_NO_CURVE_LOGGED.swap(true, Ordering::Relaxed) {
+                        warn!(
+                            "{}",
+                            t_with_args(
+                                "tuned-sweet-cap-no-curve",
+                                &fluent_args!("mode" => mode_name.to_string())
+                            )
+                        );
+                    }
+                    return None;
+                };
+                let khz = curve.sweet_khz();
+                if khz == 0 {
+                    return None;
+                }
+                // 曲线频档与本 policy 实测频率表理论上一致（同源于 soc.yaml 与 scaling_available_frequencies），
+                // 但仍按本簇表 floor 对齐：两者不一致时以本簇实测表为准，避免写进表外档位被内核静默 clamp
+                freqs
+                    .iter()
+                    .rev()
+                    .copied()
+                    .find(|&f| f <= khz)
+                    .or_else(|| freqs.first().copied())
+            }
+        }
     }
 
     // [dwell] 受控写频（与 CLG write_freq 同口径）：死区由调用方 hysteresis 保证（|target−current| 超死区才调用），这里做最小驻留内方向翻摆延迟与写失败防篡改补写豁免
@@ -521,17 +615,70 @@ impl TunedGovernor {
         ok
     }
 
+    // [activity_params] 每 tick 刷新「特调模式配置 + 当前 activity 覆盖」的有效配置
+    /// 只在覆盖**实例变化**时重算（`Arc::ptr_eq` 命中即返回），稳态每 tick 只花一次加锁 + 一次指针比较。
+    /// 未配置覆盖（绝大多数场景）时 `eff_cfg` 与 `cfg` 逐位相同，后续决策路径与加该机制前完全一致。
+    /// 叠加四个跨链路同义的标量（headroom / util_smoothing / hysteresis / down_hold_ms），
+    /// 与 CLG 侧同口径——同一份 `activity_params` 配置对两条链路都成立。
+    fn refresh_activity_override(&mut self) {
+        let Some(ov) = crate::monitor::app_detect::current_activity_params() else {
+            if self.act_override.is_some() {
+                self.act_override = None;
+                self.eff_cfg = self.cfg.clone();
+            }
+            return;
+        };
+        if self
+            .act_override
+            .as_ref()
+            .is_some_and(|cur| Arc::ptr_eq(cur, &ov))
+        {
+            return;
+        }
+        self.eff_cfg = self.cfg.clone();
+        if let Some(v) = ov.headroom {
+            self.eff_cfg.headroom = v;
+        }
+        if let Some(v) = ov.util_smoothing {
+            self.eff_cfg.util_smoothing = v;
+        }
+        if let Some(v) = ov.hysteresis {
+            self.eff_cfg.hysteresis = v;
+        }
+        if let Some(ms) = ov.down_hold_ms {
+            // 特调 down_hold_ms 本就是毫秒，直接沿用（normalize 已钳到 5s 内）
+            self.eff_cfg.down_hold_ms = ms;
+        }
+        self.act_override = Some(ov);
+        debug!(
+            "{}",
+            t_with_args(
+                "tuned-activity-params-applied",
+                &fluent_args!(
+                    "mode" => self.mode.clone(),
+                    "headroom" => format!("{:.2}", self.eff_cfg.headroom),
+                    "smooth" => format!("{:.2}", self.eff_cfg.util_smoothing),
+                    "hyst" => format!("{:.3}", self.eff_cfg.hysteresis),
+                    "down_ms" => self.eff_cfg.down_hold_ms.to_string()
+                )
+            )
+        );
+    }
+
     /// 无档位动态限频入口，每个 SystemLoadUpdate（特调 40ms）触发一次，每个核心组独立决策（语义与 CLG 对齐）
     /// up = 目标 > 当前 max + hysteresis 立即上调；down_wait = 目标 < 当前 max − hysteresis 保持计时（down_hold_ms）；down = 期满把上限收到目标档位；hold = 目标在死区内（或保持期内目标回升，取消等待）
     pub fn on_load_update(&mut self, core_utils: &[f32]) {
         if !self.active {
             return;
         }
+        // [activity_params] 决策前刷新一次：activity 页面切换后本 tick 即生效，不必等模式事件
+        self.refresh_activity_override();
 
         let ranges = crate::common::chiri_core_ranges();
         let now = Instant::now();
         // 借用配置不克隆：SpecialTunedConfig 唯一堆字段是 per_cluster（HashMap，键为组名），每 tick 克隆要复制整张表；gated_write 是关联函数不借 &mut self，与 &self.cfg 不冲突
-        let cfg = &self.cfg;
+        // [activity_params] 决策一律读 `eff_cfg`（= cfg + activity 覆盖）
+        let cfg = &self.eff_cfg;
 
         // main_ tick 行数据（每个 policy 一行：policy_id / cluster / util / decision / cur_max / hw_max），只在开发记录开启时收集（关闭时零开销、零分配、零写入）
         let diag = crate::logger::diag_active();
@@ -599,7 +746,51 @@ impl TunedGovernor {
             // 下探只改目标档的计算输入：tuned 没有 CLG 那种独立的决策比例，比较量就是 freq 本身，所以减过 decay 的 target_max 同时是目标档与 up/down 的比较量
             // 这是本架构的必然（与 CLG「下探不回写决策量」不同）；hysteresis / down_hold_ms / up_wait 的判据结构不受影响
             let write_ratio = (target_ratio - c.steady_decay).max(p.perf_floor);
-            let target_max = Self::freq_for_ratio(&c.available_freqs, write_ratio);
+            let mut target_max = Self::freq_for_ratio(&c.available_freqs, write_ratio);
+
+            // [sweet_cap] 甜点封顶：只降不升（与 EEM 侧「target = min(ratio_freq, eem)」同口径）。
+            // 越过甜点只在「本簇占用达 sweet_cap_release_units」时放行——那是「甜点确实不够用」的
+            // 显式信号（多核并发共享同一档位时升频收益覆盖全簇，迁移也无处可去），
+            // 缺省 0.0 = 不放行（硬封顶）。放行带 hold 窗口，避免占用在阈值附近抖动导致上限来回跳。
+            if p.sweet_cap != crate::chiri::config::SweetCapMode::Off {
+                // 簇内**平均**占用率（不是核当量）：单核簇也能表达「这颗核被吃满」，
+                // 而核当量阈值对 prime 退化成恒真（只有 1 核，占用恒 ≤1.0）
+                let cpus = range.clone().count().max(1) as f32;
+                let occupied_avg: f32 = range
+                    .clone()
+                    .filter_map(|cpu| core_utils.get(cpu).copied())
+                    .map(|u| u.clamp(0.0, 1.0))
+                    .sum::<f32>()
+                    / cpus;
+                let release_units = cfg.sweet_cap_release_units;
+                let in_release = release_units > 0.0 && occupied_avg >= release_units;
+                if in_release && cfg.sweet_cap_release_hold_ticks > 0 {
+                    c.sweet_release_until = Some(
+                        now + Duration::from_millis(
+                            (cfg.sweet_cap_release_hold_ticks as u64) * TUNED_TICK_MS,
+                        ),
+                    );
+                }
+                // 窗口过期即收回封顶（hold=0 时每一 tick 按当前占用重新判定，低于阈值立即收回）
+                let holding = c.sweet_release_until.is_some_and(|until| until > now);
+                if !holding && !in_release {
+                    c.sweet_release_until = None;
+                }
+                // 放行 = 不封顶，直接走比例路径；否则压到甜点档（只降不升）
+                if !(in_release || holding) {
+                    if let Some(cap) = Self::sweet_cap_freq(
+                        p.sweet_cap,
+                        p.sweet_cap_ratio,
+                        c.core_name,
+                        &self.mode,
+                        &c.available_freqs,
+                    ) {
+                        target_max = target_max.min(cap);
+                    }
+                }
+            } else if c.sweet_release_until.is_some() {
+                c.sweet_release_until = None;
+            }
             let hyst_freq = (hw_max as f32 * p.hysteresis) as u32;
 
             let decision;

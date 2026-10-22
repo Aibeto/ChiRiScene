@@ -59,3 +59,35 @@ tuned_profiles:
     # per_cluster 三簇天花板（little 0.90/0.55、big 0.75、prime 0.80/0.50）2026-09-28 整段拆除；
     # 未列簇/字段本就回退模式级值，删段与「不覆盖」等价。
     migration_cost_ns: 400000
+
+  # sweet —— 甜点封顶（2026-10-23 8550 日志分析新增，logd_1023-011754；入口 com.baiyang.eet）
+  # 与 playback 的分工：playback 是「贴负载软跟随」（util×headroom，util 高就放），
+  # sweet 是「按能效曲线硬封顶」——EEM 相对能效模型的甜点档就是「最后一档 1 单位功耗
+  # 还能换到 ≥1 单位算力」的位置，再往上加热大于加算力。实测依据（同一份日志）：
+  #   cap 越甜点比例  little 4% / big 34% / prime 67%（prime p50 2477MHz = 甜点 1709 的 1.45 倍）
+  #   而该包 gpu 仅 2.1%、wakeups 3.8k/s、migrations 1.7k/s —— 负载不重，上限被单核尖峰推高
+  # 故 headroom 收到 1.0（不外推）、util_smoothing 0.5（滤掉单核瞬时尖峰，避免反复顶上限）、
+  # down_hold_ms 收到 100（甜点内下探要跟得上，别卡在越甜点的旧上限）。
+  # boost_affinity=false：同 playback——保大核常在线与「按能效压上限」相反。
+  # sweet_cap: auto 由 soc.yaml 的 frontier_policy 曲线取甜点，跨机型通用；
+  # 无曲线的机型本组不封顶（安全侧：只是不省电，不削性能），需要时改 ratio + sweet_cap_ratio。
+  # sweet_cap_release_units: 簇内**平均**占用率达 0.85 才允许越过甜点。
+  # 用平均而非核当量：prime 只有 1 核，核当量阈值退化成恒真（占用恒 ≤1.0）＝永不封顶；
+  # 平均占用率对任意簇规模同口径（0.85 = 整簇平均 85% 满），实测该包 prime 平均占用
+  # 远低于此（max_util p50 0.98 但那是「组内最大值」不是平均），故稳态保持在封顶内。
+  # hold_ticks 6 ≈ 240ms 放行窗口，避免占用在阈值附近抖动导致上限来回跳。
+  sweet:
+    headroom: 1.0
+    perf_floor: 0.0
+    perf_ceil: 1.0
+    hysteresis: 0.04
+    down_hold_ms: 100
+    util_smoothing: 0.5
+    boost_affinity: false
+    sweet_cap: auto
+    # auto 下不参与；留作 ratio 模式的机型兜底值（≈ sm8550 三簇甜点 0.50~0.54 的上沿）
+    sweet_cap_ratio: 0.55
+    sweet_cap_release_units: 0.85
+    sweet_cap_release_hold_ticks: 6
+    # 甜点封顶期间上限变化频繁（快落快起），不额外调迁移成本：本模式不追求少搬迁
+    # 而是「别在越甜点的档位上待着」，搬迁成本抬高会让 EAS 更保守地留在高上限核上

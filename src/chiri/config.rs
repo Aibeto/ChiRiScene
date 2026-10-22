@@ -757,6 +757,38 @@ pub struct SpecialTunedConfig {
     /// 下探量幅值上限（比例，抗积分饱和）
     #[serde(default = "d_ak_steady_max")]
     pub steady_decay_max: f32,
+    // [sweet_cap] 甜点封顶：把上限压到 EEM 相对能效曲线的甜点档，而不是按 util 线性外推
+    /// 甜点封顶模式（缺省 `off` = 完全不介入，与加该字段前逐位一致）
+    /// `auto` = 甜点由 soc.yaml 的 `frontier_policy` 曲线算（跨机型通用，曲线缺失则该簇不封顶）
+    /// `ratio` = 按 `sweet_cap_ratio × 硬件最高` 封顶（不依赖曲线，给无 frontier_policy 的机型兜底）
+    #[serde(default)]
+    pub sweet_cap: SweetCapMode,
+    /// `sweet_cap: ratio` 时使用的封顶比例（0.1~1.0，缺省 0.55 ≈ sm8550 三簇甜点 0.50~0.54 的上沿）
+    /// `auto` 下本值不参与（曲线自带甜点档），仅供 `ratio` 使用
+    #[serde(default = "d_ak_sweet_cap_ratio")]
+    pub sweet_cap_ratio: f32,
+    /// 甜点封顶的越顶放行阈值（**簇内平均占用率**，0~1）：本簇各核 util 的平均值 ≥ 该值才临时放开到比例路径
+    /// 缺省 0.0 = 不放行（硬封顶），甜点就是上限
+    /// 用平均占用率而不是核当量：核当量阈值对单核簇（prime）退化成恒真（占用恒 ≤1.0，任何正阈值都放行），
+    /// 平均占用率对任意簇规模口径一致（0.85 = 全簇平均 85% 才放行），且与 `max_util` 同量纲、配置直观
+    #[serde(default)]
+    pub sweet_cap_release_units: f32,
+    /// 越顶放行后的持续 tick 数（缺省 0 = 一旦低于阈值立即收回封顶）：放行窗口内允许比例路径接管，避免来回抖动
+    #[serde(default)]
+    pub sweet_cap_release_hold_ticks: u32,
+}
+
+/// 甜点封顶模式（`SpecialTunedConfig::sweet_cap`）
+#[derive(Debug, Deserialize, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SweetCapMode {
+    /// 不介入（缺省）：行为与加该字段前完全一致
+    #[default]
+    Off,
+    /// 甜点取 `soc.yaml` 的 `frontier_policy` 曲线（跨机型通用）
+    Auto,
+    /// 甜点取 `sweet_cap_ratio × 硬件最高`
+    Ratio,
 }
 
 /// 按核心组的参数覆盖（`per_cluster` 段的元素）：**全部字段可选**，
@@ -769,6 +801,10 @@ pub struct ClusterTunedOverride {
     pub hysteresis: Option<f32>,
     pub down_hold_ms: Option<u64>,
     pub util_smoothing: Option<f32>,
+    /// [sweet_cap] 本簇是否启用甜点封顶（None = 回退模式级）
+    pub sweet_cap: Option<SweetCapMode>,
+    /// [sweet_cap] 本簇的 `ratio` 封顶比例（None = 回退模式级）；`auto` 下不参与
+    pub sweet_cap_ratio: Option<f32>,
 }
 
 impl ClusterTunedOverride {
@@ -799,6 +835,11 @@ impl ClusterTunedOverride {
                 self.util_smoothing = None;
             }
         }
+        if let Some(v) = self.sweet_cap_ratio {
+            if !v.is_finite() {
+                self.sweet_cap_ratio = None;
+            }
+        }
     }
 }
 
@@ -811,6 +852,10 @@ pub struct EffectiveTuned {
     pub hysteresis: f32,
     pub down_hold_ms: u64,
     pub util_smoothing: f32,
+    /// [sweet_cap] 甜点封顶模式（`Off` = 不介入）
+    pub sweet_cap: SweetCapMode,
+    /// [sweet_cap] `Ratio` 模式下的封顶比例
+    pub sweet_cap_ratio: f32,
 }
 
 // SpecialTunedConfig 缺省值：tuned_profiles.yaml 没写的字段回退到这里
@@ -856,6 +901,10 @@ fn d_ak_steady_step() -> f32 {
 fn d_ak_steady_max() -> f32 {
     0.20
 }
+/// [sweet_cap] `ratio` 模式缺省封顶比例：0.55 ≈ sm8550 三簇甜点比例（little 0.505 / big 0.500 / prime 0.536）的上沿
+fn d_ak_sweet_cap_ratio() -> f32 {
+    0.55
+}
 
 impl Default for SpecialTunedConfig {
     fn default() -> Self {
@@ -877,6 +926,10 @@ impl Default for SpecialTunedConfig {
             steady_decay_stable_ticks: d_ak_steady_ticks(),
             steady_decay_step: d_ak_steady_step(),
             steady_decay_max: d_ak_steady_max(),
+            sweet_cap: SweetCapMode::Off,
+            sweet_cap_ratio: d_ak_sweet_cap_ratio(),
+            sweet_cap_release_units: 0.0,
+            sweet_cap_release_hold_ticks: 0,
         }
     }
 }
@@ -931,6 +984,18 @@ impl SpecialTunedConfig {
             self.steady_decay_max = d_ak_steady_max();
         }
         self.steady_decay_max = self.steady_decay_max.clamp(0.0, 0.5);
+        // [sweet_cap] 封顶比例钳制：低于 0.1 会把上限压到硬件最低附近、高于 1.0 即不封顶，
+        // 都失去「压到甜点」的语义，故统一收到 [0.1, 1.0]；越顶放行阈值上限取簇核数上限 8
+        if !self.sweet_cap_ratio.is_finite() {
+            self.sweet_cap_ratio = d_ak_sweet_cap_ratio();
+        }
+        self.sweet_cap_ratio = self.sweet_cap_ratio.clamp(0.1, 1.0);
+        if !self.sweet_cap_release_units.is_finite() || self.sweet_cap_release_units < 0.0 {
+            self.sweet_cap_release_units = 0.0;
+        }
+        // 放行阈值是占用率比例，收到 [0,1]；≥1.0 等价于「永不放行」，与 0.0 的「硬封顶」同义但语义更绕，统一钳到 1.0
+        self.sweet_cap_release_units = self.sweet_cap_release_units.clamp(0.0, 1.0);
+        self.sweet_cap_release_hold_ticks = self.sweet_cap_release_hold_ticks.min(600);
         for ov in self.per_cluster.values_mut() {
             ov.normalize();
         }
@@ -945,6 +1010,8 @@ impl SpecialTunedConfig {
             hysteresis: self.hysteresis,
             down_hold_ms: self.down_hold_ms,
             util_smoothing: self.util_smoothing,
+            sweet_cap: self.sweet_cap,
+            sweet_cap_ratio: self.sweet_cap_ratio,
         };
         let Some(ov) = self.per_cluster.get(name) else {
             return e;
@@ -966,6 +1033,12 @@ impl SpecialTunedConfig {
         }
         if let Some(v) = ov.util_smoothing.filter(|v| v.is_finite()) {
             e.util_smoothing = v.clamp(0.05, 1.0);
+        }
+        if let Some(v) = ov.sweet_cap {
+            e.sweet_cap = v;
+        }
+        if let Some(v) = ov.sweet_cap_ratio.filter(|v| v.is_finite()) {
+            e.sweet_cap_ratio = v.clamp(0.1, 1.0);
         }
         if e.perf_floor > e.perf_ceil {
             e.perf_floor = e.perf_ceil;

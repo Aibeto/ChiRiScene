@@ -100,6 +100,58 @@ pub struct RulesConfig {
     /// activity 由全局采样器（`ActivitySampler`，屏幕亮且前台有效时按节流采样，不限 FAS）与 FAS 窗口探针共同刷新，未采到（空）时自动回退
     #[serde(default = "crate::utils::default_true")]
     pub activity_aware: bool,
+    /// [activity_params] Activity 级**参数**覆盖（键与 `app_modes` 同一套 activity 键写法）：在模式之上再叠一层参数微调，
+    /// 与 `app_modes` 的模式选择**正交**——`app_modes` 决定「用哪套参数」，本段决定「在这套参数上再改哪几个字段」。
+    /// 未命中/`activity_aware` 关闭/值为空时完全不介入（与加该字段前逐位一致），故现有规则无需改动。
+    /// 限 CLG 与特调两条链路共用的字段（见 `ActivityParamOverride`），不支持 per_cluster 这类整表替换。
+    #[serde(default)]
+    pub activity_params: HashMap<String, ActivityParamOverride>,
     #[serde(default)]
     pub ignored_apps: Vec<String>,
+}
+
+/// [activity_params] 单个 activity 的参数覆盖：**全部字段可选**，None = 不覆盖（沿用该模式原参数）
+/// 只收「跨 CLG/特调同义」的四个调节量，让同一份配置对两条链路都成立：
+/// - `headroom`：CLG 的 `headroom_factor` / 特调的 `headroom`（目标 = util × headroom，>1 留余量、<1 收紧）
+/// - `util_smoothing`：CLG 的 `util_smoothing` / 特调的 `util_smoothing`（EMA 系数，1.0 = 不平滑）
+/// - `hysteresis`：特调 `hysteresis`（CLG 同义量是 `write_deadzone`，写频死区，比例口径一致）
+/// - `down_hold_ms`：特调 `down_hold_ms`（CLG 同义量是 `down_rate_limit_ticks × tick`，这里直接给毫秒，按 tick 折算）
+/// 刻意**不收** `perf_ceil/perf_floor`：天花板已在 2026-09-28 全局拆除，「除特殊模式外都能跑最高频」是硬约束，
+/// activity 级再开天花板会绕过该约束且难审计；要压频请用 headroom < 1 表达（软收紧，仍可被负载释放）。
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+pub struct ActivityParamOverride {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub headroom: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub util_smoothing: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hysteresis: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub down_hold_ms: Option<u64>,
+}
+
+impl ActivityParamOverride {
+    /// 是否一个字段都没写（空覆盖 = 不介入，避免「配了空表」被当成有效覆盖去覆盖掉模式参数）
+    pub fn is_empty(&self) -> bool {
+        self.headroom.is_none()
+            && self.util_smoothing.is_none()
+            && self.hysteresis.is_none()
+            && self.down_hold_ms.is_none()
+    }
+
+    /// 校验并钳制（与 CLG/特调的对应字段同口径）：非有限值丢弃、越界收进合理范围
+    pub fn normalize(&mut self) {
+        if let Some(v) = self.headroom {
+            self.headroom = v.is_finite().then(|| v.clamp(0.5, 2.0));
+        }
+        if let Some(v) = self.util_smoothing {
+            self.util_smoothing = v.is_finite().then(|| v.clamp(0.05, 1.0));
+        }
+        if let Some(v) = self.hysteresis {
+            self.hysteresis = v.is_finite().then(|| v.clamp(0.0, 0.2));
+        }
+        if let Some(v) = self.down_hold_ms {
+            self.down_hold_ms = Some(v.min(5_000));
+        }
+    }
 }

@@ -45,6 +45,48 @@ app_modes:
   tv.danmaku.bili/.MainActivityV2: default
   tv.danmaku.bili/com.bilibili.search2.main.BiliMainSearchActivity: default
 
+# [activity-params]
+# Activity 级**参数**覆盖（2026-10-23 首版；机制见 src/monitor/config.rs 的 ActivityParamOverride）。
+# 与上面的 app_modes **正交**：app_modes 决定「用哪套参数」（模式名），本段决定「在这套参数上再改哪几个字段」。
+# 同一 activity 键可以两边都写（模式 + 微调），也可以只写本段（模式不变、只调参）。
+# 限四个跨链路同义字段（CLG 与特调共用同一份配置）：
+#   headroom        目标 = util × headroom（>1 留余量、<1 收紧；软收紧，仍可被负载顶到最高频）
+#   util_smoothing  EMA 系数，1.0 = 不平滑（越小越滤尖峰）
+#   hysteresis      特调死区 / CLG 写频死区（占硬件最高频比例）
+#   down_hold_ms    降频保持（特调直接毫秒；CLG 按 tick 折算）
+# 刻意不开 perf_ceil/perf_floor：天花板已在 2026-09-28 全局拆除，
+# 「除特殊模式外任何情况下都能跑最高频」是硬约束，activity 级不能绕过它去封顶。
+#
+# 证据（logd_1023-011754，sm8550/PHB110，A02-14，放电 10727 样本）：
+#   按包能量占比 incallui 49.9%（2.58W）、kernelsu 23.7%、QQ 16.9%、baiyang.eet 2.9%（3.65W，gpu 仅 2.1%）
+activity_params:
+  # --- com.android.incallui（通话界面，能量占比第一） ---
+  # 形态：三簇实际上限远低于硬件顶（little 1112 / big 1580 / prime 742 MHz 均值），
+  # 但 util 均值 little 0.59 / big 0.60 / prime 0.15，且 deb_up 峰值 63/82/100 —— 决策方向反复翻转。
+  # 该界面是低频宽稳态（点按/滑动的瞬时尖峰多），把平滑收到 0.45 滤掉尖峰、
+  # headroom 收到 0.95（不再外推余量），死区从缺省 0.85 段抬一档减少相邻档往复。
+  com.android.incallui/.InCallActivity:
+    util_smoothing: 0.45
+    headroom: 0.95
+    hysteresis: 0.06
+  # 通话中的悬浮/会议子界面（VideoCall 与 Conference 共用同一负载形态，
+  # 单独列出是因为两者 activity 名不同、且会议态往往同时有音频编码，负载更平）
+  com.android.incallui/.VideoCallActivity:
+    util_smoothing: 0.45
+    headroom: 0.95
+  # --- com.tencent.mobileqq（boost 模式，4.20W 为全批功耗密度最高） ---
+  # boost 是宽松档（up_threshold 0.55、无稳态下探），实测该包 boost 段 1042 样本 4.20W、
+  # 但 default 段（175 样本）4.48W —— 说明 boost 本身不是主因，是**负载在两类界面间切换**。
+  # 只对 QQ 的聊天/联系人这类长停留 UI 收紧平滑（滚动+输入尖峰多），
+  # 保留 boost 的响应性：headroom 不动（1.0 档已是 boost 语义），只滤尖峰。
+  com.tencent.mobileqq/.activity.FriendProfileCardActivity:
+    util_smoothing: 0.5
+  com.tencent.mobileqq/.activity.ChatActivity:
+    util_smoothing: 0.5
+  # --- com.baiyang.eet（省钱主目标，见 special_tuned.yaml 的 sweet 组） ---
+  # 该包整包走 sweet 特调模式（甜点硬封顶），参数已在 tuned_profiles.yaml 的 sweet 段；
+  # 这里**不写**本包，避免两套覆盖叠加时口径难审计（特调接管期间 CLG 不活跃，本段对它无效）。
+
 # [ignored-apps]
 ignored_apps:
   - com.android.systemui

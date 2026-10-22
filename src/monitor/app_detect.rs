@@ -34,6 +34,22 @@ pub fn activity_rules_configured() -> bool {
     ACTIVITY_RULES_ACTIVE.load(Ordering::Relaxed)
 }
 
+// [activity_params]
+/// 当前前台 activity 的参数覆盖（进程级快照）：由检测循环在 activity 变化时按 `rules.yaml` 的
+/// `activity_params` 段查表刷新，调度侧（CLG / 特调）每轮直接读，不在热路径上重查 HashMap。
+///
+/// 语义：`None` = 当前没有生效的参数覆盖（绝大多数帧都是这个），调度侧据此走原参数路径，
+/// **零分支零开销**；`Some` = 叠一层覆盖，具体字段仍可能为 None（= 该字段不覆盖）。
+/// 只存一个 `Arc`，读侧克隆成本是一次原子自增。
+static ACTIVITY_PARAMS: LazyLock<
+    Mutex<Option<Arc<crate::monitor::config::ActivityParamOverride>>>,
+> = LazyLock::new(|| Mutex::new(None));
+
+/// 当前生效的 activity 参数覆盖（无则 None）；调度侧热路径调用，只做一次 Arc 克隆
+pub fn current_activity_params() -> Option<Arc<crate::monitor::config::ActivityParamOverride>> {
+    ACTIVITY_PARAMS.lock().unwrap().clone()
+}
+
 // 获取系统已启用的输入法列表
 fn get_system_ime_packages() -> HashSet<String> {
     let mut imes = HashSet::new();
@@ -940,6 +956,41 @@ pub fn app_detection_loop(
         // 同包内 Activity 变化也要重算模式：Activity 级规则用在页面切换（聊天→视频通话、浏览→播放），activity 不参与 identity/generation，故不能只靠 identity_changed
         let activity_changed =
             activity_observation_changed(identity_changed, &observed_activity, &last_activity);
+
+        // [activity_params] activity 一变化就刷新参数覆盖，**与模式重判解耦**：
+        // 同一个 activity 键可以只配参数（不配 app_modes），此时模式不变、但参数必须落地；
+        // 反之换包/强制刷新时也要重算（新包可能有同名 activity 键，前缀已由 activity_for_package
+        // 校验，不会跨包命中）。两种条件取并集，保证快照不漏更新。
+        // 锁内只取命中项并就地克隆（不整表 clone：activity_params 是与 app_modes 同量级的 HashMap，
+        // 每轮整表复制在活跃期是实打实的分配开销）；未命中时给 None，锁内直接落地。
+        // 没配 activity_params 时整段跳过：零锁、零分配，与加该机制前一致。
+        if (activity_changed || identity_changed || force_refresh)
+            && !{
+                let cfg = config_arc.lock().unwrap();
+                cfg.activity_params.is_empty()
+            }
+        {
+            let next = {
+                let cfg = config_arc.lock().unwrap();
+                if observed_activity.is_empty() {
+                    None
+                } else {
+                    cfg.activity_params
+                        .get(observed_activity.as_ref())
+                        .filter(|o| !o.is_empty())
+                        .map(|o| Arc::new(o.clone()))
+                }
+            };
+            let mut slot = ACTIVITY_PARAMS.lock().unwrap();
+            let same = match (&*slot, &next) {
+                (None, None) => true,
+                (Some(a), Some(b)) => Arc::ptr_eq(a, b) || **a == **b,
+                _ => false,
+            };
+            if !same {
+                *slot = next;
+            }
+        }
 
         if identity_changed || force_refresh || activity_changed {
             if !final_pkg.is_empty() {

@@ -46,3 +46,13 @@ com.salt.music:playback:playback
 # com.android.documentsui / com.littlewhale.combinedstatus / yangfentuozi.batteryrecorder /
 # com.moondroplab.moondrop.moondrop_app / fans.lty.app / org.lsposed.manager /
 # me.weishu.kernelsu / re:(?i)launcher
+
+# sweet 组（甜点封顶；2026-10-23 8550 日志分析新增，logd_1023-011754）
+# 证据：com.baiyang.eet 243 样本 3.65 W、gpu 仅 2.1%（纯 CPU 负载），
+# 而实际下发的上限里 prime 有 67%（164/243）**高于甜点 1709MHz**（p50 2477MHz = 甜点 1.45 倍），
+# big 34% 越甜点、little 仅 4%——即「单核吃满就把 prime 顶到 2.5GHz+」，
+# 而该应用本身是低频宽场景（wakeups 3.8k/s、migrations 1.7k/s，均低于同批其它应用），
+# 上限越高越是白烧电。sweet 组把上限压到各簇甜点档（sm8550：little 1018 / big 1402 / prime 1709MHz）。
+# 与 playback 的区别：playback 走 util×headroom 贴负载（软跟随），sweet 是按能效曲线**硬封顶**，
+# util 再高也不越过甜点，除非簇内占用达到 release 阈值（显式让位，见 tuned_profiles.yaml 的 sweet 段）。
+com.baiyang.eet:sweet:sweet

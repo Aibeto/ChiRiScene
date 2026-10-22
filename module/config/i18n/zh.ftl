@@ -213,6 +213,9 @@ tuned-config-reloaded = [Tuned] { $mode } 特调参数组已热重载
 tuned-tick-log = [Tuned] { $mode } { $state }
 tuned-watchdog-release = [Tuned] 看门狗: { $secs } 秒无负载事件，eBPF 负载源疑似失效，已释放特调控制权
 tuned-profile-missing = [Tuned] 白名单模式 { $mode } 没有对应参数组，接管时回退 akmode 段
+tuned-sweet-cap-no-curve = [Tuned] { $mode } 的 sweet_cap=auto 未生效：本机型 soc.yaml 无 frontier_policy 曲线（安全侧不封顶，需改用 sweet_cap:ratio）
+tuned-activity-params-applied = [Tuned] { $mode } 叠加 activity 参数覆盖 (headroom { $headroom } / 平滑 { $smooth } / 死区 { $hyst } / 降频保持 { $down_ms }ms)
+clg-activity-params-applied = [CLG] P{ $p } 叠加 activity 参数覆盖 (headroom { $headroom } / 平滑 { $smooth } / 写频死区 { $deadzone } / 降频确认 { $down_ticks } tick)
 
 # --- Touch（触摸升频） ---
 touch-detect-started = [Touch] 触摸检测线程已启动 (读取 /dev/input)

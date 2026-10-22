@@ -213,6 +213,9 @@ tuned-config-reloaded = [Tuned] { $mode } profile hot-reloaded
 tuned-tick-log = [Tuned] { $mode } { $state }
 tuned-watchdog-release = [Tuned] WATCHDOG: no load events for { $secs }s, eBPF source failed, releasing special tuning
 tuned-profile-missing = [Tuned] whitelist mode { $mode } has no profile, takeover falls back to the akmode section
+tuned-sweet-cap-no-curve = [Tuned] { $mode } sweet_cap=auto inactive: this SoC has no frontier_policy curve (safe side: no cap; use sweet_cap:ratio instead)
+tuned-activity-params-applied = [Tuned] { $mode } activity param override applied (headroom { $headroom } / smoothing { $smooth } / hysteresis { $hyst } / down hold { $down_ms }ms)
+clg-activity-params-applied = [CLG] P{ $p } activity param override applied (headroom { $headroom } / smoothing { $smooth } / write deadzone { $deadzone } / down confirm { $down_ticks } ticks)
 
 # --- Touch (touch boost) ---
 touch-detect-started = [Touch] touch detection thread started (reading /dev/input)

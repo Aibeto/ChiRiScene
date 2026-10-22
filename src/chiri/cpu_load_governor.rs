@@ -31,6 +31,12 @@ static PF_ENABLED_LOGGED: AtomicBool = AtomicBool::new(false);
 /// 连续压制超过该窗口即放弃封顶、回到比例路径——宁可多花电，也不把性能长期锁在甜点。
 const EEM_CAP_RELEASE_TICKS: u32 = 10;
 
+/// [activity_params] CLG 的降频确认 tick 周期（ms，近似值）：`down_hold_ms` 折算成
+/// `down_rate_limit_ticks` 时用。CLG 实际 tick 周期由 scheduler 传入（ChiRi 160ms / 非 ChiRi 200ms），
+/// 这里取 160ms——`down_hold_ms` 本就是「大致保持多久」的软约束，折算差一档不影响语义，
+/// 若需精确对齐应在 scheduler 侧把真实周期传进 worker（当前未传，故用近似值并在此注明）。
+const CLG_TICK_MS_APPROX: u64 = 160;
+
 /// [eem] 本簇所属核心组（按受影响 CPU 的最小 ID 归属）：spawn 时定一次，用于取该组的逐桶落点表
 fn pf_group_of(
     affected: &[usize],
@@ -371,9 +377,73 @@ struct CoreGroupWorker {
     dev_prev_perf: f32,
     /// 上次 flush 热钳制是否生效；仅用于 clamp_apply 证据事件的跃迁去重，不参与控制
     dev_clamp_binds: bool,
+    // [activity_params] 当前 activity 的参数覆盖（进程级快照的本地副本）
+    /// `None` = 无覆盖（绝大多数帧），决策走 `self.cfg` 原值；`Some` = 与 `self.cfg` 叠加后的有效配置
+    /// 由 `run` 每帧从 `app_detect::current_activity_params()` 取并套用，`on_load_update`/`flush` 只读它
+    /// 只在覆盖**变化**时重算（Arc 判等），稳态每帧成本是一次原子自增 + 一次指针比较
+    act_override: Option<std::sync::Arc<crate::monitor::config::ActivityParamOverride>>,
+    /// 叠加 activity 覆盖后的有效配置（无覆盖时与 `self.cfg` 相同；只换四个标量，`per_cluster` 表复用 `self.cfg` 的）
+    eff_cfg: CpuLoadGovernorConfig,
 }
 
 impl CoreGroupWorker {
+    /// [activity_params] 每帧刷新「模式配置 + 当前 activity 覆盖」的有效配置
+    ///
+    /// 只在覆盖**实例变化**时重算：`Arc::ptr_eq` 命中即返回，稳态每帧只花一次加锁 + 一次指针比较。
+    /// 未配置覆盖（绝大多数场景）时 `eff_cfg` 与 `cfg` 逐位相同，后续决策路径与加该机制前完全一致。
+    ///
+    /// 只叠加四个跨链路同义的标量（headroom / util_smoothing / hysteresis / down_hold_ms）；
+    /// hysteresis 在 CLG 侧的对应量是 `write_deadzone`（同为「占硬件最高频的比例」），
+    /// down_hold_ms 对应 `down_rate_limit_ticks`，按 CLG 的 tick 周期折成 tick 数。
+    fn refresh_activity_override(&mut self) {
+        let Some(ov) = crate::monitor::app_detect::current_activity_params() else {
+            // 覆盖撤销：回到模式原参数（只有曾生效过才需要重建）
+            if self.act_override.is_some() {
+                self.act_override = None;
+                self.eff_cfg = self.cfg.clone();
+            }
+            return;
+        };
+        // 同一份覆盖（activity 未变）：不重算
+        if self
+            .act_override
+            .as_ref()
+            .is_some_and(|cur| std::sync::Arc::ptr_eq(cur, &ov))
+        {
+            return;
+        }
+        self.eff_cfg = self.cfg.clone();
+        if let Some(v) = ov.headroom {
+            self.eff_cfg.headroom_factor = v;
+        }
+        if let Some(v) = ov.util_smoothing {
+            self.eff_cfg.util_smoothing = v;
+        }
+        if let Some(v) = ov.hysteresis {
+            self.eff_cfg.write_deadzone = v;
+        }
+        if let Some(ms) = ov.down_hold_ms {
+            // CLG 的降频确认是 tick 计数，tick 周期由 scheduler 传入（150ms 档），
+            // 这里按 160ms 缺省折算并对齐到 ≥1 tick（写死上限 5s 已在 normalize 钳过）
+            self.eff_cfg.down_rate_limit_ticks =
+                ((ms / CLG_TICK_MS_APPROX).max(1)).min(u32::MAX as u64) as u32;
+        }
+        self.act_override = Some(ov);
+        debug!(
+            "{}",
+            t_with_args(
+                "clg-activity-params-applied",
+                &fluent_args!(
+                    "p" => self.restore.policy_id.to_string(),
+                    "headroom" => format!("{:.2}", self.eff_cfg.headroom_factor),
+                    "smooth" => format!("{:.2}", self.eff_cfg.util_smoothing),
+                    "deadzone" => format!("{:.3}", self.eff_cfg.write_deadzone),
+                    "down_ticks" => self.eff_cfg.down_rate_limit_ticks.to_string()
+                )
+            )
+        );
+    }
+
     /// 在新线程中运行 Worker 事件循环：接收负载、决策、写频；线程退出（stop 或 channel 断开）前恢复系统原始状态
     /// 性能响应全部走推送事件（负载包 / 触摸空包立即 flush），超时分支只做清理过期触摸窗口与重写当前频率防篡改，空闲空转从 ~6 次/s 降到 1 次
     fn run(mut self) {
@@ -387,6 +457,8 @@ impl CoreGroupWorker {
 
             match self.load_rx.recv_timeout(tick_interval) {
                 Ok(core_utils) => {
+                    // [activity_params] 决策前刷新一次：activity 页面切换后本帧即生效，不必等模式事件
+                    self.refresh_activity_override();
                     // 空负载包 = 触摸唤醒信号：只 flush 应用触摸升频，跳过决策——避免空数据把 util 算成 0 扰动 up/down_wait
                     if !core_utils.is_empty() {
                         self.on_load_update(&core_utils);
@@ -418,10 +490,10 @@ impl CoreGroupWorker {
         let mut under = 0u32;
         for &cpu in &self.cluster.affected_cpus {
             if let Some(&u) = core_utils.get(cpu) {
-                if u > self.cfg.up_threshold {
+                if u > self.eff_cfg.up_threshold {
                     over += 1;
                 }
-                if u < self.cfg.down_threshold {
+                if u < self.eff_cfg.down_threshold {
                     under += 1;
                 }
             }
@@ -431,11 +503,11 @@ impl CoreGroupWorker {
 
         // 负载平滑（EMA，util_smoothing=1.0 关闭，语义同 tuned）：抑制抖动负载下 max_util 大幅摆动导致的决策翻摆与 scaling_max_freq 高频改写
         // main_ 的 max_util 列刻意写平滑前原始值，离线回放可自行试验系数
-        let smoothed = if self.cfg.util_smoothing >= 0.999 || self.cluster.ema_util < 0.0 {
+        let smoothed = if self.eff_cfg.util_smoothing >= 0.999 || self.cluster.ema_util < 0.0 {
             raw_util
         } else {
-            self.cfg.util_smoothing * raw_util
-                + (1.0 - self.cfg.util_smoothing) * self.cluster.ema_util
+            self.eff_cfg.util_smoothing * raw_util
+                + (1.0 - self.eff_cfg.util_smoothing) * self.cluster.ema_util
         };
         self.cluster.ema_util = smoothed;
 
@@ -443,26 +515,26 @@ impl CoreGroupWorker {
         // util 高于 T 就回收下探（步长 ×2 防过冲）、低于 T 就加深、死区内保持，回路自带稳态，不会形成 2~4s 频率锯齿；限幅 [0, max] = 抗积分饱和，必须用更新前的 last_util 算差量
         let prev_smoothed = self.cluster.last_util;
         let delta = smoothed - prev_smoothed;
-        let stable = delta.abs() <= self.cfg.steady_decay_band;
-        if !self.cfg.steady_decay_enabled
-            || smoothed >= self.cfg.up_threshold
-            || smoothed < self.cfg.down_fast_threshold
-            || delta > self.cfg.steady_decay_band
+        let stable = delta.abs() <= self.eff_cfg.steady_decay_band;
+        if !self.eff_cfg.steady_decay_enabled
+            || smoothed >= self.eff_cfg.up_threshold
+            || smoothed < self.eff_cfg.down_fast_threshold
+            || delta > self.eff_cfg.steady_decay_band
         {
             // 负载上行 / 极低负载 / 关闭开关：立即放弃下探（安全优先，回到正常升频路径）
             self.cluster.steady_decay = 0.0;
             self.cluster.steady_streak = 0;
         } else if stable {
             self.cluster.steady_streak = self.cluster.steady_streak.saturating_add(1);
-            if self.cluster.steady_streak >= self.cfg.steady_decay_stable_ticks {
-                let target = self.cfg.up_threshold * self.cfg.steady_decay_target_ratio;
-                if smoothed > target + self.cfg.steady_decay_band {
+            if self.cluster.steady_streak >= self.eff_cfg.steady_decay_stable_ticks {
+                let target = self.eff_cfg.up_threshold * self.eff_cfg.steady_decay_target_ratio;
+                if smoothed > target + self.eff_cfg.steady_decay_band {
                     self.cluster.steady_decay =
-                        (self.cluster.steady_decay - self.cfg.steady_decay_step * 2.0).max(0.0);
-                } else if smoothed < target - self.cfg.steady_decay_band {
+                        (self.cluster.steady_decay - self.eff_cfg.steady_decay_step * 2.0).max(0.0);
+                } else if smoothed < target - self.eff_cfg.steady_decay_band {
                     self.cluster.steady_decay = (self.cluster.steady_decay
-                        + self.cfg.steady_decay_step)
-                        .min(self.cfg.steady_decay_max);
+                        + self.eff_cfg.steady_decay_step)
+                        .min(self.eff_cfg.steady_decay_max);
                 }
                 // 死区内保持不变 → 消除抖动
             }
@@ -472,8 +544,8 @@ impl CoreGroupWorker {
         }
 
         // 尖峰抑制：单 tick 跳升超过阈值时衰减其增量
-        let util = if smoothed > self.cluster.last_util + self.cfg.spike_jump_threshold {
-            self.cluster.last_util + (smoothed - self.cluster.last_util) * self.cfg.spike_decay
+        let util = if smoothed > self.cluster.last_util + self.eff_cfg.spike_jump_threshold {
+            self.cluster.last_util + (smoothed - self.cluster.last_util) * self.eff_cfg.spike_decay
         } else {
             smoothed
         };
@@ -481,12 +553,12 @@ impl CoreGroupWorker {
 
         // 主旋钮契约：target_perf = clamp(util × headroom, perf_floor, perf_ceil)，与 up_threshold 无关（up 只管 headroom ramp 与升频速度）；
         // perf_ceil 默认 1.0（降功耗不封顶，除特调外）；headroom 在 up_threshold 附近线性过渡，避免阶跃振荡
-        let ramp_start = self.cfg.up_threshold - self.cfg.headroom_ramp;
-        let headroom = if util >= self.cfg.up_threshold {
-            self.cfg.headroom_factor
+        let ramp_start = self.eff_cfg.up_threshold - self.eff_cfg.headroom_ramp;
+        let headroom = if util >= self.eff_cfg.up_threshold {
+            self.eff_cfg.headroom_factor
         } else if util > ramp_start {
-            let t = ((util - ramp_start) / self.cfg.headroom_ramp.max(1e-6)).clamp(0.0, 1.0);
-            1.0 + (self.cfg.headroom_factor - 1.0) * t
+            let t = ((util - ramp_start) / self.eff_cfg.headroom_ramp.max(1e-6)).clamp(0.0, 1.0);
+            1.0 + (self.eff_cfg.headroom_factor - 1.0) * t
         } else {
             1.0
         };
@@ -496,16 +568,17 @@ impl CoreGroupWorker {
         let old_perf = self.cluster.current_perf;
         // hold 兜底：确认被连续阻塞满 high_zone_hold_ticks 强制放行一次并重新计数，
         // 防负载形态与确认条件错配时永久卡高位
-        let candidate_perf = (util * headroom).clamp(self.cfg.perf_floor, self.cfg.perf_ceil);
+        let candidate_perf =
+            (util * headroom).clamp(self.eff_cfg.perf_floor, self.eff_cfg.perf_ceil);
         let mut high_zone_block = false;
-        if self.cfg.high_zone_count > 0
-            && self.cfg.high_zone_gate > 0.0
-            && old_perf >= self.cfg.high_zone_gate
+        if self.eff_cfg.high_zone_count > 0
+            && self.eff_cfg.high_zone_gate > 0.0
+            && old_perf >= self.eff_cfg.high_zone_gate
             && candidate_perf > old_perf + 1e-6
         {
             let hits = self
                 .cluster
-                .high_zone_hits(core_utils, self.cfg.high_zone_util);
+                .high_zone_hits(core_utils, self.eff_cfg.high_zone_util);
             // [high_zone] 确认核数按本簇规模封顶：hits 的可达上限 = 本簇在线核数（prime 单核簇恒为 1），取 min(count, 本簇核数)
             // 否则 high_zone_count 大于本簇核数时确认条件永不成立，只能靠 high_zone_hold_ticks 兜底放行一次，退化成周期性突刺
             let need = self
@@ -516,7 +589,7 @@ impl CoreGroupWorker {
                 self.cluster.high_zone_wait = 0;
             } else {
                 self.cluster.high_zone_wait = self.cluster.high_zone_wait.saturating_add(1);
-                if self.cluster.high_zone_wait >= self.cfg.high_zone_hold_ticks {
+                if self.cluster.high_zone_wait >= self.eff_cfg.high_zone_hold_ticks {
                     // 兜底放行一次后重新计数：恢复确认节奏
                     self.cluster.high_zone_wait = 0;
                 } else {
@@ -540,7 +613,7 @@ impl CoreGroupWorker {
             // [dir_stabilize_tick] 有意保留的 off-by-a-tick：up-hold 不清 down_wait，被暂停的那次 down intent 仍算确认进度，降频最多早 1 tick，换取噪声 tick 不抹掉降频确认进度
             let up_freq = self.cluster.find_floor_freq(target_perf);
             if (up_freq.abs_diff(self.cluster.current_freq) as f32)
-                <= self.cluster.deadzone_band(self.cfg.write_deadzone)
+                <= self.cluster.deadzone_band(self.eff_cfg.write_deadzone)
             {
                 self.dev_decision = "hold";
                 return;
@@ -549,24 +622,24 @@ impl CoreGroupWorker {
             self.cluster.up_wait += 1;
 
             // 升频速率限制：必须连续 up_rate_limit_ticks 才执行
-            if self.cluster.up_wait < self.cfg.up_rate_limit_ticks {
+            if self.cluster.up_wait < self.eff_cfg.up_rate_limit_ticks {
                 self.dev_decision = "up_wait";
                 return;
             }
             self.dev_decision = "up";
 
             // 动态上限：抬 ceiling 不强制频率跳变（schedutil 按实际需求在 [硬件最低, ceiling] 内取频），直接平滑抬升
-            let is_high_load = util >= self.cfg.up_threshold;
-            let is_significant_jump = target_perf > old_perf + self.cfg.up_jump_threshold;
+            let is_high_load = util >= self.eff_cfg.up_threshold;
+            let is_significant_jump = target_perf > old_perf + self.eff_cfg.up_jump_threshold;
 
             if is_high_load || is_significant_jump {
-                self.cluster.current_perf += (target_perf - old_perf) * self.cfg.smoothing_up;
+                self.cluster.current_perf += (target_perf - old_perf) * self.eff_cfg.smoothing_up;
             } else {
                 // 滞回带内升频：速率随 util 接近 up_threshold 线性提升
-                let span = (self.cfg.up_threshold - self.cfg.down_threshold).max(1e-6);
-                let gap = ((util - self.cfg.down_threshold) / span).clamp(0.0, 1.0);
-                let speed = self.cfg.smoothing_up
-                    * (self.cfg.slow_up_scale + (1.0 - self.cfg.slow_up_scale) * gap);
+                let span = (self.eff_cfg.up_threshold - self.eff_cfg.down_threshold).max(1e-6);
+                let gap = ((util - self.eff_cfg.down_threshold) / span).clamp(0.0, 1.0);
+                let speed = self.eff_cfg.smoothing_up
+                    * (self.eff_cfg.slow_up_scale + (1.0 - self.eff_cfg.slow_up_scale) * gap);
                 self.cluster.current_perf += (target_perf - old_perf) * speed;
             }
         } else {
@@ -575,7 +648,7 @@ impl CoreGroupWorker {
             let target_freq = self.cluster.find_floor_freq(target_perf);
             // [deadzone_hold] hold 判定：≤ 死区频差（含相等；write_deadzone=0 退化为精确相等），与吞写 gate 同源，写不进 sysfs 的落点不累计 down_wait
             if (target_freq.abs_diff(self.cluster.current_freq) as f32)
-                <= self.cluster.deadzone_band(self.cfg.write_deadzone)
+                <= self.cluster.deadzone_band(self.eff_cfg.write_deadzone)
             {
                 self.cluster.down_wait = 0;
                 self.dev_decision = "hold";
@@ -585,11 +658,11 @@ impl CoreGroupWorker {
                 self.cluster.up_wait = 0;
                 self.cluster.down_wait += 1;
                 // 极低负载立即降频（跳过 down_wait 确认期），否则连续满 down_rate_limit_ticks
-                if self.cluster.down_wait >= self.cfg.down_rate_limit_ticks
-                    || util < self.cfg.down_fast_threshold
+                if self.cluster.down_wait >= self.eff_cfg.down_rate_limit_ticks
+                    || util < self.eff_cfg.down_fast_threshold
                 {
                     // [dwell] 极低负载立即降频 = 豁免路径：本次写频绕过滞回（flush 消费）
-                    self.cluster.fast_down = util < self.cfg.down_fast_threshold;
+                    self.cluster.fast_down = util < self.eff_cfg.down_fast_threshold;
                     self.dev_decision = "down";
                     // 直接降上限（能效优先），一步到位写目标档：降 ceiling 只收窄 schedutil 区间，不会抬高实际频率
                     self.cluster.current_perf = self.cluster.ratio_of_freq(target_freq);
@@ -607,7 +680,7 @@ impl CoreGroupWorker {
         let mut touch_active = false;
         // [dwell] floor 提频写入豁免滞回（floor 提频立即生效）
         let mut touch_raised = false;
-        if self.cfg.touch_boost_enabled {
+        if self.eff_cfg.touch_boost_enabled {
             let floor = self.touch.get_floor();
             if floor > 0.0 && Self::is_big_cluster(&self.cluster.affected_cpus, &self.core_ranges) {
                 touch_raised = floor > self.cluster.current_perf;
@@ -618,7 +691,7 @@ impl CoreGroupWorker {
         self.cluster.current_perf = self
             .cluster
             .current_perf
-            .clamp(self.cfg.perf_floor, self.cfg.perf_ceil);
+            .clamp(self.eff_cfg.perf_floor, self.eff_cfg.perf_ceil);
         // 热压制（重钳，只作用于 CLG、不含 tuned）：只钳写频、不回写 current_perf（回写才会卡死在 cap），窗口解除立即恢复全速，clamp_heavy=true（默认）所有簇恒钳；
         // false 时 current_perf >= 豁免档 free_above 不钳（豁免档需严格大于 soft_perf_cap，free_above 仅此分支生效）
         let cap = f32::from_bits(self.thermal_cap.load(Ordering::Relaxed));
@@ -636,7 +709,7 @@ impl CoreGroupWorker {
         } else {
             self.cluster.steady_decay
         };
-        let write_perf = (eff_perf - decay).max(self.cfg.perf_floor);
+        let write_perf = (eff_perf - decay).max(self.eff_cfg.perf_floor);
         let ratio_freq = self.cluster.find_floor_freq(write_perf);
         // [eem] 相对能效落点：**只允许下调**，与比例路径取 min。
         // 语义 = 「甜点封顶」：单线程需求没跨过整簇份额门槛时，频率停在本簇甜点档，
@@ -677,8 +750,8 @@ impl CoreGroupWorker {
         let exempt = (touch_raised && target_freq > self.cluster.current_freq)
             || (fast_down && target_freq < self.cluster.current_freq)
             || self.cluster.last_failed;
-        let dwell_ms = self.cfg.write_dwell_ms;
-        let deadzone = self.cfg.write_deadzone;
+        let dwell_ms = self.eff_cfg.write_dwell_ms;
+        let deadzone = self.eff_cfg.write_deadzone;
         self.cluster
             .write_freq(target_freq, dwell_ms, deadzone, exempt);
 
@@ -785,7 +858,7 @@ impl CoreGroupWorker {
     fn eem_target_freq(&mut self, core_utils: &[f32]) -> Option<u32> {
         let curve = self.eem?;
         // 非稳态不压向甜点：稳态下探与迁移都还没收敛，压频只会让 util 虚高
-        if self.cluster.steady_streak < self.cfg.steady_decay_stable_ticks {
+        if self.cluster.steady_streak < self.eff_cfg.steady_decay_stable_ticks {
             return None;
         }
         // 只算**本簇**：worker 按 policy（单簇）划分，整机口径会让每簇都以为自己要扛全 SoC 需求
@@ -1076,7 +1149,11 @@ impl CoreGroupWorker {
 
         let worker = CoreGroupWorker {
             cluster,
+            // [activity_params] 工作副本先取一份：`cfg` 是模式原配置（热重载会替换它），
+            // `eff_cfg` 是「模式配置 + 当前 activity 覆盖」的派生结果，紧随 `cfg` 变化重算
+            eff_cfg: cfg.clone(),
             cfg,
+            act_override: None,
             restore: PolicyRestore {
                 policy_id: restore.policy_id,
                 governor: restore.governor.clone(),
