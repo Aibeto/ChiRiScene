@@ -32,6 +32,24 @@
       （big 顶档单核 3.819 W、prime 6.196 W），绝对量级未经真机核对。**相对向量使机内决策不受影响**
       （形状正确即可），但**跨簇比较依赖簇间相对比例**，故 prime/big 的比值若失真会改变跨簇落点。
       待有条件时用 PMIC 实测复核（`devimpbin/batch_ingest.py` 链路已就绪）。
+- [x] **8650 适配 EEM 已完成（2026-10-23）**：`scripts/curve_anchor.py --soc sm8650` 生成受控块到
+      `module/config/sm8650/soc.yaml`，`feature.yaml` 开 `eem_placement: true`。数据源 = 8 Gen 3 实测
+      能效曲线（A520/A720/X4 + N4P），口径与甜点见 `06-kernel.md`「8650 的 EEM 已适配」条。
+      结构回归 = `src/common.rs` 的 `frontier_config_tests::sm8650_frontier_usable`（断言甜点三档，
+      改锚点数据会立刻失败）。
+- [ ] **8650 甜点真机校准**：当前 little 1843200 / big 2323200 / prime 2246400 kHz，来自**读图**
+      （逐点约读 + `α=0.7` 反解频率轴），误差可漂 ±2 档，**按体质误差接受**（用户 2026-10-23 定）。
+      真机若发现单线程性能不足，同 8750 口径：先看 `eem_press_streak` 触发率，再考虑 `sweet_bias`，
+      **不要直接改判据**。
+- [ ] **8650 逐档电压仍缺**（唯一未闭合的口径）：DT `opp-microvolt` 计数 0，电压只在 EPSS 寄存器
+      （`reg_volt_lut=0x200`、`LUT_VOLT=GENMASK(11,0)`、×1000）。取证后可反解真实 V(f) 替换本轮的
+      曲线折算，并用 `curve_anchor.py --check` 对账。**这是「代际进步是否被正确表达」的唯一硬校验**——
+      dpc 绝对值已被归一化抵消，形状只由 V(f) 曲率承载。
+- [ ] **8475 维持默认回退 CLG（2026-10-23 用户决定，非待办）**：`module/config/sm8475/` 无
+      `frontier_policy`、`feature.yaml` 无 `eem_placement` → `soc_frontier_policy()` 返回 None →
+      `energy_model::curve()` 全 None → 日志前缀仍是 `CLG`（非 `CLG-EEM`）。根因：8475 无可信频表
+      （DT 无静态 OPP、无真机 devimp 采集、mainline 无 cape）。若日后要适配，**先解决频表**，再按 8650 同一
+      链路（实测能效曲线 → `curve_anchor.py`）补功耗。
 - [ ] **`devimpbin/batch_ingest.py` 的负净idle 问题**（历史遗留，未修）：616/851 档
       `净idle < 0`，泄漏校正反号、功耗被放大（最差 exynos7880 little 顶档 +0.558 W = 23%）。
       修法 = `idle = max(0.0, idle - base)`，但需连带重跑 batch_ingest → 文档 §3 →

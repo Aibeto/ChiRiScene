@@ -46,6 +46,7 @@ CLUSTERS = ("little", "big", "prime")
 # [args]
 # 目标机型 → soc.yaml 路径。新增机型 = 加一条。
 SOC_PROFILES = {
+    "sm8650": ROOT / "module/config/sm8650/soc.yaml",
     "sm8750": ROOT / "module/config/sm8750/soc.yaml",
 }
 

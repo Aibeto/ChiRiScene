@@ -25,7 +25,12 @@
 - **真机 capacity（`cpu_capacity` 逐 policy）**：policy0 = 379、policy2 = 923、policy5 = 867、policy7 = 1024（FAS 自动算力权重日志，已是 `arch_topology.c` 归一化后的值）。已写入 `config/sm8650/soc.yaml [capacity]`（big 取 923）。
 - 真机频率范围（CLG 初始化读到的 policy min–max，MHz）：P0 364.8–2265.6、P2 499.2–3148.8、P5 499.2–2956.8、P7 480–3302.4。注意 snap 行里的 `cpu_max_khz` 常见 3052800 之类**不是硬件上限**，是厂商/vendor 动态改过的 policy max。
 - **真机 frequency 与厂商 dtsi 静态 OPP 表已对账一致（2026-10-20）**：`AYNTechnologies/linux/arch/arm64/boot/dts/qcom/sm8650.dtsi` 含完整静态 CPU OPP 表，逐簇括住真机范围 —— little 25 档 `307200-2265600`（真机 P0 `364800-2265600`）、big 47 档 `460800-3148800`（真机 P2 `499200-3148800`，且含 P5 的 `2956800`）、prime 49 档 `480000-3302400`（真机 P7 `480-3302.4` 完全吻合）。已写入 `config/sm8650/soc.yaml [freq_khz]`。注意 P5 真机 max 只有 2956800、而 dtsi 的 cpu5_opp_table 与 cpu2_opp_table 逐档相同（都到 3148800）——差异来自厂商/vendor 动态改 policy max，非 DT 阶梯不同。
-- TODO: 逐档功耗表（→ 无 `frontier_policy`，CLG-PF / FDP 均不启用）；sm8450.dtsi 的数值（4+3+1 三域）**不可**套到 8650。idle/dpc 已从厂商 dtsi 补入，`[idle]` 的分族取值见下「平台基线（sm8475 / msm8998，dtsi 口径，2026-10-20）」节，dpc 100/238/588 逐值正确。
+- **8650 的 EEM 已适配（2026-10-23）**，与上面「无逐档功耗表」的旧 TODO 相反——但**不是**靠 DT 电压表，而是靠**实测能效曲线**：数据源 = 8 Gen 3 (SM8650) 实测「能效曲线-架构工艺-FP」（AndSPECmod + 假电池整轨实测、多项式拟合，V1.0.7，2026.08.09，作者 Timysy_小添），三簇分别取 A520(512KB)+N4P / A720(512KB)+N4P / X4(2MB)+N4P。落表方式 = `scripts/curve_anchor.py --soc sm8650` 生成到 `module/config/sm8650/soc.yaml` 的受控块。
+  - **口径三步**：① 横轴是**整机功耗差**（含板卡/漏电成分），非单簇纯动态项；② 纵轴是 SPEC2006 FP 分，须按 `score = score_max·(f/f_max)^α`（α=0.7，IPC 随频率衰减经验值）反解成频率轴才能喂 `sweet_index`（其 `cap_rel` 硬编码 `f/f_max`，`src/chiri/energy_model.rs:262`，没有「用分数当算力」的入口）；③ `dpc` 绝对值在归一化中被**完全抵消**（`dp=100` 与 `588` 得逐位相同形状），故代际进步只能由 V(f) 曲率承载。
+  - **甜点结果**：little idx=19 → 1843200 kHz (81.4%)、big idx=32 → 2323200 kHz (73.8%)、prime idx=31 → 2246400 kHz (68.0%)。读图误差实测可漂 ±2 档，**按体质误差接受**（用户 2026-10-23 定）。
+  - **仍缺的校验项**：逐档电压（DT `opp-microvolt` 计数 0；EPSS 电压只在运行时寄存器 `common/drivers/cpufreq/qcom-cpufreq-hw.c` 的 `reg_volt_lut=0x200`、`LUT_VOLT=GENMASK(11,0)`、×1000）。拿到真机 debugfs 转储后可用 `--check` 对账。
+  - sm8450.dtsi 的数值（4+3+1 三域）**不可**套到 8650。idle/dpc 已从 dtsi 补入，`[idle]` 的分族取值见下「平台基线（sm8475 / msm8998，dtsi 口径，2026-10-20）」节，dpc 100/238/588 逐值正确。
+- **8650 参考内核改为 `common`（2026-10-23，用户指定）**：以 `common/arch/arm64/boot/dts/qcom/sm8650.dtsi`（android-mainline）为准，此前用厂商件 `AYNTechnologies/linux/.../sm8650.dtsi`。两版实测对账：`cpu{0,2,5,7}_opp_table` **逐档完全相同**、`dynamic-power-coefficient` **相同**（100/238/588）；**只有 `capacity-dmips-mhz` 不同**——common = 1024/2909/3591，厂商 = 1024/1792/1894，而两者都**不进运行时**：`[capacity]` 取真机 `cpu_capacity` 归一值（379/923/1024），`energy_model::cluster_cap()` 优先读真机 sysfs、读不到才回退本表。
 
 ### 平台基线（sm8475 / msm8998，dtsi 口径，2026-10-20）
 

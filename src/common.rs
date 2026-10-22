@@ -1898,3 +1898,104 @@ mod meta_heal_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+/// [frontier] 机型 frontier_policy 段的结构回归：`deserialize_frontier_lenient` 会把解析错误
+/// 静默降级成 None（顶层 soc.yaml 解析失败同样静默回退整份配置），故各机型数据必须显式断言
+/// 「解析出来且可用」，否则误配不会在任何地方报错、EEM 只是悄悄不生效。
+#[cfg(test)]
+mod frontier_config_tests {
+    use super::*;
+
+    /// 对单个机型的 soc.yaml 校验 frontier 段的可用性；返回各簇甜点 kHz。
+    fn check(soc: &str, text: &str) -> Vec<(&'static str, u32)> {
+        let c: SocConfig = serde_yaml::from_str(text)
+            .unwrap_or_else(|e| panic!("{soc}: 整份 soc.yaml 解析失败: {e}"));
+        let p = c
+            .frontier_policy
+            .unwrap_or_else(|| panic!("{soc}: frontier_policy 段缺失或解析失败"));
+        assert!(p.enabled, "{soc}: enabled 必须为 true");
+        assert!(
+            p.model_fingerprint
+                .as_deref()
+                .is_some_and(|s| !s.is_empty()),
+            "{soc}: 缺 model_fingerprint"
+        );
+        let pc = p
+            .per_cluster
+            .unwrap_or_else(|| panic!("{soc}: per_cluster 缺失"));
+        let mut out = Vec::new();
+        for (name, b) in [
+            ("little", &pc.little),
+            ("big", &pc.big),
+            ("prime", &pc.prime),
+        ] {
+            // 空簇是**合法**配置（如 8750 没有小核簇，little 空区间 + 空表）：跳过而非报错。
+            // 非空即必须自洽——有频点就得有等长功耗，否则归一化会静默产出退化向量。
+            if b.freq_khz.is_empty() {
+                assert!(
+                    b.single_core_power_w.is_empty(),
+                    "{soc}/{name}: freq_khz 空但 single_core_power_w 非空"
+                );
+                continue;
+            }
+            assert_eq!(
+                b.freq_khz.len(),
+                b.single_core_power_w.len(),
+                "{soc}/{name}: freq_khz 与 single_core_power_w 长度不齐"
+            );
+            assert!(
+                b.freq_khz.windows(2).all(|w| w[0] < w[1]),
+                "{soc}/{name}: freq_khz 非严格升序"
+            );
+            assert!(
+                b.single_core_power_w.windows(2).all(|w| w[0] <= w[1]),
+                "{soc}/{name}: single_core_power_w 非单调非减（相对向量的跨度项会失真）"
+            );
+            // 复现 build()：cap_rel = f/f_max，pow_rel 先扣首档再按跨度归一
+            let fmax = *b.freq_khz.last().unwrap() as f32;
+            let cap: Vec<f32> = b.freq_khz.iter().map(|&f| f as f32 / fmax).collect();
+            let p0 = b.single_core_power_w[0];
+            let span = (b.single_core_power_w.last().unwrap() - p0).max(f32::EPSILON);
+            let pr: Vec<f32> = b
+                .single_core_power_w
+                .iter()
+                .map(|&x| (x - p0).max(0.0) / span)
+                .collect();
+            let sweet = crate::chiri::energy_model::sweet_index(&cap, &pr);
+            // 甜点不能落在首档（= 判据一次都没满足，EEM 退化成锁最低频）也不能在顶档
+            assert!(
+                sweet > 0,
+                "{soc}/{name}: 甜点落在首档，功耗曲线在归一化后没有超线性段"
+            );
+            assert!(sweet < b.freq_khz.len() - 1, "{soc}/{name}: 甜点落在顶档");
+            out.push((name, b.freq_khz[sweet]));
+        }
+        out
+    }
+
+    /// 8650：8 Gen 3 实测能效曲线折算（读图 ≤2 档漂移按体质误差接受）
+    #[test]
+    fn sm8650_frontier_usable() {
+        let got = check("sm8650", include_str!("../module/config/sm8650/soc.yaml"));
+        assert_eq!(
+            got,
+            vec![("little", 1843200), ("big", 2323200), ("prime", 2246400)],
+            "sm8650 甜点漂移超出预期（改了锚点数据就需要同步更新 expectations）"
+        );
+    }
+
+    /// 8750：EEM 首个适配机型，行为不得被后续改动带偏
+    #[test]
+    fn sm8750_frontier_usable() {
+        // 8750 是两簇布局（无小核簇，little 空区间 + 空表）→ 只有 big/prime 两簇
+        let got = check("sm8750", include_str!("../module/config/sm8750/soc.yaml"));
+        assert_eq!(got.len(), 2, "sm8750 应只有 big/prime 两簇（无小核）");
+    }
+
+    /// 8550：完整实测表机型，同上
+    #[test]
+    fn sm8550_frontier_usable() {
+        let got = check("sm8550", include_str!("../module/config/sm8550/soc.yaml"));
+        assert_eq!(got.len(), 3, "sm8550 三簇都应给出甜点");
+    }
+}

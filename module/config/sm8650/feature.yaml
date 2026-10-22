@@ -41,6 +41,11 @@ Affinity:
   # TODO: 确认本机 A520 是否承接 32 位任务后再决定是否填该名单。
   # normal_fg_exclude_little（非 boost 时 top-app 掩码剔除 little）同属按簇能效结论，
   # TODO: 待本机 little 贴顶与能耗实测后再决定。
+  # EEM（相对能效模型放置）：本机 soc.yaml 的 frontier_policy.per_cluster 带
+  # single_core_power_w（8 Gen 3 实测能效曲线折算），满足数据前置条件 → 开启。
+  # 缺数据时 apply 里的 && energy_model::available() 会自动关掉，不需要写 false。
+  # 数据出处与误差口径见 soc.yaml 受控块上方 `source:` 注释（读图 ≤2 档漂移，按体质误差接受）。
+  eem_placement: true
 
 # [corectl]
 CoreCtl:
