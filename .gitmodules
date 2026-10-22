@@ -1,3 +1,4 @@
+# repo
 [submodule "AppOptR"]
 	path = AppOptR
 	url = https://gitee.com/sutoliu/AppOptR.git
@@ -6,30 +7,12 @@
 	path = LittleYouran_CTS_3
 	url = https://github.com/LittleYouran/LittleYouran_CTS_3.git
 	branch = main
-[submodule "android_kernel_oneplus_sm8550"]
-	path = android_kernel_oneplus_sm8550
-	url = https://github.com/OnePlusOSS/android_kernel_oneplus_sm8550.git
-	branch = oneplus/sm8550_b_16.0.0_oneplus_11
-[submodule "torvalds/linux"]
-	path = torvalds/linux
-	url = https://github.com/torvalds/linux.git
-	branch = master
-[submodule "AYNTechnologies/linux"]
-	path = AYNTechnologies/linux
-	url = https://github.com/AYNTechnologies/linux.git
-	branch = ayn/v7.0
-[submodule "android_kernel_oneplus_sm8650"]
-	path = android_kernel_oneplus_sm8650
-	url = https://github.com/OnePlusOSS/android_kernel_oneplus_sm8650.git
-	branch = oneplus/sm8650_b_16.0.0_oneplus_12
-[submodule "android-gs-caimito-6.1-android15-qpr1"]
-	path = android-gs-caimito-6.1-android15-qpr1
-	url = https://android.googlesource.com/device/google/caimito-kernels/6.1
-	branch = 
 [submodule "socpk"]
 	path = socpk
 	url = https://github.com/Aibeto/socpk.git
 	branch = main
+
+# freqbench
 [submodule "freqbench"]
 	path = freqbench
 	url = https://github.com/kdrag0n/freqbench.git
@@ -38,7 +21,40 @@
 	path = freqbench_tensor
 	url = https://github.com/kerneltoast/freqbench.git
 	branch = tensor
-[submodule "android_kernel_oneplus_sm8750"]
+
+# OnePlus Kernel
+[submodule "OnePlusOSS/android_kernel_oneplus_sm8475"]
+	path = android_kernel_oneplus_sm8475
+	url = https://github.com/OnePlusOSS/android_kernel_oneplus_sm8475.git
+	branch = oneplus/sm8475_b_16.0.0_ace_2
+[submodule "OnePlusOSS/android_kernel_oneplus_sm8550"]
+	path = android_kernel_oneplus_sm8550
+	url = https://github.com/OnePlusOSS/android_kernel_oneplus_sm8550.git
+	branch = oneplus/sm8550_b_16.0.0_oneplus_11
+[submodule "OnePlusOSS/android_kernel_oneplus_sm8650"]
+	path = android_kernel_oneplus_sm8650
+	url = https://github.com/OnePlusOSS/android_kernel_oneplus_sm8650.git
+	branch = oneplus/sm8650_b_16.0.0_oneplus_12
+[submodule "OnePlusOSS/android_kernel_oneplus_sm8750"]
 	path = android_kernel_oneplus_sm8750
 	url = https://github.com/OnePlusOSS/android_kernel_oneplus_sm8750.git
 	branch = oneplus/sm8750_b_16.0.0_oneplus_13
+
+# Google Kernel
+[submodule "android-gs-caimito-6.1-android15-qpr1"]
+	path = android-gs-caimito-6.1-android15-qpr1
+	url = https://android.googlesource.com/device/google/caimito-kernels/6.1
+[submodule "common"]
+	path = common
+	url = https://android.googlesource.com/kernel/common
+	branch = android-mainline
+
+# Other Kernel
+[submodule "torvalds/linux"]
+	path = torvalds/linux
+	url = https://github.com/torvalds/linux.git
+	branch = master
+[submodule "AYNTechnologies/linux"]
+	path = AYNTechnologies/linux
+	url = https://github.com/AYNTechnologies/linux.git
+	branch = ayn/v7.0

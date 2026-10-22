@@ -286,17 +286,20 @@ FAS 白名单内的游戏（明日方舟：终末地、王者荣耀等）前台�
 
 ### 主要项目
 
-| Project                                  | License                         | Repository                                                            | Platform |
-| :--------------------------------------- | :------------------------------ | :-------------------------------------------------------------------- | :------- |
-| imacte/yumi                              | GPL v3.0                        | [GitHub](https://github.com/imacte/yumi)                              | ALL      |
-| Sutoliu/AppOptR                          | GPL v3.0                        | [Gitee](https://gitee.com/sutoliu/AppOptR)                            | ALL      |
-| torvalds/linux                           | GPL-2.0 WITH Linux-syscall-note | [GitHub](https://github.com/torvalds/linux)                           | SM8550   |
-| AYNTechnologies/linux                    | GPL-2.0 WITH Linux-syscall-note | [Github](https://github.com/AYNTechnologies/linux)                    | SM8550   |
-| OnePlusOSS/android_kernel_oneplus_sm8550 | GPL-2.0 WITH Linux-syscall-note | [GitHub](https://github.com/OnePlusOSS/android_kernel_oneplus_sm8550) | SM8550   |
-| OnePlusOSS/android_kernel_oneplus_sm8650 | GPL-2.0 WITH Linux-syscall-note | [GitHub](https://github.com/OnePlusOSS/android_kernel_oneplus_sm8650) | SM8650   |
-| OnePlusOSS/android_kernel_oneplus_sm8750 | GPL-2.0 WITH Linux-syscall-note | [GitHub](https://github.com/OnePlusOSS/android_kernel_oneplus_sm8750) | SM8750   |
-| kdrag0n/freqbench                        | MIT                             | [GitHub](https://github.com/kdrag0n/freqbench)                        | part     |
-| kerneltoast/freqbench                    | MIT                             | [GitHub](https://github.com/kerneltoast/freqbench)                    | part     |
+| Project                                  | License                         | Repository                                                                          | Platform |
+| :--------------------------------------- | :------------------------------ | :---------------------------------------------------------------------------------- | :------- |
+| imacte/yumi                              | GPL v3.0                        | [GitHub](https://github.com/imacte/yumi)                                            | ALL      |
+| Sutoliu/AppOptR                          | GPL v3.0                        | [Gitee](https://gitee.com/sutoliu/AppOptR)                                          | ALL      |
+| android-common                           | Apache License 2.0              | [Google Source](https://android.googlesource.com/kernel/common)                     | ALL      |
+| android-gs-caimito-6.1-android15-qpr1    | Apache License 2.0              | [Google Source](https://android.googlesource.com/device/google/caimito-kernels/6.1) | part     |
+| kdrag0n/freqbench                        | MIT                             | [GitHub](https://github.com/kdrag0n/freqbench)                                      | part     |
+| kerneltoast/freqbench                    | MIT                             | [GitHub](https://github.com/kerneltoast/freqbench)                                  | part     |
+| OnePlusOSS/android_kernel_oneplus_sm8475 | GPL-2.0 WITH Linux-syscall-note | [GitHub](https://github.com/OnePlusOSS/android_kernel_oneplus_sm8475)               | SM8475   |
+| torvalds/linux                           | GPL-2.0 WITH Linux-syscall-note | [GitHub](https://github.com/torvalds/linux)                                         | SM8550   |
+| AYNTechnologies/linux                    | GPL-2.0 WITH Linux-syscall-note | [Github](https://github.com/AYNTechnologies/linux)                                  | SM8550   |
+| OnePlusOSS/android_kernel_oneplus_sm8550 | GPL-2.0 WITH Linux-syscall-note | [GitHub](https://github.com/OnePlusOSS/android_kernel_oneplus_sm8550)               | SM8550   |
+| OnePlusOSS/android_kernel_oneplus_sm8650 | GPL-2.0 WITH Linux-syscall-note | [GitHub](https://github.com/OnePlusOSS/android_kernel_oneplus_sm8650)               | SM8650   |
+| OnePlusOSS/android_kernel_oneplus_sm8750 | GPL-2.0 WITH Linux-syscall-note | [GitHub](https://github.com/OnePlusOSS/android_kernel_oneplus_sm8750)               | SM8750   |
 
 ### 补丁
 
@@ -313,6 +316,7 @@ FAS 白名单内的游戏（明日方舟：终末地、王者荣耀等）前台�
 | nanoreview.net     |          | [nanoreview](https://nanoreview.net)                         |
 | GSMArena           |          | [gsmarena](https://www.gsmarena.com)                         |
 | Wikipedia          | CC BY-SA | [wikipedia](https://en.wikipedia.org)                        |
+| Timisy\_小添       |          | [bilibili](https://space.bilibili.com/299565822)             |
 
 <!-- | dieshot            |          | [Kurnal Insights](kurnal-insights.com)                       | -->
 
