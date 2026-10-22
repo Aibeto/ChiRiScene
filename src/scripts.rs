@@ -1,6 +1,7 @@
 //! scripts.rs: [embed] [release] [call]
-//! 脚本编译期 include_str! 嵌入二进制，运行时不读磁盘副本（防篡改）；每次调用覆盖写入私有临时目录并 chmod 0700，经 /system/bin/sh 按位置传参
+//! 脚本编译期 include_str! 嵌入二进制，运行时不读磁盘副本（防篡改）；每次调用以 O_EXCL 新建私有临时文件并 chmod 0700，经 /system/bin/sh 按位置传参
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -34,40 +35,137 @@ impl Script {
     }
 }
 
-/// 释放目录：`$TMPDIR` → `/data/local/tmp` → `/dev/shm`，都不落在模块目录（模块目录对其他进程可写）
+/// 固定的 root-only 释放目录：`/data/adb` 权限 0700，非 root 进程无法进入，
+/// 抢跑者既建不了同名文件也换不掉目录
+const ROOT_ONLY_DIR: &str = "/data/adb/chiri/tmp";
+
+/// 释放目录：优先固定 root-only 目录；退化时只接受 root 拥有且 other 不可写的临时目录
+/// 世界可写目录（1777 的 /tmp、0777 的 /dev/shm）允许任意进程预置符号链接，直接跳过
 fn release_dir() -> PathBuf {
+    let fixed = PathBuf::from(ROOT_ONLY_DIR);
+    if ensure_secure_dir(&fixed) {
+        return fixed;
+    }
     for cand in ["TMPDIR", "TMP", "TEMP"] {
         if let Ok(v) = std::env::var(cand) {
             let p = PathBuf::from(&v);
-            if p.is_dir() {
+            if is_secure_dir(&p) {
                 return p.join("chiri-scripts");
             }
         }
     }
     for p in ["/data/local/tmp", "/dev/shm", "/tmp"] {
         let p = PathBuf::from(p);
-        if p.is_dir() {
+        if is_secure_dir(&p) {
             return p.join("chiri-scripts");
         }
     }
-    // 都不行时退到模块根下的临时子目录（名字不同且每次覆盖）
-    crate::common::get_module_root().join(".tmp")
+    // 都不行时退到模块根下的临时子目录：建好后置 0700，挡住非 root 进程进入
+    let fallback = crate::common::get_module_root().join(".tmp");
+    let _ = std::fs::create_dir_all(&fallback);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&fallback, std::fs::Permissions::from_mode(0o700));
+    }
+    fallback
 }
 
-/// 把脚本写入并覆盖到 `dir`，返回可执行路径；失败返回 `None`
+/// 创建并校验 root-only 目录：owner 必须是 root；已存在且权限过宽说明不可信，直接放弃
+fn ensure_secure_dir(p: &Path) -> bool {
+    if std::fs::create_dir_all(p).is_err() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let Ok(md) = std::fs::metadata(p) else {
+            return false;
+        };
+        if !md.is_dir() || md.uid() != 0 {
+            return false;
+        }
+        if md.mode() & 0o077 != 0 {
+            // 只收紧 root 自己建的目录；收紧后仍不合规就放弃
+            if std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o700)).is_err() {
+                return false;
+            }
+            let Ok(md) = std::fs::metadata(p) else {
+                return false;
+            };
+            return md.mode() & 0o077 == 0;
+        }
+        true
+    }
+    #[cfg(not(unix))]
+    {
+        p.is_dir()
+    }
+}
+
+/// 目录是否可作为脚本落点：必须是目录、owner 为 root、other 无写权限
+fn is_secure_dir(p: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let Ok(md) = std::fs::metadata(p) else {
+            return false;
+        };
+        md.is_dir() && md.uid() == 0 && (md.mode() & 0o002) == 0
+    }
+    #[cfg(not(unix))]
+    {
+        p.is_dir()
+    }
+}
+
+/// 把脚本独占写入 `dir`，返回可执行路径；失败返回 `None`
+/// 名字带 pid + 序号：并发/重入不互相覆盖；`create_new`（O_EXCL）拒绝已存在路径，
+/// 预置的同名文件或符号链接只会让我们换名重试，不会被跟随写入
 fn release_into(script: Script, dir: &Path) -> Option<PathBuf> {
     std::fs::create_dir_all(dir).ok()?;
-    // 文件名带 pid：并发调用不会互相覆盖到半截
-    let path = dir.join(format!("{}.{}", script.file_name(), std::process::id()));
-    // 每次都写（内含 truncate），「存在即跳过」会被抢先落地劫持
-    std::fs::write(&path, script.body()).ok()?;
+    for attempt in 0..16u32 {
+        let path = dir.join(format!(
+            "{}.{}.{}",
+            script.file_name(),
+            std::process::id(),
+            attempt
+        ));
+        if write_script(script, &path) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+/// 独占创建并写入脚本正文，成功后置 0700；任何一步失败都清理并返回 false
+fn write_script(script: Script, path: &Path) -> bool {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o700);
+    }
+    let Ok(mut f) = opts.open(path) else {
+        return false;
+    };
+    if f.write_all(script.body().as_bytes()).is_err() {
+        drop(f);
+        let _ = std::fs::remove_file(path);
+        return false;
+    }
+    drop(f);
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         // 0700：仅 owner 可读写执行，`su` 提权与 `chiri zstd` 都经这里
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).ok()?;
+        if std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).is_err() {
+            let _ = std::fs::remove_file(path);
+            return false;
+        }
     }
-    Some(path)
+    true
 }
 
 /// 释放脚本并返回绝对路径（供自行 spawn 的调用方，如 `pack_dir_tar`）
@@ -268,35 +366,56 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 防篡改核心断言：先放伪造的同名文件，释放必须覆盖回嵌入内容
+    /// 防篡改核心断言：预置同名符号链接时 O_EXCL 拒绝跟随，换名重试，受害者文件不被写穿
+    #[cfg(unix)]
     #[test]
-    fn release_overwrites_a_planted_tampered_file() {
-        let dir = std::env::temp_dir().join(format!("chiri-scripts-tamper-{}", std::process::id()));
+    fn release_does_not_follow_a_planted_symlink() {
+        let dir =
+            std::env::temp_dir().join(format!("chiri-scripts-symlink-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(format!("notify.sh.{}", std::process::id()));
-        std::fs::write(&path, "#!/system/bin/sh\necho TAMPERED\n").unwrap();
-        // 覆盖前确认伪造文件确实在
-        assert!(std::fs::read_to_string(&path).unwrap().contains("TAMPERED"));
+        let victim = dir.join("victim");
+        std::fs::write(&victim, "original").unwrap();
+        // 首个候选名可预测（<name>.<pid>.0），抢先放符号链接指向受害者
+        let planted = dir.join(format!("notify.sh.{}.0", std::process::id()));
+        std::os::unix::fs::symlink(&victim, &planted).unwrap();
 
         let released = release_for_test(Script::Notify, &dir).expect("release ok");
 
-        let got = std::fs::read_to_string(&released).unwrap();
-        assert_eq!(got, NOTIFY_SH, "释放必须覆盖掉被篡改的同名文件");
-        assert!(!got.contains("TAMPERED"));
+        assert_ne!(released, planted, "不得复用被抢占的名字");
+        assert_eq!(
+            std::fs::read_to_string(&victim).unwrap(),
+            "original",
+            "不得写穿符号链接"
+        );
+        assert_eq!(std::fs::read_to_string(&released).unwrap(), NOTIFY_SH);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 每次调用都重新覆盖：第二次释放后内容仍是嵌入正文
+    /// 每次调用都独占新建：同进程重复调用换名，既有文件不被覆盖
     #[test]
-    fn release_repeats_and_rewrites_every_call() {
-        let dir = std::env::temp_dir().join(format!("chiri-scripts-repeat-{}", std::process::id()));
+    fn release_creates_a_fresh_file_each_call() {
+        let dir = std::env::temp_dir().join(format!("chiri-scripts-fresh-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let p1 = release_for_test(Script::Pack, &dir).expect("release ok");
         std::fs::write(&p1, "clobbered").unwrap();
         let p2 = release_for_test(Script::Pack, &dir).expect("release ok");
-        assert_eq!(p1, p2, "同一进程内路径稳定（按 pid 命名）");
+        assert_ne!(p1, p2, "重复调用必须换名，不覆盖既有文件");
         assert_eq!(std::fs::read_to_string(&p2).unwrap(), PACK_SH);
+        assert_eq!(std::fs::read_to_string(&p1).unwrap(), "clobbered");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 世界可写目录不得作为脚本落点
+    #[cfg(unix)]
+    #[test]
+    fn secure_dir_rejects_world_writable() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("chiri-scripts-mode-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(!is_secure_dir(&dir), "0777 目录不得通过校验");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
