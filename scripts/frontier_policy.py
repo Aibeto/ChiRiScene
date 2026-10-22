@@ -25,9 +25,9 @@
   * 解析必须**按段取**，不能用「全文件首个匹配」——zumapro 的 [idle] 段是块状写法，
     段内也有 little/big/prime 整数键，全文件匹配会抓到 idle 的值而不是 capacity
 
-TODO: 两个口径待用户拍板，先取占位值并可用 CLI 覆盖——
-      `--lead-frac` 预判基准提前量（占需求桶跨度的比例，default 基准；reduce ×0.5 / boost ×2 已定）
-      `--reserve`   流畅度下界（需求之上预留算力的百分比，三模式各自一份）
+说明：上一代的「需求桶 / 三模式结果向量 / 预判提前量 / 流畅度下界」随第二代帕累托
+前沿（CLG-EEM）重构已移除；本脚本现在只产出 `per_cluster` 的 capacity/freq/power 三项，
+下凸包仅作对账留痕。
 """
 
 import argparse
@@ -45,14 +45,6 @@ BLOCK_LITE_END = "# <<< frontier_policy_lite <<<"
 BLOCK_END = "# <<< frontier_policy <<<"
 
 CLUSTERS = ("little", "big", "prime")
-# 预判提前量的模式乘子（用户已定量: default 为基准）
-MODE_LEAD_MULT = {"reduce": 0.5, "default": 1.0, "boost": 2.0}
-DEFAULT_LEAD_FRAC = 0.30  # TODO: 基准提前量待拍板（占需求桶跨度比例）
-DEFAULT_RESERVE = {  # TODO: 流畅度下界待拍板（需求之上预留算力 %）
-    "reduce": 0.0,
-    "default": 0.10,
-    "boost": 0.25,
-}
 ANCHOR_TOL = 0.03
 
 
@@ -197,8 +189,8 @@ def parse_reference_tables(soc_path: Path, cores=None):
     """从 soc.yaml 的 `frontier_policy.per_cluster` 读参考曲线 → 与 §3 表同形的三元组
 
     输出结构与 `parse_cluster_tables()` **完全一致**：[(freq_khz, power_w, compute), ...]，
-    因此下游 `enumerate_frontier` / `lower_hull` / `build_buckets` / `build_modes`
-    一行都不用改——「参考曲线」与「实测表」在下游是同一种输入。
+    因此下游 `enumerate_frontier` / `lower_hull` 一行都不用改——「参考曲线」与「实测表」
+    在下游是同一种输入。
 
     算力列口径 = 单核算力 capacity × f / f_max（与文档 §3 的 Mdmips 列同构，
     单位不同不影响前沿形状，因为 hull 只用总算力与总功耗的**相对**几何）。
@@ -286,9 +278,8 @@ def monotone_compute(tables):
 
     算力在物理上必然随频率单调不减（同簇同核数，频率越高算力只会持平或上升）。
     实测表出现逆序 = CoreMark 单档噪声（sm8350 prime 1420800 档 coremarks_per_mhz
-    5.22，邻档 8.83 / 7.75），而生成器的 hull 与桶边界都要拿算力排序：
-    非单调列会让「hull 序」与「combo_units 序」互相矛盾，产出 lo_units 非单调的桶表，
-    运行期二分查表随即落到错桶（见 07-todos 的 sm8350 条）。
+    5.22，邻档 8.83 / 7.75），而生成器的下凸包要对算力排序：
+    非单调列会让「hull 序」与「算力序」互相矛盾，对账失败（见 07-todos 的 sm8350 条）。
 
     修法取**保守侧**：逆序档抬到「到此为止见过的最大值」（前缀最大值），
     即把测低的档当作「至少与前档同算力」，不用邻档插值（会凭空造出未测点）。
@@ -352,7 +343,7 @@ def parse_soc(path: Path):
             cap[c] = int(m.group(1))
     # [capacity] 段可缺失（无 DT 平台刻意留空，真机 sysfs 才是权威）：此时回退取
     # frontier_policy.per_cluster.<簇>.capacity。不补这一层的话 cap 全 0 会让
-    # build_buckets 的 lo_units 全为 0、桶表退化成单桶（运行期二分永远命中同一桶）。
+    # 下凸包对账的算力列全为 0（对账失败而不是静默出错）。
     if not cap:
         cap.update(reference_capacity_map(path))
     freqs = {}
@@ -418,20 +409,6 @@ def efficiency(x1, y1, x2, y2):
     return (x2 - x1) / dp if dp > 0 else float("inf")
 
 
-# 真机容量单位口径（文档 §2.2）: 单核算力 = cpu_capacity × f / f_max；簇算力 = 单核 × 核数
-# 核数不写死，由 soc.yaml [topology] 的区间长度算（8550 → 3/4/1，zumapro → 4/3/1）
-
-
-def combo_units(combo, cap, freqs, cores):
-    """频率三元组 → 总算力（真机容量单位）；capacity / f_max / 核数 缺失的簇按 0 计（调用方回退）"""
-    total = 0.0
-    for cluster, f in zip(CLUSTERS, combo):
-        f_max = freqs.get(cluster, [0])[-1] if freqs.get(cluster) else 0
-        if f_max:
-            total += cores.get(cluster, 0) * cap.get(cluster, 0) * f / f_max
-    return total
-
-
 def check_anchors(hull, tables, anchors, prime_top_from_khz):
     """复算自检：与文档公布值对账（容差 3%）
 
@@ -467,85 +444,6 @@ def check_anchors(hull, tables, anchors, prime_top_from_khz):
     return results
 
 
-# [buckets] -----------------------------------------------------------------
-
-def build_buckets(hull, cap, freqs, cores):
-    """前沿点两两之间构成需求桶；桶边界取相邻点算力（**真机容量单位**）的中点
-
-    每个桶直接带该前沿点的三簇目标频点（little_khz/big_khz/prime_khz）——运行期
-    查表即可，不用在设备上重算 Cx·f·V²。纯几何定义，不依赖 SLO。
-
-    **不变式（落表前硬断言）**：`units` 必须严格非降。运行期 `bucket_for_demand()`
-    对 `lo_units` 做二分（partition_point），数组一旦非单调，查表结果未定义——不是慢，
-    是**错桶**：需求落到相邻桶、目标频点偏低（过度降频）或本应有桶却回退比例路径。
-    `units` 用的是 capacity×f/f_max 折算算力，与文档 §3 算力列**不同源**，所以
-    「文档算力单调」推不出「units 单调」；这里显式兜底，坏表一律拒绝落盘。
-    """
-    units = [combo_units(p[2], cap, freqs, cores) for p in hull]
-    bad = [
-        (i, units[i], units[i + 1])
-        for i in range(len(units) - 1)
-        if units[i + 1] < units[i] - 1e-9
-    ]
-    if bad:
-        detail = "、".join(f"#{i} {a:.1f} → #{i + 1} {b:.1f}" for i, a, b in bad[:5])
-        raise SystemExit(
-            f"桶表不可落盘：hull 的 combo_units 非单调（{len(bad)} 处逆序：{detail}）。"
-            "运行期二分查表会落到错桶。先查文档 §3 算力列是否非单调（本脚本已按前缀"
-            "最大值自动修，仍有逆序说明 capacity / freq_khz 与文档 §3 表不一致）。"
-        )
-    buckets = []
-    for i, p in enumerate(hull):
-        lo = units[i] if i == 0 else (units[i - 1] + units[i]) / 2.0
-        hi = units[-1] if i == len(hull) - 1 else (units[i] + units[i + 1]) / 2.0
-        buckets.append({
-            "point_index": i,
-            "lo_units": round(lo, 1),
-            "hi_units": round(hi, 1),
-            "target_compute": round(p[0], 1),
-            "target_power_w": round(p[1], 4),
-            "margin_mdmips_per_w": (
-                round(efficiency(p[0], p[1], hull[i + 1][0], hull[i + 1][1]), 1)
-                if i + 1 < len(hull) else 0.0
-            ),
-            "little_khz": p[2][0],
-            "big_khz": p[2][1],
-            "prime_khz": p[2][2],
-        })
-    return buckets
-
-
-# [modes] -------------------------------------------------------------------
-
-def build_modes(buckets, lead_frac, reserve):
-    """三模式结果向量：桶 → 目标档/倾向 + 预判交叠带（上升/下降对称）
-
-    enter_units / exit_units = 「距桶边界还剩多少真机容量单位就交叠 / 撤出」；
-    两种临界点（需求跨桶、落点贴顶）共用同一组提前量，乘子 reduce 0.5 / default 1.0 / boost 2.0。
-    """
-    modes = {}
-    for mode, mult in MODE_LEAD_MULT.items():
-        lead = lead_frac * mult
-        rows = []
-        for b in buckets:
-            span = max(b["hi_units"] - b["lo_units"], 1.0)
-            band = round(span * lead, 1)
-            rows.append({
-                "point_index": b["point_index"],
-                "target_compute": b["target_compute"],
-                "target_power_w": b["target_power_w"],
-                "enter_units": band,
-                "exit_units": band,
-            })
-        modes[mode] = {
-            "lead_mult": mult,
-            "lead_frac": round(lead, 4),
-            "reserve_pct": reserve[mode],
-            "buckets": rows,
-        }
-    return modes
-
-
 # [emit] --------------------------------------------------------------------
 
 def fingerprint(tables, cap, freqs):
@@ -561,8 +459,8 @@ def fingerprint(tables, cap, freqs):
 
 
 def render_block(tables, cap, freqs, enabled, prof, from_reference=False, cores=None, checks=None):
-    # cores 未入参：本块只渲染 per_cluster 的 capacity/freq/power 与前沿/桶表，核数已折算进
-    # combo_units（build_buckets 阶段），落块不需要它（a818354 曾传入但函数体内未使用）
+    # cores 未入参：本块只渲染 per_cluster 的 capacity/freq/power 与前对账注释，
+    # 核数已折算进算力列，落块不需要它（a818354 曾传入但函数体内未使用）
     fp = fingerprint(tables, cap, freqs)
     cores = cores or {}
     L = []
@@ -694,10 +592,6 @@ def main(argv=None):
     ap.add_argument("--target", choices=("new", "soc"), default="soc",
                     help="soc = 并入本机 soc.yaml（受控块当前落点，默认）;"
                          " new = 独立 frontier_policy.yaml（运行期不消费，仅迁移用）")
-    ap.add_argument("--lead-frac", type=float, default=DEFAULT_LEAD_FRAC,
-                    help="预判基准提前量（占需求桶跨度比例）TODO 待拍板")
-    ap.add_argument("--reserve", type=float, default=None,
-                    help="统一覆盖三模式的流畅度下界 reserve_pct（TODO 待拍板）")
     ap.add_argument("--from-reference", action="store_true",
                     help="功耗列取本机 soc.yaml 的 frontier_policy.per_cluster 参考曲线"
                          "（而非 mdocs §3 实测表），算力列按 capacity×f/f_max 生成；"
@@ -727,7 +621,7 @@ def main(argv=None):
         tables = parse_reference_tables(prof["soc"], cores=cores_pre)
     else:
         tables = parse_cluster_tables(prof["doc"])
-    # 算力列先修单调：非单调列会让 hull 序与 combo_units 序互相矛盾 → 桶表 lo_units 非单调
+    # 算力列先修单调：非单调列会让 hull 序与算力序互相矛盾 → 下凸包对账失真
     tables, compute_fixes = monotone_compute(tables)
     if compute_fixes:
         print(f"⚠ 算力列非单调 {len(compute_fixes)} 处，已按前缀最大值抬起：", file=sys.stderr)

@@ -344,7 +344,8 @@ pub struct SocConfig {
     #[serde(default)]
     #[allow(dead_code)]
     pub dpc: Option<SocTriValues>,
-    /// 帕累托前沿查表段（sm8550 / zumapro 已具备；无本段的 SoC → 天然 None → 走原比例路径）
+    /// 相对能效模型段（第二代帕累托前沿 CLG-EEM 的数据源：sm8550 / zumapro / sm8750 等 38 机型已具备；
+    /// 无本段的 SoC（sm8475 / sm8650）→ 天然 None → 走原比例路径）
     /// [frontier_lenient] 用宽松反序列化：本段损坏不得拖垮整份 soc.yaml（topology/capacity/freq 兜底是更贵的资产）
     #[serde(default, deserialize_with = "deserialize_frontier_lenient")]
     pub frontier_policy: Option<FrontierPolicy>,
@@ -407,8 +408,9 @@ pub struct SocIdleUs {
     pub cluster_exit_latency: Vec<u32>,
 }
 
-// [frontier] 帕累托前沿策略段，由 scripts/frontier_policy.py --soc <机型> 生成到对应 soc.yaml
-// 消费方是 CLG 的 PF 落点（只允许下调，查表经 [frontier_table] 摊平成进程级表）与 FDP 的逐档功耗
+// [frontier] 相对能效模型策略段（第二代帕累托前沿 CLG-EEM），由 scripts/frontier_policy.py --soc <机型> 生成到对应 soc.yaml
+// 消费方：① CLG 的 EEM 甜点封顶（`energy_model::curve`）；② 功耗遥测的逐档簇功耗 `per_cluster.<簇>.power_w`
+// （上一代 FDP 的边际成本决策链已于 2026-10-23 移除，`per_cluster` 的 freq_khz 仅供遥测与对账留痕）
 // 字段名与生成脚本逐字对齐，解析失败由 [frontier_lenient] 兜底为 None
 
 /// 前沿策略段，段缺失或 `enabled` 非 true → `soc_frontier_policy()` 返回 None → 原比例路径
@@ -478,7 +480,7 @@ where
     }
 }
 
-/// 当前 SoC 的帕累托前沿策略：仅当 soc.yaml 存在 `frontier_policy` 段且 `enabled == true` 时返回 Some；
+/// 当前 SoC 的相对能效模型策略：仅当 soc.yaml 存在 `frontier_policy` 段且 `enabled == true` 时返回 Some；
 /// 其它 SoC（无本段）天然 None → CLG 走原比例路径，行为逐位不变
 pub fn soc_frontier_policy() -> Option<&'static FrontierPolicy> {
     soc_config()?.frontier_policy.as_ref().filter(|p| p.enabled)

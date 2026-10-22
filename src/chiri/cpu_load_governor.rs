@@ -23,7 +23,8 @@ pub fn set_clamp_heavy(v: bool) {
     CLAMP_HEAVY.store(v, Ordering::Relaxed);
 }
 
-// [frontier_pf] 接管提示的一次性门（进程级）：表与指纹都是编译期资产，每个 worker / 每次重建重复打没有信息量
+// [eem] 接管提示的一次性门（进程级）：模型与指纹都是编译期资产，每个 worker / 每次重建重复打没有信息量
+// 名称沿用 `PF_` 前缀（第二代帕累托前沿 = CLG-EEM），改名成本高于收益
 static PF_ENABLED_LOGGED: AtomicBool = AtomicBool::new(false);
 
 /// [eem] 甜点封顶的抗饥饿释放窗口（tick；10 tick = 10s）：
@@ -37,7 +38,8 @@ const EEM_CAP_RELEASE_TICKS: u32 = 10;
 /// 若需精确对齐应在 scheduler 侧把真实周期传进 worker（当前未传，故用近似值并在此注明）。
 const CLG_TICK_MS_APPROX: u64 = 160;
 
-/// [eem] 本簇所属核心组（按受影响 CPU 的最小 ID 归属）：spawn 时定一次，用于取该组的逐桶落点表
+/// [eem] 本簇所属核心组（按受影响 CPU 的最小 ID 归属）：spawn 时定一次，用于取该组的相对能效曲线
+/// 名称沿用 `pf_` 前缀（第二代帕累托前沿 = CLG-EEM），改名成本高于收益
 fn pf_group_of(
     affected: &[usize],
     core_ranges: &crate::common::CoreGroupRanges,
@@ -351,8 +353,8 @@ struct CoreGroupWorker {
     cfg: CpuLoadGovernorConfig,
     restore: PolicyRestore,
     core_ranges: crate::common::CoreGroupRanges,
-    /// [frontier_pf] 各 CPU 的容量（真机 cpu_capacity 优先，缺失按核心组回退 soc.yaml [capacity]；再缺 = None）
-    /// spawn 时一次性解析并缓存，flush 每 tick 只读；None 项会让 PF 需求折算整段回退比例路径
+    /// [eem] 各 CPU 的容量（真机 cpu_capacity 优先，缺失按核心组回退 soc.yaml [capacity]；再缺 = None）
+    /// spawn 时一次性解析并缓存，flush 每 tick 只读；None 项会让 EEM 需求折算整段回退比例路径
     core_capacities: Vec<Option<u32>>,
     /// [eem] 本簇的相对能效曲线（`energy_model::curve`，进程级 OnceLock 共享）；None = 本 SoC 无可用模型 → 走原比例路径
     eem: Option<&'static crate::chiri::energy_model::Curve>,
@@ -1089,7 +1091,7 @@ impl CoreGroupWorker {
 
         let (load_tx, load_rx) = mpsc::sync_channel::<Arc<Vec<f32>>>(1);
 
-        // [frontier_pf] 各 CPU 容量：真机 cpu_capacity 优先，缺失按核心组回退 soc.yaml [capacity]，再缺 = None（PF 需求折算整段回退）
+        // [eem] 各 CPU 容量：真机 cpu_capacity 优先，缺失按核心组回退 soc.yaml [capacity]，再缺 = None（EEM 需求折算整段回退）
         let total_cpus = core_ranges
             .little
             .end

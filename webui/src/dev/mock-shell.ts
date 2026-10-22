@@ -20,7 +20,7 @@ function param(name: string, fallback: string): string {
 const soc = param('soc', 'chiri')
 const state = param('state', 'normal')
 const isChiri = soc === 'chiri'
-/** CLG 是否启用帕累托前沿落点（pf.chr）：`?pf=0` 走查未启用机型（家族名 CLG） */
+/** CLG 是否启用第二代帕累托前沿（CLG-EEM）落点（pf.chr）：`?pf=0` 走查未启用机型（家族名 CLG） */
 const pfEnabled = param('pf', '1') !== '0'
 let daemonRunning = param('daemon', 'running') !== 'stopped'
 const readFails = state === 'error'
@@ -219,7 +219,7 @@ function seed(): void {
   if (empty) return
 
   put('current_mode.chr', 'default')
-  // daemon 启动写一次（1 = 启用帕累托前沿落点）：非 ChiRi 与 ?pf=0 都写 0
+  // daemon 启动写一次（1 = 启用第二代帕累托前沿 CLG-EEM 落点）：非 ChiRi 与 ?pf=0 都写 0
   put('pf.chr', isChiri && pfEnabled ? '1' : '0')
   // 心跳只为「文件存在」播种，内容在读取时动态生成
   put('LiveTime.chr', '')

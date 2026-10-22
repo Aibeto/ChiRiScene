@@ -1375,21 +1375,8 @@ pub struct AffinityConfig {
     /// 写去重：目标掩码已生效、或同 tid 同目标在 repin_debounce 内已写过时跳过写入与 @A 帧；false = 旧行为
     #[serde(default = "crate::utils::default_true")]
     pub write_dedup: bool,
-    /// FDP（前沿主导的放置内核）总开关：true 时后台/批处理线程 promote 的目的簇由边际能耗成本（等算力下更低功耗）决定，取代「big 优先、钉满溢出 prime」
-    /// 默认 false（8550 的 feature.yaml 显式写 true）；false = 逐位回到既有 bg_promote_exclude_prime → big_pool 路径
-    #[serde(default)]
-    pub fdp_enabled: bool,
-    /// FDP 迁移最小净收益（W，缺省 20 mW）：只有该次搬迁能省 ≥ 该值才动（差小于一个频档等效时不动作）
-    #[serde(default = "d_aff_fdp_cost_hysteresis_w")]
-    pub fdp_cost_hysteresis_w: f32,
-    /// FDP 每轮每个目的簇的迁入条数硬上限（缺省 2）：同轮防 burst 靠它；**0 视为 1**（防误配成无上限）
-    #[serde(default = "d_aff_fdp_max_inserts_per_round")]
-    pub fdp_max_inserts_per_round: u32,
-    /// FDP 目的簇落点频率上限比例（缺省 0.85，钳 0.3..=1.0）：迁入后该簇模型工作频率不得高于 `该值 × 该簇最高频`，任何簇贴顶都不允许
-    #[serde(default = "d_aff_fdp_dst_freq_cap_ratio")]
-    pub fdp_dst_freq_cap_ratio: f32,
     /// EEM（相对能效模型）放置内核总开关：true 时**不分前后台**，所有被采样的线程
-    /// 都按「同算力取更低功耗」动态选簇/选核，取代 FDP 的「只服务后台 promote」口径。
+    /// 都按「同算力取更低功耗」动态选簇/选核。
     ///
     /// 缺省 **true**：模型不可用（无 `frontier_policy.per_cluster`）时 `apply` 里
     /// `&& energy_model::available()` 会自动关掉，逐位回到既有放置路径——即
@@ -1539,16 +1526,6 @@ fn d_aff_bg_uclamp_max() -> u32 {
 fn d_aff_aarch32_clusters() -> Vec<String> {
     Vec::new()
 }
-/// FDP 阈值缺省（缺省值唯一来源 = affinity.rs 的同名 const）
-fn d_aff_fdp_cost_hysteresis_w() -> f32 {
-    crate::chiri::affinity::FDP_COST_HYSTERESIS_W
-}
-fn d_aff_fdp_max_inserts_per_round() -> u32 {
-    crate::chiri::affinity::FDP_MAX_INSERTS_PER_ROUND
-}
-fn d_aff_fdp_dst_freq_cap_ratio() -> f32 {
-    crate::chiri::affinity::FDP_DST_FREQ_CAP_RATIO
-}
 // 缺省值唯一来源 = affinity.rs 的同名 const（改 const 即改缺省，不在两处写数字）
 /// EEM 滞回缺省（唯一数字源 = energy_model::SWITCH_HYSTERESIS）
 fn d_aff_eem_hysteresis() -> f32 {
@@ -1624,13 +1601,9 @@ impl Default for AffinityConfig {
             aarch32_clusters: d_aff_aarch32_clusters(),
             bitwidth_aware: true,
             write_dedup: true,
-            fdp_enabled: false,
             eem_placement: true,
             eem_hysteresis: d_aff_eem_hysteresis(),
             eem_min_util_pct: d_aff_eem_min_util_pct(),
-            fdp_cost_hysteresis_w: d_aff_fdp_cost_hysteresis_w(),
-            fdp_max_inserts_per_round: d_aff_fdp_max_inserts_per_round(),
-            fdp_dst_freq_cap_ratio: d_aff_fdp_dst_freq_cap_ratio(),
             tuning: AffinityTuningConfig::default(),
         }
     }
@@ -1642,17 +1615,6 @@ impl AffinityConfig {
         self.top_app_uclamp_min_pct = self.top_app_uclamp_min_pct.clamp(0, 100);
         self.top_app_uclamp_max_pct = self.top_app_uclamp_max_pct.clamp(0, 100);
         self.background_uclamp_max_pct = self.background_uclamp_max_pct.clamp(0, 100);
-        // FDP 阈值：非有限回退默认；滞回钳 0..=1、迁入条数钳 1..=16（0 视为 1，不设上限是误配）、
-        // 落点频率上限比例钳 0.3..=1.0
-        if !self.fdp_cost_hysteresis_w.is_finite() {
-            self.fdp_cost_hysteresis_w = d_aff_fdp_cost_hysteresis_w();
-        }
-        self.fdp_cost_hysteresis_w = self.fdp_cost_hysteresis_w.clamp(0.0, 1.0);
-        self.fdp_max_inserts_per_round = self.fdp_max_inserts_per_round.clamp(1, 16);
-        if !self.fdp_dst_freq_cap_ratio.is_finite() {
-            self.fdp_dst_freq_cap_ratio = d_aff_fdp_dst_freq_cap_ratio();
-        }
-        self.fdp_dst_freq_cap_ratio = self.fdp_dst_freq_cap_ratio.clamp(0.3, 1.0);
         // EEM 阈值：非有限回退默认；滞回钳 0..=1（0 = 只要有改善就切，1 = 永不切）、
         // 参与门槛钳 0..=100
         if !self.eem_hysteresis.is_finite() {

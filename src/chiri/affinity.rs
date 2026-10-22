@@ -182,16 +182,8 @@ pub(crate) const DEMOTE_UTIL_PCT: f32 = 5.0;
 pub(crate) const DEMOTE_STREAK: u32 = 3;
 pub(crate) const THREAD_STALE: Duration = Duration::from_secs(30);
 
-// FDP（前沿主导的放置内核）阈值缺省：唯一数字源 = 本处 const（config.rs 的 d_aff_fdp_* 引用之）
-/// FDP 迁移最小净收益（W，缺省 20 mW）：省得不够多不动
-pub(crate) const FDP_COST_HYSTERESIS_W: f32 = 0.02;
-/// FDP 每轮每个目的簇的迁入条数上限（缺省 2）；0 视为 1（不设上限是误配）
-pub(crate) const FDP_MAX_INSERTS_PER_ROUND: u32 = 2;
-/// FDP 目的簇落点频率上限比例（缺省 0.85）：迁入后该簇模型工作频率不得高于 该值 × 该簇最高频
-pub(crate) const FDP_DST_FREQ_CAP_RATIO: f32 = 0.85;
-
 /// [eem] 每轮最多发起的线程迁移数：同轮内负载快照不会因迁移而更新，
-/// 无上限会让大批线程同时判「同一簇最便宜」而齐涌（FDP 的 `max_inserts` 教训）。
+/// 无上限会让大批线程同时判「同一簇最便宜」而齐涌（上一代放置内核 `max_inserts` 配额留下的教训）。
 /// 4 条 / 2s 周期 = 每秒最多 2 条；迁移是慢动作，不需要更快。
 const EEM_MAX_MOVES_PER_ROUND: u32 = 4;
 
@@ -909,13 +901,6 @@ pub struct AffinityManager {
     aarch32_clusters: Vec<String>,
     /// 写去重开关（apply 刷新）
     write_dedup: bool,
-    /// FDP（前沿主导的放置内核）开关与阈值（apply 刷新，与 bg_promote_exclude_prime 同款）
-    fdp_enabled: bool,
-    fdp_cost_hysteresis_w: f32,
-    fdp_max_inserts_per_round: u32,
-    fdp_dst_freq_cap_ratio: f32,
-    /// FDP 本轮各目的簇已迁入条数（[big, prime]，每轮 rebalance 清零）：同轮防 burst 的硬配额
-    fdp_inserts: [u32; 2],
     /// [eem] 放置引擎：逐 tid 记账（区间状态机 + 冷却），不分前后台
     eem: placement::Engine,
     /// [eem] 总开关（apply 刷新，缺省 false = 逐位回到既有放置路径）
@@ -962,11 +947,6 @@ impl AffinityManager {
             bitwidth_aware: true,
             aarch32_clusters: Vec::new(),
             write_dedup: true,
-            fdp_enabled: false,
-            fdp_cost_hysteresis_w: FDP_COST_HYSTERESIS_W,
-            fdp_max_inserts_per_round: FDP_MAX_INSERTS_PER_ROUND,
-            fdp_dst_freq_cap_ratio: FDP_DST_FREQ_CAP_RATIO,
-            fdp_inserts: [0, 0],
             eem: placement::Engine::new(),
             eem_placement: false,
             eem_hysteresis: energy_model::SWITCH_HYSTERESIS,
@@ -1034,11 +1014,6 @@ impl AffinityManager {
         self.bitwidth_aware = cfg.bitwidth_aware;
         self.aarch32_clusters = cfg.aarch32_clusters.clone();
         self.write_dedup = cfg.write_dedup;
-        // FDP：热重载刷新（缺省 fdp_enabled=false → 不启用 FDP 路径）
-        self.fdp_enabled = cfg.fdp_enabled;
-        self.fdp_cost_hysteresis_w = cfg.fdp_cost_hysteresis_w;
-        self.fdp_max_inserts_per_round = cfg.fdp_max_inserts_per_round;
-        self.fdp_dst_freq_cap_ratio = cfg.fdp_dst_freq_cap_ratio;
         // [eem] 相对能效放置（不分前后台）：开关与阈值热重载即生效。
         // **关闭时必须归还掩码**：EEM 会把线程写成 1 核窗口，关掉后若没人还原，
         // 该线程会永久卡在那个窄掩码上（既有 pin/promote 路径不会主动扫它）。
@@ -1627,8 +1602,6 @@ impl AffinityManager {
         let now = Instant::now();
         self.tick = self.tick.wrapping_add(1);
         let t = self.tick;
-        // FDP：每轮开始清零各目的簇的迁入计数（同轮防 burst 的硬配额按轮生效）
-        self.fdp_inserts = [0, 0];
         // 建档用的迁移最小间隔本地化——ThreadState 构造闭包不得捕获 self（与 entry 的 &mut 借用冲突）
         let min_mig = self.tuning.min_migrate_interval();
         let repin_debounce = self.tuning.repin_debounce();
@@ -2119,23 +2092,8 @@ impl AffinityManager {
                     // false = 回到仅 boost 态旧行为，判据只用排序/门槛，不引入新数值
                     let big_pressure = (self.big_pressure_any_mode || boost)
                         && big_max > self.tuning.big_high_water;
-                    // FDP 数据面就绪 = 开关 + 本 SoC 具备 capacity 与逐档功耗表：**与下方准入同源**，勿只看开关——
-                    // 数据缺失时 FDP 整段回退，若 big 饱和保护已按「FDP 会兜住」让位，两重保护会同时失效
-                    // [eem] EEM 接管时 FDP 让位：两套成本模型口径不同（FDP 用绝对瓦数、
-                    // 只服务后台 promote；EEM 用相对向量、不分前后台），同轮同时决策会互相覆盖。
-                    let fdp_ready =
-                        self.fdp_enabled && !self.eem_placement && energy_cost::fdp_available();
-                    // FDP 就绪时不让 big_pressure 一票否决 promote：FDP 自己的「迁入后模型频率 ≤ 0.85×该簇最高频」护栏已覆盖「别往已热的簇塞」
-                    // 否则 bg_promote_exclude_prime=false 想把后台分流到 prime 时，恰好在「big 已热」这个最该分流的场景被整体闸掉，prime 分支近乎不可达；取局部量是为了在下方 `self.threads.get_mut` 的借用期内不再借 self
-                    let fdp_handles_big_pressure = fdp_ready;
                     let clk = clk_tck();
                     let n = bg.len();
-                    // FDP 工作点快照：本候选刷新轮读一次三簇实际频率（口径 = FREQ_QOS 聚合值，非 CLG 决策上限）
-                    let fdp_freqs = if fdp_ready {
-                        energy_cost::read_cluster_freqs()
-                    } else {
-                        [None, None, None]
-                    };
                     self.bg_cursor %= n;
                     let end = (self.bg_cursor + BG_SCAN_WINDOW).min(n);
                     for (tid, group) in &bg[self.bg_cursor..end] {
@@ -2225,7 +2183,7 @@ impl AffinityManager {
                                     promote_thresh,
                                     self.tuning.demote_util_pct,
                                 );
-                                if sustained_busy && (!big_pressure || fdp_handles_big_pressure) {
+                                if sustained_busy && !big_pressure {
                                     Some(util)
                                 } else {
                                     None
@@ -2235,117 +2193,6 @@ impl AffinityManager {
                         if let Some(util) = busy {
                             // 32 位线程不能上不含 AArch32 的性能簇（big/prime），直接放弃 promote（不 move_group，无副作用）
                             if !self.mask_write_allowed(*tid, &big_pool) {
-                                continue;
-                            }
-                            // —— FDP（前沿主导的放置内核）：仅替换后台/批处理 promote 的目的簇选择 ——
-                            // 作用域保守：只走这一条后台路径，前台关键线程与普通前台线程的放置一律不动（FDP 成本模型不含延迟项）；prime 候选资格仍由 bg_promote_exclude_prime 把关；fdp_ready=false 时整段跳过，逐位回原放置路径
-                            if fdp_ready {
-                                let pid = self.threads.get(tid).map(|st| st.pid).unwrap_or(0);
-                                let move_plan = match energy_cost::fdp_destination(
-                                    util,
-                                    &self.core_utils,
-                                    &fdp_freqs,
-                                    self.fdp_cost_hysteresis_w,
-                                    self.fdp_dst_freq_cap_ratio,
-                                    !self.bg_promote_exclude_prime,
-                                    &self.fdp_inserts,
-                                    self.fdp_max_inserts_per_round,
-                                ) {
-                                    energy_cost::FdpChoice::Move(m) => m,
-                                    energy_cost::FdpChoice::Skip(reason) => {
-                                        if crate::logger::diag_active() {
-                                            let comm = self.thread_comm(*tid);
-                                            crate::logger::aff_action(
-                                                "fdp", pid, *tid, "-", comm, "-", "-", "skip",
-                                                reason,
-                                            );
-                                        }
-                                        continue;
-                                    }
-                                };
-                                let dst_name = if matches!(move_plan.dst, CoreGroup::Prime) {
-                                    "prime"
-                                } else {
-                                    "big"
-                                };
-                                let dst_pool: Vec<usize> =
-                                    if matches!(move_plan.dst, CoreGroup::Prime) {
-                                        prime_pool.clone()
-                                    } else {
-                                        big_pool.clone()
-                                    };
-                                // 兜底：目的簇池与线程允许核交集为空则不动作
-                                if !self.mask_write_allowed(*tid, &dst_pool) {
-                                    continue;
-                                }
-                                // 选核失败（None）→ 不 move_group、不置 promoted（本文件「宁可不动」口径）
-                                let Some(core) = self.pick_core_pref(&dst_pool, &[]) else {
-                                    if crate::logger::diag_active() {
-                                        let comm = self.thread_comm(*tid);
-                                        crate::logger::aff_action(
-                                            "fdp", pid, *tid, "-", comm, "-", "-", "skip", "nocore",
-                                        );
-                                    }
-                                    continue;
-                                };
-                                // 移入 top-app 使性能核可见，再钉定（核池走既有 pick_core_pref 两段式，不改 per-core 打分）
-                                let move_res = self.move_tid_group(*tid, GROUP_TOP_APP);
-                                if crate::logger::diag_active() {
-                                    let comm = self.thread_comm(*tid);
-                                    crate::logger::aff_action(
-                                        "move_group",
-                                        pid,
-                                        *tid,
-                                        "-",
-                                        comm,
-                                        GROUP_TOP_APP,
-                                        "-",
-                                        &io_result_tag(&move_res),
-                                        "fdp",
-                                    );
-                                    // value=净收益 mW；reason 带 src->dst 与两簇 before/after 频率
-                                    // （离线核对「没把目标簇推进能效劣化区」）
-                                    crate::logger::aff_action(
-                                        "fdp",
-                                        pid,
-                                        *tid,
-                                        "-",
-                                        comm,
-                                        dst_name,
-                                        &format!("{:.0}", move_plan.net_w * 1000.0),
-                                        "ok",
-                                        &format!(
-                                            "little->{} f_src={}->{} f_dst={}->{} net_mW={:.0}",
-                                            dst_name,
-                                            move_plan.f_src_now / 1000,
-                                            move_plan.f_src_after / 1000,
-                                            move_plan.f_dst_now / 1000,
-                                            move_plan.f_dst_after / 1000,
-                                            move_plan.net_w * 1000.0,
-                                        ),
-                                    );
-                                }
-                                if let Some(st) = self.threads.get_mut(tid) {
-                                    st.moved_group = move_res.is_ok();
-                                    // EEM 接管时不置 promoted：promoted 复查的入口条件是
-                                    // `home >= 0`（单核钉定产物），而 EEM 不钉核，
-                                    // 置了只会让 demote 复查每轮空转、永远清不掉这个标记。
-                                    st.promoted = !self.eem_placement;
-                                }
-                                self.pin_core(*tid, core, -1, 0, "-", "bg_busy");
-                                let islot = usize::from(matches!(move_plan.dst, CoreGroup::Prime));
-                                self.fdp_inserts[islot] += 1;
-                                debug!(
-                                    "{}",
-                                    t_with_args(
-                                        "affinity-fdp-promoted",
-                                        &fluent_args!(
-                                            "tid" => tid.to_string(),
-                                            "dst" => dst_name,
-                                            "net_mw" => format!("{:.0}", move_plan.net_w * 1000.0)
-                                        )
-                                    )
-                                );
                                 continue;
                             }
                             // bg_promote_exclude_prime 时先按 big 池选核（overflow 传空），选核失败（big 全钉满）即放弃——

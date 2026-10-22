@@ -45,18 +45,8 @@ Affinity:
   # soc.yaml 的 frontier_policy 受控块 `per_cluster.<簇>.power_w`，与 8550 同一条数据链。
   # 本机功耗是 ODPM 实测净能量并做过漏电校正（设计文档 §7），与 8550 的推算表不同源，
   # 但两者都只进成本模型的**相对**比较，阈值量纲相同。
-  # 只作用于**后台/批处理线程 promote**（成本模型不含延迟项，前台路径一律不动）。
-  # ---- EEM：相对能效模型放置（2026-10-22 起取代 FDP）----
+  # ---- EEM：相对能效模型放置（2026-10-22 起为唯一的能效放置内核）----
   eem_placement: true
-  fdp_enabled: true
-  # 只在该次搬迁能省 ≥ 该值(W) 时才动：防在噪声上反复搬（0.02 = 20 mW）
-  fdp_cost_hysteresis_w: 0.02
-  # 每轮每个目的簇的迁入条数硬上限：成本项只在跨轮生效，同轮几十条线程会一起判「big 最便宜」，
-  # 必须靠配额兜住同向涌入（0 视为 1，不允许「无上限」）
-  fdp_max_inserts_per_round: 2
-  # 迁入后目标簇的模型工作频率不得高于「该值 × 该簇最高频」——
-  # P-a「任何簇贴顶都不行」在代码里的落点
-  fdp_dst_freq_cap_ratio: 0.85
   # normal_fg_exclude_little（非 boost 时 top-app 掩码剔除 little）同属按簇能效结论，
   # TODO: 待本机 little 贴顶与能耗实测后再决定。
 

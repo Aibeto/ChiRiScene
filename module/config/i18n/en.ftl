@@ -347,7 +347,6 @@ affinity-normal-restore = [Affinity] normal affinity layout restored
 affinity-eem-released = [Affinity] relative efficiency placement disabled, restored { $n } thread masks
 affinity-migrate = [Affinity] thread { $tid } ({ $comm }) migrate { $dir } cores { $cores }
 affinity-promoted = [Affinity] background thread { $tid } promoted to big core (util { $util }%)
-affinity-fdp-promoted = [Affinity] FDP: background thread { $tid } migrated to { $dst } (net benefit { $net_mw } mW)
 affinity-demoted = [Affinity] background thread { $tid } demoted back to the little cluster (util { $util }%)
 affinity-write-fail-summary = [Affinity] affinity write failures in this 25-tick window: mask={ $mask } cpuset={ $cpuset } uclamp={ $uclamp }
 affinity-uclamp-unavailable = [Affinity] top_app_uclamp_max_pct unavailable, auto-corrected (kernel { $version }, reason: { $reason })

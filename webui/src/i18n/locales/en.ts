@@ -305,7 +305,8 @@ export default {
   'mode.unknown.missing': 'No mode recorded yet',
   'mode.unknown.stopped': 'Scheduler not running',
   'mode.family.clg': 'CLG',
-  // CLG family label when the Pareto-frontier landing is enabled (pf.chr = 1, 8550 only)
+  // CLG family label when the second-generation Pareto-frontier (relative energy model, CLG-EEM)
+  // landing is enabled (pf.chr = 1; any SoC with a frontier_policy curve — not 8550 only)
   // same wording as the daemon log prefix [CLG-EEM]
   'mode.family.clgpf': 'CLG-EEM',
   'mode.family.special': 'Special',

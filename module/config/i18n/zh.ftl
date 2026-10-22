@@ -347,7 +347,6 @@ affinity-normal-restore = [Affinity] 已恢复正常亲和布局
 affinity-eem-released = [Affinity] 已关闭相对能效放置，还原 { $n } 条线程掩码
 affinity-migrate = [Affinity] 线程 { $tid } ({ $comm }) 迁移 { $dir } 核区间 { $cores }
 affinity-promoted = [Affinity] 后台线程 { $tid } 已提升到大核 (util { $util }%)
-affinity-fdp-promoted = [Affinity] FDP：后台线程 { $tid } 迁至 { $dst } (净收益 { $net_mw } mW)
 affinity-demoted = [Affinity] 后台线程 { $tid } 已降回小核组 (util { $util }%)
 affinity-write-fail-summary = [Affinity] 亲和写失败汇总 (本 25 tick) mask={ $mask } cpuset={ $cpuset } uclamp={ $uclamp }
 affinity-uclamp-unavailable = [Affinity] top_app_uclamp_max_pct 不可用已自动纠正 (内核 { $version }，原因: { $reason })

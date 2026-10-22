@@ -115,11 +115,21 @@ WebUI 侧：
 
 - **稳态下探（T11，2026-09-28 新增）**：`steady_decay_*`（CLG 与特调各一份，缺省 `enabled=true`）。语义 = 对「写侧性能偏移」的**限幅积分控制**，被控量是 util：目标水位 `T = up_threshold × steady_decay_target_ratio`（缺省 0.90），util 高于 `T+band` 就回收（步长 ×2 防过冲）、低于 `T−band` 就加深（步长 `steady_decay_step`，缺省 0.01）、死区内保持；`steady_streak` 需连续 `steady_decay_stable_ticks`（缺省 12，≈2s）稳定才建立，**负载上行（Δutil > band）/ `util ≥ up_threshold` / 极低负载立即清零**。偏移只在 `flush()` 里从 `eff_perf` 减去（再 `.max(perf_floor)`），**绝不回写 `current_perf`**——否则会与升频分支的 `target_perf > old_perf` 比较打架产生振荡；自限性来自「压频 → 真实 util 被 sched_switch 记账反馈抬高 → 触阈值即清零」。为什么不做「稳态就无脑累加」：那会形成 2~4s 的频率锯齿（正是 R6 要防的震荡）。配套特调 `up_confirm_ticks`（缺省 2）= 严格升频审批，目标比当前高时需连续 N tick 才抬升（CLG 侧本就有 `up_rate_limit_ticks`）。全部参数可在 feature.yaml / tuned_profiles.yaml 覆盖。**8550 三模式取点（2026-09-28）**：`reduce` `steady_decay_target_ratio: 0.80`（T = 0.90×0.80 = 0.72，省电档取点更左）、`default` `0.90`（T = 0.79）、`boost` 直接 `steady_decay_enabled: false`——boost 的 `perf_ceil` 拆前拆后都是 1.0，关闭下探后其行为与天花板拆除前逐位一致，且避免 `up_threshold: 0.55` 导致 T = 0.50 把常态负载也下探掉（削响应）。
 
-### 相对能效模型（EEM）：调频封顶 + 线程迁移（2026-10-22 重构，取代 CLG-PF 与 FDP）
+### 相对能效模型（EEM）= **第二代帕累托前沿概念算法**：调频封顶 + 线程迁移
+（2026-10-22 重构，2026-10-23 正式定义；取代第一代帕累托前沿 CLG-PF，FDP 已移除）
 
 > **一句话**：绝对能效曲线不再参与任何决策。单核功耗与单核算力各自归一成**相对向量**，
 > 之后全部比较都在无量纲空间里做：**同算力下取更低功耗**，甜点（1 单位功耗换 1 单位算力）
 > 是「加核 vs 升频」的判据，线程迁移一律**先扩后缩**。
+>
+> **代数口径（2026-10-23 用户定）**：CLG-EEM 是**第二代帕累托前沿概念算法**。
+> 第一代 = CLG-PF（整簇满载的绝对能效查表 + `FrontierTable`/`demand_buckets` 桶表），已删除；
+> 中间的 FDP（绝对瓦数边际成本，只服务后台 promote）作为过渡实现已整体移除。
+> `pf` 前缀的**文件名/符号名**（`pf.chr`、`PF_ENABLED_LOGGED`、`pf_group_of`）属命名沿用，
+> 语义已全部指向第二代。
+> **机型覆盖**：40 个 `soc.yaml` 中 38 个具备 `frontier_policy` 逐档数据（EEM 生效）；
+> 仅 **sm8475 / sm8650** 无该段（mdocs 亦无功耗表、无法生成）→ `energy_model::available()`
+> 恒 false → 走原比例路径、`pf.chr` 写 `0`、WebUI 显示 `CLG`（非 bug，已由用户拍板接受）。
 
 - **为什么推翻旧 PF（根因，勿再犯）**：旧 `demand_buckets` 桶表的**两个轴都假设整簇满载**——
   功耗轴 `n×active − (n−1)×净idle`、算力轴 `n × cap × f/f_max`。但调度器搬的是**线程**：
@@ -174,28 +184,51 @@ WebUI 侧：
 - **日志两级**（用户口径）：INFO `affinity-migrate` 只写**线程 + 方向 + 核区间**；
   devimp `@A act=place` 帧写全量（`dst=<lo>-<hi> value=gain=..,settled=..,reason=..,clipped=..`
   `reason` 槽写方向 `up/down/hold`）。CLG 侧 tick 日志键 `clg-eem-tick-log`（带 `eem_khz/sweet_khz/cores`）。
-- **与 FDP 的关系**：`eem_placement` 缺省 **true**（`apply` 里 `&& energy_model::available()` 自动兜底，
-  无模型机型静默回退），EEM 开启时 **FDP 自动让位**（两套成本模型口径不同，同轮同时决策会互相覆盖）。
-  `fdp_*` 配置保留但不再生效，仅作回退路径留痕。sm8550 / zumapro / sm8750 已显式 `eem_placement: true`。
+- **开关**：`eem_placement` 缺省 **true**（`apply` 里 `&& energy_model::available()` 自动兜底，
+  无模型机型静默回退比例路径）；关闭时 `eem_release_all()` 归还迁移掩码。
+  sm8550 / zumapro / sm8750 已显式 `eem_placement: true`。**FDP 已于 2026-10-23 整体移除**
+  （见下节台账），`fdp_*` 配置键不再存在——若在旧配置里看到它们，属未同步的历史残留。
 - **验证能力**：`YUMI_SKIP_EBPF=1 cargo check` 可在开发机做**全仓类型检查**（`screen_detect.rs` 的
   `__system_property_get` 已有 `#[cfg(not(target_os="android"))]` 桩）。离线回归
   `scripts/tests/energy_model_regression.rs`（29 项）覆盖甜点判据、缩放不变性、静态项口径、
   先扩后缩、方向判定、选核、k 核分摊数学关系。
 
-### FDP：前沿主导的放置内核（**已被 EEM 取代，2026-10-22**；仅作回退路径与历史留痕）
+### FDP：前沿主导的放置内核（**已于 2026-10-23 整体移除**；仅作历史留痕，无回退路径）
 
-- **一句话**：后台/批处理线程 promote 时不再按「簇名气（big 优先、钉满溢出 prime）」选目的簇，而是算**双边净收益** `net = [P_src(让出后) − P_src(现状)] + [P_dst(承接后) − P_dst(现状)]`，只有 `net ≤ −fdp_cost_hysteresis_w` 才迁——等价于「**等算力下把这份算力放到边际 mW/Mdmips 更低的地方**」。❌ 不用单边 `ΔP(dst)` 选最小者（其增量恒 ≥ 0，与「不搬」比永远更差，会退化成永不动作）。
-- **数据不手抄、单点真相**：`src/chiri/energy_cost.rs` 直接读 `soc_frontier_policy().per_cluster.<簇>.{capacity, freq_khz, power_w}`；逐档簇功耗由 `scripts/frontier_policy.py` 从 `mdocs/sm8550/sm8550-freq-power.md` §3 生成进 `sm8550/soc.yaml` 的受控块（生成时断言「文档档位数 == soc.yaml 档位数」，不一致拒绝落表）。**无该段的 SoC**（无 capacity / 无 `per_cluster` 功耗表）→ 调用方先经 `energy_cost::fdp_available()` 判定，缺数据即**回退原 A3 放置路径**（不是把后台 promote 整段停掉）。表是纯动态项、不含漏电，只作相对排序。**两机表不同源**：8550 是按 `Cx·f·V²` 推算的，zumapro 是 PMIC ODPM 实测净能量并做过漏电校正（`cluster_W = n×active − (n−1)×idle`）；两者都只进相对比较，不可跨机比绝对值。
-- **工作点口径（现状实测 + 之后按单核落位）**：现状取该簇**最忙核的 util**（policy 口径，取各核最大值）+ 实测 `scaling_cur_freq`（读不到才用模型），`P_now` 直接查表；之后按「一份需求落到**一个核**」算 `Δu = d / capacity`，再用 schedutil 口径 `f = f_min + u_after × (f_max − f_min)` 并 floor 对齐真实档位。`P(f)` 超线性（§2.1 算力/mW 随频率单调劣化）→ 把目标簇推向高位会自动变贵，这就是「注意目标核当前能效、别因迁移把它拉劣」的代码形态。**不要**用过原点线性 `f = d×f_max/(核数×capacity)`（那假设需求在簇内均摊，对 prime 这类单核簇会算出低于最低档的频率、把 prime 判成「免费」）。
-- **边际能效劣化边缘的保守包络（2026-09-28 审查后修）**：现状与之后**必须锚在同一侧**，否则两个不同底相减会算出负的 `ΔP`。修前是「现状取实测、之后取纯模型」，当目的簇因 QoS / 热 / 别的线程尖峰**此刻跑得比模型高**时会得到 `f_after < f_now`、`ΔP_dst < 0`——把承接成本算成免费甚至收益，反鼓励往满簇塞（计划 E2 警告的那条）。
-  现在改成：**目的簇** `now = min(实测, 模型)`、`after = max(模型, 实测)`，于是 `ΔP_dst ≥ 模型边际 ≥ 0`，并顺带堵住「簇已在热 ⇒ 加负载免费」的错觉；**源簇** `after = min(模型, now)`，保证 `ΔP_src ≤ 0` 且让出收益宁小勿大。
-  实测与模型一致时（无 QoS/热/尖峰干扰）行为与修前**逐位相同**；不一致时只会让迁移更难、不会更易。
-  附带：0.85 频率护栏现在比的是包络值（≥ 实测现状），所以「**目的簇此刻就已经贴在劣化区**」也会被拦下（修前只比模型值，会漏这一半）。
-- **防拥挤（同轮硬约束，成本项只在跨轮生效）**：每轮每目的簇迁入条数上限 `fdp_max_inserts_per_round`（同轮几十条线程看到同一份快照会一起判「big 最便宜」，必须靠配额兜）+ 迁入后模型工作频率不得超 `fdp_dst_freq_cap_ratio × 最高频`（P-a「任何簇贴顶都不行」的落点）。
-- **prime 的资格仍由 `bg_promote_exclude_prime` 把关**：静态表不含漏电/idle-exit（prime 独核被从 rail-collapse 拉起后的静默代价不在表里），且本模型判不出 P-b 的「单核算力需求 >2600 Mdmips 才用 prime」门槛 → 缺省候选只有 big，显式把该开关置 false 才纳入 prime。**注意**：`fdp_enabled=true` 时不再让 `big_pressure` 一票否决 promote（FDP 自己的 0.85 频率护栏已覆盖「别往已热的簇塞」）——否则放开 prime 后，最该分流的「big 已热」场景反而会被整体闸掉、prime 分支近乎不可达（独立审查发现后修）。
-- **作用域 / 开关 / 不变式**：只替换**后台/批处理线程 promote** 的目的簇选择（成本模型不含延迟项，前台关键线程与普通前台线程路径一律不动）；`fdp_enabled` 缺省 false、8550 显式 true，关掉后逐位回旧行为；`fdp_enabled=true` 但静态数据缺失时同样回退 A3（`fdp_available()` 判定）。落点仍走既有 `pick_core_pref`（不绕 `MAX_PINS_PER_CORE`/`PINNED_WEIGHT`/过载分散），选核失败即不动（不 move_group、不置 promoted）；三道时间闸与 A3/A6/A10 不变式全部保留。日志 `action=fdp` 带 `src→dst`、两簇 before/after 频率与 net(mW)，供离线核对。
+> **现状**：代码、配置键、日志键全部删除，**不再是可回退路径**。本节只保留「为什么删」与
+> 「它踩过的坑」，供日后重写放置内核时避雷。
 
-- **`src/chiri/energy_cost.rs` 的文件结构与两个易踩的实现坑（2026-09-28）**：文件头有 `//!` 区块索引，内部按 `[source] [power] [supply] [cost] [probe] [decision] [tests]` 分块；核心是**三个纯函数**——`cluster_power_w`（逐档插值）、`freq_for_policy_util`（schedutil 口径的频率映射）、`net_benefit_w`（双边净收益）。**簇到 cpufreq policy 的映射只发现一次**（policy 目录开机后固定、热插拔不增删 policy），此后每轮只读 3 个 `scaling_cur_freq`，**不再扫 policy0..16**——新增读点时必须走这层缓存，勿在热路径里重新枚举 policy 目录。数据一律读 `soc_frontier_policy()`，不手抄。FDP 实现过程中被打回的两处模型缺陷（均已修，勿回退）：① 频率不能由「簇总算力」过原点反解（那假设簇内均摊，会把单核的 prime 判成「免费」），改为「现状取实测 `scaling_cur_freq` + 最忙核 util，之后按单核落位 + schedutil `f_min + u×(f_max−f_min)` 映射」；② prime 候选资格不能交给成本函数（静态表不含漏电/idle-exit，且判不出 P-b 的 >2600 Mdmips 门槛），仍由 `bg_promote_exclude_prime` 把关。回退 = `fdp_enabled: false`（缺省即 false，8550 显式 true）。
+- **删除范围（2026-10-23 用户授权，随 CLG-EEM 定义为第二代帕累托前沿一并清理）**：
+  - `src/chiri/energy_cost.rs`：删 `[supply]` 段（`cluster_real_freqs`、`cluster_now_util`、
+    `freq_for_policy_util`、`cluster_now_freq`）、`[cost]` 段（`net_benefit_w`）、`[decision]` 段
+    （`FdpMove`、`FdpChoice`、`fdp_available`、`fdp_destination`）。文件由 571 行降到 301 行，
+    现只服务**功耗遥测**（`mod.rs` 的 `cpu_dynamic_power_w*`）与 **EEM 的频率读取**
+    （`affinity.rs` 的 `read_cluster_freqs`）。文件头索引改为 `[table][interp][power][probe][tests]`。
+  - `src/chiri/affinity.rs`：删三个常量（`FDP_COST_HYSTERESIS_W=0.02`、
+    `FDP_MAX_INSERTS_PER_ROUND=2`、`FDP_DST_FREQ_CAP_RATIO=0.85`）、五个结构体字段、`new()` 初值、
+    `apply` 热重载、`rebalance` 清零、`fdp_ready` 判决块，以及整段 `if fdp_ready {...}`（111 行）。
+    A3 准入条件回退为 `if sustained_busy && !big_pressure`。
+  - `src/chiri/config.rs`：删 `fdp_enabled` / `fdp_cost_hysteresis_w` / `fdp_max_inserts_per_round` /
+    `fdp_dst_freq_cap_ratio` 四字段、三个缺省函数、Default impl 与 clamp 各四行。
+  - `module/config/{sm8550,zumapro}/feature.yaml`：删全部 `fdp_*` 键；`sm8650/feature.yaml` 删相关注释。
+    `module/config/i18n/{en,zh}.ftl`：删已无调用点的 `affinity-fdp-promoted`。
+  - `scripts/frontier_policy.py`：删死代码 `build_buckets` / `build_modes` / `combo_units`、
+    `MODE_LEAD_MULT` / `DEFAULT_LEAD_FRAC` / `DEFAULT_RESERVE` 与 `--lead-frac` / `--reserve` 两个 CLI 参数
+    （30144 → 26824 字节）；保留 `enumerate_frontier` / `lower_hull` / `efficiency` / `check_anchors` /
+    `monotone_compute`（主流程仍用，下凸包仅作对账留痕）。
+- **为什么删（而不是继续留着当回退）**：FDP 与 EEM 是**两套成本模型**（FDP 用绝对瓦数、只服务后台
+  promote；EEM 用相对向量、不分前后台），同轮同时决策会互相覆盖，原设计靠
+  `let fdp_ready = self.fdp_enabled && !self.eem_placement && energy_cost::fdp_available();`
+  让 FDP 让位。38/40 机型已切 EEM 后，FDP 分支**永远不可达**，属于「配置写着 true 但运行期被屏蔽」
+  的死路径（`sm8550`/`zumapro` 的 `fdp_enabled: true` 即此），留着只会误导排查。
+- **它踩过的两个坑（重写放置内核时勿再犯）**：
+  ① 频率不能由「簇总算力」过原点反解——那假设簇内均摊，会把单核的 prime 判成「免费」；
+  实到「现状取实测 `scaling_cur_freq` + 最忙核 util，之后按单核落位 + schedutil 映射」才对。
+  ② prime 候选资格不能交给成本函数——静态表不含漏电/idle-exit，判不出 P-b 的「单核算力需求
+  >2600 Mdmips 才用 prime」门槛，仍须由 `bg_promote_exclude_prime` 把关。
+  ③ 同轮几十条线程看同一份快照会齐涌同一「最便宜」簇，必须有每轮配额
+  （FDP 的 `max_inserts`）——该教训已被 EEM 的 `EEM_MAX_MOVES_PER_ROUND`(4) 继承。
+
 
 ### core_ctl 核心在线接管（ChiRi 专属）
 
@@ -258,11 +291,19 @@ WebUI 侧：
 - **天花板全拆（2026-09-28）**：4 份 feature.yaml + tuned_profiles.yaml 的 `perf_ceil` / `headroom` / `per_cluster` 天花板整段删除。**触发**：视频/游戏同场景稳态功耗明显上抬且 T11 未补回，或热档触发频率变高。**回退**：把对应文件的 `perf_ceil` 改回旧值——8550 reduce 0.60 / 兜底 reduce 0.70、default 0.80；8475 reduce 0.70、default 0.80；8998 reduce 0.60、default 0.80；akmode 0.95；playback `per_cluster` little 0.55 · big 0.75 · prime 0.50 + `headroom` 0.85。
 - **T11 稳态下探（2026-09-28）**：CLG 与特调各一组 `steady_decay_*`（缺省 `enabled=true`）。**触发**：省电档/均衡档出现周期性卡顿或频率锯齿，或稳态频率反而比改动前更高。**回退**：`steady_decay_enabled: false`（单档即可，CLG 与特调各一处）；或把 `steady_decay_max` 调小。
 - **三模式取点（8550，2026-09-28）**：`reduce.steady_decay_target_ratio: 0.80`。**触发**：省电档明显不跟手。**回退**：删掉该一行 `reduce.steady_decay_target_ratio: 0.80`（回缺省 0.90）。
-- **CLG-PF 查表（2026-09-28）**：**触发**：出现 `clg-pf-fallback` 告警，或稳态频率下移但掉帧增加。**回退**：`module/config/sm8550/soc.yaml` 生成块内 `enabled: false`（或重跑 `scripts/frontier_policy.py --disable` 再重编；块内禁手改）。
+- **CLG-PF 查表（第一代，2026-09-28；**已失效 2026-10-23**）**：`clg-pf-fallback` 告警与
+  `FrontierTable` / `demand_buckets` 桶表**在代码中已零命中**，本条回退路径不复存在。
+  等价手段改为第二代：`frontier_policy.enabled: false`（`soc.yaml` 生成块，或重跑
+  `scripts/frontier_policy.py --disable`；块内禁手改）让 EEM 整体不生效 → 走原比例路径；
+  只想调松不关掉：调 `eem_hysteresis`（相对滞回）或 `eem_min_util_pct`（参与迁移的最低占用）。
 - **A1 后台降权 25（2026-09-28）**：`Affinity.background_uclamp_max_pct` 由 50 降到 25。**触发**：后台同步 / 消息推送时延可感知变差。**回退**：`background_uclamp_max_pct: 35`。
 - **A3 后台不进 prime（2026-09-28）**：`bg_promote_exclude_prime: true`。**触发**：后台批处理（下载/软解）明显变慢。**回退**：`bg_promote_exclude_prime: false`。
 - **big 饱和保护全模式生效（2026-09-28）**：`big_pressure_any_mode: true`。**触发**：default 下后台大量待 promote 不升核、任务堆积。**回退**：`big_pressure_any_mode: false`。
 - **A6 位宽感知（2026-09-28）**：`bitwidth_aware` + `aarch32_clusters`。**触发**：32 位应用关键线程被误判为不可上核、反而变卡。**回退**：缺省已不限制落点（`aarch32_clusters: []`）；彻底不判位宽则 `bitwidth_aware: false`；要恢复限制则填白名单（如 `["little"]`，仅确认系统无转译层的机型才填）。
 - **A10 写去重（2026-09-28）**：`write_dedup`。**触发**：掩码漂移未被纠正——`@A` 帧里同一线程 home 与内核实测不一致。**回退**：`write_dedup: false`。
 - **F1/F2/F6/F3（2026-09-28 小范围定点修改）**：**触发**：F1 = 退出后 `scaling_governor` 仍为 performance；F6 = 日志 `ok` 但 `min_cpus` 未生效。**回退**：按 commit 反向回退单个文件即可（`git revert` 对应改动，**勿 `git checkout`**）。
-- **FDP 放置内核（2026-09-28）**：`fdp_enabled`（缺省 false，8550 显式 true）。**触发**：后台/批处理明显变慢（「该升不升」），或日志 `action=fdp` 的 `net` 符号与真机 `batt_power_w` 走向相反。**回退**：`fdp_enabled: false`（`module/config/sm8550/feature.yaml`）；只想调松不关掉：把 `fdp_cost_hysteresis_w` 由 0.02 降到 0.01，或把 `fdp_dst_freq_cap_ratio` 由 0.85 抬到 0.95。
+- **FDP 放置内核（2026-09-28；**已于 2026-10-23 整体移除**）**：`fdp_enabled` 等四个配置键、
+  `action=fdp` 日志与对应代码全部删除，**无可回退**。后台/批处理变慢的排查改看 EEM：
+  `eem_placement` 是否生效（`pf.chr` = 1 且 `energy_model::available()`）、`eem_min_util_pct`
+  是否过高（缺省 8%，抬高会漏掉轻负载线程）、`EEM_MAX_MOVES_PER_ROUND`(4) 是否成为瓶颈。
+  日志改看 `affinity-migrate`（INFO）与 `@A act=place` 帧（devimp）。
