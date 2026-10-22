@@ -609,6 +609,7 @@ label {
   align-items: center;
   gap: var(--space-2);
   box-sizing: border-box;
+  max-width: 100%;
   min-height: var(--control-h);
   padding: 0 var(--space-3);
   border: var(--hairline) solid var(--surface-border);
@@ -634,10 +635,14 @@ label {
 }
 
 .g-status__detail {
+  min-width: 0;
   color: var(--text-muted);
   font-family: var(--font-mono);
   font-size: 0.6875rem;
-  white-space: nowrap;
+  line-height: 1.4;
+  /* 详情可能承载 daemon 错误文本：允许换行，不能把所在卡片撑出屏幕 */
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 /* 只有 running 态呼吸（环境动效，非交互过渡）；停止/未知不闪 */

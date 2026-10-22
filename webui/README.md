@@ -15,9 +15,9 @@ ksu.exec → kernel/shell（可注入） → contract（契约层） → data（
 | --- | --- |
 | `src/kernel/` | KernelSU 桥（`ksu.ts`）与可注入的 `ShellRunner`（`shell.ts`） |
 | `src/contract/` | 与守护进程的接口：路径与安全校验、三分类读取、meta 读写、实验室状态读写、存活探测、关闭调度 |
-| `src/data/` | 纯解析：status.csv（27 列，`daemon_utime_ms`/`daemon_stime_ms` 为 daemon 自测量基线，末两列 `cpu_dyn_w`/`resid_w` 为功耗分解）、daemon.log、白名单、rules、模式派生、应用标签、实验室状态 |
+| `src/data/` | 纯解析：status.csv（27 列，`daemon_utime_ms`/`daemon_stime_ms` 为 daemon 自测量基线，末两列 `cpu_dyn_w`/`resid_w` 为功耗分解）、daemon.log、白名单、rules（包名级 + activity 级分组）、模式派生、实验室状态 |
 | `src/app.css` | Fluent 设计系统：`[fonts] [tokens] [base] [scene] [materials] [primitives] [signal-map] [utilities] [fallbacks]`。Mica 场景 / Acrylic 材质 / 原子类全在这里，色值只在此处定义 |
-| `src/views/` | 四主屏：状态总览 / 配置 / 应用与规则 / 日志；二级页：实验室 `#/lab`、电量 `#/battery`、高级 `#/advanced` |
+| `src/views/` | 四主屏：状态总览 / 配置 / 应用规则查询（只读调度规则，不再拉取安装应用列表）/ 日志；二级页：实验室 `#/lab`、电量 `#/battery`、高级 `#/advanced` |
 | `src/components/` | 面板、存活芯片、状态占位、开关、数值输入、分段切换、确认弹层（原生 `<dialog>`） |
 | `src/i18n/` | 界面文案（界面语言与 daemon 日志语言互不影响） |
 | `src/stylekit/` | 上游 StyleKit 导出的风格包留档（全局 CSS / tokens / Tailwind preset / SKILL.md） |

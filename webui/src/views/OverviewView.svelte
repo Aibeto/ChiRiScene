@@ -2,6 +2,7 @@
   // OverviewView.svelte: [status] [mode] [info] [stop]
   import { onMount } from "svelte";
   import Panel from "@/components/Panel.svelte";
+  import LiveStatus from "@/components/LiveStatus.svelte";
   import ConfirmSheet from "@/components/ConfirmSheet.svelte";
   import StateBox from "@/components/StateBox.svelte";
   import { t } from "@/i18n/index.svelte";
@@ -10,10 +11,10 @@
 
   let confirmOpen = $state(false);
 
-  // 存活判据是心跳文件（LiveTime.chr）新鲜度；读取/内容异常时用 daemonError 覆盖 detail（比通用 detail 更有排查价值）
-  const daemonDetail = $derived(
-    app.daemonError || t(`daemon.${app.daemonState}.detail`),
-  );
+  // 存活判据是心跳文件（LiveTime.chr）新鲜度；状态芯片从顶栏移到这里，取代原「调度主服务正常」文字行
+  // 读取/内容异常（daemonError）不塞进芯片（错误文本可能很长），单独用说明行展示，比通用 detail 更有排查价值
+  const daemonLabel = $derived(t(`daemon.${app.daemonState}`));
+  const daemonError = $derived(app.daemonError || "");
   // 调度未运行时不把 current_mode.chr 的陈旧值当「当前模式」，卡片只陈述「调度未运行」；文件缺失同口径显示「尚未产生模式记录」
   const modeIdle = $derived(app.daemonState === "stopped");
   const modeName = $derived(
@@ -119,7 +120,12 @@
             {t("overview.module.author")}：{app.moduleProp.author}
           </p>
         {/if}
-        <p class="u-note">{daemonDetail}</p>
+        <div class="daemon__status">
+          <LiveStatus state={app.daemonState} label={daemonLabel} />
+        </div>
+        {#if daemonError}
+          <p class="u-note u-danger">{daemonError}</p>
+        {/if}
       </div>
       {#if app.isChiri}
         <!-- 耗电情况：PowerAVG.chr（daemon 每 1s 采样写入），口径随 meta.power_avg；量程 = meta.power_max_w（默认 12W），
@@ -407,6 +413,12 @@
     display: grid;
     gap: 0.15rem;
     min-width: 0;
+  }
+
+  /* 状态芯片按内容宽度贴左，不在单列栅格里被拉满整行 */
+  .daemon__status {
+    justify-self: start;
+    margin-top: 0.25rem;
   }
 
   /* 耗电读数：口径标签 + 数值 + 量程条，右栏紧凑排列 */

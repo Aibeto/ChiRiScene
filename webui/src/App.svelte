@@ -1,8 +1,8 @@
 <script lang="ts">
-  // App.svelte: [shell] [bar] [views] [nav] 顶层骨架：顶栏（关闭 / 模块名版本 + 守护进程状态 + 界面语言）、路由视图区、亚克力底栏
+  // App.svelte: [shell] [bar] [views] [nav] 顶层骨架（app-frame）：顶栏（关闭 / 模块名版本 + 界面语言）、路由视图区（唯一滚动容器）、亚克力底栏
+  // 外壳视口高、页面本身不滚；顶/底栏在文档流内，因此不依赖 sticky/fixed 也不会被内容滚走
   // 场景用 Mica 底（.g-scene 中性面 + 顶部一层品牌蓝光晕 + .g-noise 颗粒），亚克力只上在顶栏/底栏/卡片这些浮层
   import { onMount } from 'svelte'
-  import LiveStatus from '@/components/LiveStatus.svelte'
   import AppsView from '@/views/AppsView.svelte'
   import BatteryView from '@/views/BatteryView.svelte'
   import ConfigView from '@/views/ConfigView.svelte'
@@ -18,7 +18,6 @@
   const navItems = $derived(VIEW_IDS.map(id => ({ id, label: t(`nav.${id}`) })))
   // 二级视图（实验室、电池读数）挂在配置页下，导航高亮跟着父视图走
   const navActive = $derived(navOwner(router.view))
-  const daemonLabel = $derived(t(`daemon.${app.daemonState}`))
 
   onMount(() => {
     initRouter()
@@ -71,7 +70,6 @@
         ✕
       </button>
       <div class="shell__brand g-brand">
-        <span class="g-icon" aria-hidden="true">CR</span>
         <div class="shell__names">
           <p class="shell__title">{app.moduleProp.name || t('app.title')}</p>
           <p class="shell__version u-mono">
@@ -81,7 +79,6 @@
       </div>
     </div>
     <div class="shell__side u-row-tight">
-      <LiveStatus state={app.daemonState} label={daemonLabel} />
       <button
         type="button"
         class="g-btn g-btn--icon lang"
@@ -95,21 +92,23 @@
   </header>
 
   <main class="shell__main">
-    {#if router.view === 'overview'}
-      <OverviewView />
-    {:else if router.view === 'config'}
-      <ConfigView />
-    {:else if router.view === 'apps'}
-      <AppsView />
-    {:else if router.view === 'logs'}
-      <LogsView />
-    {:else if router.view === 'battery'}
-      <BatteryView />
-    {:else if router.view === 'advanced'}
-      <AdvancedView />
-    {:else}
-      <LabView />
-    {/if}
+    <div class="shell__content">
+      {#if router.view === 'overview'}
+        <OverviewView />
+      {:else if router.view === 'config'}
+        <ConfigView />
+      {:else if router.view === 'apps'}
+        <AppsView />
+      {:else if router.view === 'logs'}
+        <LogsView />
+      {:else if router.view === 'battery'}
+        <BatteryView />
+      {:else if router.view === 'advanced'}
+        <AdvancedView />
+      {:else}
+        <LabView />
+      {/if}
+    </div>
   </main>
 
   <nav class="shell__nav" aria-label={t('nav.main')}>
@@ -129,11 +128,17 @@
 </div>
 
 <style>
+  /* [frame] 应用外壳：视口高、页面本身不滚动，只有 .shell__main 内部滚动。
+     顶栏/底栏都放在文档流里（不用 sticky/fixed）——Android WebView 里 fixed 元素叠加
+     backdrop-filter 时合成层会跟着内容滚走，sticky 在部分 WebView 也不可靠；app-frame 让两条栏天然常驻 */
   .shell {
     display: flex;
     flex-direction: column;
-    min-height: 100vh;
-    min-height: 100dvh;
+    height: 100vh;
+    height: 100dvh;
+    min-height: 0;
+    overflow: hidden;
+    box-sizing: border-box;
   }
 
   /* [custom-bg] 自定义背景层：与 index.html 同目录的 backend.chr，铺满视口；position:fixed 而非 absolute——absolute 的包含块是 .g-scene，页面比视口长时背景会随内容拉长、滚动到底露出空白
@@ -161,12 +166,12 @@
     display: none;
   }
 
-  /* 吸顶顶栏：强亚克力（28px 模糊）+ 1px 底边收边，滚动时内容在它下面虚化穿过
-     左右内距在宽屏下自动加大到「与 720px 正文列对齐」，所以不给顶栏套 max-width */
+  /* 顶栏：流内第一段（不再吸顶），亚克力材质不变；左右内距在宽屏下自动对齐 720px 正文列 */
   .shell__bar {
-    position: sticky;
-    top: 0;
+    position: relative;
     z-index: 20;
+    flex: 0 0 auto;
+    box-sizing: border-box;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -221,25 +226,36 @@
     font-weight: 700;
   }
 
-  /* 底部留出底栏的高度 + 安全区，避免最后一张卡片被压住；宽屏居中收窄到 720px（Fluent 的阅读宽度） */
+  /* 唯一滚动容器：页面本身不滚，只有内容区滚 —— 顶/底栏因此始终留在视口内 */
   .shell__main {
     flex: 1 1 auto;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  /* 正文列：最大 720px（Fluent 阅读宽度）居中，很横屏时不会把卡片拉成一条长线；
+     border-box 是「宽度不超屏」的关键 —— content-box 下 width:100% 再叠内距会横向溢出 */
+  .shell__content {
+    box-sizing: border-box;
     width: 100%;
     max-width: 720px;
     margin-inline: auto;
     padding: var(--space-4);
-    padding-bottom: calc(68px + var(--space-6) + var(--safe-b));
+    padding-bottom: var(--space-6);
   }
 
-  /* 底栏：亚克力药丸浮在场景上（左右留边 + 圆角两处都是「浮起」的关键），阴影用第 3 档
-     宽屏下居中并限宽 520px，避免四项被拉成四根长条 */
+  /* 底栏：流内最后一段（不再 fixed），仍是浮起的亚克力药丸（左右留边 + 圆角）；
+     宽屏下居中并限宽 520px，避免四项被拉成四根长条；border-box 保证内距不把药丸撑出屏幕 */
   .shell__nav {
-    position: fixed;
+    position: relative;
     z-index: 30;
-    bottom: calc(var(--space-3) + var(--safe-b));
-    left: 50%;
+    flex: 0 0 auto;
+    box-sizing: border-box;
     width: min(520px, calc(100% - 2 * var(--space-3)));
-    transform: translateX(-50%);
+    margin: 0 auto calc(var(--space-3) + var(--safe-b));
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: var(--space-1);

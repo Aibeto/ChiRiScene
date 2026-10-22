@@ -41,8 +41,19 @@ Acrylic 自带的那层噪点，用来消除大面积白面的塑料感。
 - 层级：`position: fixed` + `z-index: -1`（定位元素若为 0 会盖住非定位正文）。
 - 启用时 `.g-scene--custom-bg` 关掉 Mica 底与光晕：背景图自己就是场景（同一时刻只应有一个场景）。
 
-## 2. Token（全部已定义在 `src/app.css` `:root`，直接用，不要硬编码色值）
+### 1.2 外壳布局（app-frame）
 
+`App.svelte` 是**固定视口的三段式外壳**：`.shell` 高 = `100dvh` 且 `overflow: hidden`，
+`.shell__bar`（顶栏）/ `.shell__nav`（底栏）在**文档流内**，只有 `.shell__main` 内部滚动。
+**不要给顶栏/底栏改回 `position: sticky` / `fixed`**：Android WebView 里 fixed 元素叠加
+`backdrop-filter` 会跟着内容滚走，sticky 在部分 WebView 亦不可靠；app-frame 让两条栏天然常驻。
+
+- 正文列 `.shell__content` 统一 `box-sizing: border-box` + `max-width: 720px` 居中：
+  手机不横向溢出，很横屏时也不会把卡片拉成一条长线。
+- 守护进程存活芯片（`LiveStatus`）在**状态页首卡**（取代原「调度主服务正常」文字行），不在顶栏。
+- 顶栏只保留：关闭、模块名/版本、界面语言。
+
+## 2. Token（全部已定义在 `src/app.css` `:root`，直接用，不要硬编码色值）
 ```
 品牌  --accent #0078D4  --accent-hover #106EBE  --accent-pressed #005A9E  --accent-tint #EFF6FC
       --accent-yellow #FFB900（只做填充）  --danger #E81123  --danger-tint #FDE7E9  --success #107C10
@@ -119,7 +130,8 @@ ConfirmSheet { open, title, message?, notes?: string[], confirmText, cancelText,
    `src/state.svelte.ts` 一律只读调用，签名不改。视图只消费 `state.svelte.ts` 暴露的 `app`。
 6. **不加依赖**。样式全部手写 CSS 变量，不引入 Tailwind / 组件库。
 7. **字体二进制不入库**，由 `scripts/fetch-fonts.mjs` 构建期拉取；`app.css` 里用相对路径 `./assets/fonts/`。
-8. **滚动容器**用 `.u-scroll`；「回到底部」按钮必须 `absolute` 锚在滚动容器内（禁 `position: fixed`）。
+8. **滚动容器**：页面级只有 `.shell__main`（app-frame，见 1.2），视图内的子滚动窗口用 `.u-scroll`；
+   「回到底部」按钮必须 `absolute` 锚在滚动容器内（禁 `position: fixed`）。
 9. 触控目标 ≥ `--control-h`(44px)；所有交互元素要有可见焦点（全局 `:focus-visible` 2px 品牌蓝 + 2px 偏移）
    与可访问名称。
 10. **`prefers-reduced-motion`** 已在 app.css 全局降级，视图不要写死动画。

@@ -1,4 +1,4 @@
-// state.svelte.ts: [common] [overview] [config] [apps] [logs] 应用级状态：把契约层三分类读取结果映射成界面可渲染的状态，并区分「读失败」与「不适用」
+// state.svelte.ts: [common] [overview] [config] [rules] [logs] 应用级状态：把契约层三分类读取结果映射成界面可渲染的状态，并区分「读失败」与「不适用」
 import {
   hasActionScript,
   judgeLiveness,
@@ -30,7 +30,6 @@ import {
   readStatusCsvTail,
   type DeviceKind
 } from '@/contract/sources'
-import { fetchInstalledPackages, buildAppEntries, filterApps, type AppEntry } from '@/data/apps'
 import { LOG_MAX_LINES, parseDaemonLog, type LogLine } from '@/data/daemon-log'
 import {
   LAB_FORCE_OFF,
@@ -45,7 +44,14 @@ import {
 } from '@/data/lab'
 import { describeMode, type ModeInfo } from '@/data/mode'
 import { EMPTY_MODULE_PROP, parseModuleProp, type ModuleProp } from '@/data/module-info'
-import { EMPTY_RULES, parseRules, type RulesInfo } from '@/data/rules'
+import {
+  buildRuleGroups,
+  EMPTY_RULES,
+  filterRuleGroups,
+  parseRules,
+  type RuleGroup,
+  type RulesInfo
+} from '@/data/rules'
 import { parseStatusCsv, type StatusRow } from '@/data/status-csv'
 import { parsePowerAvgWatt } from '@/data/power-avg'
 import {
@@ -115,12 +121,15 @@ class AppStore {
   /** 正在写入（启用/关闭）——期间禁用按钮，避免重复提交 */
   labPending = $state(false)
 
-  // [apps]
-  apps = $state<AppEntry[]>([])
-  appKeyword = $state('')
-  scanning = $state(false)
-  appsState = $state<FileState>('ok')
+  // [rules] 应用规则查询页：只读 rules.yaml / special_tuned.yaml / fas_whitelist.yaml，不再拉取安装应用列表
   rules = $state<RulesInfo>(EMPTY_RULES)
+  rulesState = $state<FileState>('ok')
+  /** 特调 / FAS 白名单读取的真实失败（缺失不是失败：非 ChiRi 机型本来就没有） */
+  rulesWhitelistError = $state('')
+  rulesLoading = $state(false)
+  ruleKeyword = $state('')
+  specialRules = $state<Map<string, SpecialTunedEntry>>(new Map())
+  fasRules = $state<Map<string, string>>(new Map())
 
   // [logs]
   logLines = $state<LogLine[]>([])
@@ -184,8 +193,14 @@ class AppStore {
     return this.deviceKind === 'chiri'
   }
 
-  get filteredApps(): AppEntry[] {
-    return filterApps(this.apps, this.appKeyword)
+  /** 规则分组：app_modes（包名级 + activity 级）+ 特调 + FAS 白名单，按包名归并 */
+  get ruleGroups(): RuleGroup[] {
+    return buildRuleGroups(this.rules, this.specialRules, this.fasRules)
+  }
+
+  /** 规则搜索：包名 / activity / 模式 / 特调 / FAS 任一命中 */
+  get filteredRules(): RuleGroup[] {
+    return filterRuleGroups(this.ruleGroups, this.ruleKeyword)
   }
 
   get statusRowsNewestFirst(): StatusRow[] {
@@ -444,14 +459,14 @@ class AppStore {
     }
   }
 
-  // [apps]
-  async loadApps(rescan = false): Promise<void> {
-    // in-flight 守卫：连点「重新扫描」时避免并发两组扫描互相复位标志
-    if (this.scanning) return
-    this.scanning = true
+  // [rules]
+  /** 只读规则三件套（rules.yaml 展示副本 + 特调 + FAS 白名单）：规则页与「刷新规则」共用，不再执行 pm list packages */
+  async loadRules(refresh = false): Promise<void> {
+    // in-flight 守卫：连点「刷新规则」时避免并发读取互相覆盖
+    if (this.rulesLoading) return
+    this.rulesLoading = true
     try {
-      const [packages, rulesRaw, tunedRaw, fasRaw] = await Promise.all([
-        fetchInstalledPackages(),
+      const [rulesRaw, tunedRaw, fasRaw] = await Promise.all([
         readRulesRaw(),
         readSpecialTunedRaw(),
         readFasWhitelistRaw()
@@ -461,18 +476,19 @@ class AppStore {
           ? parseRules(rulesRaw.value)
           : rulesRaw.kind === 'failed'
             ? { ...EMPTY_RULES, problem: rulesRaw.error }
-            : { ...EMPTY_RULES, problem: t('logs.missing') }
-      const special = tunedRaw.kind === 'ok' ? parseSpecialTuned(tunedRaw.value) : new Map()
-      const fas = fasRaw.kind === 'ok' ? parseFasWhitelist(fasRaw.value) : new Map()
-      this.appsState = packages.length > 0 ? 'ok' : 'missing'
-      this.apps = buildAppEntries(packages, {
-        specialTuned: special,
-        fasWhitelist: fas,
-        appModes: this.rules.appModes
-      })
-      if (rescan) toast(t('apps.scanned'))
+            : { ...EMPTY_RULES, problem: t('apps.rules.missing') }
+      this.rulesState =
+        rulesRaw.kind === 'ok' ? 'ok' : rulesRaw.kind === 'failed' ? 'failed' : 'missing'
+      this.specialRules = tunedRaw.kind === 'ok' ? parseSpecialTuned(tunedRaw.value) : new Map()
+      this.fasRules = fasRaw.kind === 'ok' ? parseFasWhitelist(fasRaw.value) : new Map()
+      // 白名单读取失败（不是缺失）要如实说，否则页面会把「读失败」显示成「没有配置」
+      const problems: string[] = []
+      if (tunedRaw.kind === 'failed') problems.push(`special_tuned.yaml: ${tunedRaw.error}`)
+      if (fasRaw.kind === 'failed') problems.push(`fas_whitelist.yaml: ${fasRaw.error}`)
+      this.rulesWhitelistError = problems.join('；')
+      if (refresh) toast(t('apps.rules.refreshed'))
     } finally {
-      this.scanning = false
+      this.rulesLoading = false
     }
   }
 

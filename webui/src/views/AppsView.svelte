@@ -1,97 +1,52 @@
 <script lang="ts">
-  // AppsView.svelte: [search] [list] [rules] 应用性能模式由 rules.yaml 决定（WebUI 无写入口），只按契约事实打标签
-  // 标签只有三种：特调命中、FAS 白名单、现存 app_modes
+  // AppsView.svelte: [rules] [search] 应用规则查询：只读三份调度规则（rules.yaml + 特调 + FAS 白名单）
+  // 按包名分组展示，activity 级覆盖缩进在包名级下面；不再执行 pm list packages 拉取完整应用列表（规则查询不需要全量清单，扫描也很慢）
   import { onMount } from "svelte";
   import Panel from "@/components/Panel.svelte";
   import StateBox from "@/components/StateBox.svelte";
   import { t } from "@/i18n/index.svelte";
   import { app } from "@/state.svelte";
 
-  const shown = $derived(app.filteredApps.length);
-  const total = $derived(app.apps.length);
+  const groups = $derived(app.filteredRules);
+  const total = $derived(app.ruleGroups.length);
+  const shown = $derived(groups.length);
 
   onMount(() => {
-    if (app.apps.length === 0) void app.loadApps();
+    // 每次进入重读三份规则（三次小文件读取，不碰应用列表）；规则是 daemon 启动时写的展示副本
+    void app.loadRules();
   });
 </script>
 
 <div class="u-stack">
-  <Panel title={t("apps.title")} desc={t("apps.count", { n: total })}>
+  <Panel title={t("apps.title")} desc={t("apps.rules.priority")}>
     {#snippet actions()}
       <button
         type="button"
         class="g-btn"
-        disabled={app.scanning}
-        onclick={() => app.loadApps(true)}
+        disabled={app.rulesLoading}
+        onclick={() => void app.loadRules(true)}
       >
-        {app.scanning ? t("action.scanning") : t("action.rescan")}
+        {app.rulesLoading ? t("state.loading") : t("apps.rules.refresh")}
       </button>
     {/snippet}
 
     <label class="g-field">
-      <span class="g-label">{t("apps.search")}</span>
+      <span class="g-label">{t("apps.rules.search")}</span>
       <input
         class="g-input"
         type="search"
-        placeholder={t("apps.search")}
-        bind:value={app.appKeyword}
+        placeholder={t("apps.rules.search")}
+        bind:value={app.ruleKeyword}
       />
     </label>
 
-    {#if shown !== total}
-      <p class="u-note u-mt-2 u-mono">{t("apps.filtered", { shown, total })}</p>
-    {/if}
+    <p class="u-note u-mt-2 u-mono">
+      {t("apps.rules.count", { n: total })}{#if shown !== total} · {t("apps.filtered", { shown, total })}{/if}
+    </p>
   </Panel>
 
-  {#if app.appsState === "missing" && total === 0}
-    <StateBox
-      kind="empty"
-      message={t("apps.empty")}
-      detail={t("apps.empty.detail")}
-    />
-  {:else if total === 0}
-    <StateBox kind="loading" message={t("state.loading")} />
-  {:else if shown === 0}
-    <StateBox kind="empty" message={t("apps.empty")} />
-  {:else}
-    <!-- 列表是一整块亚克力（g-acrylic），行是嵌在内的实心面（g-surface）：亚克力里禁止再叠模糊层 -->
-    <ul class="apps g-acrylic u-list-reset">
-      {#each app.filteredApps as entry (entry.pkg)}
-        <li class="apps__item g-surface">
-          <div class="apps__head">
-            <p class="apps__label u-truncate">{entry.label}</p>
-            {#if entry.label !== entry.pkg}
-              <p class="apps__pkg u-mono u-truncate">{entry.pkg}</p>
-            {/if}
-          </div>
-          <div class="g-tag-group">
-            {#if entry.special}
-              <span class="g-tag g-tag--accent">
-                {t("apps.tag.special")} · {entry.special.fallback}
-              </span>
-            {/if}
-            {#if entry.fasConfig}
-              <span class="g-tag">{t("apps.tag.fas")} · {entry.fasConfig}</span>
-            {/if}
-            {#if entry.appMode}
-              <span class="g-tag g-tag--neutral">
-                {t("apps.tag.mode")} · {entry.appMode}
-              </span>
-            {/if}
-          </div>
-        </li>
-      {/each}
-    </ul>
-  {/if}
-
   <Panel title={t("apps.rules")} desc={t("apps.rules.hint")}>
-    {#if !app.rules.ok}
-      <StateBox
-        kind="error"
-        message={t("state.failed")}
-        detail={app.rules.problem}
-      />
-    {:else}
+    {#if app.rules.ok}
       <div class="kv">
         <span class="kv__key">{t("apps.rules.dynamic")}</span>
         <span class="kv__value u-mono"
@@ -103,26 +58,119 @@
         <span class="kv__value u-mono">{app.rules.globalMode}</span>
       </div>
       <div class="kv">
-        <span class="kv__key">{t("apps.rules.ignored")}</span>
-        <span class="kv__value u-mono">
-          {app.rules.ignoredApps.length ?
-            app.rules.ignoredApps.join("、")
-          : "—"}
-        </span>
+        <span class="kv__key">{t("apps.rules.activityAware")}</span>
+        <span class="kv__value u-mono"
+          >{app.rules.activityAware ? "true" : "false"}</span
+        >
       </div>
+      {#if !app.rules.activityAware}
+        <p class="u-note u-mt-2">{t("apps.rules.activityAware.off")}</p>
+      {/if}
       <div class="kv">
-        <span class="kv__key">app_modes</span>
-        <span class="kv__value u-mono">
-          {Object.keys(app.rules.appModes).length || "—"}
+        <span class="kv__key">{t("apps.rules.ignored")}</span>
+        <span class="kv__value">
+          {#if app.rules.ignoredApps.length > 0}
+            <span class="rules__ignored">
+              {#each app.rules.ignoredApps as name, index (index)}
+                <span class="g-tag g-tag--neutral u-mono">{name}</span>
+              {/each}
+            </span>
+          {:else}
+            <span class="u-mono">—</span>
+          {/if}
         </span>
       </div>
+    {:else if app.rulesLoading}
+      <StateBox kind="loading" message={t("state.loading")} />
+    {:else if app.rulesState === "missing"}
+      <StateBox
+        kind="missing"
+        message={t("apps.rules.missing")}
+        detail={t("apps.rules.missing.detail")}
+      />
+    {:else}
+      <StateBox
+        kind="error"
+        message={t("state.failed")}
+        detail={app.rules.problem}
+      />
+    {/if}
+
+    {#if app.rulesWhitelistError}
+      <p class="u-note u-danger u-mt-2">{app.rulesWhitelistError}</p>
     {/if}
   </Panel>
+
+  {#if app.rules.ok}
+    {#if shown === 0}
+      <StateBox kind="empty" message={t("apps.rules.empty")} />
+    {:else}
+      <!-- 列表是一整块亚克力（g-acrylic），行是嵌在内的实心面（g-surface）：亚克力里禁止再叠模糊层 -->
+      <ul class="rules g-acrylic u-list-reset">
+        {#each groups as group (group.pkg)}
+          <li class="rules__item g-surface">
+            <div class="rules__head">
+              <p class="rules__pkg u-mono u-truncate" title={group.pkg}>
+                {group.pkg}
+              </p>
+              {#if group.ignored || group.special || group.fasConfig}
+                <div class="g-tag-group">
+                  {#if group.ignored}
+                    <span
+                      class="g-tag g-tag--neutral"
+                      title={t("apps.rules.ignored.hint")}
+                    >
+                      {t("apps.rules.ignoredTag")}
+                    </span>
+                  {/if}
+                  {#if group.special}
+                    <span
+                      class="g-tag g-tag--accent"
+                      title={t("apps.rules.special.hint", {
+                        modes: group.special.modes.join(" / "),
+                        fallback: group.special.fallback,
+                      })}
+                    >
+                      {t("apps.rules.special")} · {group.special.fallback}
+                    </span>
+                  {/if}
+                  {#if group.fasConfig}
+                    <span class="g-tag">
+                      {t("apps.rules.fas")} · {group.fasConfig}
+                    </span>
+                  {/if}
+                </div>
+              {/if}
+            </div>
+
+            {#if group.mode}
+              <div class="rules__line">
+                <span class="rules__level">{t("apps.rules.level.package")}</span>
+                <span class="rules__mode u-mono">{group.mode}</span>
+              </div>
+            {/if}
+
+            {#each group.activities as activity (activity.activity)}
+              <div class="rules__line rules__line--activity">
+                <span class="rules__level"
+                  >{t("apps.rules.level.activity")}</span
+                >
+                <span class="rules__activity u-mono" title={activity.activity}>
+                  {activity.activity}
+                </span>
+                <span class="rules__mode u-mono">{activity.mode}</span>
+              </div>
+            {/each}
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  {/if}
 </div>
 
 <style>
   /* 列表重置来自 .u-list-reset；亚克力底/边/影来自 .g-acrylic，这里只补圆角与内部排布 */
-  .apps {
+  .rules {
     display: grid;
     gap: var(--space-2);
     padding: var(--space-3);
@@ -130,7 +178,7 @@
   }
 
   /* 行是实心面（g-surface，无 backdrop-filter）：补细边与圆角成「列表行」 */
-  .apps__item {
+  .rules__item {
     display: grid;
     gap: var(--space-2);
     padding: var(--space-3) var(--space-4);
@@ -138,13 +186,14 @@
     border-radius: var(--radius-m);
   }
 
-  .apps__head {
+  .rules__head {
     display: grid;
-    gap: 0.1rem;
+    gap: var(--space-2);
     min-width: 0;
   }
 
-  .apps__label {
+  .rules__pkg {
+    min-width: 0;
     margin: 0;
     color: var(--text-primary);
     font-size: 0.875rem;
@@ -152,10 +201,50 @@
     line-height: 1.4;
   }
 
-  .apps__pkg {
-    margin: 0;
+  /* 规则行：层级标签 + 值；activity 行多一列 activity 名（缩进表达层级，不用单侧粗边框信号条） */
+  .rules__line {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: center;
+    gap: var(--space-2);
+    min-width: 0;
+  }
+
+  .rules__line--activity {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    padding-left: var(--space-4);
+  }
+
+  .rules__level {
     color: var(--text-muted);
-    font-size: 0.6875rem;
+    font-size: 0.625rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    white-space: nowrap;
+  }
+
+  .rules__activity {
+    min-width: 0;
+    margin: 0;
+    color: var(--text-secondary);
+    font-size: 0.75rem;
     line-height: 1.4;
+    /* activity 名可能很长：换行而不是截断，保证「精确到 activity」看得到全名 */
+    overflow-wrap: anywhere;
+  }
+
+  .rules__mode {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 0.75rem;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  /* ignored_apps 是模糊条目，可能有多条：标签流式换行 */
+  .rules__ignored {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
   }
 </style>

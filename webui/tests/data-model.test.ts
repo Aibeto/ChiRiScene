@@ -1,7 +1,7 @@
 // data-model.test.ts: [whitelists] [rules] [module-prop] [mode] [apps]
 import { describe, expect, it } from 'vitest'
 import { parseFasWhitelist, parseSpecialTuned, specialModeSet } from '@/data/whitelists'
-import { parseRules } from '@/data/rules'
+import { buildRuleGroups, filterRuleGroups, parseRules, splitRuleKey } from '@/data/rules'
 import { parseModuleProp } from '@/data/module-info'
 import { CLG_MODE_IDS, clgFamilyKey, describeMode } from '@/data/mode'
 import { buildAppEntries, filterApps } from '@/data/apps'
@@ -68,6 +68,76 @@ describe('rules.yaml 解析', () => {
     const info = parseRules('[[[')
     expect(info.ok).toBe(false)
     expect(info.problem).toBeTruthy()
+  })
+
+  it('activity_aware 缺省 true，显式 false 时保留', () => {
+    expect(parseRules('app_modes: {}\n').activityAware).toBe(true)
+    expect(parseRules('activity_aware: false\napp_modes: {}\n').activityAware).toBe(false)
+  })
+
+  it('规则键拆分：包名级 / activity 级（与 daemon 精确查表键一致）', () => {
+    expect(splitRuleKey('com.tencent.mm')).toEqual({ pkg: 'com.tencent.mm', activity: '' })
+    expect(splitRuleKey('com.tencent.mm/.Chat')).toEqual({
+      pkg: 'com.tencent.mm',
+      activity: '.Chat'
+    })
+  })
+})
+
+describe('规则分组（精确到 activity）', () => {
+  const info = parseRules(
+    [
+      'dynamic_enabled: true',
+      'global_mode: "default"',
+      'activity_aware: true',
+      'app_modes:',
+      '  com.tencent.mm: reduce',
+      '  com.tencent.mm/.Chat: boost',
+      '  com.tencent.mm/com.tencent.mm.ui.LauncherUI: default',
+      '  tv.danmaku.bili/.MainActivityV2: default',
+      'ignored_apps:',
+      '  - com.tencent.mm'
+    ].join('\n')
+  )
+  const groups = buildRuleGroups(
+    info,
+    new Map([['com.tencent.tmgp.sgame', { modes: ['sgame'], fallback: 'sgame' }]]),
+    new Map([['tv.danmaku.bili', 'bili']])
+  )
+
+  it('包名级与 activity 级归到同一分组，activity 按名排序', () => {
+    const mm = groups.find(g => g.pkg === 'com.tencent.mm')
+    expect(mm?.mode).toBe('reduce')
+    expect(mm?.activities.map(a => a.activity)).toEqual([
+      '.Chat',
+      'com.tencent.mm.ui.LauncherUI'
+    ])
+    expect(mm?.activities[0].mode).toBe('boost')
+    expect(mm?.ignored).toBe('com.tencent.mm')
+  })
+
+  it('特调 / FAS 白名单并进同一分组；只有 activity 规则的包也成组', () => {
+    expect(groups.find(g => g.pkg === 'com.tencent.tmgp.sgame')?.special?.fallback).toBe(
+      'sgame'
+    )
+    const bili = groups.find(g => g.pkg === 'tv.danmaku.bili')
+    expect(bili?.fasConfig).toBe('bili')
+    expect(bili?.mode).toBe('')
+    expect(bili?.activities).toHaveLength(1)
+  })
+
+  it('分组按包名排序', () => {
+    const names = groups.map(g => g.pkg)
+    expect(names).toEqual([...names].sort())
+  })
+
+  it('搜索命中 activity / 模式 / 特调 / FAS；空白关键词不过滤', () => {
+    expect(filterRuleGroups(groups, '.chat').map(g => g.pkg)).toEqual(['com.tencent.mm'])
+    expect(filterRuleGroups(groups, 'bili').map(g => g.pkg)).toEqual(['tv.danmaku.bili'])
+    expect(filterRuleGroups(groups, 'sgame').map(g => g.pkg)).toEqual([
+      'com.tencent.tmgp.sgame'
+    ])
+    expect(filterRuleGroups(groups, '  ')).toHaveLength(groups.length)
   })
 })
 
