@@ -68,7 +68,11 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: "24" # 推荐使用 LTS 版本
+          # 钉死补丁号：2026-10 Node 安全公告（CVE-2026-111497 Brotli 越界写 RCE、
+          # CVE-2026-105482 DNS NUL、CVE-2026-105483/106069 TLS 主机名绕过）
+          # 修复于 22.23.4 / 24.22.1 / 26.12.1；浮动 "24" 会解析到 runner 缓存里的
+          # 任意补丁号，无法保证不受影响
+          node-version: "24.22.1"
           cache: npm
           cache-dependency-path: webui/package-lock.json
 
