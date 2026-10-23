@@ -90,12 +90,23 @@ jobs:
       #    独立 host lint job 无法编译，复用本 job 环境最省）
       #    工具链钉版本（2026-10-18 用户定）：浮动 nightly 会让 rustfmt/clippy 规则随
       #    构建漂移、本地与 CI 对不上。
-      #    2026-10-22 起**唯一真相 = 仓库根 rust-toolchain.toml**：这里不再写
-      #    toolchain/targets/components，action 缺省就读该文件（channel/components/
-      #    targets 全在里面）。升级 = 只改那一个文件，本机与 CI 同时生效。
+      #  ⚠ 本 action **不读** rust-toolchain.toml（勿删 with:）。dtolnay/rust-toolchain
+      #    的 action.yml 里 `toolchain` 是 `required: true` 的输入，GitHub 不校验
+      #    required，空值只会在 composite 首步以
+      #      "'toolchain' is a required input" → exit 1
+      #    失败；它内部从不用到仓库文件。故 14ad555 删掉 with: 后整套 CI 在第二步就红。
+      #    三个字段都必须在 action 里显式给：显式工具链名安装时不会套用文件里的
+      #    targets/components，漏了就不是「按文件装」而是「少装」。
+      #    口径：本机 + xtask 由仓库根 rust-toolchain.toml 决定（rustup 原生读它），
+      #    CI 这一段是第二处 pin，**升级 = channel 改这里与 rust-toolchain.toml 两处**，
+      #    两处必须同值，否则本机/CI 共用 target/ 会报 E0514。
       #    当前 1.101.0-nightly，commit 080cc2714。
       - name: Setup Rust Toolchain
         uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-10-12
+          targets: aarch64-linux-android
+          components: rust-src, clippy, rustfmt # build-std 需要 rust-src (含 bpfel-unknown-none)
 
       # 5. 缓存 Rust 依赖与编译产物（含 -Z build-std 的 core 与 eBPF 产物）。
       #    纯加速步骤，不改构建语义：key 含 rustc 版本与 Cargo.lock，

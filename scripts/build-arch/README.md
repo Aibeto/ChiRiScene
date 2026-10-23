@@ -84,7 +84,9 @@ error: the `-Z` flag is only accepted on the nightly channel of Cargo,
 
 ### 现行做法:仓库根 `rust-toolchain.toml`(2026-10-22 起)
 
-**唯一真相 = `rust-toolchain.toml`**。rustup 自己解析这个文件,与 PATH 无关、不受 `env_remove("RUSTUP_TOOLCHAIN")` 影响,所以外层 cargo、`build.rs` 内层 cargo、`cargo clippy`、`cargo fmt` 全部落到同一个编译器。CI 也读同一个文件(`dtolnay/rust-toolchain` 不传 `toolchain` 输入即读它),本机与 CI 天然一致。
+**本机唯一真相 = `rust-toolchain.toml`**。rustup 自己解析这个文件,与 PATH 无关、不受 `env_remove("RUSTUP_TOOLCHAIN")` 影响,所以外层 cargo、`build.rs` 内层 cargo、`cargo clippy`、`cargo fmt` 全部落到同一个编译器。
+
+**CI 不读该文件**——`dtolnay/rust-toolchain` 是 composite action,内部只用 `inputs.toolchain`,从不解析仓库里的 `rust-toolchain.toml`;`toolchain` 还是 `required: true`,`with:` 留空会在首步以 `'toolchain' is a required input` 直接 fail(14ad555 删掉 `with:` 后整套 CI 即挂)。所以 `build.yml` 的 Setup Rust Toolchain **必须显式写** `toolchain` / `targets` / `components` 三项(显式工具链名安装时不会套用文件里的 targets/components)。口径:`channel` 升级 = 改 `rust-toolchain.toml` **与** `build.yml` 两处,两处必须同值,否则本机/CI 共用 `target/` 会报 E0514。
 
 ```toml
 [toolchain]
@@ -94,7 +96,7 @@ targets = ["aarch64-linux-android"]
 profile = "minimal"
 ```
 
-升级 = 只改 `channel` → 本机 `rustup show` 拉新工具链 → 跑 `cargo fmt --all --check` + `cargo check --workspace --all-targets` + `cargo clippy` → 再提交。
+升级 = 改 `channel`(本文件 **和** `build.yml` 的 `with.toolchain`,两处同值) → 本机 `rustup show` 拉新工具链 → 跑 `cargo fmt --all --check` + `cargo check --workspace --all-targets` + `cargo clippy` → 再提交。
 
 `setup_toolchain()` 现在只做**前置自检**:文件在不在、`channel` 读不读得到、工具链装没装,不满足就用人话报错并给出安装命令——而不是等到编译中途炸出一堆 E0514。
 
