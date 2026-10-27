@@ -18,5 +18,10 @@
         "versionCode": 30212,
         "title": "ChiRi 安全响应",
         "content": "当前版本存在安全问题，请及时关注更新"
+    },
+    {
+        "versionCode": 30214,
+        "title": "ChiRi 更新通知",
+        "content": "A02-15 已构建，包含部分能效优化"
     }
 ]
