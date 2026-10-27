@@ -21,8 +21,10 @@ use fas_process::ProcessIdentity;
 /// 活跃实例温度刷新周期（喂给 FAS 引擎内部限温逻辑，core_temp_threshold=0 时无效）
 const FAS_TEMP_REFRESH: Duration = Duration::from_secs(3);
 
-/// 接管期间写入 `sched_migration_cost_ns` 的节点（配置 None 时不动）
-// TODO: 实机复核接管期写入与退出恢复（退出后该节点应回到接管前的值）
+/// 接管期间写入 `sched_migration_cost_ns` 的节点（配置 None 时不动）。
+/// 2026-10-24 A02-14 实测：5 台机型该节点**都不存在**（GKI 未导出），写入侧已改为
+/// 读不到即 warn 并跳过；恢复侧同口径（write_sysfs 不吞错 + warn）。真机取证到
+/// 实际存在的等价节点后，改这里 + `module/config/normal/fas/*.yaml` 即可。
 const MIGRATION_COST_PATH: &str = "/proc/sys/kernel/sched_migration_cost_ns";
 
 /// 接管期间被 FAS 引擎 `load_policies` 无条件写成 0 的厂商 perfmgr 使能节点（与 `scheduler/fas/policy_mgmt.rs` 的写点同源）
@@ -158,13 +160,35 @@ impl FasManager {
             self.governor.release();
             return false;
         }
-        // 迁移成本：读不到原值就不写，保证退出能恢复
-        let migration_cost_restore = rules.migration_cost_ns.filter(|v| *v > 0).and_then(|want| {
-            let orig = std::fs::read_to_string(MIGRATION_COST_PATH).ok()?;
-            let orig = orig.trim().to_string();
-            crate::utils::try_write_file(MIGRATION_COST_PATH, &want.to_string()).ok()?;
-            Some(orig)
-        });
+        // 迁移成本：读不到原值就不写，保证退出能恢复。
+        // **失败必须可见**（2026-10-24）：A02-14 五台机型实测 `/proc/sys/kernel/sched_migration_cost_ns`
+        // 节点**都不存在**（GKI 未导出），原写法用 `and_then` 把「没读到 / 没写成功」一起吞成 None，
+        // 于是 `fas/*.yaml` 的 `migration_cost_ns` 配置静默失效——「FAS 期少迁移」这条链路
+        // 从来没被写过，也就永远拿不到数据来复核它。这里改成逐分支告警。
+        let migration_cost_restore = match rules.migration_cost_ns.filter(|v| *v > 0) {
+            None => None,
+            Some(want) => match std::fs::read_to_string(MIGRATION_COST_PATH) {
+                Err(e) => {
+                    log::warn!(
+                        "[FAS] 迁移成本节点不可读（{MIGRATION_COST_PATH}）：{e}；migration_cost_ns={want} 未生效"
+                    );
+                    None
+                }
+                Ok(orig) => {
+                    let orig = orig.trim().to_string();
+                    // 用不吞错的 write_sysfs 判定真实成败（try_write_file 恒返回 Ok，会把失败写成成功）
+                    match crate::utils::write_sysfs(MIGRATION_COST_PATH, &want.to_string()) {
+                        Err(e) => {
+                            log::warn!(
+                                "[FAS] 迁移成本写入失败（{MIGRATION_COST_PATH}）：{e}；migration_cost_ns={want} 未生效"
+                            );
+                            None
+                        }
+                        Ok(()) => Some(orig),
+                    }
+                }
+            },
+        };
         controller.set_game(pid, pkg);
         controller.reset_frame_feedback();
         controller.set_temperature(self.last_temp);
@@ -219,9 +243,15 @@ impl FasManager {
         // 通知与 [fas] warn 一并静默（对齐 controller.rs 的 load_only_warned = false）
         self.was_open_loop = false;
         self.fas_signal.set_frame_source(None);
-        // 迁移成本与 perfmgr 先于频率恢复，让后续 governor 快照到系统原状
+        // 迁移成本与 perfmgr 先于频率恢复，让后续 governor 快照到系统原状。
+        // 恢复口径与激活侧一致（write_sysfs 不吞错）：激活侧只会在「读到过原值且写入成功」时
+        // 才留 restore，这里的失败只能发生在节点被热拔/权限翻转这类罕见场景，warn 可见即可。
         if let Some(orig) = inst.migration_cost_restore.take() {
-            let _ = crate::utils::try_write_file(MIGRATION_COST_PATH, &orig);
+            if let Err(e) = crate::utils::write_sysfs(MIGRATION_COST_PATH, &orig) {
+                log::warn!(
+                    "[FAS] 迁移成本恢复失败（{MIGRATION_COST_PATH}）：{e}；原值 {orig} 未写回"
+                );
+            }
         }
         // perfmgr_enable 恢复：引擎接管前写成 0，按快照写回厂商原值（失败只记日志，不中断收尾）
         restore_perfmgr_enable(&inst.perfmgr_restore);

@@ -156,8 +156,22 @@ pub(crate) const RETURN_COOLDOWN: Duration = Duration::from_secs(16);
 /// 过载重钉防抖：重钉打断 cache/TLB 本地性比 promote 更明显，拉长间隔减少迁移
 /// 下界恒为现值，不得改小/绕过
 pub(crate) const REPIN_DEBOUNCE: Duration = Duration::from_secs(8);
+/// 单核钉定连续失败的退避上限：核不可用是**状态**不是**事件**，超过这个间隔重试无收益
+pub(crate) const PIN_FAIL_BACKOFF_MAX: Duration = Duration::from_secs(60);
+/// 进程级窄核域备忘的有效期：同 pid 同簇被内核拒过后，这段时间内不再为该进程的线程尝试
+///
+/// 取值是两难折中：太短则一个 boost 批次里几十上百个线程逐个各撞一次（实测单秒 431 条失败、
+/// 全为同一个 pid 的线程钉同一颗核）；太长则进程真回到前台（cgroup cpuset 放宽）后
+/// 提升迟迟不生效。15s 覆盖「同一场景的连续 boost 重试」，又能在场景稳定后自愈。
+pub(crate) const NARROW_PID_TTL: Duration = Duration::from_secs(15);
 /// 核心过载阈值：钉定核 util 超此值重钉到低占用核，分散负载压制峰值频率（前台/promoted 共用）
 pub(crate) const CORE_OVERLOAD_UTIL: f32 = 0.70;
+
+/// boost（含 fas）期重钉保守系数：debounce ×此值。锁频（min=max）下换核不省能，
+/// 重钉只剩「压排队」一个收益，付迁移代价前必须比 default 更确定——防抖拉长 3 倍。
+pub(crate) const BOOST_REPIN_SCALE: u32 = 3;
+/// boost 期过载阈值增量：0.70→0.85，核没接近饱和就换核纯属白付迁移 + 缓存失效
+pub(crate) const BOOST_OVERLOAD_EXTRA: f32 = 0.15;
 /// 已钉线程对 score 的保守负载基准：util 快照滞后时仍能把后续线程推向其他核，避免挤同核
 pub(crate) const PINNED_WEIGHT: f32 = 0.4;
 /// 单核钉定上限：钉核目的是「分散」非「圈养」，钉满继续钉只会在同核排队；达上限的线程留 boost cpuset（big∪prime）内 EAS 自调度
@@ -814,6 +828,13 @@ struct ThreadState {
     last_hold_log: Instant,
     /// 升核掩码与线程允许核交集为空（32 位任务钉无 AArch32 核等）：内核恒拒 EINVAL），置位后跳过该线程升核尝试；线程退出随表清理
     pin_incapable: bool,
+    /// 单核钉定的**连续失败次数**（0 = 正常）：驱动指数退避，成功后清零。
+    ///
+    /// 2026-10-26 真机取证：单核钉定失败后原实现既不记账也不限速，同一线程对同一颗
+    /// 当时不可用的核会按调度周期无限重打（实测单 pid 单核 1 分钟 390~417 次，
+    /// sm8550 侧 `pin fg_pin` 失败 63,856 次 = 90.5%）。失败是**核此刻不可用**的信号，
+    /// 不是重试信号，退避到下一次核域变化再试才有意义。
+    pin_fail_streak: u8,
     /// 线程是否 32 位（ELF32）：建档时读一次 /proc/<tid>/exe 判定，解析失败按 64 位（false）
     elf32: bool,
     /// 写去重：最近一次掩码写入的 (目标 tag, 时刻)；同 tag 在 repin_debounce 内不再重写
@@ -911,6 +932,13 @@ pub struct AffinityManager {
     eem_min_util_pct: f32,
     /// [eem] 各 CPU 容量（真机 cpu_capacity 优先，缺则 soc.yaml [capacity]）：进程内一次解析
     core_caps: Vec<Option<u32>>,
+    /// [narrow] 进程级窄核域备忘：pid → (被拒的簇, 到期时刻)
+    ///
+    /// 取证（2026-10-26 sm8550/PHB110）：一次 boost 里 417 个前台线程被钉向同一颗 big 核、
+    /// 整批 EINVAL（单秒 431 条），随后整批每轮重试 —— 这类拒绝的判据是**进程级**的
+    /// （cgroup cpuset 把该 pid 收窄、或目标核此刻不可用），逐线程各撞一次纯属浪费。
+    /// 记住一次，同进程其余线程直接跳过，到期自动重试。
+    narrow_pid: HashMap<i32, (CoreGroup, Instant)>,
 }
 
 impl AffinityManager {
@@ -952,6 +980,7 @@ impl AffinityManager {
             eem_hysteresis: energy_model::SWITCH_HYSTERESIS,
             eem_min_util_pct: 8.0,
             core_caps: Vec::new(),
+            narrow_pid: HashMap::new(),
         }
     }
 
@@ -1101,6 +1130,11 @@ impl AffinityManager {
         }
 
         let force = fg_pid != self.last_fg_pid || boost != self.last_boost;
+        if force {
+            // [narrow] 前台/boost 状态切换 → 核域大概率跟着放宽（ROM 的 cpuset 随前台变化），
+            // 立刻作废备忘，避免把「刚切到前台的进程」按 NARROW_PID_TTL 压住。
+            self.narrow_pid.clear();
+        }
         if cfg.pin_foreground_threads
             && (force || self.last_rebalance.elapsed() >= REBALANCE_INTERVAL)
         {
@@ -1220,6 +1254,50 @@ impl AffinityManager {
         if let Some(st) = self.threads.get_mut(&tid) {
             st.last_mask_write = Some((tag, now));
             st.normal_bind_retry.clear();
+            st.pin_fail_streak = 0;
+        }
+    }
+
+    /// 单核钉定的**失败退避闸**：连续失败 n 次后，距上次尝试不足
+    /// `REPIN_DEBOUNCE × 2^(n-1)`（封顶 `PIN_FAIL_BACKOFF_MAX`）就整条跳过（连 @A 帧都不产生）。
+    ///
+    /// 仅在失败后生效：成功后 `record_mask_write` 已把计数清零，本闸恒 false，正常路径零改变。
+    fn pin_fail_wait(&self, tid: i32, now: Instant) -> bool {
+        let Some(st) = self.threads.get(&tid) else {
+            return false;
+        };
+        if st.pin_fail_streak == 0 {
+            return false;
+        }
+        let Some((_, at)) = st.last_mask_write else {
+            return false;
+        };
+        let mul = 1u32 << (st.pin_fail_streak.min(4) - 1);
+        let wait = (REPIN_DEBOUNCE * mul).min(PIN_FAIL_BACKOFF_MAX);
+        now.saturating_duration_since(at) < wait
+    }
+
+    /// [narrow] 该 pid 在该簇是否刚被内核拒过：未到期 → 直接跳过（不发起 syscall、不落 @A 帧）
+    fn narrow_skip(&self, pid: i32, cluster: CoreGroup, now: Instant) -> bool {
+        pid > 0
+            && self
+                .narrow_pid
+                .get(&pid)
+                .is_some_and(|&(c, until)| c == cluster && now < until)
+    }
+
+    /// [narrow] 记一次**进程级**拒绝（EINVAL）：同 pid 同簇在 `NARROW_PID_TTL` 内不再尝试。
+    ///
+    /// 只对 EINVAL 记账：ESRCH（线程已退出）与 ENOENT（节点缺失）不代表核域受限，
+    /// 记进去只会白白压制正常的提升动作。
+    fn note_narrow(&mut self, pid: i32, cluster: CoreGroup, now: Instant, err: Option<i32>) {
+        if pid <= 0 || err != Some(libc::EINVAL) {
+            return;
+        }
+        self.narrow_pid.insert(pid, (cluster, now + NARROW_PID_TTL));
+        // 表按 pid 增长：超过阈值先清过期项（正常情况下一条 pid 只占一条）
+        if self.narrow_pid.len() > 512 {
+            self.narrow_pid.retain(|_, &mut (_, until)| until > now);
         }
     }
 
@@ -1364,6 +1442,20 @@ impl AffinityManager {
         if self.mask_write_skip(tid, core as u64, now) {
             return;
         }
+        // 上两次同核尝试失败过（核此刻多半不可用）→ 按指数退避跳过，不产生 @A 帧：
+        // 失败不是重试信号。恢复靠下一次核域变化后的重新尝试（退避封顶 60s）。
+        if self.pin_fail_wait(tid, now) {
+            return;
+        }
+        // [narrow] 该进程在这个簇上刚被内核拒过（cpuset 收窄 / 核此刻不可用）：
+        // 同 pid 其余线程整批跳过。一个 boost 批次里同 pid 常有几十到几百个线程，
+        // 逐个各撞一次没有信息增量，只有 syscall 与日志体积（实测单秒 431 条全灭）。
+        let core_group = cpu_group_of(core, &crate::common::chiri_core_ranges());
+        if let Some(cl) = core_group
+            && self.narrow_skip(pid, cl, now)
+        {
+            return;
+        }
         let res = set_tid_affinity(tid, &[core]);
         if crate::logger::diag_active() {
             let comm = self.thread_comm(tid);
@@ -1380,6 +1472,17 @@ impl AffinityManager {
             );
         }
         if res.is_err() {
+            // 失败记账（**必须**做，否则退避闸永远读不到失败）：计数 +1 并把本次尝试
+            // 记进 last_mask_write，使 mask_write_skip 的 recent 分支与 pin_fail_wait 的
+            // 指数退避都基于「最近一次真实尝试」而不是「最近一次成功」。
+            let errno = res.as_ref().err().and_then(|e| e.raw_os_error());
+            if let Some(st) = self.threads.get_mut(&tid) {
+                st.pin_fail_streak = st.pin_fail_streak.saturating_add(1);
+                st.last_mask_write = Some((core as u64, now));
+            }
+            if let Some(cl) = core_group {
+                self.note_narrow(pid, cl, now, errno);
+            }
             return;
         }
         // 写成功记账（同核最短重写间隔）
@@ -1714,6 +1817,7 @@ impl AffinityManager {
                                 prev_home_at: now,
                                 last_hold_log: now - HOLD_LOG_COOLDOWN,
                                 pin_incapable: false,
+                                pin_fail_streak: 0,
                                 elf32,
                                 last_mask_write: None,
                                 starttime: None,
@@ -1807,13 +1911,22 @@ impl AffinityManager {
                                         {
                                             self.pin_core(tid, core, home, fg_pid, &pkg, "fg_pin");
                                         }
-                                    } else if now.duration_since(st.last_move) >= repin_debounce
-                                        && self
-                                            .core_utils
-                                            .get(home as usize)
-                                            .copied()
-                                            .unwrap_or(0.0)
-                                            > self.tuning.core_overload_util
+                                    // [partition] boost 期过载重钉（保守版，2026-10-24 A02-14 修订）：
+                                    // FAS 锁频下换核不省能，但**过载分散**换核能压排队（吞吐/时延），是 boost 期
+                                    // 唯一不破坏 cpuset 分区的动态分散手段（线程仍在 top-app=big∪prime 组内）。
+                                    // 「更少更稳」= debounce ×3 + 阈值 0.70+0.15=0.85，双滞回（margin + 反跳回冷却）照旧。
+                                    // 本块位于 `if pin_fg`（= fg_ok && boost && screen_on）内，default 期从不进入；
+                                    // 完全禁掉的版本（同日早前）会造成钉定线程在饱和核上排队无人解。
+                                    } else if self.threads.get(&tid).is_some_and(|st| {
+                                        now.duration_since(st.last_move)
+                                            >= repin_debounce * BOOST_REPIN_SCALE
+                                    }) && self
+                                        .core_utils
+                                        .get(home as usize)
+                                        .copied()
+                                        .unwrap_or(0.0)
+                                        > (self.tuning.core_overload_util + BOOST_OVERLOAD_EXTRA)
+                                            .min(0.98)
                                     {
                                         // home 核过载：重钉到全性能池（big∪prime）最低分核分散负载——旧口径只看 big，大核普遍过载时空闲 prime 永远进不了候选；
                                         // 双滞回：分数差 ≥ OVERLOAD_MARGIN 且目标严格更低 + 反跳回冷却禁回
@@ -1978,6 +2091,10 @@ impl AffinityManager {
                         if let Some(st) = self.threads.get_mut(&tid) {
                             st.util_pct = util;
                             st.last_cpu = s.processor;
+                            // [partition] boost 期后台深扫被跳过、无人刷 last_seen；本块 boost 期照跑，
+                            // 必须在这里续命，否则 30s 后全量条目命中 stale 清理（批量 demote 迁移，
+                            // 恰在降迁移的会话中段制造迁移瀑布）。
+                            st.last_seen = now;
                         }
                         // tid 来自上方收集且循环内无删除，正常不可达；防御性跳过不中止整轮
                         let low = match self.threads.get_mut(&tid) {
@@ -1999,10 +2116,17 @@ impl AffinityManager {
                                 Some(st) => (st.home, st.last_move),
                                 None => continue,
                             };
+                            // [partition] boost（含 fas）期重钉走保守参数：debounce ×3、阈值 0.70+0.15=0.85
+                            // （锁频下换核不省能，过载分散压排队是唯一收益，门槛必须更确定才付迁移代价）；
+                            // 同组内换核不破坏 cpuset 分区（promoted 线程已在 top-app=big∪prime），双滞回照旧。
+                            // 2026-10-24 修订：早前版本对 boost 期一刀切禁掉，会造成 promoted 线程在饱和核排队无人解。
                             if home >= 0
-                                && now.duration_since(last_move) >= repin_debounce
+                                && now.duration_since(last_move)
+                                    >= repin_debounce * (if boost { BOOST_REPIN_SCALE } else { 1 })
                                 && self.core_utils.get(home as usize).copied().unwrap_or(0.0)
-                                    > self.tuning.core_overload_util
+                                    > (self.tuning.core_overload_util
+                                        + if boost { BOOST_OVERLOAD_EXTRA } else { 0.0 })
+                                    .min(0.98)
                             {
                                 // 与前台同口径：全性能池最低分核 + 双滞回 + 反跳回冷却
                                 if let Some(core) = self.pick_core(&perf_pool) {
@@ -2051,7 +2175,16 @@ impl AffinityManager {
             }
 
             // 候选刷新（低频）+ 分片深扫
-            if t % BG_LIST_EVERY_ROUNDS == 0 || self.bg_cursor == 0 {
+            // [partition] boost（含 fas）期不跑后台动态 promote：boost 的 cpuset 分区已经把
+            // 后台固定在 little、top-app/foreground 收窄在 big∪prime，此时再逐线程把后台
+            // 线程 promote 到 big，等于每轮把分区重画一遍——每个 promote/demote 都是一次
+            // group move + 掩码写（= 一次立即迁移），而 FAS 期间频率由 PID 锁档、这些迁移
+            // 换不来能效（真机 A02-14：fas 段 9703~10007 次/s，是 default 段的 2~4 倍）。
+            // 改为「boost 期由 cpuset 静态分区承担后台摆放，退出 boost 后恢复动态再平衡」。
+            // 2026-10-24 修订边界：boost 期禁的只有 **move_group 型 promote**（会破坏分区不变式）；
+            // 同组内换核的过载重钉（home_overload / bg_overload）放开成保守参数版——见上方各分支。
+            // 注意只跳过**候选扫描**，不得 return：尾部失联清理仍要跑。
+            if (t % BG_LIST_EVERY_ROUNDS == 0 || self.bg_cursor == 0) && !boost {
                 let mut bg: Vec<(i32, &'static str)> = Vec::new();
                 for group in BACKGROUND_GROUPS {
                     let exist = match group {
@@ -2152,6 +2285,7 @@ impl AffinityManager {
                                         prev_home_at: now,
                                         last_hold_log: now - HOLD_LOG_COOLDOWN,
                                         pin_incapable: false,
+                                        pin_fail_streak: 0,
                                         elf32,
                                         last_mask_write: None,
                                         starttime: s.starttime,
@@ -2345,8 +2479,12 @@ impl AffinityManager {
         }
         // 三簇当前频率：整轮只读一次（每线程各读一次是纯浪费）
         let cur_freqs = energy_cost::read_cluster_freqs();
-        // 本轮已提交的迁移条数上限：成本项只在跨轮才反映真实负载，
+        // [ledger] 新一轮决策：清空「本轮已承诺」账。不清会让承诺跨轮累进、谁也迁不动。
+        self.eem.begin_round();
+        // 本轮已提交的迁移条数上限（保底闸门）：成本项只在跨轮才反映真实负载，
         // 同轮内几十条线程会一起判「同一个簇最便宜」而齐涌，必须按轮封顶。
+        // 真正的修法在 placement 侧：见 `placement::Ledger`——每个决策把「我占掉了多少」
+        // 记到核上，后续决策按含承诺的有效负载选核，齐涌自然摊平（截断只是兜底）。
         let mut budget = EEM_MAX_MOVES_PER_ROUND;
         let mut actions: Vec<placement::Action> = Vec::new();
         for (tid, util_pct) in cands {
@@ -2477,9 +2615,26 @@ impl AffinityManager {
                 {
                     st.moved_group = true;
                 } else if mv.is_err() {
-                    // 升组失败：本线程本轮放弃（掩码一定被裁剪，写它没有意义）
+                    // 升组失败：本线程本轮放弃（掩码一定被裁剪，写它没有意义）。
+                    // 必须同时回滚引擎记账：本轮的 `tick` 已经把 window/cluster 改成目标，
+                    // 不退回就会与内核实际掩码分叉，下一轮还按假窗口重新规划。
+                    self.eem.abort(a.tid, now);
                     continue;
                 }
+            }
+            // [narrow] 目标簇刚被这个进程拒过 → 本轮整条跳过（不发起 syscall、不落 @A 帧），
+            // 但**必须回滚引擎记账**：`tick` 已把 window/cluster 改成目标，不回滚下一轮
+            // 就会按假窗口重新规划（正是「每轮再失败一次」的来源）。
+            let dst_core = match a.dir {
+                energy_model::Dir::Up => a.mask.last().copied(),
+                _ => a.mask.first().copied(),
+            };
+            let dst_group = dst_core.and_then(|c| crate::common::core_group_of(c as u32));
+            if let Some(g) = dst_group
+                && self.narrow_skip(pid, g, now)
+            {
+                self.eem.abort(a.tid, now);
+                continue;
             }
             let res = set_tid_affinity(a.tid, &a.mask);
             // 写后读回：cgroup cpuset 会**静默裁剪**越界核（写返回 0 但掩码没生效）。
@@ -2518,27 +2673,62 @@ impl AffinityManager {
                         a.mask.last().copied().unwrap_or(0)
                     ),
                     &format!(
-                        "gain={:.3},settled={},reason={},clipped={}",
-                        a.gain, a.settled, a.reason, clipped
+                        "gain={:.3},settled={},reason={},clipped={},eff={}",
+                        a.gain,
+                        a.settled,
+                        a.reason,
+                        clipped,
+                        // [eem-ack] 回读到的**实际**掩码（read_fail = 读回失败，多为线程已退出）。
+                        // 与意图掩码 dst= 对照，即可在不加新 syscall 的前提下看出
+                        // 「cpuset 裁剪 / 暂停核」到底吃掉了哪些核 —— 下一轮日志用它对账。
+                        effective
+                            .as_ref()
+                            .map(|v| match (v.first(), v.last()) {
+                                (Some(lo), Some(hi)) => format!("{lo}-{hi}"),
+                                _ => "none".to_string(),
+                            })
+                            .unwrap_or_else(|| "read_fail".to_string())
                     ),
                     &io_result_tag(&res),
                     a.dir.as_str(),
                 );
             }
-            // 记账：真正生效（写成功且未被 cpuset 裁剪）才更新窗口/簇
-            // 记账只在**收敛步**做：过渡步写的是「旧∪新」并集，不是目标区间，
-            // 拿它当窗口镜像会让下一轮的 direction/宽度判断都基于一个过宽的假窗口。
-            if res.is_ok()
-                && !clipped
-                && a.settled
-                && let Some(st) = self.threads.get_mut(&a.tid)
-            {
-                st.eem_window = Some(placement::Window::new(
-                    a.mask.first().copied().unwrap_or(0),
-                    a.mask.last().copied().unwrap_or(0),
-                ));
-                st.eem_cluster =
-                    crate::common::core_group_of(a.mask.first().copied().unwrap_or(0) as u32);
+            // [eem-ack] 写结果的两种归属（详见 `placement::Engine` 的 note_applied / abort）：
+            // * **成功** → 以**回读掩码**为回滚锚点。意图掩码会被 cgroup cpuset 与暂停核
+            //   静默摘核（写返回 0 不等于全生效），拿意图记账等于记了个假窗口。
+            // * **失败** → 回滚到上一锚点并累加失败计数，退避在 `Engine::tick` 的冷却里生效。
+            //   「先扩后缩」的前提是每拍都落地；失败不回滚会让引擎记「已在新核」而内核里
+            //   线程还在老掩码上，下一轮按假窗口重新规划 → 每轮再失败一次（sm8550 实测
+            //   14 批 `place` 失败 62,531 次、其中 35 个线程陷入连续重复）。
+            // 仍只在**收敛步**更新 `eem_window`：过渡步写的是「旧∪新」并集，拿它当窗口镜像
+            // 会让下一轮的 direction/宽度判断基于过宽的假窗口。
+            match effective.as_ref().filter(|v| !v.is_empty()) {
+                Some(eff) => {
+                    let cl = eff
+                        .first()
+                        .copied()
+                        .and_then(|c| crate::common::core_group_of(c as u32));
+                    if let Some(cl) = cl {
+                        self.eem.note_applied(a.tid, cl, eff, now);
+                    }
+                    if a.settled
+                        && let Some(st) = self.threads.get_mut(&a.tid)
+                    {
+                        st.eem_window = Some(placement::Window::new(
+                            eff.first().copied().unwrap_or(0),
+                            eff.last().copied().unwrap_or(0),
+                        ));
+                        st.eem_cluster = cl;
+                    }
+                }
+                None => {
+                    // 失败：先记进程级窄域（仅 EINVAL 生效），再回滚引擎
+                    if let Some(g) = dst_group {
+                        let errno = res.as_ref().err().and_then(|e| e.raw_os_error());
+                        self.note_narrow(pid, g, now, errno);
+                    }
+                    self.eem.abort(a.tid, now);
+                }
             }
         }
     }

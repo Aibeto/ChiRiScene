@@ -62,8 +62,36 @@ pub mod common {
         pub per_cluster: Option<FrontierPerCluster>,
     }
 
+    /// 虚构一台 6×big + 2×prime 的 SoC（与 `chiri_core_ranges` 同形状）：
+    /// 原先恒 `None` 让 `curve()` 全 None，只能测不依赖曲线的纯函数；给了这张表之后
+    /// `build()`/`decide()`/`Engine::tick()` 都能离线跑，用于 [replay] 段的重放回归。
+    /// 数值取自 sm8750 量级（Oryon-M 762 / Oryon-L 1024），不求物理真值、只求形状可比。
     pub fn soc_frontier_policy() -> Option<&'static FrontierPolicy> {
-        None
+        static P: std::sync::OnceLock<Option<FrontierPolicy>> = std::sync::OnceLock::new();
+        P.get_or_init(|| {
+            let big = FrontierClusterBase {
+                capacity: Some(762),
+                freq_khz: vec![300_000, 600_000, 900_000, 1_200_000, 1_500_000, 1_800_000, 2_100_000],
+                power_w: Vec::new(),
+                single_core_power_w: vec![0.05, 0.09, 0.15, 0.24, 0.36, 0.52, 0.72],
+            };
+            let prime = FrontierClusterBase {
+                capacity: Some(1024),
+                freq_khz: vec![
+                    400_000, 800_000, 1_200_000, 1_600_000, 2_000_000, 2_400_000, 2_800_000, 3_200_000,
+                ],
+                power_w: Vec::new(),
+                single_core_power_w: vec![0.08, 0.15, 0.26, 0.42, 0.62, 0.88, 1.20, 1.60],
+            };
+            Some(FrontierPolicy {
+                per_cluster: Some(FrontierPerCluster {
+                    little: FrontierClusterBase::default(),
+                    big,
+                    prime,
+                }),
+            })
+        })
+        .as_ref()
     }
 }
 
@@ -274,3 +302,161 @@ fn glob_vector_keeps_nonzero_base() {
     assert!(v > 0.0, "静态项被扣掉了：{v}");
     assert!((v - 0.00728).abs() < 1e-4, "静态项比例应约 0.0073，实得 {v}");
 }
+
+// [replay]
+// 离线重放（不触 sysfs、不依赖真机）：把「一轮决策 → 落盘 → 失败」编排成最小闭环，
+// 回归 2026-10-26 真机取证暴露的三条失效。背景数字（sm8550/PHB110 14 批 + sm8750 22 批）：
+//   * `place` 写失败 62,531 次（80%）、其中 54% 的 ok 写又被 cpuset/暂停核摘核 → 真正生效仅 ≈9.5%；
+//   * 写失败后原实现既不记账也不限速 → 同一线程对同一颗不可用核按调度周期无限重打；
+//   * 两拍协议假定每拍都落地，失败时不回滚 → 引擎记账 / 内核掩码 / `eem_window` 三方分叉。
+
+use crate::common::CoreGroup;
+use std::time::{Duration, Instant};
+
+/// 0..5 = big（核 5 最闲）、6..7 = prime（都忙）：复现「一轮里多个线程盯上同一颗最闲核」
+fn herding_load() -> Vec<f32> {
+    vec![0.90, 0.90, 0.90, 0.90, 0.90, 0.02, 0.90, 0.90]
+}
+
+fn replay_online() -> Vec<(CoreGroup, usize)> {
+    vec![(CoreGroup::Big, 6), (CoreGroup::Prime, 2)]
+}
+
+fn replay_subject(window: usize, demand: f32) -> placement::Subject {
+    placement::Subject {
+        demand,
+        cluster: CoreGroup::Big,
+        window: Window::new(window, window),
+        past_sweet: true,
+    }
+}
+
+/// 一轮重放的**核心不变量**：落到同一颗核的所有线程，其需求总和加上该核原有负载不得越 1。
+///
+/// 这正是 `Ledger` 相对「整轮共用一份裸 load 快照」的差别：齐涌不会因为多个线程同时判定
+/// 同一颗最闲核而超载 —— 后续线程看到的是**含本轮承诺**的有效负载（改去刚被腾空的源核，
+/// 或被「到达后不超载」闸拒掉）。同时校验先扩后缩：旧核必须留在并集里。
+#[test]
+fn replay_round_keeps_arrivals_within_capacity() {
+    use std::collections::BTreeMap;
+    let load = herding_load();
+    let online = replay_online();
+    let hyst = 0.15f32;
+    let t0 = Instant::now();
+    let t1 = t0 + Duration::from_secs(5);
+    let demand = 0.4f32;
+    let n = 6usize;
+    let mut eng = placement::Engine::new();
+    for w in 0..n {
+        eng.ensure(w as i32, CoreGroup::Big, Window::new(w, w), t0);
+    }
+    eng.begin_round();
+    let mut arrivals: BTreeMap<usize, f32> = BTreeMap::new();
+    let mut departures: BTreeMap<usize, f32> = BTreeMap::new();
+    let mut moved = 0usize;
+    for w in 0..n {
+        if let Some(a) = eng.tick(w as i32, &replay_subject(w, demand), &load, &online, hyst, t1) {
+            assert!(!a.mask.is_empty(), "掩码绝不空（先扩后缩第一拍是并集）");
+            // 并集的两端不总代表目标：向上迁目标在高位、向下迁目标在低位，
+            // 判方向只能看 `dir`（Hold = 收敛拍，目标就在掩码内）。
+            let dst = match a.dir {
+                Dir::Up => *a.mask.last().expect("掩码非空"),
+                _ => *a.mask.first().expect("掩码非空"),
+            };
+            let (lo, hi) = (a.mask[0], a.mask[a.mask.len() - 1]);
+            assert!(
+                (lo..=hi).contains(&w),
+                "旧核 {w} 必须留在并集 {lo}-{hi} 里（目标 {dst}，dir={:?}）",
+                a.dir
+            );
+            assert!(!a.settled, "第一拍是过渡态，收敛在下一拍");
+            *arrivals.entry(dst).or_default() += demand;
+            if dst != w {
+                // 源核同时卸载：账本让源核变轻正是靠这一半，只算迁入会得出假超载
+                *departures.entry(w).or_default() += demand;
+            }
+            moved += 1;
+        }
+    }
+    assert!(moved >= 2, "重放没覆盖到决策路径（moved={moved}）");
+    // 守恒口径：一轮结束时每颗核的状态 = 原有负载 − 本轮迁出 + 本轮迁入，不得越 1。
+    for core in 0..load.len() {
+        let landed = load[core] - departures.get(&core).copied().unwrap_or(0.0)
+            + arrivals.get(&core).copied().unwrap_or(0.0);
+        assert!(
+            landed <= 1.0 + 1e-6,
+            "核 {core} 一轮后超载：原有 {} − 迁出 {} + 迁入 {} = {landed}",
+            load[core],
+            departures.get(&core).copied().unwrap_or(0.0),
+            arrivals.get(&core).copied().unwrap_or(0.0)
+        );
+    }
+}
+
+/// 写失败 → 回滚到锚点 + 指数退避：失败是**核此刻不可用**的状态，不是重试信号。
+/// 原实现下这条线程会按 MIN_DWELL(2s) 每轮重打（真机实测 1 分钟 390~417 次）。
+#[test]
+fn replay_abort_restores_anchor_and_backs_off() {
+    let load = herding_load();
+    let online = replay_online();
+    let hyst = 0.15f32;
+    let t0 = Instant::now();
+    let t1 = t0 + Duration::from_secs(5);
+    let mut eng = placement::Engine::new();
+    eng.ensure(0, CoreGroup::Big, Window::new(2, 2), t0);
+    eng.begin_round();
+    let a = eng
+        .tick(0, &replay_subject(2, 0.4), &load, &online, hyst, t1)
+        .expect("首轮应判定迁移");
+    assert_eq!(a.mask, vec![2, 3, 4, 5]);
+    // 内核拒了这一拍（目标核当时不可用）
+    assert_eq!(eng.abort(0, t1), Some(1), "失败计数必须 +1");
+    let e = eng.entry(0).expect("条目存在");
+    assert_eq!(
+        e.window,
+        Window::new(2, 2),
+        "失败后必须退回最后**确认生效**的区间，否则引擎记的是假窗口"
+    );
+    assert_eq!(e.state.phase, RangePhase::Steady, "回滚后回到稳态，不再滞留过渡态");
+    eng.begin_round();
+    assert!(
+        eng.tick(
+            0,
+            &replay_subject(2, 0.4),
+            &load,
+            &online,
+            hyst,
+            t1 + Duration::from_secs(1)
+        )
+        .is_none(),
+        "退避期内（FAIL_BACKOFF_BASE=4s）不得重打"
+    );
+    eng.begin_round();
+    assert!(
+        eng.tick(
+            0,
+            &replay_subject(2, 0.4),
+            &load,
+            &online,
+            hyst,
+            t1 + Duration::from_secs(5)
+        )
+        .is_some(),
+        "退避期满应重新参与竞争（核恢复后至多等一个退避周期）"
+    );
+}
+
+/// 回执必须记**回读掩码**：写返回 0 但内核摘了核（cpuset 裁剪 / 核被暂停）时，
+/// 按意图记账等于把「没生效」记成「已迁移」。
+#[test]
+fn replay_note_applied_records_readback_not_intent() {
+    let t0 = Instant::now();
+    let mut eng = placement::Engine::new();
+    eng.ensure(7, CoreGroup::Big, Window::new(0, 0), t0);
+    // 意图写 {0,1}，回读只剩 {1}
+    eng.note_applied(7, CoreGroup::Big, &[1], t0);
+    let e = eng.entry(7).expect("条目存在");
+    assert_eq!(e.applied, Window::new(1, 1), "锚点必须取回读掩码");
+    assert_eq!(e.fail_streak, 0, "成功写回执要清零失败计数");
+}
+

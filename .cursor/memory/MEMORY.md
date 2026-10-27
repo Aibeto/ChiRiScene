@@ -188,3 +188,18 @@
   插件超时 15000 ms）；**huggingface.co 本机不可达，须 `HF_ENDPOINT=https://hf-mirror.com`**；模型本地副本在 `devimpbin/_hf-cache/`（560MB）；
   一键脚本 `devimpbin/fix-memsearch-onnx.sh`，**必须在真实终端跑**（DSH 工具沙箱 /home 为 ro，`mkdir ~/.memsearch` 报只读文件系统），跑完重启 DSH。
   已排除：ollama（无二进制）、local（需 torch）、hapi-cn（无 embedding 模型 / 404）、MiniLM 系（512 截断与位置嵌入不匹配，onnxruntime broadcast 报错）。
+
+## 亲和写失败契约（2026-10-26 定，改任何 pin/place 写路径都必须守住）
+
+- **失败是一等状态，不是重试信号**：掩码写被内核拒（EINVAL）后必须①记账、②指数退避、③回滚引擎状态。
+  三处实现：`pin_fail_wait()`（`REPIN_DEBOUNCE`=8s × 2^(n-1)，封顶 `PIN_FAIL_BACKOFF_MAX`=60s）、
+  进程级 `narrow_pid` 备忘（同 pid 同簇 15s，只对 EINVAL 记账，前台/boost 变化清表）、
+  `placement::Engine::abort()`（退回 `applied` 锚点，失败退避 4s × 2^(n-1) 封顶 30s）。
+- **记账取回读掩码，不取写入意图**（`Engine::note_applied`）：cgroup cpuset 与不可用核会让内核静默摘核，
+  「写返回 0」不等于全生效。`@A act=place` 的 `value` 已追加 `eff=<lo>-<hi>` 供对账。
+- **取证基线**：sm8550/PHB110 14 批 A02-14 —— `place` 写失败 **80%**、ok 里 54% 又被裁剪 → 真正生效 ≈9.5%；
+  `pin fg_pin` 失败 **90.5%**；失败呈爆发（单秒 431 条，全为同 pid 的 417 个线程钉同一颗核）；
+  sm8750 同一份代码几乎零失败。完整报告 `.cursor/docs/2026-10-26-亲和写失败取证与窄域修复.md`。
+- **本机验证口径更正**：`YUMI_SKIP_EBPF=1 cargo check -p chiri` **可用**（≈36s，exit 0），
+  比 `agentsdocs/01-overview.md` 里「本机只能做 fmt / sh -n / rustc --test 三件套」更宽 —— 涉及 Rust 语义的改动应先跑它。
+

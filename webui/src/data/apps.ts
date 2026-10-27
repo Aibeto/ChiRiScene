@@ -2,6 +2,7 @@
 // 标签只陈述「已配置」：特调 = special_tuned.yaml 精确条目（正则条目 UI 不可见），FAS = fas_whitelist.yaml（是否生效取决于白名单能否解析），模式 = rules.yaml 现存 app_modes 的只读展示
 import { getPackagesInfo, hasKsu, listPackages } from '@/kernel/ksu'
 import { isLive, run } from '@/kernel/shell'
+import { splitRuleKey } from '@/data/rules'
 import type { SpecialTunedEntry } from './whitelists'
 
 // [types]
@@ -56,6 +57,12 @@ export async function fetchInstalledPackages(): Promise<InstalledApp[]> {
 }
 
 // [build]
+/**
+ * 合成应用标签。app_modes 的键有两种形态（与 daemon 精确查表同口径，见 rules.ts::splitRuleKey）：
+ * 包名级 `pkg` 与 activity 级 `pkg/.Activity`。包名级优先；没有包名级键、但有 activity 级键的包
+ * （如 `com.tencent.mm/.plugin.voip.ui.VideoActivity`）也算「已配置」，取其 activity 级模式值展示——
+ * 否则这类应用在应用列表永远拿不到模式标签，只能去规则页翻。
+ */
 export function buildAppEntries(apps: InstalledApp[], ctx: AppTagContext): AppEntry[] {
   return apps.map(app => {
     const entry: AppEntry = { ...app }
@@ -64,6 +71,7 @@ export function buildAppEntries(apps: InstalledApp[], ctx: AppTagContext): AppEn
     const fas = ctx.fasWhitelist.get(app.pkg)
     if (fas) entry.fasConfig = fas
     const mode = ctx.appModes[app.pkg]
+      ?? Object.entries(ctx.appModes).find(([key]) => splitRuleKey(key).pkg === app.pkg)?.[1]
     if (mode) entry.appMode = mode
     return entry
   })

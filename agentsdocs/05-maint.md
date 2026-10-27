@@ -30,7 +30,9 @@
 
 ## [analysis] 日志分析链路与判读口径（2026-09-26 沉淀）
 
-**分析入口唯一**：`/devimp-log-analysis` 命令（正文唯一副本 `.cursor/commands/devimp-log-analysis.md`，2026-09-23 由 skill 迁移而来，**勿再建 skill 副本**）；脚本套件 `scripts/devimp/`（dvrun/dvextract/dvlz4/dvmain/dvaff/dvstatus/dvpower/dvcommon + `scripts/devimp-run.cmd`，dvrun 阶段 = extract/analyze/main/aff/status/**power**）。**改 scripts/devimp/ 任何脚本必须同步命令文件「预设脚本」节**（双向同步义务）。dvlz4.py 以「帧头内容大小 = 解出长度」作编码器一致性闸门（lz4_flex 新产物帧头不带 content size 时跳过该闸门，兜底靠 dvextract 的 tar magic 校验）。
+**分析入口唯一**：`/devimp-log-analysis` 命令（正文唯一副本 `.cursor/commands/devimp-log-analysis.md`，2026-09-23 由 skill 迁移而来，**勿再建 skill 副本**）；脚本套件 `scripts/devimp/`（dvrun/dvextract/dvlz4/dvmain/dvaff/dvstatus/dvpower/**dvenergy**/**dvactivity**/dvselfcost/dvcommon + `scripts/devimp-run.cmd`，dvrun 阶段 = extract/analyze/main/aff/status/power/energy；`dvactivity` 不在 dvrun 链内，需单独跑）。**改 scripts/devimp/ 任何脚本必须同步命令文件「预设脚本」节**（双向同步义务）。dvlz4.py 以「帧头内容大小 = 解出长度」作编码器一致性闸门（lz4_flex 新产物帧头不带 content size 时跳过该闸门，兜底靠 dvextract 的 tar magic 校验）。
+
+**app/activity 级规则取证口径（`scripts/devimp/dvactivity.py`，2026-10-24 固化）**：`app_modes` / `activity_params` 的键只能来自真机取样，判据 = over_cores（组内过升频阈值的核数，性能不足）/ under_cores（低于降频阈值的核数，性能充裕）/ max_util / f-max（big 组选频÷硬件上限，贴顶程度），样本 < `--min-n`（默认 30）不入规则候选。**放电方向必须取同批次 `status.csv` 的 `charge` 列**——main 日志 `batt_i` 是整数化读数且各机型符号约定相反（PHB110 A02-14 实测 `batt_i<0` 一侧 batt_v≈4.0~4.2 且 P≈17 W，实为充电），用电流符号定方向会把能量占比算反。规则键取 **activity 列原值**（`activity_key` 归一后形态不统一：有的是 `pkg/.Act`，有的保留 `pkg/pkg.Act` 全限定）。
 
 **按包功耗归因口径（`scripts/devimp/dvpower.py`）**：功耗权威源是 `status.csv` 的 `charge` + `batt_power_w`；放电方向不用电流符号。`sum(W)/3600` 明确标记为样本等效 Wh，只有等间隔 1s 采样才等同覆盖能量。短区间积分使用有效 dt，不跨 type/charge/mode/package/screen 边界，不外推长缺口和末行；coverage、gaps、max gap 与未知归属区间同时报告。热档行数是样本数，不能等同完整墙钟秒数。devimp 的 `batt_i` 整数化会使排除零电流的统计高估轻载功耗，`batt_p/P_avg` 仅作交叉验证。跨重启 cap 序列不能连读。`dvstatus/dvpower/dvenergy` 支持文件、批次目录和 root；root 默认含全部批次，`--since` 按父目录归档戳筛，无戳报错。
 

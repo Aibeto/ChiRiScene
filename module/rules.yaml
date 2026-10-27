@@ -45,6 +45,18 @@ app_modes:
   tv.danmaku.bili/.MainActivityV2: default
   tv.danmaku.bili/com.bilibili.search2.main.BiliMainSearchActivity: default
 
+  # --- 包名级 reduce：整包只有长稳态一种形态，全包充裕 ---
+  # 阅读器
+  com.dragon.read: reduce
+  # 阅读/书架
+  com.example.pilinara: reduce
+
+  # --- Activity 级 reduce：同包内只有这些页面充裕，其余保留包名默认 ---
+  # 微信 VoIP 视频通话页
+  com.tencent.mm/.plugin.voip.ui.VideoActivity: reduce
+  # 酷安通用容器页（各类二级页共用）
+  com.coolapk.market/.view.base.SimpleActivity: reduce
+
 # [activity-params]
 # Activity 级**参数**覆盖（2026-10-23 首版；机制见 src/monitor/config.rs 的 ActivityParamOverride）。
 # 与上面的 app_modes **正交**：app_modes 决定「用哪套参数」（模式名），本段决定「在这套参数上再改哪几个字段」。
@@ -86,6 +98,58 @@ activity_params:
   # --- com.baiyang.eet（省钱主目标，见 special_tuned.yaml 的 sweet 组） ---
   # 该包整包走 sweet 特调模式（甜点硬封顶），参数已在 tuned_profiles.yaml 的 sweet 段；
   # 这里**不写**本包，避免两套覆盖叠加时口径难审计（特调接管期间 CLG 不活跃，本段对它无效）。
+
+  # 阅读器主界面
+  # 翻页是典型「短尖峰 + 长空闲」，平滑收到 0.35（比通用 0.5 更狠）、余量收到 0.95。
+  com.dragon.read/.reader.ui.ReaderActivity:
+    util_smoothing: 0.35
+    headroom: 0.95
+    hysteresis: 0.06
+  # 阅读器书籍列表/主页
+  com.dragon.read/.pages.main.MainFragmentActivity:
+    util_smoothing: 0.45
+    headroom: 1.0
+  # 同上（书架类）
+  com.example.pilinara/.MainActivity:
+    util_smoothing: 0.4
+    headroom: 0.95
+  # 微信聊天主页（多机型形态不一致，故只调参不改模式）
+  com.tencent.mm/.ui.chatting.variants.ChattingMainUI:
+    util_smoothing: 0.45
+    headroom: 0.95
+  # 微信主界面
+  com.tencent.mm/.ui.LauncherUI:
+    util_smoothing: 0.5
+    headroom: 0.95
+  # Telegram 三开客户端主界面
+  fork.risin42.nagramx/org.telegram.ui.LaunchActivity:
+    util_smoothing: 0.5
+    headroom: 0.95
+  # 网易云播放页：只滤尖峰
+  com.netease.cloudmusic/.activity.PlayerActivity:
+    util_smoothing: 0.5
+  # 剪映类编辑主页：导出尖峰多
+  com.trim.app/.MainActivity:
+    util_smoothing: 0.45
+    headroom: 0.95
+
+# [rollback] 改动回退三项（2026-10-24 第二批；缺一即视为未定义回退，不得排期）
+# 本文件是**编译期嵌入**的只读副本（common::embedded_rules_str），改动要改 `module/rules.yaml` 源码本体、
+# 重新构建才生效；WebUI 与磁盘副本改动均不影响调度行为。
+# ① 可观测触发条件（写死指标，不写「变卡了」）：
+#     · 流畅度：命中规则的 activity 所在批次，`dvmain.py` 的 `[7] 播放态帧间隔直方图` 长尾率
+#       （>50 ms 帧占比）较改动前上移；FAS 段看 `status.csv` 的 `fps` 列 1% Low 下滑。
+#     · 响应：首帧/启动时长（QQ/微信冷启动）在日志 `reason` 列出现持续 `up_wait` 堆叠。
+#     · 功耗反向：命中包在 `dvpower.py` 的 `[2] 按 package 汇总` 里 avg W 不降反升，
+#       或该 activity 的样本等效 Wh 占比上升。
+# ② 可逆动作（字段级）：
+#     · 撤单条 activity：`app_modes` 里删该键（自动回退包名级）、`activity_params` 里删该键（回退模式缺省参数）。
+#     · 只撤收紧：把 `util_smoothing` 调回 0.5、`headroom` 调回 1.0（两个旋钮独立可逆）；
+#       `hysteresis: 0.06` 删该行即回缺省（它是 ReaderActivity 一条额外抬的，非通用值）。
+#     · 整批撤：删除本文件里所有「2026-10-24 第二批」段落，即回到第一批（2026-10-22/23）状态。
+# ③ 回退后留档位置：
+#     · 证据与规则清单：`devimpbin/a0214/REPORT-A02-14.md`（含每台机型原始读数与脚本命令）。
+#     · 待裁决/已否决条目：`agentsdocs/07-todos.md`（TODO 唯一权威）。
 
 # [ignored-apps]
 ignored_apps:

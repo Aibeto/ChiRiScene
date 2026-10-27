@@ -115,6 +115,7 @@ python scripts\devimp-analyze.py <解压目录> [--since MMDD-HHMMSS] [--min-n 3
 | `dvaff.py`     | `aff_*.log`：`@A` 动作与 bulk、`@S` 差分帧累积（按 `full=1` 收敛存活集合、tid 复用作废）、绑定轨迹、`t` 行核分布与存活集合合并态（`--groups` 按机型分簇） | `python scripts\devimp\dvaff.py <解压目录> [--since MMDD-HHMMSS] [--groups "0-2,3-6,7"] [--core-top 8]` |
 | `dvstatus.py`  | `status.csv` + `daemon.log`：charge / 放电功率 / fps / FAS 证据 / 重启界标；按解析身份去重，FPS 空不等于未接管 | `python scripts\devimp\dvstatus.py <目录或 status.csv> [--since MMDD-HHMMSS] [--out 路径]` |
 | `dvpower.py`   | **按包功耗归因**：`status.csv` 权威（按 mode×package / 按包 / **按 mode 能量汇总 `[7]`**）+ 热档秒数 `[4]` + **档位迁移时间线 `[5]` / 档位温度区间 `[6]`** + **电量计尖峰剔除（`batt_power_w > 20 W` 计为异常读数，条数与最大值打在 `[3]` 后，不进均值/分位/Wh）** + devimp 侧交叉验证 `[8]` | `python scripts\devimp\dvpower.py <解压目录> [--since MMDD-HHMMSS]`                   |
+| `dvactivity.py` | **app / activity 级规则取证**：app×activity 的 over/under/util/f-max/屏off/放电能量表 + **性能不足/性能充裕两张规则候选表** + 能量占比两张。放电方向取同批次 `status.csv` 的 `charge`（**不用 `batt_i` 符号**：main 侧 batt_i 整数化且各机型符号约定相反，PHB110 A02-14 实测 `batt_i<0` 一侧 batt_v≈4.0~4.2、P≈17 W 实为充电）；功率合理性过滤同 dvpower（非正值 / >20 W 剔除，条数打 `[7]`）；规则键取 **activity 列原值**（`activity_key` 归一形态不统一） | `python scripts\devimp\dvactivity.py <解压目录> [--since MMDD-HHMMSS] [--min-n 30] [--top 25] [--out 路径]`（**不在 dvrun 链内，需单独跑**） |
 | `dvenergy.py`  | **功耗三层分解 + 同基准增量**：总口 / 模型动态 / 残差；同一低分位子集的总口与模型基线分别扣除，未解释增量保留正负；按文件连续段、屏幕、模式、包名分组回归。区分缺列与全缺值，报告负残差、样本等效 Wh、短区间积分与缺口；截距不是实测外围地板 | `python scripts\devimp\dvenergy.py <目录或 status.csv> [--since MMDD-HHMMSS] [--out 路径]`（`--selftest` 自检） |
 | `dvlz4.py`     | 纯 python LZ4 解码（供 dvextract 用；有 `--selftest`）                                                                           | `python scripts\devimp\dvlz4.py --selftest`                                           |
 | `dvcommon.py`  | 共享工具（列定义、文件头解析、切行、统计、UTF-8 输出）                                                                           | （库，不直接跑）                                                                      |
@@ -390,3 +391,13 @@ python scripts\devimp-analyze.py <解压目录> [--since MMDD-HHMMSS] [--min-n 3
     恒等满频即无硬件 DCVS 降档；`corectl=min/max/enable` 三值斜杠分隔（**字段序固定**，
     enable=0 时 min 摆动不生效）；`smax` = scaling_max_freq 读回（P1-1 三级判定的读回源）。
     节点缺失首见会 warn 一次（文案 `佐证节点不可用`），之后静默记 `-`
+
+20. **亲和写失败已改为「一等状态」（2026-10-26）**：`@A` 帧数量下降属**预期**——
+    单核钉定连续失败按 `REPIN_DEBOUNCE×2^(n-1)`（封顶 60s）退避、进程级窄域备忘让
+    同 pid 同簇 15s 内整批跳过、放置失败按 `4s×2^(n-1)`（封顶 30s）退避并回滚引擎状态。
+    判「有没有在动作」看 `place ... settled=false` 的成功条数与 `pin/restore ok`，**不要看总帧数**。
+21. **`@A act=place` 的 `value` 追加 `eff=<lo>-<hi>`（2026-10-26）**：`dst=` 是**意图**掩码，
+    `eff=` 是写后**回读**的实际掩码（`read_fail` = 读回失败，多为线程已退出；`none` = 回读为空）。
+    两者不等即「内核摘了核」——它是判定 cpuset 裁剪 vs 核不可用的第一手证据。
+    旧包没有该字段，跨版本比较时只读 `dst=`/`clipped=`。
+

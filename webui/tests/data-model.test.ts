@@ -259,4 +259,30 @@ describe('应用标签合成与过滤', () => {
     expect(filterApps(entries, 'MIHOYO').map(e => e.pkg)).toEqual(['com.miHoYo.Yuanshen'])
     expect(filterApps(entries, '  ')).toHaveLength(3)
   })
+
+  it('activity 级 app_modes 键（pkg/.Activity）也给宿主包打模式标签（2026-10-24 第二批规则键形态）', () => {
+    const actCtx = {
+      specialTuned: new Map(),
+      fasWhitelist: new Map(),
+      appModes: {
+        'com.tencent.mm/.plugin.voip.ui.VideoActivity': 'reduce',
+        'com.coolapk.market/.view.base.SimpleActivity': 'reduce'
+      }
+    }
+    const entries = buildAppEntries([{ pkg: 'com.tencent.mm', label: '微信' }], actCtx)
+    expect(entries[0].appMode).toBe('reduce')
+  })
+
+  it('包名级优先于 activity 级键（与 daemon determine_mode 的 fallback 链同序）', () => {
+    const bothCtx = {
+      specialTuned: new Map(),
+      fasWhitelist: new Map(),
+      appModes: {
+        'com.tencent.mm': 'default',
+        'com.tencent.mm/.plugin.voip.ui.VideoActivity': 'reduce'
+      }
+    }
+    const entries = buildAppEntries([{ pkg: 'com.tencent.mm', label: '微信' }], bothCtx)
+    expect(entries[0].appMode).toBe('default')
+  })
 })

@@ -180,9 +180,23 @@ WebUI 侧：
   * **cpuset 前置**：纯后台线程的组通常只含小核，掩码写到 big/prime 会被内核**静默裁剪**
     （写返回 0 但掩码没生效）。故跨到更高能级簇时先 `move_group → top-app`，升组失败即本轮放弃。
   * **写后读回校验**：`set_tid_affinity` 成功后回读掩码，发现越界核被裁剪即记 `clipped=true`
-    且**不更新记账、不发 INFO 迁移日志**——不校验就会把「内核没答应」记成成功迁移。
+    且不发 INFO 迁移日志——不校验就会把「内核没答应」记成成功迁移。
+    **2026-10-26 起按回读掩码记账**（`Engine::note_applied`）：此前「clipped 就不更新记账」会让引擎
+    留着意图窗口、与内核实际掩码分叉；现在记的是「实际生效的那个」，`@A` 的 `value` 也追加 `eff=<lo>-<hi>`。
+  * **写失败是一等状态，不是重试信号（2026-10-26）**：掩码写被内核拒（EINVAL）后三条路径各自收敛——
+    ① `pin_core` 记 `pin_fail_streak` 并按 `REPIN_DEBOUNCE(8s) × 2^(n-1)`（封顶 **60s**）退避，
+       退避期内连 `@A` 帧都不产生；成功即清零；
+    ② **进程级窄域备忘** `narrow_pid`（同 pid 同簇 **15s** 内不再尝试，**只对 EINVAL 记账**，
+       前台 pid / boost 状态一变立刻清表）——实测 sm8550 一次 boost 里同 pid 的 **417 个线程**
+       在同一秒全部撞同一颗核、整批 EINVAL（单秒 431 条），逐线程各撞一次没有信息增量；
+    ③ `placement::Engine` 新增 `applied` 回滚锚点与 `abort()`：写失败退回锚点 + 计入
+       `FAIL_BACKOFF_BASE(4s) × 2^(n-1)`（封顶 30s）的冷却——不回滚的话引擎记「已在新核」、
+       内核里线程还在老掩码上，下一轮按假窗口重规划 → 每轮再失败一次（`MIN_DWELL`=2s 一次）。
+    取证数字：sm8550 14 批 `place` 写失败 **80%**、ok 里 54% 又被裁剪 → 真正生效仅 **≈9.5%**；
+    `pin fg_pin` 失败 **90.5%**；sm8750 同一份代码几乎零失败（平台差异）。
+    详见 `.cursor/docs/2026-10-26-亲和写失败取证与窄域修复.md`。
 - **日志两级**（用户口径）：INFO `affinity-migrate` 只写**线程 + 方向 + 核区间**；
-  devimp `@A act=place` 帧写全量（`dst=<lo>-<hi> value=gain=..,settled=..,reason=..,clipped=..`
+  devimp `@A act=place` 帧写全量（`dst=<lo>-<hi> value=gain=..,settled=..,reason=..,clipped=..,eff=<回读掩码>`
   `reason` 槽写方向 `up/down/hold`）。CLG 侧 tick 日志键 `clg-eem-tick-log`（带 `eem_khz/sweet_khz/cores`）。
 - **开关**：`eem_placement` 缺省 **true**（`apply` 里 `&& energy_model::available()` 自动兜底，
   无模型机型静默回退比例路径）；关闭时 `eem_release_all()` 归还迁移掩码。

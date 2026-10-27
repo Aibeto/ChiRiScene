@@ -63,9 +63,9 @@
 | sm8250   | Snapdragon 865      | 就绪     | -           | - [x]      | - [ ]  | -                          |
 | sm8350   | Snapdragon 888      | 就绪     | -           | - [x]      | - [ ]  | -                          |
 | sm8475   | Snapdragon 8+ Gen 1 | 测试     | -           | - [x]      | - [ ]  | -                          |
-| sm8550   | Snapdragon 8 Gen 2  | 适配     | 242,201,487 | - [x]      | - [ ]  | PHB110 / PGEM10 / 2210132C |
+| sm8550   | Snapdragon 8 Gen 2  | 适配     | 257,185,173 | - [x]      | - [ ]  | PHB110 / PGEM10 / 2210132C / MEIZU 20 |
 | sm8650   | Snapdragon 8 Gen 3  | 测试     | -           | - [x]      | - [ ]  | PJX110                     |
-| sm8750   | Snapdragon 8 Elite  | 测试     | 32,444      | - [x]      | - [ ]  | -                          |
+| sm8750   | Snapdragon 8 Elite  | 测试     | 1,657,177   | - [x]      | - [ ]  | 2410DPN6CC                 |
 
 ## 三星 Exynos（Samsung）
 
@@ -89,7 +89,7 @@
 | ------- | --------- | -------- | ---------- | ---------- | ------ | -------- |
 | gs201   | Tensor G2 | 就绪     | -          | - [x]      | - [ ]  | -        |
 | zuma    | Tensor G3 | 就绪     | -          | - [x]      | - [ ]  | -        |
-| zumapro | Tensor G4 | 测试     | 20,950,120 | - [x]      | - [ ]  | -        |
+| zumapro | Tensor G4 | 测试     | 27,773,482  | - [x]      | - [ ]  | Pixel 9 Pro |
 | lga     | Tensor G5 | 就绪     | -          | - [x]      | - [ ]  | -        |
 
 ## 苹果 Apple

@@ -1,4 +1,4 @@
-//! placement.rs: [window] [decide] [engine] [tests]
+//! placement.rs: [window] [ledger] [decide] [engine] [tests]
 //!
 //! 线程放置内核：**同算力下取更低功耗**，迁移优先于升频。
 //!
@@ -24,6 +24,15 @@ use std::time::{Duration, Instant};
 pub const MIN_DWELL: Duration = Duration::from_secs(2);
 /// 反跳回冷却倍数：刚离开的簇，短时间内回去需要更高收益
 pub const RETURN_COOLDOWN_MUL: u32 = 4;
+/// 掩码写失败的退避基值：第 n 次连续失败等 `基值 × 2^(n-1)`（封顶 `FAIL_BACKOFF_MAX`）。
+///
+/// 背景（2026-10-26 真机取证，sm8550/PHB110 14 批）：`set_tid_affinity` 失败后各路径
+/// **既不改窗口也不记账**，于是同一个线程对同一颗当时不可用的核按冷却周期无限重打 ——
+/// 实测单 pid 单核一分钟内重试 390~417 次，14 批累计 `place` 失败 62,531 次（占 80%）、
+/// `pin fg_pin` 失败 63,856 次（占 90.5%）。退避把「失败」变成一等信息，而不是重试信号。
+pub const FAIL_BACKOFF_BASE: Duration = Duration::from_secs(4);
+/// 失败退避上限：核不可用时重试再密也没有意义，超过这个间隔就该靠下一轮重新采样
+pub const FAIL_BACKOFF_MAX: Duration = Duration::from_secs(30);
 
 // [window]
 
@@ -71,6 +80,60 @@ pub fn best_window(pool: &[usize], w: usize, load: &[f32]) -> Option<Window> {
     best.map(|(_, w)| w)
 }
 
+// [ledger]
+
+/// 本轮已承诺的迁移账（**算法核心**：让同轮第 N 个决策看见前 N−1 个决策已经占掉的容量）
+///
+/// 背景（2026-10-24，A02-14 真机取证）：`decide` 整轮共用同一份 `load` 快照。不记账时，
+/// 一轮里几十个线程会同时判定「那同一颗最闲核最便宜」而齐涌过去；下一轮那颗核变忙，
+/// 又齐涌出来 —— 迁移次数与 A→B→A 回摆主要来自这个羊群效应，而不是负载本身。
+/// 原先用 `EEM_MAX_MOVES_PER_ROUND`（affinity.rs）按轮硬截断应付：截断只是把齐涌
+/// **推迟**到下一轮，既不消除它、也让截断后的决策顺序（谁抢到名额）决定落点。
+/// 本账本让每个决策在提交时把「我搬走了多少 / 搬来了多少」记到核上，后续决策看到的
+/// 是**含本轮承诺**的有效负载，齐涌自然摊平 —— 是成本可见性，不是阈值。
+#[derive(Clone, Debug, Default)]
+pub struct Ledger {
+    /// 核 → 本轮净需求增量（线程搬走为负、搬来为正）
+    delta: std::collections::HashMap<usize, f32>,
+}
+
+impl Ledger {
+    pub fn clear(&mut self) {
+        self.delta.clear();
+    }
+
+    /// 该核本轮的净增量（无记录 = 0）
+    pub fn delta(&self, core: usize) -> f32 {
+        self.delta.get(&core).copied().unwrap_or(0.0)
+    }
+
+    /// 提交一次迁移：从 `from` 区间搬走到 `to` 区间，需求量 `demand`。
+    /// 宽窗口（width > 1）时按核摊 `demand/width`：线程实际只落在一颗核上，
+    /// 若对窗口每颗核记全额，会让源侧被系统性高估成「每核都空出一份」，
+    /// 后续线程误判源窗口很闲、方向上反而助长羊群（审查 P2-1 修正）。
+    pub fn commit(&mut self, from: Window, to: Window, demand: f32) {
+        if !demand.is_finite() || demand <= 0.0 {
+            return;
+        }
+        let per = demand / from.width().max(1) as f32;
+        for c in from.cores() {
+            *self.delta.entry(c).or_insert(0.0) -= per;
+        }
+        let per_to = demand / to.width().max(1) as f32;
+        for c in to.cores() {
+            *self.delta.entry(c).or_insert(0.0) += per_to;
+        }
+    }
+
+    /// 有效负载视图：快照 `load` + 本轮承诺增量，逐核夹到 0..1
+    pub fn effective(&self, load: &[f32]) -> Vec<f32> {
+        load.iter()
+            .enumerate()
+            .map(|(c, v)| (v + self.delta(c)).clamp(0.0, 1.0))
+            .collect()
+    }
+}
+
 // [decide]
 
 /// 一次迁移计划
@@ -110,6 +173,7 @@ pub fn decide(
     load: &[f32],
     online: &[(CoreGroup, usize)],
     hysteresis: f32,
+    ledger: &Ledger,
 ) -> Option<Plan> {
     if !s.demand.is_finite() || s.demand <= 0.0 {
         return None;
@@ -118,6 +182,9 @@ pub fn decide(
     if !s.past_sweet {
         return None;
     }
+    // [ledger] 有效负载 = 采样快照 + 本轮已承诺的迁移增量：
+    // 同轮第二个及以后的线程看到的是「前面的人已经占过」的核，齐涌自然摊平。
+    let eff = ledger.effective(load);
     let here = energy_model::curve(s.cluster)?;
     let here_cost = here.cost(here.gear_for(s.demand, 1), 1);
 
@@ -141,18 +208,24 @@ pub fn decide(
         if pool.is_empty() {
             continue;
         }
-        let Some(win) = best_window(&pool, 1, load) else {
+        let Some(win) = best_window(&pool, 1, &eff) else {
             continue;
         };
-        let dst_load = load.get(win.lo).copied().unwrap_or(0.0).clamp(0.0, 1.0);
-        // 余量下限 5%：贴满的核不要（否则求档会爆到顶档，成本必然更差）
-        let residual = (1.0 - dst_load).max(0.05);
+        let dst_load = eff.get(win.lo).copied().unwrap_or(0.0).clamp(0.0, 1.0);
+        // 余量下限 5%：贴满的核不要（否则求档会爆到顶档，成本必然更差）。
+        // [ledger] 余量要扣掉**本线程到达后**的占用（dst_load + demand）：
+        // 原写法只看目的地现有负载，会把线程送进「看起来还行、我到了就爆」的核，
+        // 下一轮再迁出来 = 两次迁移换零收益。
+        let residual = (1.0 - (dst_load + s.demand)).max(0.05);
         let need = s.demand / residual;
         let gear = cv
             .gear_below_sweet_for(need, 1)
             .unwrap_or_else(|| cv.gear_for(need, 1));
         let cost = cv.cost(gear, 1);
-        // 相对改善不足滞回 → 不动（跨簇与同簇用同一把尺子）
+        // 相对改善不足滞回 → 不动（跨簇与同簇用同一把尺子）。
+        // [ledger] 有意的不对称：跨簇路径没有同簇那样的「到达不超载」硬闸
+        // （下方 `new_score + demand > 1.0`），只靠 5% 余量下限 + 成本对比自然拒绝——
+        // 逃离更差簇本身就是收益，目的地略挤可以接受；若仍加硬闸会把线程困在高成本簇。
         if cost < here_cost
             && (here_cost - cost) / here_cost.max(f32::EPSILON) >= hysteresis
             && best_alt.is_none_or(|(b, _, _, _)| cost < b)
@@ -186,19 +259,23 @@ pub fn decide(
         .window
         .cores()
         .iter()
-        .map(|&c| load.get(c).copied().unwrap_or(0.0).clamp(0.0, 1.0))
+        .map(|&c| eff.get(c).copied().unwrap_or(0.0).clamp(0.0, 1.0))
         .sum::<f32>()
         / s.window.width().max(1) as f32;
-    let win = best_window(&pool, w, load)?;
+    let win = best_window(&pool, w, &eff)?;
     if win == s.window {
         return None;
     }
     let new_score: f32 = win
         .cores()
         .iter()
-        .map(|&c| load.get(c).copied().unwrap_or(0.0).clamp(0.0, 1.0))
+        .map(|&c| eff.get(c).copied().unwrap_or(0.0).clamp(0.0, 1.0))
         .sum::<f32>()
         / win.width().max(1) as f32;
+    // [ledger] 到达后不超载：把线程放进「我到了就 >1」的核等于制造下一次迁移
+    if new_score + s.demand > 1.0 {
+        return None;
+    }
     // 负载改善不足滞回：不动（防两段边界来回抖）
     let gain = if cur_score > f32::EPSILON {
         (cur_score - new_score) / cur_score
@@ -243,6 +320,17 @@ pub struct Entry {
     pub last_move: Instant,
     /// 上次迁离的簇与时刻（反跳回冷却）
     pub left: Option<(CoreGroup, Instant)>,
+    /// **最近一次确认生效**的区间（掩码写成功后的回读掩码）：两拍协议的回滚锚点。
+    ///
+    /// 两拍协议（先写并集、再收敛到目标）隐含假设「每次写都落地」。写被内核拒绝
+    /// （核当时不可用 → EINVAL）时该假设不成立，必须回到上一个真实生效的区间，
+    /// 否则引擎记的是「已在新核」、内核里线程还在老掩码上，后续 `direction`/宽度判断
+    /// 全部基于假窗口。
+    pub applied: Window,
+    /// 最近一次确认生效的簇（与 `applied` 同一时刻）
+    pub applied_cluster: CoreGroup,
+    /// 连续写失败次数（0 = 正常）：驱动指数退避，成功后立刻清零
+    pub fail_streak: u8,
 }
 
 impl Entry {
@@ -253,6 +341,9 @@ impl Entry {
             cluster,
             last_move: now,
             left: None,
+            applied: window,
+            applied_cluster: cluster,
+            fail_streak: 0,
         }
     }
 }
@@ -261,6 +352,8 @@ impl Entry {
 #[derive(Default)]
 pub struct Engine {
     entries: std::collections::HashMap<i32, Entry>,
+    /// [ledger] 本轮承诺账：由调用方在一轮决策前 `begin_round()` 清零
+    ledger: Ledger,
 }
 
 /// 一次实际动作（由调用方落到 sysfs）
@@ -294,6 +387,53 @@ impl Engine {
     /// 线程退出/失联：清账
     pub fn forget(&mut self, tid: i32) {
         self.entries.remove(&tid);
+    }
+
+    /// 只读查询（离线回归用）：取某线程的记账快照。
+    /// `cfg(test)` 下才存在——生产构建里没有这条路径，也不进热循环。
+    #[cfg(test)]
+    pub fn entry(&self, tid: i32) -> Option<&Entry> {
+        self.entries.get(&tid)
+    }
+
+    /// [ledger] 一轮决策开始前调用：清空「本轮已承诺」账。
+    ///
+    /// 不清会让上一轮的承诺永久累进，有效负载越算越高、最终谁也迁不动。
+    /// 调用方（affinity.rs `eem_place_round`）每轮开头调一次。
+    pub fn begin_round(&mut self) {
+        self.ledger.clear();
+    }
+
+    /// 掩码**确认生效**后的回执：把回读到的实际掩码记为新的回滚锚点，并清失败计数。
+    ///
+    /// 必须传**回读后的有效掩码**而不是写入意图：cgroup cpuset 与暂停核会让内核
+    /// 静默摘核（写返回 0、掩码却没全生效），拿意图记账等于记了个假窗口。
+    pub fn note_applied(&mut self, tid: i32, cluster: CoreGroup, mask: &[usize], now: Instant) {
+        let Some(e) = self.entries.get_mut(&tid) else {
+            return;
+        };
+        if let (Some(&lo), Some(&hi)) = (mask.iter().min(), mask.iter().max()) {
+            e.applied = Window::new(lo, hi);
+            e.applied_cluster = cluster;
+        }
+        e.fail_streak = 0;
+        e.last_move = now;
+    }
+
+    /// 掩码写**失败**（EINVAL / 升组失败 / 掩码为空）后的回滚：退回上一个确认生效的区间，
+    /// 累加失败计数并返回新的次数（调用方据此决定日志与是否继续）。
+    ///
+    /// 回滚是必须的：不退回的话 `window` 停在半路（并集或目标），而内核里线程还在旧掩码上，
+    /// 三样东西（引擎记账 / 内核掩码 / `eem_window`）会各说各话，且下一轮的
+    /// `win == s.window` 判等永远不成立 —— 于是每轮重新规划、每轮再失败一次。
+    pub fn abort(&mut self, tid: i32, now: Instant) -> Option<u8> {
+        let e = self.entries.get_mut(&tid)?;
+        e.window = e.applied;
+        e.cluster = e.applied_cluster;
+        e.state = RangeState::new(e.applied.lo, e.applied.hi);
+        e.fail_streak = e.fail_streak.saturating_add(1);
+        e.last_move = now;
+        Some(e.fail_streak)
     }
 
     /// 推进一个线程：返回需要写掩码的动作（None = 本轮不动）
@@ -333,16 +473,24 @@ impl Engine {
         // 恒等于零（Duration 非负），是条死表达式——已删。
         let since = now.saturating_duration_since(e.last_move);
         let returning = e.left.is_some_and(|(c, _)| c == s.cluster);
-        let cooldown = if returning {
+        let mut cooldown = if returning {
             MIN_DWELL * RETURN_COOLDOWN_MUL
         } else {
             MIN_DWELL
         };
+        // 失败退避：连续失败 n 次后等 `FAIL_BACKOFF_BASE × 2^(n-1)`（封顶）。
+        // 与反跳回冷却取大者——两条闸都是「推迟」而不是「取消」，核恢复可用后
+        // 至多等一个退避周期就重新参与竞争。
+        if e.fail_streak > 0 {
+            let mul = 1u32 << (e.fail_streak.min(4) - 1);
+            cooldown = cooldown.max((FAIL_BACKOFF_BASE * mul).min(FAIL_BACKOFF_MAX));
+        }
         if since < cooldown {
             return None;
         }
 
-        let plan = decide(s, load, online, hysteresis)?;
+        // [ledger] 决策要看见本轮前面已承诺的迁移（同轮齐涌靠这个摊平，不是靠截断）
+        let plan = decide(s, load, online, hysteresis, &self.ledger)?;
         // 反跳回冷却：刚离开的簇要回去，收益必须翻倍
         if let Some((c, at)) = e.left
             && c == plan.cluster
@@ -358,8 +506,14 @@ impl Engine {
             e.left = Some((s.cluster, now));
             e.cluster = plan.cluster;
         }
+        let old_window = e.window;
         e.window = plan.target;
         e.last_move = now;
+        // [ledger] 把这次迁移记进本轮承诺账：后续线程看到的是「它已经占过去了」的核。
+        // 已知留档：commit 发生在 sysfs 落盘**之前**，落盘阶段若 mask_write_allowed 拒绝 /
+        // 升组失败 / clipped，承诺不撤销——本轮内留下幻影承诺（源核被记成更闲）。
+        // 失败少见且 budget 封顶，影响一轮（下轮 begin_round 清账），接受不撤。
+        self.ledger.commit(old_window, plan.target, s.demand);
         // 先扩后缩：第一拍写并集（旧区间 ∪ 新区间），第二拍在下次 tick 收敛。
         // 唯一的「先扩后缩」实现在 `energy_model::step_range`，这里只负责记账。
         energy_model::step_range(&mut e.state, plan.target.lo, plan.target.hi);
@@ -407,7 +561,66 @@ mod tests {
             window: Window::new(0, 0),
             past_sweet: false,
         };
-        assert!(decide(&s, &[0.1, 0.9], &[], 0.15).is_none());
+        assert!(decide(&s, &[0.1, 0.9], &[], 0.15, &Ledger::default()).is_none());
+    }
+
+    /// [ledger] 本轮承诺账的核心不变量：
+    /// 1. 提交一次迁移后，目的核的有效负载上升、源核下降；
+    /// 2. **同一轮里第二个线程不该再选中刚刚被占掉的那颗最闲核**
+    ///    ——原实现整轮共用裸 `load`，会出现「N 个线程齐涌同一核」。
+    #[test]
+    fn ledger_makes_committed_load_visible() {
+        let mut led = Ledger::default();
+        let load = [0.10, 0.90, 0.90];
+        // 提交：从核 2 迁到核 0，需求 0.6
+        led.commit(Window::new(2, 2), Window::new(0, 0), 0.6);
+        let eff = led.effective(&load);
+        assert!(eff[0] > load[0], "目的核有效负载必须上升");
+        assert!(eff[2] < load[2], "源核有效负载必须下降");
+        // 关键：核 0 不再是「最闲核」——下一条线程不应再涌向它
+        let pool = vec![0usize, 1, 2];
+        let w = best_window(&pool, 1, &eff).unwrap();
+        assert_ne!(w.lo, 0, "核 0 已被本轮承诺占用，不应再被选为最闲核");
+        // 清零后恢复裸快照语义（begin_round 的契约）
+        led.clear();
+        assert_eq!(led.effective(&load), load.to_vec());
+    }
+
+    /// 宽窗口 commit 必须按核摊 `demand/width`（审查 P2-1）：
+    /// 线程实际只落在一颗核，若对目的窗口每核记全额，源侧会被系统性高估成
+    /// 「每核都空出一份」，后续线程误判源窗口很闲、方向上反而助长羊群。
+    #[test]
+    fn ledger_commit_spreads_demand_over_window_width() {
+        let mut led = Ledger::default();
+        // 宽度 2 的源/目的窗口：每核应只记 0.4/2 = 0.2
+        led.commit(Window::new(2, 3), Window::new(0, 1), 0.4);
+        let load = [0.10, 0.10, 0.90, 0.90, 0.50];
+        let eff = led.effective(&load);
+        assert!(
+            (eff[0] - 0.30).abs() < 1e-4,
+            "dst 每核 +0.2，实得 {}",
+            eff[0]
+        );
+        assert!(
+            (eff[1] - 0.30).abs() < 1e-4,
+            "dst 每核 +0.2，实得 {}",
+            eff[1]
+        );
+        assert!(
+            (eff[2] - 0.70).abs() < 1e-4,
+            "src 每核 -0.2，实得 {}",
+            eff[2]
+        );
+        assert!(
+            (eff[3] - 0.70).abs() < 1e-4,
+            "src 每核 -0.2，实得 {}",
+            eff[3]
+        );
+        assert!(
+            (eff[4] - 0.50).abs() < 1e-4,
+            "窗口外不受影响，实得 {}",
+            eff[4]
+        );
     }
 
     /// 多核分摊的**数学关系**：同一份需求摊到 k 颗核上、档位相应下降，

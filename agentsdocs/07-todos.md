@@ -57,3 +57,65 @@
 - [ ] **EEM 与既有 pin/promote 的边界**：当前 EEM 只管「未钉核且非关键」的线程，pin/promote/demote
       路径仍在跑。若真机出现两套机制打架（同一线程反复改掩码），考虑在 EEM 开启时把普通放置
       路径的 `pick_core` 也交给 EEM 统一决策。
+
+### 待裁决（2026-10-24 A02-14 真机分析产出；证据与规则见 `devimpbin/a0214/REPORT-A02-14.md`）
+
+- [ ] **「降低一半功耗」的口径未定（用户目标，保留待拍板，不得由 AI 否决）**：A02-14 五台真机实测
+      （79565 放电样本 / 57.762 样本等效 Wh）显示 CPU 动态只占整机 15.8%~35.3%（sm8750 游戏机 64.6%
+      例外），**整机 -50% 在调度侧不可达**（即使 CPU 动态清零也只有 -16%~-35%）。三个候选口径：
+      ① 整机能耗 → 不可达；② **daemon 自耗减半 → 可达**（基线 52.82~134.78 ms CPU/s，
+      zumapro 13.48% 单核最差，playback 段 144.79 ms/s 是 default 段 2.2 倍），需改 `src/` 采样链路；
+      ③ 规则覆盖段的 CPU 动态减半 → 方向可达，整机折算仅 -0.3%~-3.5%。**请用户指定口径**。
+- [ ] **`com.android.incallui` 息屏通话的归属**：PHB110 上 6.566 Wh（27.7%）居首，但 58.5% 的 snap 行
+      `screen_on=0` → activity 采不到（末列 `-`），现有 `.InCallActivity` 的 `activity_params` 不生效。
+      属 SceneMode（息屏轴）地盘。待确认：息屏判定与 `scene_mode_delay_secs=3000` 的关系，
+      是否给该包加息屏侧覆盖。
+- [ ] **`com.tencent.mobileqq/.activity.SplashActivity` 的 boost 是否回收**：该键实测覆盖整个 QQ 会话
+      （40262 tick ≈ 长驻，非启动页），PHB110 上 5.372 Wh（22.7%）。但 boost 段 2.39 W（8283 样本）
+      < default 段 2.95 W（1817 样本），样本量差 4.6 倍且负载相位不同，**无法判定回收是否省电**。
+- [ ] **内核 sched 通道全线失效（2026-10-24 A02-14 实测，5 台机型全部）**：
+      `/proc/sys/kernel/sched_migration_cost_ns` 与 `/proc/sys/kernel/sched_nr_migrate` **节点不存在**
+      （9 个启动点各报「节点不存在 ×2」）→ `module/config/normal/fas/{sgame,dfm}.yaml` 的
+      `migration_cost_ns: 400000` 与 `tuned.rs` 同名通道**从未生效**，yaml 里「实机复核 400000」的 TODO
+      因此一直没有结论。已加告警：`fas_manager.rs` 改为逐分支 `log::warn!`（读不到 / 写失败分别报），
+      旋钮失效不再静默。**修法仍需先取证**：真机 `ls /proc/sys/kernel/ | grep sched` + `/sys/kernel/debug/sched/`，
+      按实际存在的节点改名或换通道；**不猜节点名**。这是 ChiRi 侧唯一能直接压内核搬迁次数的旋钮。
+- [ ] **i18n 文案与行为不符（顺手可改）**：`governor-residue-cleanup` 写「已恢复 schedutil」，实际恢复目标是
+      `common::cpu_governor_for_policy(pid)`（walt / uag / sched_pixel…）。只改文案，不动行为。
+- [ ] **FAS 残留 performance 泄漏已闭环（证据已到，可销那条「待真机验证」）**：真机 9 条
+      「检测到残留 performance 调速器」，启动自检已捕获并写回默认调速器。
+- [ ] **EEM 同轮承诺账（已实现，待验证）**：`placement::Ledger` 让同轮后续决策看到已承诺的负载，
+      取代原「`EEM_MAX_MOVES_PER_ROUND` 硬截断」的齐涌应付（详见
+      `devimpbin/a0214/REPORT-A02-14.md` §8.3）。验证途径只有离线重放
+      （`scripts/devimp/replay_clg.py` 同法）或下一包真机观察——按 R3 不做 A/B 对照。
+- [ ] **FAS 迁移治理（未完）**：实测 fas 段 9703~10007 次/s（default 2728~4327），但 mig/wake 比
+      0.45~0.58 与 default 0.46~0.50 同量 → 主因是唤醒量（17k~22k/s 对比 5.7k~8.7k/s）而非策略。
+      ChiRi 自身 @A 动作仅 1.24 次/s（占 0.01%），只调自己的放置动不了总量。已落地三项（见
+      `devimpbin/a0214/REPORT-A02-14.md` §8.3）：Ledger 承诺账、boost 期 promote 保持禁（分区
+      不变式）、home/bg_overload 重钉改保守参数版（debounce ×3、阈值 0.85，用户定调「允许迁移
+      但更少更稳」）。其余待上述 sched 通道取证后再定。
+- [ ] **性能不足候选（若写即 boost）未落规则**：`org.mozilla.firefox/.App`、`me.weishu.kernelsu/.ui.webui.WebUIActivity`、
+      `com.miui.home/.launcher.Launcher`、`com.eg.android.AlipayGphone/…NebulaActivity$Main`、
+      `com.tencent.mm/.plugin.webview.ui.tools.MMWebViewUI`、`com.oplus.camera/.Camera`。
+      未采纳理由：加宽松档无法回答 R4「省了哪部分功耗」，「race-to-idle 更快完成所以更省」在本批日志
+      无完成时间证据（属模型外推）。
+
+### 亲和写失败治理（2026-10-26 落地，待真机复核）
+
+- [x] 已落地：失败退避（pin `REPIN_DEBOUNCE×2^(n-1)` 封顶 60s / place `FAIL_BACKOFF_BASE×2^(n-1)` 封顶 30s）、
+      进程级窄域备忘（同 pid 同簇 15s，只对 EINVAL 记账）、`Engine::applied` 回滚锚点 +
+      `note_applied`/`abort`、`@A place` 追加 `eff=` 回读掩码。
+      取证与数字：`.cursor/docs/2026-10-26-亲和写失败取证与窄域修复.md`。
+- [ ] **下轮日志核对三件事**：① `pin fg_pin e22` 是否从 6.4 万量级降到百量级；② `place` 失败是否
+      按 (pid,簇) 收敛（预期 ≈30× 降幅，126,555 → ≈4,190 次尝试）；③ `eff=` 回读掩码与 `dst=` 的差集
+      落在哪些核 —— 这是判定「cpuset 收窄」还是「核此刻不可用」的决定性数据。
+- [ ] **cpuset 感知放置（根治项，待判别后动）**：写前读一次该线程的 cgroup cpuset 并缓存
+      （`affinity_cpuset::check_group_cpuset` 已有实现，当前只服务组绑定、单核/放置路径刻意未用），
+      把目标区间夹到允许域内。判据：下轮失败若集中在特定 pid 而非特定核号 → cpuset 侧。
+- [ ] **活动核探测（可选）**：`sched_getaffinity(self)` 一轮一次拿「在线且活跃」核集（暂停核会被内核
+      从掩码里摘掉），作放置域上界；风险 = 守护进程自身 cpuset 可能更窄，须先取证再启用。
+- [ ] **EEM 预算观察**：本批日志「有 place 动作的秒里 **78%** 打满 `EEM_MAX_MOVES_PER_ROUND`=4」，
+      预算已是真实限流器；放宽会增加迁移数与「更少更稳」冲突，等失败治理生效后按观测定。
+- [ ] **本机离线回归缺口**：`scripts/tests/clg_replay.rs`（`CpuLoadGovernorConfig` 未定义桩）与
+      `scripts/tests/rust_regression.rs`（`crate::i18n` 缺失桩）在 HEAD 即编译失败，需补桩或显式标注跳过。
+
