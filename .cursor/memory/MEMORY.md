@@ -202,4 +202,25 @@
   sm8750 同一份代码几乎零失败。完整报告 `.cursor/docs/2026-10-26-亲和写失败取证与窄域修复.md`。
 - **本机验证口径更正**：`YUMI_SKIP_EBPF=1 cargo check -p chiri` **可用**（≈36s，exit 0），
   比 `agentsdocs/01-overview.md` 里「本机只能做 fmt / sh -n / rustc --test 三件套」更宽 —— 涉及 Rust 语义的改动应先跑它。
+- **复核结果（2026-10-30，29 批）**：fg_pin e22 63,856 → **60**；place 62,531 → **6,353**；合计 **19.6×**。
+  但 place ok 的 34,937 行里 **81% settled=false / 64% clipped=true** ⇒ 一部分 EINVAL 转成了**静默裁剪**，
+  故新增 `note_stripped`（写 ok 但回读整簇被摘 → 同样记 15s 窄域备忘，只记整簇）。被摘核 94% 在核 0-2，
+  但小核仍承担 11-12% 驻留且 93 个 pid 拿到过 ⇒ 是「间歇可用」而非 cpuset 收窄。
+
+## EEM 调频/放置契约（2026-10-30 定，改 `energy_model`/`cpu_load_governor`/`placement` 必守）
+
+- **`k` 是核当量近似，不是实测忙核数**：代码里 `k = ceil(Σ clamp(util,0,1))`。它只保证总量够，
+  不保证每颗核够 ⇒ `eem_target_freq` 必须再过一道 `demand_with_core_floor`（`max(Σ, busiest×k)`）。
+  纯函数、均匀载荷逐位不变，回归 `core_floor_is_noop_for_even_load` / `core_floor_lifts_gear_for_uneven_load`。
+- **封顶的释放是滞回，不是节拍**：超 `EEM_CAP_RELEASE_TICKS`(10 tick = **1.6s**，不是 10s) 即挂起
+  （`eem_cap_suspended`），只有甜点档供给重新够用才解挂；「清 0 后下一 tick 重封」的占空比是 91%，等于长期欠供。
+- **「别处更便宜」必须同口径且供得上**：`best_placement(demand, online, only, hysteresis, cores)`
+  现在按调用方给的**核数**比价（单线程传 1，簇级传 k），并要求候选 `supply ≥ demand`、在线核数 ≥ cores。
+  原先恒 `cores:1`，k≥2 时本簇成本被放大 2–4 倍，会封甜点又迁不过去（big 两核各 0.7 实测缺供 29%）。
+- **换前台即清记忆**：EMA/steady/up_wait/high_zone_wait/fast_down/eem_* 是「上一个 App 的负载记忆」，
+  包名变化即重置（`[fg_reset]`），但**不动 current_perf/current_freq**。空包名（解锁瞬间）不算切换。
+- **模型不能当整机预测器**：低估 1.0–1.8 W（8750 段反而高估 1.34×），方向都不稳定，只可用于相对排序；
+  8750/8650 的簇级瓦数是单核线性外推，顶档不可达（求和 35.31 W vs 实测整机 7.03 W）。
+- **日志口径**：main tick 行的 `cur_freq_khz` 是**决策值/上限**，不是实测频率（实测在 snap 的 `cpu_cur_khz`）；
+  行数 ≠ 时间（tick 行按 (policy,cluster) 去重 + 2s 心跳），做墙钟统计必须按相邻 Δts 加权。
 

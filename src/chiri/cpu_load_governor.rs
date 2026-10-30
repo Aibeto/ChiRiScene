@@ -27,9 +27,13 @@ pub fn set_clamp_heavy(v: bool) {
 // 名称沿用 `PF_` 前缀（第二代帕累托前沿 = CLG-EEM），改名成本高于收益
 static PF_ENABLED_LOGGED: AtomicBool = AtomicBool::new(false);
 
-/// [eem] 甜点封顶的抗饥饿释放窗口（tick；10 tick = 10s）：
+/// [eem] 甜点封顶的抗饥饿释放窗口（tick；worker tick 周期 160ms，10 tick ≈ 1.6s）：
 /// 封顶是为了「先让迁移动手」，但迁移可能因 cpuset / 位宽 / 目标簇拥塞而落不了地。
-/// 连续压制超过该窗口即放弃封顶、回到比例路径——宁可多花电，也不把性能长期锁在甜点。
+/// 连续压制超过该窗口即**挂起封顶**、回到比例路径——宁可多花电，也不把性能长期锁在甜点。
+///
+/// 挂起后**不按固定节拍自动恢复**：早期实现是「10 tick 封 + 1 tick 放」，实际占空比 10/11 ≈ 91%，
+/// 等于长期欠供（实测该形态在 1 < Σutil < gate 的区间会缺供 ~29%）。现在的恢复条件是
+/// 「甜点档供给重新够用」（见 `eem_target_freq` 的 [cap_suspend] 段），真正的滞回。
 const EEM_CAP_RELEASE_TICKS: u32 = 10;
 
 /// [activity_params] CLG 的降频确认 tick 周期（ms，近似值）：`down_hold_ms` 折算成
@@ -361,8 +365,13 @@ struct CoreGroupWorker {
     /// [eem] 本簇拓扑核数（`k` 的上限；与 `affected_cpus.len()` 分开记账，热插拔时后者会变）
     eem_cores: usize,
     /// [eem] 甜点封顶「压住但需求确实超了」的连续 tick 数：超过 `EEM_CAP_RELEASE_TICKS`
-    /// 即放弃封顶（迁移动不了时不能把频率长期压在甜点，那是净性能损失）
+    /// 即挂起封顶（迁移动不了时不能把频率长期压在甜点，那是净性能损失）
     eem_press_streak: u32,
+    /// [eem] 封顶是否处于「挂起」态：挂起后不再按节拍自动恢复，只有甜点档供给
+    /// 重新够用才解挂（真正的滞回；早期「10 封 1 放」的实际占空比是 91%，等于长期欠供）
+    eem_cap_suspended: bool,
+    /// [fg_reset] 上次观测到的前台包：变化即清空本簇负载画像（EMA / 稳态 / 升降频确认）
+    last_fg_pkg: Arc<str>,
     load_rx: LoadReceiver,
     stop: Arc<AtomicBool>,
     touch: Arc<AtomicTouchState>,
@@ -456,6 +465,8 @@ impl CoreGroupWorker {
             if self.stop.load(Ordering::Acquire) {
                 break;
             }
+            // [fg_reset] 前台包换代：清空上一个 App 的负载画像（两条分支都要覆盖，故放在 recv 之前）
+            self.refresh_fg_change();
 
             match self.load_rx.recv_timeout(tick_interval) {
                 Ok(core_utils) => {
@@ -478,6 +489,54 @@ impl CoreGroupWorker {
 
         // 线程退出时恢复系统原始状态
         ClusterState::restore_policy(&self.restore);
+    }
+
+    /// [fg_reset] 前台应用切换即清空本簇负载画像。
+    ///
+    /// EMA / 稳态计数 / 升降频确认都是「上一个 App 的负载记忆」：
+    /// * 重载 → 轻载：沿用上个 App 的高 EMA，频率拖着高频跑 ~1s（白耗电）；
+    /// * 轻载 → 重载：EMA 与 up_wait 从旧值慢慢爬，到位要 ~1s（点开就卡）。
+    ///
+    /// 换 App 是负载换代而不是同一个负载的抖动，直接清空最接近真实：`ema_util = -1.0` 让
+    /// 下一帧直接采用原始 util（首帧即到位），升降频确认计数归零也不再继承旧方向。
+    /// 包名变化才触发；同一包内的 activity 切换仍走 `refresh_activity_override`。
+    fn refresh_fg_change(&mut self) {
+        let fg = crate::monitor::app_detect::raw_foreground_package_arc();
+        // 空包名 = 采集中间态（解锁瞬间 / 进程替换），不当作切换
+        if fg.is_empty() || fg.as_ref() == self.last_fg_pkg.as_ref() {
+            return;
+        }
+        let first_seen = self.last_fg_pkg.is_empty();
+        self.last_fg_pkg = fg;
+        if first_seen {
+            return;
+        }
+        self.reset_load_state();
+        debug!(
+            "{}",
+            t_with_args(
+                "clg-fg-reset",
+                &fluent_args!(
+                    "pid" => self.restore.policy_id.to_string(),
+                    "pkg" => self.last_fg_pkg.to_string()
+                )
+            )
+        );
+    }
+
+    /// [fg_reset] 清空负载画像：只动「记忆」类状态，不动已写下的频率
+    /// （频率由下一帧 flush 按新负载重算；这里改 current_perf 反而会让写频漏掉一次 clamp）
+    fn reset_load_state(&mut self) {
+        self.cluster.ema_util = -1.0;
+        self.cluster.last_util = 0.0;
+        self.cluster.steady_decay = 0.0;
+        self.cluster.steady_streak = 0;
+        self.cluster.up_wait = 0;
+        self.cluster.down_wait = 0;
+        self.cluster.high_zone_wait = 0;
+        self.cluster.fast_down = false;
+        self.eem_press_streak = 0;
+        self.eem_cap_suspended = false;
     }
 
     /// 决策入口：只计算目标性能比不写 sysfs，同时记录 main_ tick 行摘要（over/under、目标性能、决策标签），标签四种：
@@ -887,6 +946,36 @@ impl CoreGroupWorker {
         // 供给按**忙核数**算：需求是簇内逐核 util×cap 的累加，供给必须用同样多的核去承接，
         // 否则「6 核各 50%」会被当成「1 核要吃 3 倍算力」而误判成必须升频。
         let k = (occupied.ceil() as usize).max(1);
+
+        // [per_core_floor] 逐核供给下限：同一簇共享频率域，供给按 k 核平均分摊，
+        // 但**最忙那颗核**拿到的份额必须够它自己用。「1 核 85% + 三核各 10%」时
+        // Σ=1.15、k=2、平均口径 0.575 就够总量，而 0.85 那颗核实际欠供约 1/3；
+        // 且 starved 用总供给判（0.96 vs 0.96）还会判成「不饿」→ 永不释放。
+        // 只补下限不改平均口径：均匀载荷下 core_floor ≤ demand，行为逐位不变。
+        let busiest = self
+            .cluster
+            .affected_cpus
+            .iter()
+            .copied()
+            .filter(|&c| core_utils.get(c).is_some_and(|u| u.is_finite() && *u > 0.0))
+            .max_by(|a, b| core_utils[*a].total_cmp(&core_utils[*b]));
+        let busiest_demand = busiest
+            .and_then(|c| {
+                crate::chiri::energy_model::demand_units(&[c], core_utils, &self.core_capacities)
+            })
+            .unwrap_or(0.0);
+        let demand = crate::chiri::energy_model::demand_with_core_floor(demand, busiest_demand, k);
+
+        // [cap_suspend] 封顶已挂起（上一轮长期欠供）：只有甜点档重新够用才解挂，
+        // 否则本 tick 一路走比例路径——不做「封 N 放 1」的节拍恢复。
+        if self.eem_cap_suspended {
+            if curve.supply(curve.sweet(), k) >= demand {
+                self.eem_cap_suspended = false;
+            } else {
+                return None;
+            }
+        }
+
         let allow_above = saturated
             || curve.gear_below_sweet_for(demand, k).is_none()
                 && !self.cheaper_elsewhere(demand, k, group);
@@ -904,6 +993,7 @@ impl CoreGroupWorker {
             self.eem_press_streak = self.eem_press_streak.saturating_add(1);
             if self.eem_press_streak > EEM_CAP_RELEASE_TICKS {
                 self.eem_press_streak = 0;
+                self.eem_cap_suspended = true;
                 return None;
             }
         } else {
@@ -920,14 +1010,33 @@ impl CoreGroupWorker {
         };
         // 与主判据同一 k 口径：本簇这份需求是由 k 颗忙核共同承接的
         let here_cost = here.cost(here.gear_for(demand, k), k);
+        // [k_symmetric] 候选簇也按**同样的 k 颗核**比价，而不是按 1 颗核。
+        //
+        // 直接调 `best_placement` 会踩口径错配：它内部恒 `cores: 1`（单线程口径），
+        // 于是「本簇 k 核成本」被拿去和「别簇 1 核成本」比，k≥2 时本簇被放大 2–4 倍，
+        // 过判「别处更便宜」→ 提前封甜点 + 触发迁移churn（审计实测 big 两核各 0.7：
+        // here_cost≈1.54 vs prime 单核 1.0，判 35% 更省，而需求 0.685 只给到 0.5 档）。
+        // 真实迁移是多个线程分别落到目标簇的多个核上，所以「k 核 vs k 核」才是对的口径；
+        // k=1（单线程场景）时本段与旧行为逐位等价。
+        // 比价走 `best_placement` 的同一份实现（含「供给够不够」与滞回的取舍），
+        // 只是把承接核数一并传进去——单一实现，避免这里另写一份口径。
         let online = crate::chiri::energy_model::online_clusters();
         crate::chiri::energy_model::best_placement(
             demand,
             &online,
             None,
             crate::chiri::energy_model::SWITCH_HYSTERESIS,
+            k,
         )
-        .is_some_and(|p| p.cluster != group && p.cost < here_cost)
+        .is_some_and(|p| {
+            p.cluster != group
+                // [supply_gate] 候选连需求都供不上时，「别处更便宜」是伪命题：
+                // 按它封顶等于为一个落不了地的迁移长期欠供（实测该形态缺供 ~29%）。
+                && p.supply >= demand
+                && p.cost < here_cost
+                && (here_cost - p.cost) / here_cost.max(f32::EPSILON)
+                    >= crate::chiri::energy_model::SWITCH_HYSTERESIS
+        })
     }
 
     /// 判定 cluster 是否覆盖当前 SoC 的大核区间：触摸升频只作用于大核
@@ -1168,6 +1277,8 @@ impl CoreGroupWorker {
             eem,
             eem_cores,
             eem_press_streak: 0,
+            eem_cap_suspended: false,
+            last_fg_pkg: Arc::from(""),
             load_rx,
             stop: stop.clone(),
             touch,

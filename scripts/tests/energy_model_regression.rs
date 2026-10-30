@@ -460,3 +460,127 @@ fn replay_note_applied_records_readback_not_intent() {
     assert_eq!(e.fail_streak, 0, "成功写回执要清零失败计数");
 }
 
+
+// [core_floor]
+/// 载荷不均时，**逐核**供给下限必须把目标档抬起来。
+///
+/// 4 核 (0.85, 0.1, 0.1, 0.1)：Σ = 1.15 → «k = ceil(Σ) = 2» → 平均口径只要每核 0.575 就判够，
+/// 而最忙那颗核要 0.85，实际只拿到 68%。更糟的是 «supply(i,2) >= Σ» 仍成立，
+/// 抗饥饿判据也看不出来 → 封顶永不释放。本用例锁住「按最忙核折算后必须抬档」。
+#[test]
+fn core_floor_lifts_gear_for_uneven_load() {
+    let big = em::curve(CoreGroup::Big).expect("虚构 SoC 有 big 曲线");
+    let caps = [Some(762u32); 6];
+    let utils = [0.85f32, 0.1, 0.1, 0.1, 0.0, 0.0];
+    let cpus: Vec<usize> = (0..6).collect();
+
+    let total = em::demand_units(&cpus, &utils, &caps).expect("容量齐备");
+    // k 走的是**原始 util 之和**（与 CLG `let k = occupied.ceil()` 同口径），
+    // 不是容量归一后的 demand：两者口径不同正是缺陷 A 的来源之一。
+    let occupied: f32 = utils.iter().map(|u| u.clamp(0.0, 1.0)).sum();
+    let k = (occupied.ceil() as usize).max(1);
+    assert_eq!(k, 2, "Σutil=1.15 只占 2 颗核当量（问题正在这里）");
+    let busiest = em::demand_units(&cpus[..1], &utils, &caps).expect("最忙核需求");
+    let floored = em::demand_with_core_floor(total, busiest, k);
+    assert!(floored > total, "不均载荷必须抬高总需求：{floored} vs {total}");
+
+    // 平均口径选出的档：按 2 核摊薄，最忙核拿不到自己需要的份额
+    let avg_gear = big.gear_for(total, k);
+    let per_core_avg = big.supply(avg_gear, k) / k as f32;
+    assert!(
+        per_core_avg < busiest,
+        "平均口径应确实欠供最忙核（{per_core_avg} < {busiest}）"
+    );
+    // 逐核口径选出的档：每核供给覆盖最忙核
+    let floor_gear = big.gear_for(floored, k);
+    let per_core_floor = big.supply(floor_gear, k) / k as f32;
+    assert!(
+        per_core_floor >= busiest,
+        "逐核口径必须让每核供给覆盖最忙核（{per_core_floor} >= {busiest}）"
+    );
+    assert!(floor_gear >= avg_gear, "只许抬档，不许降档");
+}
+
+/// 均匀载荷下 «demand_with_core_floor» 必须逐位不变：此时 «busiest ≈ Σ/k»，
+/// 折算不会引入任何额外需求，既有行为与甜点落点完全不受影响（等价性保护）。
+#[test]
+fn core_floor_is_noop_for_even_load() {
+    let caps = [Some(762u32); 6];
+    for u in [0.05f32, 0.2, 0.5, 0.9] {
+        let utils = [u; 6];
+        let cpus: Vec<usize> = (0..6).collect();
+        let total = em::demand_units(&cpus, &utils, &caps).expect("容量齐备");
+        let k = (total.ceil() as usize).max(1);
+        let busiest = em::demand_units(&cpus[..1], &utils, &caps).expect("单核需求");
+        let floored = em::demand_with_core_floor(total, busiest, k);
+        assert!(
+            (floored - total).abs() <= f32::EPSILON * total.max(1.0),
+            "均匀 util={u} 不应改变需求：{floored} vs {total}"
+        );
+    }
+    // 非有限值原样返回（NaN 不允许被「修」成一个可用的数）
+    assert!(em::demand_with_core_floor(f32::NAN, 0.5, 2).is_nan());
+}
+
+/// 放置候选**不许虚报供给**：需求超过单核硬件上限时，只能返回「供给最大的那个」，
+/// 且其 supply 必须等于该簇该档的真实供给（调用方据此判「已到硬件上限」而不是以为搬得动）。
+#[test]
+fn placement_never_claims_supply_beyond_hardware() {
+    let online = em::online_clusters();
+    assert!(!online.is_empty(), "虚构 SoC 至少有一簇在线");
+    let demand = 2.0f32; // 远超任一双簇单核供给
+    let p = em::best_placement(demand, &online, None, 0.0, 1).expect("有候选");
+    let c = em::curve(p.cluster).expect("候选簇有曲线");
+    assert_eq!(p.cores, 1, "单线程口径：只占 1 核");
+    assert!(
+        (p.supply - c.supply(p.gear, 1)).abs() <= f32::EPSILON,
+        "供给必须等于真实档位供给"
+    );
+    assert!(p.supply < demand, "供不上就是供不上，不许凑数");
+    assert_eq!(p.gear, c.top(), "供不上时应取本簇顶档");
+}
+
+/// 成本更低的簇如果**供不上**需求，放置必须选能供上的那个（哪怕更贵）。
+/// 这条锁的是「别处更便宜」判据的前置条件：供给不足的候选不构成迁移理由。
+#[test]
+fn placement_picks_cluster_that_can_supply_even_if_dearer() {
+    let online = em::online_clusters();
+    let demand = 0.9f32; // big 单核最高供给 < 0.9，prime 够
+    let p = em::best_placement(demand, &online, None, 0.0, 1).expect("有候选");
+    assert!(
+        p.supply >= demand,
+        "存在能供上的簇时必须选它（选中 {:?} supply={}）",
+        p.cluster,
+        p.supply
+    );
+}
+
+
+// [k_symmetric]
+/// `best_placement` 必须按**调用方给的核数**比价：单线程（cores=1）供不上的需求，
+/// 在簇级口径（cores=k）下可能正好落得下——这是「k 核 vs k 核」而非「k 核 vs 1 核」的意义。
+#[test]
+fn placement_scales_with_requested_cores() {
+    let online = em::online_clusters();
+    let demand = 1.2f32;
+    let single = em::best_placement(demand, &online, None, 0.0, 1).expect("有候选");
+    assert!(single.supply < demand, "单核口径下 1.2 供不上（应取顶档）");
+    assert_eq!(single.cores, 1);
+
+    let multi = em::best_placement(demand, &online, None, 0.0, 2).expect("有候选");
+    assert_eq!(multi.cores, 2, "核数要如实回传");
+    assert!(
+        multi.supply >= demand,
+        "2 核口径下必须能供上：supply={} demand={demand}",
+        multi.supply
+    );
+    let c = em::curve(multi.cluster).expect("有曲线");
+    assert!(
+        (multi.cost - c.cost(multi.gear, 2)).abs() <= f32::EPSILON,
+        "成本必须按 2 核计（不能拿 1 核成本冒充）"
+    );
+    // 在线核数不足的簇不得参与比价（prime 只有 2 核，要 3 核时必须排除它）
+    let three = em::best_placement(demand, &online, None, 0.0, 3).expect("有候选");
+    assert_eq!(three.cluster, CoreGroup::Big, "3 核只能落 big");
+}
+

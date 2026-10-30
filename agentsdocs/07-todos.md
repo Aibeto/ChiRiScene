@@ -106,9 +106,11 @@
       进程级窄域备忘（同 pid 同簇 15s，只对 EINVAL 记账）、`Engine::applied` 回滚锚点 +
       `note_applied`/`abort`、`@A place` 追加 `eff=` 回读掩码。
       取证与数字：`.cursor/docs/2026-10-26-亲和写失败取证与窄域修复.md`。
-- [ ] **下轮日志核对三件事**：① `pin fg_pin e22` 是否从 6.4 万量级降到百量级；② `place` 失败是否
-      按 (pid,簇) 收敛（预期 ≈30× 降幅，126,555 → ≈4,190 次尝试）；③ `eff=` 回读掩码与 `dst=` 的差集
-      落在哪些核 —— 这是判定「cpuset 收窄」还是「核此刻不可用」的决定性数据。
+- [x] **首轮复核（2026-10-30，29 批 / 52.8M 行）**：① `pin fg_pin e22` **63,856 → 60**（1,064×，超额）；
+      ② `place` **62,531 → 6,353**（9.8×，合计 19.6×，未达 30×，缺口几乎全在 place）；
+      ③ `eff`/`dst` 差集 **94.0% 落在核 0-2**，但 `t` 行统计小核各承担 11-12% 驻留、285 个含小核的 pid 里
+      93 个确实拿到过 ⇒ **不是 cpuset 收窄、也不是核离线，是「间歇可用」** —— 故 cpuset 感知放置
+      （下条）暂不立项，改做「静默裁剪记账」（见下）。簇级震荡 0、@A 峰值 656/s < 基线 734。
 - [ ] **cpuset 感知放置（根治项，待判别后动）**：写前读一次该线程的 cgroup cpuset 并缓存
       （`affinity_cpuset::check_group_cpuset` 已有实现，当前只服务组绑定、单核/放置路径刻意未用），
       把目标区间夹到允许域内。判据：下轮失败若集中在特定 pid 而非特定核号 → cpuset 侧。
@@ -118,4 +120,30 @@
       预算已是真实限流器；放宽会增加迁移数与「更少更稳」冲突，等失败治理生效后按观测定。
 - [ ] **本机离线回归缺口**：`scripts/tests/clg_replay.rs`（`CpuLoadGovernorConfig` 未定义桩）与
       `scripts/tests/rust_regression.rs`（`crate::i18n` 缺失桩）在 HEAD 即编译失败，需补桩或显式标注跳过。
+
+### EEM 模型审计与调频/放置修复（2026-10-30 落地，待真机复核）
+
+报告：`.cursor/docs/2026-10-30-EEM能效模型审计与调度改进.md`；审计明细 `devimpbin/_x1030/model-audit.md`。
+
+- [x] **逐核供给下限** `energy_model::demand_with_core_floor`（+ `[per_core_floor]` 调用点）：不均载荷下
+      `demand = max(Σ, busiest×k)`；均匀载荷逐位不变（两条回归锁死）。
+- [x] **抗饥饿改挂起** `eem_cap_suspended`：原「10 封 1 放」占空比 91% ≈ 长期欠供；并订正「10 tick = 1.6s 不是 10s」。
+- [x] **`[k_symmetric]`+`[supply_gate]`**：`best_placement` 增 `cores` 参数（单线程传 1、簇级传 k），
+      `cheaper_elsewhere` 传本簇 k 并要求候选 `supply ≥ demand`、在线核数 ≥ cores（修 k 核 vs 1 核的口径错配）。
+- [x] **换前台重置负载画像** `[fg_reset]`（`refresh_fg_change`/`reset_load_state`，不动 current_perf）。
+- [x] **静默裁剪记账** `note_stripped`：写返回 0 但回读整簇被摘 → 与 EINVAL 共用 15s 窄域备忘（只记整簇）。
+- [ ] **下轮核对**：① 同 pid 同簇「写 ok 但整簇被摘」是否不再重复出现；② `settled=true` 占比是否从 19.0% 上升；
+      ③ 不均载荷场景（`max_util≈0.85` 且本簇其余核有小负载）下 `cur_freq/sweet` 是否抬升；④ fg 切换后首帧
+      `up_wait` 是否不再继承旧方向（`deb_up` 首行应为 1）。
+- [ ] **跨簇可比性校准**：8750/8650 的簇级瓦数是单核线性外推（顶档求和 35.31 W vs 实测整机 7.03 W，5×），
+      且同一表按单核/整簇口径结论相反（big 便宜 38% vs prime 便宜 85%）。需实测校准或明确标注「不可跨代比较」。
+- [ ] **开应用爬坡 15.3 J/次（占屏亮能量 4.0%）**：换模式时 CLG 重建 + `write_value_force` 写 init 频 →
+      低 util 桶过频 +7…29%。是否改为「保留 current_perf、只重放上限」需先评估与热切换契约的冲突。
+- [ ] **净 idle 符号错误**（`n×active−(n−1)×idle` 的 idle 被重复扣基线）：29/39 SoC 受影响、exynos7880
+      little 顶档 +1.700 W（69%），但**三台在役机不走该路径**，改它会移动 11 个簇的甜点 → 等对应机型日志。
+- [ ] **`dp ≤ 0 → eff = INF`**（22 簇）会把甜点抬到「功率持平」档，应改为「该档不算收益」。
+- [ ] **Ledger 幻影承诺**（commit 在落盘前、abort 不回滚，`placement.rs:513-516`/`:429-437`）：仅影响一轮内
+      后续线程排序且方向保守，暂留；要改须先补「同轮撤销」回归。
+- [ ] **腾讯视频**：本轮判定「不加特调」（样本 81.1 s、详情页非播放页、playback 会丢 touch boost）。
+      待有 ≥10 min 真实播放会话日志再评估。
 

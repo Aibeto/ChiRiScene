@@ -95,6 +95,14 @@ WebUI 侧：
 
 - **`util_smoothing`（2026-09-22 新增，CLG 决策负载 EMA）**：抖动负载下 max*util 每 tick 大幅摆动 → target_perf 翻摆、决策方向反复翻转、`scaling_max_freq` 高频改写（8550 QQ 实测大核 2048 tick 反转 458 次）。EMA 滤波（语义同 tuned 的 `util_smoothing`，1.0=关闭、缺省即关闭=逐位等价）后反转降约五成、写频降三成。default/reduce 配 0.5，boost 保持 1.0（响应优先）；α 0.35 可再降抖动但上限均值抬升更多。main* `max_util` 列为双语义：CLG 行写**平滑前**原始值（离线回放可自行试验系数）；tuned（akmode）行写平滑后的决策负载（2026-09-17 起语义变化）——离线回放按行来源/decision 区分，tuned 行不可再当原始 util 二次平滑。字段新增须同步：`config.rs` 字段+缺省+normalize+Default、`feature.yaml` 全部 SoC 文件（SoC 文件整份覆盖根，只改根不生效）、`mdocs/config-example.yaml`。
 
+- **换前台即重置负载画像（2026-10-30，`[fg_reset]`）**：`CoreGroupWorker::run` 每轮先调 `refresh_fg_change()`，
+  前台包名一变就清空本簇的**记忆类**状态（`ema_util=-1.0`、`steady_decay/steady_streak`、`up_wait/down_wait`、
+  `high_zone_wait`、`fast_down`、`eem_press_streak`、`eem_cap_suspended`），**不动** `current_perf/current_freq`
+  （频率由下一帧 flush 按新负载重算，这里改反而会让写频漏掉一次 clamp）。原因：EMA 与升降频确认都是
+  「上一个 App 的负载记忆」——重载→轻载会拖着高频跑 ~1s（白耗电），轻载→重载要从旧 EMA 慢慢爬到位（点开就卡）。
+  `ema_util=-1.0` 是已有的「首帧直接采用原始 util」哨兵，重置后等价于新 App 的第一帧。
+  空包名（解锁瞬间 / 进程替换）不当作切换；同一 App 内 activity 切换仍走 `refresh_activity_override`。
+
 - **FAS 防篡改强制重写改时间基准（2026-09-24）**：`freq_force_reapply_interval` 语义由「每 N **帧**」改为「每 N **秒**」（默认 30 秒，`normalize()` 钳制最小 1——旧实现写 0 会 `% 0` panic，看门狗反复重启）。旧行为在 120fps 下等效 0.25s 一次、144fps 更密，每次对 3 个 policy 做两次写频 + 两次 `re_unmount()`（实测游戏期约 24 写 + 24 `umount2`/s 且随刷新率放大）→ 现在降至 0.2 写/s、0 `umount2`；`PolicyController::force_reapply()` 里的两次 `re_unmount()` 已删除（它只 `umount2(MNT_DETACH)`、不重开 fd，对写入路径零贡献；`verify_prev_freq` 里那次保留）。副作用：`freq_hold_frames` 的 hold 不再被高频 force 击穿。**防篡改是异常兜底语义**：ChiRi 是设备上唯一的 userspace sysfs 写频调度程序、无竞争者（口径，2026-09-26 依内核源码分析修正；频率实际决策链 = waltgov + vendor hook（OMRG/frame_boost）+ FREQ_QOS 聚合，详见 `agentsdocs/06-kernel.md`「调频路径与竞争者」，ChiRi 写 scaling_max/min 是 clamp 不是频率决策，内核 thermal QoS 钳制是合法态不算篡改），节点被改写属异常态（残留旧模块、手动调试、内核异常态）。
 - 全局省电向（2026-09-23 十三轮调参定稿方向：**不封顶，控高频门槛 + 动态范围**——用户口径：除部分特调外任何在用模式保留随时到最高频的能力；控功耗靠升频门槛/速率/平滑，不靠砍上限）。8550 default 现值：up_threshold 0.88、headroom_ramp 0.08、smoothing_up 0.60、up_rate_limit_ticks 3、up_jump_threshold 0.45、slow_up_scale 0.02、down_threshold 0.62、down_rate_limit_ticks 2、down_fast_threshold 0.30、spike_decay 0.10（离线模拟 QQ −3.7~−5.9%，且新参数下出现 cap≥70% 时刻 = 既压均值又保留冲高频）；per_cluster 仅 little `up_threshold: 0.95`——A510 r1 支持 AArch32、DT 能耗模型（coeff 251）低估其能耗，EAS 会把 64 位线程吸进 little，故抬高其升频门槛而非砍上限；affinity 升核 EINVAL 已按 `pin_incapable` 标记跳过。reduce：up_threshold 0.90 + perf_ceil 1.0；boost：up_threshold 0.55。**2026-09-28 天花板全拆**（R2 硬口径）：8550/8475/8998/根兜底的 `reduce` 与 `default` `perf_ceil` 一律 1.0、特调 akmode 0.95→1.0、playback `headroom` 0.85→1.0 且三簇 `per_cluster` 天花板（little 0.90/0.55、big 0.75、prime 0.80/0.50）整段删除；仅 SceneMode 的 `perf_ceil 0.12` 保留（R1 唯一允许不到最高频的轴）。拆掉的稳态降功耗能力由 T11 稳态下探接棒（见下条），交互响应仍由 touch_boost 兜。`module/config/feature.yaml`（根）是未命中 SoC 目录机型的兜底配置与代码默认值来源；**SoC 文件是覆盖层只改根不生效**。ceil 压低后交互响应全靠 touch_boost——「不跟手」应调 boost 而非抬回 ceil。FAS（sgameGlobal 等）仍是唯一 perf_ceil 豁免。历史演进：0920「禁压 ceiling」→ 0922 日常档 ceiling 0.80+per_cluster → 0923 推翻（不封顶），引用 0920/0922 的 CLG 数字一律过期。
 
@@ -154,14 +162,32 @@ WebUI 侧：
   prime 1958/4320 MHz；sm8550 little 1018/2016、big 1402/2803、prime 1709/3187。
 - **成本口径按忙核数**：`cost(gear,k) = pow[gear] × k`、`supply(gear,k) = cap[gear] × k`，
   `k` = 真正承接工作的核数。这是相对旧 PF 的**根本修正**（不再假设整簇满载）。
+  **实现口径（2026-10-30 对齐）**：代码里 `k = ceil(Σ clamp(util,0,1))`，是**核当量**近似而非实测忙核数；
+  它只保证总量够、不保证**每一颗**够，所以另有下面的「逐核下限」补丁。
+  **实现口径（2026-10-30 对齐）**：代码里 `k = ceil(Σ clamp(util,0,1))`，是**核当量**近似而非实测忙核数；
+  它只保证总量够、不保证**每一颗**够，所以另有下面的「逐核下限」补丁。
 - **调频侧（CLG，`eem_target_freq`）**——三分支，仍守 `target = min(ratio_freq, eem)` 只降不升：
   1. **甜点档就够用** → 封顶在甜点（零损失：需求本就能满足，再升频纯烧电）；
   2. **本簇占用达 `ceil(n/2)` 核当量** → 允许越过甜点（多核共享同一档位，升频收益覆盖全簇；
      此时迁移也无处可去）。6 核 big 门槛 3.0（单线程最多 1.0 → 单线程永不单独触发）、
      2 核 prime 门槛 1.0（单线程跑满即触发，符合物理：频率域共享、别无他法）；
   3. **别处更便宜** → 仍封顶甜点，把缺口留给 affinity 侧迁移。
+     **必须按同样的 k 颗核比价，且候选要真能供上**（2026-10-30 `[k_symmetric]`+`[supply_gate]`）：
+     `best_placement` 新增 `cores` 参数（缺省语义 = 单线程 1 核），`cheaper_elsewhere` 传本簇的 k，
+     于是「k 核 vs k 核」才是对称口径。原先它内部恒 `cores:1`，k≥2 时本簇成本被放大 2–4 倍，
+     把「别处也供不上」误判成「别处更便宜」，封了甜点又迁不过去（实测 sm8550 big 两核各 0.7：
+     `here_cost≈1.54` vs prime 单核 1.0，判 35% 更省 → 需求 0.685 只给到 0.5 档）。
+     候选 `supply < demand` 时一律不算更便宜；在线核数 < k 的簇直接不参与比价。
+  **逐核下限（2026-10-30 `[per_core_floor]`）**：先取本簇 util 最大的核求单核需求 `busiest`，
+  令 `demand = max(Σ需求, busiest × k)`（`energy_model::demand_with_core_floor`）。
+  原因：4 核 (0.85,0.1,0.1,0.1) → Σ=1.15、k=2，平均口径每核 0.575 就判够，而 0.85 那颗只拿到 68%，
+  且 `supply(gear,k) >= Σ` 仍成立 → **抗饥饿判据也看不出欠供 → 封顶永不释放**。均匀载荷下该函数逐位不变
+  （回归 `core_floor_is_noop_for_even_load` / `core_floor_lifts_gear_for_uneven_load`）。
   **抗饥饿**：封顶且需求确实超出该档供给时累计 `eem_press_streak`，连续超
-  `EEM_CAP_RELEASE_TICKS`(10 tick=10s) 即放弃封顶回比例路径——迁移动不了时不能长期锁性能。
+  `EEM_CAP_RELEASE_TICKS`（10 tick = **1.6s**，tick 间隔 160ms；早期文档误写成 10s）
+  即**挂起**封顶（`eem_cap_suspended`）并回比例路径；挂起后不再按节拍自动重封，
+  只有「甜点档供给重新够用」才解挂（真正的滞回）。早先的实现是清 0 后下一 tick 立刻重封，
+  实际占空比 10/11≈91%，等价于长期欠供。
 - **迁移侧（`src/chiri/placement.rs` + `affinity::eem_place_round`）**——**不分前后台**：
   所有被采样线程（`util_pct ≥ eem_min_util_pct`，缺省 8%）都参与，`is_key` 除外（关键线程由 boost 独占）。
   * **只越过甜点才迁**：甜点以内频率维度还没用尽，迁移只会打断缓存局部性。
@@ -187,15 +213,27 @@ WebUI 侧：
   * **写失败是一等状态，不是重试信号（2026-10-26）**：掩码写被内核拒（EINVAL）后三条路径各自收敛——
     ① `pin_core` 记 `pin_fail_streak` 并按 `REPIN_DEBOUNCE(8s) × 2^(n-1)`（封顶 **60s**）退避，
        退避期内连 `@A` 帧都不产生；成功即清零；
-    ② **进程级窄域备忘** `narrow_pid`（同 pid 同簇 **15s** 内不再尝试，**只对 EINVAL 记账**，
-       前台 pid / boost 状态一变立刻清表）——实测 sm8550 一次 boost 里同 pid 的 **417 个线程**
-       在同一秒全部撞同一颗核、整批 EINVAL（单秒 431 条），逐线程各撞一次没有信息增量；
+    ② **进程级窄域备忘** `narrow_pid`（同 pid 同簇 **15s** 内不再尝试，前台 pid / boost 状态一变立刻清表）
+       ——实测 sm8550 一次 boost 里同 pid 的 **417 个线程**在同一秒全部撞同一颗核、整批 EINVAL（单秒 431 条），
+       逐线程各撞一次没有信息增量。**2026-10-30 起两种来源都记账**：EINVAL（内核用返回值说）与
+       **「写返回 0 但回读整簇被摘」**（内核用回读说，`note_stripped`）。后者是 A02-15 治理后暴露的
+       主要形态：`place` 写 ok 的 34,937 行里 22,159 行 eff 少了目标核、被摘的核 94% 落在核 0-2，
+       不记账就会「每轮往同一簇写一次、每次被摘一次」——日志记 ok、线程原地不动。只对**整簇一颗都没拿到**
+       记账，簇内还有核可用不压（285 个目标含小核的 pid 里 93 个确实拿到过小核）；
     ③ `placement::Engine` 新增 `applied` 回滚锚点与 `abort()`：写失败退回锚点 + 计入
        `FAIL_BACKOFF_BASE(4s) × 2^(n-1)`（封顶 30s）的冷却——不回滚的话引擎记「已在新核」、
        内核里线程还在老掩码上，下一轮按假窗口重规划 → 每轮再失败一次（`MIN_DWELL`=2s 一次）。
     取证数字：sm8550 14 批 `place` 写失败 **80%**、ok 里 54% 又被裁剪 → 真正生效仅 **≈9.5%**；
     `pin fg_pin` 失败 **90.5%**；sm8750 同一份代码几乎零失败（平台差异）。
     详见 `.cursor/docs/2026-10-26-亲和写失败取证与窄域修复.md`。
+- **A02-15 治理效果对账（2026-10-30，29 批 / 52.8M 行，去重后 sm8550 19 + sm8750 7 + sm8250 3）**：
+  `pin fg_pin` EINVAL **63,856 → 60**（10,693 次尝试的 0.56%，**1,064×**；同 (pid,tid) 60s 内 ≥3 次重复失败
+  的 tid 4,601 → **0**）；`place` EINVAL **62,531 → 6,353**（9.8×，单 (pid,簇) 峰值 19,760 → 485）；
+  合计 **126,555 → 6,449（19.6×）**。但 place ok 的 34,937 行里 **28,285（81.0%）settled=false**、
+  **22,490（64.4%）clipped=true**、22,159 行 eff 少了目标核 —— **EINVAL 的下降有一部分只是转成了静默裁剪**，
+  故补 `note_stripped`（见上）。被摘核 94% 在核 0-2，但 `t` 行统计小核各承担 11-12% 驻留、
+  285 个目标含小核的 pid 里 93 个确实拿到过小核 ⇒ **不是 cpuset 收窄、也不是小核整体离线，是「间歇可用」**。
+  簇级震荡为 0（≥3 簇/60s 的 tid 两轮皆 0），@A 峰值 656/s 低于基线 734，秒≥400 占比 13/73,083 vs 104/49,936。
 - **日志两级**（用户口径）：INFO `affinity-migrate` 只写**线程 + 方向 + 核区间**；
   devimp `@A act=place` 帧写全量（`dst=<lo>-<hi> value=gain=..,settled=..,reason=..,clipped=..,eff=<回读掩码>`
   `reason` 槽写方向 `up/down/hold`）。CLG 侧 tick 日志键 `clg-eem-tick-log`（带 `eem_khz/sweet_khz/cores`）。

@@ -60,12 +60,12 @@
 | sdm845   | Snapdragon 845      | 就绪     | -           | - [x]      | - [ ]  | -                          |
 | sm8150   | Snapdragon 855      | 就绪     | -           | - [x]      | - [ ]  | -                          |
 | sm8150ac | Snapdragon 855+     | 就绪     | -           | - [x]      | - [ ]  | -                          |
-| sm8250   | Snapdragon 865      | 就绪     | -           | - [x]      | - [ ]  | -                          |
+| sm8250   | Snapdragon 865      | 就绪     | 116,128     | - [x]      | - [ ]  | -                          |
 | sm8350   | Snapdragon 888      | 就绪     | -           | - [x]      | - [ ]  | -                          |
 | sm8475   | Snapdragon 8+ Gen 1 | 测试     | -           | - [ ]      | - [ ]  | -                          |
-| sm8550   | Snapdragon 8 Gen 2  | 适配     | 294,230,759 | - [x]      | - [ ]  | PHB110 / PGEM10 / 2210132C / MEIZU 20 |
+| sm8550   | Snapdragon 8 Gen 2  | 适配     | 348,076,884 | - [x]      | - [ ]  | PHB110 / PGEM10 / 2210132C / MEIZU 20 |
 | sm8650   | Snapdragon 8 Gen 3  | 测试     | -           | - [x]      | - [ ]  | PJX110                     |
-| sm8750   | Snapdragon 8 Elite  | 测试     | 8,982,380   | - [x]      | - [ ]  | 2410DPN6CC                 |
+| sm8750   | Snapdragon 8 Elite  | 测试     | 13,133,681  | - [x]      | - [ ]  | 2410DPN6CC                 |
 
 ## 三星 Exynos（Samsung）
 

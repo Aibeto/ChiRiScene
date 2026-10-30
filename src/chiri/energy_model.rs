@@ -336,6 +336,24 @@ pub fn thread_demand(util_pct: f32, core_cap: f32) -> f32 {
     (util_pct / 100.0).min(1.0) * core_cap.max(0.0) / cr
 }
 
+/// 逐核供给下限：`k` 核共享同一频率域时，**总需求至少要覆盖最忙那颗核的单核需求**。
+///
+/// 为什么需要：`supply(i, k) = cap_at(i) · k` 是「k 颗核一起承接这份需求」的平均口径，
+/// 只保证总量够，不保证**每一颗**都够。载荷不均时平均口径会系统性低估：
+/// 4 核 (0.85, 0.1, 0.1, 0.1) → `Σ = 1.15`、`k = ceil(Σ) = 2`、平均每核 0.575 就判够，
+/// 而 0.85 那颗核按 0.575 的份额只有它需要的 68%，**长期欠供约 1/3**；更糟的是
+/// `supply(i,k) >= Σ` 仍然成立，抗饥饿判据也看不出来，于是永不释放。
+///
+/// 折算方式：把最忙核的单核需求乘 `k` 与总需求取大——两边同除 `k` 即「单核供给 ≥ 单核需求」。
+/// 载荷均匀时 `busiest ≈ Σ/k`，此函数不改变任何结果（见回归 `core_floor_is_noop_for_even_load`）。
+pub fn demand_with_core_floor(demand: f32, busiest_core_demand: f32, k: usize) -> f32 {
+    if !demand.is_finite() || !busiest_core_demand.is_finite() {
+        return demand;
+    }
+    let floor = busiest_core_demand.max(0.0) * k.max(1) as f32;
+    demand.max(floor)
+}
+
 /// 该簇「整簇升频」的占用门槛（**核当量**）：`ceil(n/2)`。
 ///
 /// 口径 = 用户要求的「单个线程占据了该核心簇的 50%（向上取整）」：
@@ -374,6 +392,10 @@ pub fn gear_for_demand(
 
 /// 相对前沿查询：在候选簇中取「同算力下成本最低」的放置。
 ///
+/// * `cores`：按**几颗核**承接这份需求来比价。单线程场景传 1；「本簇 k 颗忙核」这类
+///   簇级需求传 k——两边口径必须一致，否则 k 核成本会被拿去和别簇 1 核成本比、
+///   k≥2 时本簇被放大 2–4 倍（审计实测 big 两核各 0.7 判「prime 便宜 35%」，而 prime
+///   单核供给 1.0 < 需求，根本落不了地）。
 /// * 供给必须 ≥ 需求；都不够时返回供给最大的那个（调用方据此判断「已到硬件上限」）
 /// * `hysteresis`：相对成本改善不足该比例则不切换（防震荡）；0 = 只要有改善就切
 pub fn best_placement(
@@ -381,7 +403,9 @@ pub fn best_placement(
     online: &[(CoreGroup, usize)],
     only: Option<&[CoreGroup]>,
     hysteresis: f32,
+    cores: usize,
 ) -> Option<Placement> {
+    let cores = cores.max(1);
     if !demand.is_finite() || demand <= 0.0 {
         return None;
     }
@@ -392,22 +416,24 @@ pub fn best_placement(
         {
             continue;
         }
+        // 在线核数不够承接 `cores` 颗核 = 这簇物理上接不住，直接不参与比价
+        if n_online < cores {
+            continue;
+        }
         let Some(c) = curve(cluster) else {
             continue;
         };
-        // 单线程只占 1 核（`n_online` 只用于判断该簇是否在线，不参与供给计算）：
-        // 先问「1 核在甜点档够不够」，不够才升档
-        let _ = n_online;
+        // 先问「`cores` 核在甜点档够不够」，不够才升档（越甜点的档只用于判断硬件上限）
         let gear = c
-            .gear_below_sweet_for(demand, 1)
-            .unwrap_or_else(|| c.gear_for(demand, 1));
+            .gear_below_sweet_for(demand, cores)
+            .unwrap_or_else(|| c.gear_for(demand, cores));
         let cand = Placement {
             cluster,
             gear,
             freq_khz: c.freq_khz(gear),
-            cores: 1,
-            cost: c.cost(gear, 1),
-            supply: c.supply(gear, 1),
+            cores,
+            cost: c.cost(gear, cores),
+            supply: c.supply(gear, cores),
         };
         best = Some(match best {
             None => cand,

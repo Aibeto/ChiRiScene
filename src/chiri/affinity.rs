@@ -1301,6 +1301,26 @@ impl AffinityManager {
         }
     }
 
+    /// [strip] 写**返回成功**但回读把某簇整簇摘掉：与 EINVAL 同样记进窄域备忘。
+    ///
+    /// 为什么写成功也要记账：写返回 0 只说明内核收下了这次写，cgroup cpuset 与暂停核会在
+    /// 之后把越界的核摘掉。sm8550 实测（A02-15，29 批 52.8M 行）：`place` 写 ok 的 34,937
+    /// 行里有 22,159 行「回读的 eff 少了目标核」，被摘的核 94% 落在核 0-2；`t` 行统计又显示
+    /// 小核各承担 11-12% 的驻留、并非整体离线。**同一个 pid 反复往同一簇写、每次被摘一次**，
+    /// 就是这种半可用核域下的典型浪费：迁移发出去了、日志记了 ok、线程却原地不动。
+    ///
+    /// 只对「整簇一颗都没拿到」记账，不做部分记账：簇内还有核可用就是有效落点，
+    /// 压住整簇会误伤（实测 285 个目标含小核的 pid 里 93 个确实拿到过小核）。
+    fn note_stripped(&mut self, pid: i32, cluster: CoreGroup, now: Instant) {
+        if pid <= 0 {
+            return;
+        }
+        self.narrow_pid.insert(pid, (cluster, now + NARROW_PID_TTL));
+        if self.narrow_pid.len() > 512 {
+            self.narrow_pid.retain(|_, &mut (_, until)| until > now);
+        }
+    }
+
     /// normal 组绑定的真实写入结果；身份未知时不建立退避
     fn record_normal_bind_result(
         &mut self,
@@ -2710,6 +2730,20 @@ impl AffinityManager {
                         .and_then(|c| crate::common::core_group_of(c as u32));
                     if let Some(cl) = cl {
                         self.eem.note_applied(a.tid, cl, eff, now);
+                    }
+                    // [strip] 意图里有、回读里**整簇没有**的簇：记窄域备忘，15s 内不再往那簇写。
+                    // 与 EINVAL 的区别只在「内核用返回值说了」还是「用回读说了」，后果一样。
+                    for cl in [CoreGroup::Little, CoreGroup::Big, CoreGroup::Prime] {
+                        let wanted = a
+                            .mask
+                            .iter()
+                            .any(|&c| crate::common::core_group_of(c as u32) == Some(cl));
+                        let got = eff
+                            .iter()
+                            .any(|&c| crate::common::core_group_of(c as u32) == Some(cl));
+                        if wanted && !got {
+                            self.note_stripped(pid, cl, now);
+                        }
                     }
                     if a.settled
                         && let Some(st) = self.threads.get_mut(&a.tid)
