@@ -23,5 +23,10 @@
         "versionCode": 30214,
         "title": "ChiRi 更新通知",
         "content": "A02-15 已构建，包含部分能效优化"
+    },
+    {
+        "versionCode": 30215,
+        "title": "ChiRi 更新通知",
+        "content": "A02-16 已构建，新增核心逻辑并修复了一些问题"
     }
 ]
