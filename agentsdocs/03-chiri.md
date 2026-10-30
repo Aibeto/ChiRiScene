@@ -127,8 +127,9 @@ WebUI 侧：
 > 中间的 FDP（绝对瓦数边际成本，只服务后台 promote）作为过渡实现已整体移除。
 > `pf` 前缀的**文件名/符号名**（`pf.chr`、`PF_ENABLED_LOGGED`、`pf_group_of`）属命名沿用，
 > 语义已全部指向第二代。
-> **机型覆盖**：40 个 `soc.yaml` 中 38 个具备 `frontier_policy` 逐档数据（EEM 生效）；
-> 仅 **sm8475 / sm8650** 无该段（mdocs 亦无功耗表、无法生成）→ `energy_model::available()`
+> **机型覆盖**：40 个 `soc.yaml` 中 **39** 个具备 `frontier_policy` 逐档数据（EEM 生效；
+> sm8650 已于 2026-10-23 由 `7d59585` 补齐 EEM 能效模型，已从缺表名单移除）；
+> 仅 **sm8475** 无该段（mdocs 亦无功耗表、无法生成）→ `energy_model::available()`
 > 恒 false → 走原比例路径、`pf.chr` 写 `0`、WebUI 显示 `CLG`（非 bug，已由用户拍板接受）。
 
 - **为什么推翻旧 PF（根因，勿再犯）**：旧 `demand_buckets` 桶表的**两个轴都假设整簇满载**——
