@@ -170,6 +170,8 @@ impl TunedGovernor {
     /// 返回 true = 成功接管；false = 无可用 cluster（配置错误或硬件不支持）
     // [init_release]
     pub fn init_policies(&mut self, mode: &str, cfg: &SpecialTunedConfig) -> bool {
+        // 撤掉释放后的钉最高频保护态：特调接管快照必须是系统原值
+        crate::chiri::max_freq_pin::unpin("tuned-init");
         self.release();
         self.cfg = cfg.clone();
         self.cfg.normalize();

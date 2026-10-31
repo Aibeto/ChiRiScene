@@ -1439,6 +1439,8 @@ impl CpuLoadGovernor {
 
     /// 接管 CLG 角色位置（唯一入口）：建 Worker 并接管 CPU 频率
     pub fn init_policies(&mut self, gov_cfg: &CpuLoadGovernorConfig) {
+        // 接管前先撤掉「释放后钉最高频」的保护态，保证下面的接管快照拍的是系统原值而非钉频值
+        crate::chiri::max_freq_pin::unpin("clg-init");
         self.stop_workers();
         self.cfg = gov_cfg.clone();
         self.normalize_cfg();
@@ -1501,6 +1503,8 @@ impl CpuLoadGovernor {
 
     /// 热切换配置：停旧 Worker 并用新配置重建（与 init_policies 同路径，current_perf 重置到新 perf_init 并立即写频），避免息屏期间 current_perf 掉到 ~0 后亮屏恢复时频率从地板缓慢爬升数秒
     pub fn reload_config(&mut self, gov_cfg: &CpuLoadGovernorConfig) {
+        // 同 init_policies：重建前先撤钉频保护态，避免新快照继承 min=max=hw_max
+        crate::chiri::max_freq_pin::unpin("clg-reload");
         // 保存旧 Worker 的 policy 信息用于重建
         let policy_ids: Vec<i32> = self.workers.iter().map(|w| w.policy_id).collect();
         let policies = crate::chiri::get_cpu_policies();

@@ -58,6 +58,8 @@ impl FastLock {
     /// 接管全部 cpufreq policy：读可用频率、快照原始状态、写默认调速器（common.rs [governor] 选型），再把 min 与 max 一起锁到目标频率
     /// `lock_min=true` 锁硬件最低频（frozen：最低功耗、最冷、完全没有性能），`false` 锁硬件最高频（vector：极速档）；升频先抬 max 再抬 min，降频先压 min 再压 max，避免 min > max 非法中间态
     pub fn init(&mut self, lock_min: bool) {
+        // 撤掉释放后的钉最高频保护态：否则 frozen 模式会把 hw_max 当成系统原值快照下来，release 时永久钉在最高频
+        crate::chiri::max_freq_pin::unpin("fast-init");
         self.release();
 
         let clusters = crate::chiri::get_cpu_policies();

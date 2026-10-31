@@ -185,6 +185,7 @@ pub mod fas_manager;
 pub mod fast;
 pub mod governor;
 pub mod gpu;
+pub mod max_freq_pin;
 pub mod placement;
 pub mod touch_detect;
 pub mod tuned;
@@ -3512,6 +3513,7 @@ pub fn start_scheduler_thread(
                     Err(mpsc::RecvTimeoutError::Timeout) => {
                         // eBPF 负载源超时自愈：超过 CLG_STALE_MAX 无负载事件 → 释放当前接管（CLG/akmode/fast_lock）回系统原生调频，下次 ModeChange/配置事件会重新接管
                         if last_load_event.elapsed() >= CLG_STALE_MAX {
+                            let mut released_any = false;
                             if ak_governor.is_active() {
                                 log::error!(
                                     "{}",
@@ -3521,6 +3523,7 @@ pub fn start_scheduler_thread(
                                     )
                                 );
                                 ak_governor.release();
+                                released_any = true;
                             }
                             if cpu_governor.is_active() {
                                 log::error!(
@@ -3531,6 +3534,7 @@ pub fn start_scheduler_thread(
                                     )
                                 );
                                 cpu_governor.release();
+                                released_any = true;
                             }
                             if fast_lock.is_active() {
                                 log::error!(
@@ -3541,6 +3545,12 @@ pub fn start_scheduler_thread(
                                     )
                                 );
                                 fast_lock.release();
+                                released_any = true;
+                            }
+                            // 释放控制权后不留低档：把各 policy 钉到硬件最高频（min=max=hw_max），
+                            // 直到下一次接管（init_policies/reload_config/FastLock::init/TunedGov::init_policies 先 unpin 还原）
+                            if released_any {
+                                crate::chiri::max_freq_pin::pin_all_max("clg-watchdog-release");
                             }
                         }
                         continue;
