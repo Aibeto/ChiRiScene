@@ -147,3 +147,35 @@
 - [ ] **腾讯视频**：本轮判定「不加特调」（样本 81.1 s、详情页非播放页、playback 会丢 touch boost）。
       待有 ≥10 min 真实播放会话日志再评估。
 
+### 日志 ERROR 取证与负载源兜底（2026-10-31 落地，待真机复核）
+
+报告：`.cursor/docs/2026-10-31-日志ERROR取证与负载源兜底.md`。
+
+- [x] **procfs 负载源兜底** `[load_source]`：eBPF `RING_BUF` 需内核 ≥5.8，sm8250/4.19 上 `Ebpf::load` 必失败，
+      旧实现只打一条 `monitor-cpu-crashed` 就结束线程（daemon 活着但永不发 SystemLoadUpdate，CLG/tuned
+      看门狗 68 分钟 release 26 次）。现 Err 分支起 `start_proc_stat_fallback`：逐核 /proc/stat 差分、
+      节拍与主路径一致、不发假 BpfStats、连续失败 >50 拍交回看门狗。
+- [x] **FAS 开环通知门控** `[open_loop_notify]`：实测 417 次开环/178 次恢复/207 条通知，中位 1 s、p90 7 s，
+      全是退游瞬态。改为持续 10 s 才通知一次；PID 替换与去激活清计时。
+- [ ] **sm8250 真机复核**：确认 `monitor-cpu-ebpf-unavailable` 出现、CLG 看门狗不再 release、status.csv CPU 列有值。
+- [ ] **sched 迁移参数缺失降级**：`sched_migration_cost_ns`/`sched_nr_migrate` 在零售 GKI 不存在
+      （CONFIG_SCHED_DEBUG=n，节点只在 debugfs），每次 boot 刷 38 条 WARN。应探测一次、缺失即静默并标不可用。
+- [ ] **3 条 FAS 单测需桩**：`activate_*`/`repeated_activate_*`/`same_package_pid_*` 依赖编译期白名单里的
+      `game`（实际不存在）+ 真机 sysfs，宿主机恒红；应注入白名单/policy loader 或 `#[ignore]`。
+- [ ] **`[selfcost] @S` 22,397 条**（devimp 开时，50ms 阈值）：下一步给 @S 分块计时，定位是 `/proc/<pid>/task/*`
+      扫描还是 uclamp/掩码回读，再决定优化点。
+
+### 清理与回退（2026-10-31 三条改动后遗留）
+
+- [ ] **删除 core_ctl 的 scenemode 下线机器**：2026-10-31 起 SceneMode 与 reduce 同口径（`apply_affinity_and_corectl`
+      不再传 `scenemode=true`，`CoreCtlConfig.scenemode_offline` 标废弃并加 `#[allow(dead_code)]`），
+      `src/chiri/core_ctl.rs` 的 `[scenemode]` 段（`scenemode_targets`/`scenemode_keep_cpus`/`max_cpus_applied`/
+      `max_cpus_warned`/`restore_online`/`reserved_core`/`self_pinned_tids` 等约 400 行）已成不可达代码。
+      下个版本整段删除，同步删 `03-chiri.md` 的 core_ctl 小节留痕与六份 feature.yaml 的 `scenemode_offline`。
+      回退路径：恢复 `apply_affinity_and_corectl` 的 scenemode 专用分支（`set_power_state(false, enabled && scenemode_offline)`）。
+- [ ] **`max_freq_pin` 真机复核**：看门狗 stale-release 后确认 `[release] max-freq pin` 落盘、各 policy
+      `scaling_min_freq=scaling_max_freq=cpuinfo_max_freq`；再确认下一次接管（CLG init/reload、FastLock、Tuned）
+      打出 `[release] max-freq unpin` 且频点回到系统快照（防止永久钉最高频）。
+- [ ] **`screen_on_value` 真机复核**：`debug.tracing.screen_state=4`（DOZE_SUSPEND）时确认判息屏、
+      `=1` 时判亮屏、属性缺失仍按亮屏兜底；顺带核对 `customize.sh` 安装期改写只在实测 1 时发生。
+

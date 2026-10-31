@@ -224,3 +224,20 @@
 - **日志口径**：main tick 行的 `cur_freq_khz` 是**决策值/上限**，不是实测频率（实测在 snap 的 `cpu_cur_khz`）；
   行数 ≠ 时间（tick 行按 (policy,cluster) 去重 + 2s 心跳），做墙钟统计必须按相邻 Δts 加权。
 
+
+## 负载源与降级契约（2026-10-31 定，改 `cpu_monitor`/`monitor`/`fas_manager` 必守）
+
+- **eBPF 主探针不是所有机型都可用**：`BPF_MAP_TYPE_RINGBUF` 需内核 ≥5.8。加载失败时**必须**切
+  `start_proc_stat_fallback`（逐核 /proc/stat 差分，节拍与 eBPF 路径一致），否则 daemon 活着但永不发
+  SystemLoadUpdate，CLG/tuned 看门狗会反复 release（实测 sm8250/4.19：68 分钟 release 26 次）。
+- **降级路径两条硬约束**：① `total_delta == 0` 沿用上一拍（不能抖成 0）；② `/proc/stat` 连续失败
+  >50 拍（≈8s）返回 Err 交回看门狗 —— 宁可不接管，也不发一串全 0 把频率压到底。不伪造 BpfStats。
+- **用户通知要按「持续时长」而不是「翻转沿」**：FAS 开环 500ms 判据本身正确，但实测 417 次开环里
+  中位 1s、p90 7s，逐沿通知 = 207 条骚扰。`OPEN_LOOP_NOTIFY_AFTER=10s`，进入只记 INFO。
+  换会话（PID 替换）与去激活都必须清 `open_loop_since/notified`，否则新会话首条通知被吞。
+- **`sched_migration_cost_ns`/`sched_nr_migrate` 在零售 GKI 不存在**（CONFIG_SCHED_DEBUG=n，
+  只挂 debugfs）⇒ FAS 的 `migration_cost_ns` 与 Sched 段的迁移微调**在零售机上是空转**，
+  不要再把「没生效」当异常，也不要每 boot 重试刷 WARN。
+- **`activate()` 是设备依赖路径**：先查编译期白名单，再 `load_policies` 读真机 sysfs。
+  写/改它的单测不能假设宿主机能通过（`fas_manager` 现有 3 条:588/:683/:694 即因此恒红）。
+
