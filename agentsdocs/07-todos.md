@@ -179,3 +179,26 @@
 - [ ] **`screen_on_value` 真机复核**：`debug.tracing.screen_state=4`（DOZE_SUSPEND）时确认判息屏、
       `=1` 时判亮屏、属性缺失仍按亮屏兜底；顺带核对 `customize.sh` 安装期改写只在实测 1 时发生。
 
+### vWdog 撞线取证与息屏静默档（2026-10-31 落地，待真机复核）
+
+取证包：`devimpbin/SYSTEM_LAST_KMSG@c6cca54b…@16_40_59` 与 `…@cf831898…@23_40_47`；报告 `devimpbin/1031-2340/FINDINGS_2340.md`。
+
+- [x] **两份 minidump 同型定位**：`QCOM Apps Watchdog bark` → `qcom_wdt_bark_handler` ← GIC ← `cpuidle_enter_s2idle`；
+      vWdog 206 tick ÷ 6.365202 s = 30.899 ms/tick（32.36 Hz，32.768 kHz/1024）⇒ 客侧 bark 20000 ms 未生效，
+      **实际窗口 ≈200 tick ≈6.18 s**；挂起路径 6.225553 s + s2idle 空转 139.612 ms 即撞线。两份是不同构建
+      （`phantom-oki cc067c49…` / `abogki537459655-4k`）⇒ 不是单版本回归。
+- [x] **息屏静默档（L1）** `[screen_off_quiet]`：`TELEMETRY_LOG_INTERVAL_SCREEN_OFF=5s` /
+      `MODE_FILE_REWRITE_INTERVAL_SCREEN_OFF=30s` / `EVENT_POLL_MS_SCREEN_OFF=2s`（thermal 2s 不动）；
+      推送事件即时打断，`CLG_STALE_MAX=5s` 断投判定不受影响。
+- [x] **亮屏时延打点**：`screen_detect::mark_detect()/detect_latency_ms()` + screen 事件分支
+      `scheduler-screen-latency` INFO（判定→落地，预期 <250 ms）。
+- [ ] **真机复核息屏档**：`grep scheduler-screen-latency logs/daemon.log` 抽样确认亮屏时延未被拖慢；
+      对比改造前后息屏段 `Freezing user space processes aborted` 次数（两份 dump 实测 39 → 2）。
+- [ ] **L2 挂起可观测**：`CLOCK_BOOTTIME - CLOCK_MONOTONIC` 差值 + 亮屏后读 `/sys/power/suspend_stats`
+      （success/fail/last_failed_dev）写 `logs/daemon.log`，用于判「这次挂起用了多久、卡在哪个设备」。
+- [ ] **L3 临界避让 + 降噪**：连续失败/长挂起后息屏期主动降低事件密度；并确认 eBPF ring buffer
+      是阻塞 poll 还是 40/160 ms 定时轮询（决定唤醒源清单）。
+- [ ] **6.226 s 卡点定位（真正的根因）**：console 已被 `suspend_console()` 静音，需 ftrace
+      `power/suspend_resume` + `irq_handler_entry` 或 `suspend_stats` 落 pstore；只在驱动侧能收敛。
+
+

@@ -118,6 +118,7 @@ scheduler-doze-special-keep = [Scheduler] 息屏: 特调模式保持接管，不
 scheduler-doze-restore = [Scheduler] 亮屏: 恢复之前的性能限制
 scheduler-clg-init = [Scheduler] CPU 负载调频器: 在启动时初始化 (模式={ $mode })
 scheduler-event-screen = [Scheduler] 收到屏幕状态事件: on={ $on } (此前 last={ $last })
+scheduler-screen-latency = [Scheduler] 屏幕事件已生效: on={ $on }, 判定→落地时延={ $ms }ms
 scheduler-event-mode-change = [Scheduler] 收到模式切换事件: 包={ $pkg } { $old } -> { $new } (温度={ $temp })
 scheduler-event-load = [Scheduler] 收到负载事件: 核心利用率=[{ $cores }]
 scheduler-event-frame = [Scheduler] 收到帧事件: 帧间隔={ $delta_ms }ms

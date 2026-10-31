@@ -15,6 +15,25 @@ use crate::common::DaemonEvent;
 use crate::fluent_args;
 use crate::i18n::{t, t_with_args};
 
+// [latency] 最近一次"判定出屏幕状态"的时刻：三处推送（prop/backlight/leds）发送前各记一次，
+// 主循环落地 ScreenStateChange 时读取，实测"判定→落地"时延（用于验证息屏档拉长轮询没有拖慢亮屏响应）
+static LAST_DETECT_AT: Mutex<Option<Instant>> = Mutex::new(None);
+
+fn mark_detect() {
+    if let Ok(mut g) = LAST_DETECT_AT.lock() {
+        *g = Some(Instant::now());
+    }
+}
+
+/// 距最近一次屏幕状态判定过去的毫秒数（None = 本进程尚未判定过）
+pub fn detect_latency_ms() -> Option<u128> {
+    LAST_DETECT_AT
+        .lock()
+        .ok()
+        .and_then(|g| *g)
+        .map(|t| t.elapsed().as_millis())
+}
+
 // [update] 更新共享屏幕状态，返回是否发生状态变化，uevent 直推 DaemonEvent::ScreenStateChange，verify 路径由 app_detect 兜底转发
 /// 两次状态翻转的最小间隔：此时长内的第二次翻转一律延后，能吃掉同一秒内息屏→亮屏这类抖动，真实操作不受影响
 const SCREEN_MIN_FLIP_INTERVAL: Duration = Duration::from_millis(200);
@@ -413,6 +432,7 @@ pub fn monitor_screen_state_property(state_arc: Arc<Mutex<bool>>, tx: SyncSender
         }
         if hits >= SCREEN_PROP_DEBOUNCE {
             if update_state_if_changed(&state_arc, state, "prop") {
+                mark_detect();
                 let _ = tx.send(DaemonEvent::ScreenStateChange(state));
             }
             candidate = state;
@@ -483,7 +503,7 @@ pub fn monitor_screen_state_uevent(
                     );
                     // 同 power 分支：变化直推事件，消除轮询延迟
                     if update_state_if_changed(&state_arc, state, "backlight") {
-                    let _ = tx.send(DaemonEvent::ScreenStateChange(state));
+                    mark_detect(); let _ = tx.send(DaemonEvent::ScreenStateChange(state));
                     }
                     } else {
                     debug!(
@@ -520,7 +540,7 @@ pub fn monitor_screen_state_uevent(
                     )
                     );
                     if update_state_if_changed(&state_arc, state, "leds") {
-                    let _ = tx.send(DaemonEvent::ScreenStateChange(state));
+                    mark_detect(); let _ = tx.send(DaemonEvent::ScreenStateChange(state));
                     }
                     } else {
                     debug!(

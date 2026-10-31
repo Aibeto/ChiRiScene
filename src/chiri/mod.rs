@@ -17,10 +17,16 @@ const CLG_STALE_MAX: Duration = Duration::from_secs(5);
 /// 事件轮询间隔：主事件通道无事件时的最大阻塞时长，实际阻塞到最近周期任务的 deadline，此值仅作 deadline 兜底上限
 /// 性能敏感路径（负载事件/模式切换/触摸）均为推送事件，到达即唤醒零延迟
 const EVENT_POLL_MS: Duration = Duration::from_millis(1000);
+/// 息屏期事件轮询兜底上限：息屏后系统反复尝试挂起（s2idle），周期性定时器把任务变 runnable 会打断 freezer 并让
+/// dpm_suspend 序列整体重跑；息屏无用户可感交互，兜底从 1s 放宽到 2s。**亮屏事件走推送通道，到达即唤醒，不引入亮屏延迟**
+const EVENT_POLL_MS_SCREEN_OFF: Duration = Duration::from_millis(2000);
 /// 热保护温度采样间隔：2s 一次，温度变化缓慢，更密的采样只浪费 IO
 const THERMAL_CHECK_INTERVAL: Duration = Duration::from_secs(2);
 /// 遥测 CSV 落盘间隔：1s 一次（功耗统计精度 1s；telemetry 线程 1s 刷新共享原子量）
 const TELEMETRY_LOG_INTERVAL: Duration = Duration::from_secs(1);
+/// 息屏期遥测采样间隔：5s 一次（0.2 次/s）。息屏段的每秒采样只带来唤醒与 IO，对诊断价值低；
+/// 不取更长是因为电池/CPU 温度滤波只在遥测块内刷新，间隔过长会让启用温控的机型出现热判定盲区
+const TELEMETRY_LOG_INTERVAL_SCREEN_OFF: Duration = Duration::from_secs(5);
 /// scenemode 饱和退出：**常驻簇（小核 + 大核）** max_util 持续高于该值视为顶满性能上限（util 是忙时占比，与频率无关——后台负载压不住常驻核时即饱和）
 const SCENEMODE_SAT_UTIL: f32 = 0.75;
 /// 饱和持续判定时长：连续满足才退出，防止瞬时突发误触发
@@ -2457,6 +2463,9 @@ pub fn start_scheduler_thread(
             // 模式文件写入器：记账上次写入值，5s 自愈块在内容未变时跳过重写（稳态 5 syscall → 1 read）
             let mut mode_file = ModeFile::new(mode_file_path);
             const MODE_FILE_REWRITE_INTERVAL: Duration = Duration::from_secs(5);
+            /// 息屏期模式文件自愈巡检间隔：息屏后没有外部写模式的场景，放宽到 30s 减少唤醒与 IO；
+            /// 模式切换本身仍即时落盘（heal 只在内容不一致时写），不会读到过期模式
+            const MODE_FILE_REWRITE_INTERVAL_SCREEN_OFF: Duration = Duration::from_secs(30);
             let mut last_mode_file_write = Instant::now();
             // 停摆期心跳间隔 60s：停摆中日志完全静止，靠这条状态行证明「停摆仍在生效、进程未死」——间隔再长就区分不出来了
             const DOWN_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
@@ -2779,7 +2788,12 @@ pub fn start_scheduler_thread(
                 }
 
                 // 当前模式文件自愈：每 5s 巡检一次，内容未变不重写（外部清空/改写/删除最多 5s 内自愈）；停摆期只推进计时不落盘
-                if last_mode_file_write.elapsed() >= MODE_FILE_REWRITE_INTERVAL {
+                let mode_rewrite_interval = if is_screen_on {
+                    MODE_FILE_REWRITE_INTERVAL
+                } else {
+                    MODE_FILE_REWRITE_INTERVAL_SCREEN_OFF
+                };
+                if last_mode_file_write.elapsed() >= mode_rewrite_interval {
                     last_mode_file_write = Instant::now();
                     if !halted {
                         let mode = mode_clone.lock().unwrap().clone();
@@ -2878,9 +2892,15 @@ pub fn start_scheduler_thread(
                     );
                 }
 
-                // 状态日志 snapshot 行（1s）：整合遥测 + 热保护 + 模式状态到 logs/status.csv，telemetry 线程 1s 刷新共享原子量
+                // 状态日志 snapshot 行（亮屏 1s / 息屏 5s）：整合遥测 + 热保护 + 模式状态到 logs/status.csv，telemetry 线程 1s 刷新共享原子量
                 // OPlus 功耗优先走 bcc_parms 私有节点（标准 power_supply 节点约 10s 才刷新，1s 采样必须绕开）
-                if last_telemetry_log.elapsed() >= TELEMETRY_LOG_INTERVAL {
+                // 息屏档放慢的理由：息屏期每秒落盘只增加唤醒与 IO（会把 freeze 打断、重跑 dpm_suspend），诊断价值低
+                let telemetry_interval = if is_screen_on {
+                    TELEMETRY_LOG_INTERVAL
+                } else {
+                    TELEMETRY_LOG_INTERVAL_SCREEN_OFF
+                };
+                if last_telemetry_log.elapsed() >= telemetry_interval {
                     last_telemetry_log = Instant::now();
                     let tm = crate::monitor::telemetry::telemetry();
                     let fmt_opt = |v: Option<f32>, digits: usize| {
@@ -3498,13 +3518,19 @@ pub fn start_scheduler_thread(
                 let until = |last: Instant, period: Duration| -> Duration {
                     period.checked_sub(now_loop.duration_since(last)).unwrap_or(Duration::ZERO)
                 };
-                let mut wait = until(last_telemetry_log, TELEMETRY_LOG_INTERVAL)
+                // 息屏档：遥测 5s、模式巡检 30s、兜底 2s（亮屏档仍是 1s/1s/5s）；推送事件到达即唤醒，不受这些上限影响
+                let poll_cap = if is_screen_on {
+                    EVENT_POLL_MS
+                } else {
+                    EVENT_POLL_MS_SCREEN_OFF
+                };
+                let mut wait = until(last_telemetry_log, telemetry_interval)
                     .min(until(last_thermal_check, THERMAL_CHECK_INTERVAL))
                     .min(until(
                         last_mode_file_write,
-                        MODE_FILE_REWRITE_INTERVAL,
+                        mode_rewrite_interval,
                     ))
-                    .min(EVENT_POLL_MS);
+                    .min(poll_cap);
                 if let Some(d) = fast_next {
                     wait = wait.min(d);
                 }
@@ -3584,6 +3610,13 @@ pub fn start_scheduler_thread(
                             "last" => is_screen_on.to_string()
                         )));
                         is_screen_on = screen_on;
+                        // 实测"判定→落地"时延：息屏档拉长轮询与动态超时后，确认亮屏响应没被拖慢（正常 <250ms）
+                        if let Some(ms) = crate::monitor::screen_detect::detect_latency_ms() {
+                            log::info!("{}", t_with_args("scheduler-screen-latency", &fluent_args!(
+                                "on" => screen_on.to_string(),
+                                "ms" => ms.to_string()
+                            )));
+                        }
                         if !screen_on {
                             fas_mgr.set_frame_feedback_enabled(false);
                             window_probe.invalidate();

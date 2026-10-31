@@ -118,6 +118,7 @@ scheduler-doze-special-keep = [Scheduler] screen OFF: special tuned mode keeps c
 scheduler-doze-restore = [Scheduler] screen ON: restoring previous performance constraints
 scheduler-clg-init = [Scheduler] CPU Load Governor: initialized at startup (mode={ $mode })
 scheduler-event-screen = [Scheduler] screen event received: on={ $on } (last={ $last })
+scheduler-screen-latency = [Scheduler] screen event applied: on={ $on }, detect->apply latency={ $ms }ms
 scheduler-event-mode-change = [Scheduler] mode change event: pkg={ $pkg } { $old } -> { $new } (temp={ $temp })
 scheduler-event-load = [Scheduler] load event: core_utils=[{ $cores }]
 scheduler-event-frame = [Scheduler] frame event: delta={ $delta_ms }ms

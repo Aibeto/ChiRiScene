@@ -75,8 +75,10 @@ pub fn pin_all_max(reason: &str) -> bool {
         };
         snap.push(rec);
 
-        let w_max = crate::utils::write_sysfs(node_path(id, "scaling_max_freq"), hw_max.to_string());
-        let w_min = crate::utils::write_sysfs(node_path(id, "scaling_min_freq"), hw_max.to_string());
+        let w_max =
+            crate::utils::write_sysfs(node_path(id, "scaling_max_freq"), hw_max.to_string());
+        let w_min =
+            crate::utils::write_sysfs(node_path(id, "scaling_min_freq"), hw_max.to_string());
         match (w_max, w_min) {
             (Ok(()), Ok(())) => pinned.push(format!("policy{id}:{hw_max}")),
             (a, b) => failed.push(format!(
@@ -119,20 +121,28 @@ pub fn unpin(reason: &str) -> bool {
     let mut failed: Vec<String> = Vec::new();
     for p in &snap {
         if let Some(min) = p.min {
-            if let Err(e) = crate::utils::write_sysfs(node_path(p.id, "scaling_min_freq"), min.to_string()) {
+            if let Err(e) =
+                crate::utils::write_sysfs(node_path(p.id, "scaling_min_freq"), min.to_string())
+            {
                 failed.push(format!("policy{} min={min}: {e}", p.id));
             }
         }
         if let Some(max) = p.max {
-            if let Err(e) = crate::utils::write_sysfs(node_path(p.id, "scaling_max_freq"), max.to_string()) {
+            if let Err(e) =
+                crate::utils::write_sysfs(node_path(p.id, "scaling_max_freq"), max.to_string())
+            {
                 failed.push(format!("policy{} max={max}: {e}", p.id));
             }
         }
         restored.push(format!(
             "policy{}:min={}:max={}",
             p.id,
-            p.min.map(|v| v.to_string()).unwrap_or_else(|| "-".to_string()),
-            p.max.map(|v| v.to_string()).unwrap_or_else(|| "-".to_string())
+            p.min
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            p.max
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".to_string())
         ));
     }
     log::info!(

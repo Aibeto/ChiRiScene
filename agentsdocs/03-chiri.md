@@ -321,6 +321,7 @@ WebUI 侧：
   - 旧行为与缺陷：`screen_off_value` 缺省 1、只有等于它才算息屏，且在 `parse_disk_meta` 被夹到 {0,1} ⇒ 本机 `screen_state=4`（DOZE_SUSPEND）恒判亮屏（2026-10-31 AirPortal 对照取证的实际缺陷，误判窗口 16:18:08–16:38:34）。
   - 代码面：`common.rs` 的 `SCREEN_ON_VALUE` 原子量 + `set_screen_on_value/screen_on_value`；`MetaYamlFile` 加 `screen_on_value: Option<u32>` 并**保留旧键 `screen_off_value`**（`deny_unknown_fields` 下不能直接删声明；旧键按 0→1、其余→2 迁移）；`chiri::config::Meta.screen_on_value`（缺省 2）+ `Config::load` 同步原子量；`screen_detect::read_screen_prop()` 改为 `v.trim() == on_value.to_string()`。41 份 meta.yaml 全部换成 `screen_on_value: 2`；`customize.sh [screen-detect]` 只在安装期实测属性为 `1` 且模板仍是 `2` 时改写为 1（读到 0/3/4 或空值不动，避免把 doze 值写死成亮屏值）。WebUI 契约/视图/状态/测试同步为 `screen_on_value`（非负整数，缺省 2）。
 - **释放接管后钉最高频（防止释放即掉档）** `src/chiri/max_freq_pin.rs`：CLG 看门狗判定负载源失效、release 掉 ak/CLG/fast 接管时，把所有 cpufreq policy 钉到硬件最高频（`scaling_min_freq = scaling_max_freq = cpuinfo_max_freq`，`scaling_available_frequencies` 末项兜底），保证「负载源失效 → 释放」不会让设备掉回系统快照的低档（2026-10-31 实测释放后核心一直跑低档直到内核崩溃）。钉频时保留首份系统 min/max 快照；**四个接管入口在拍快照前先 `unpin()` 还原**（`cpu_load_governor::init_policies` / `reload_config`、`FastLock::init`、`TunedGovernor::init_policies`）——否则新快照拍到钉频值，之后每次 release 都会永久钉在最高频。日志前缀 `[release] max-freq pin/unpin`。
+- **息屏静默档（2026-10-31，vWdog 撞线取证后落地）**：`scheduler_ipc` 的周期任务按 `is_screen_on` 分两档——亮屏 telemetry 1s / mode file 5s / 兜底 `EVENT_POLL_MS=1s`；**息屏 telemetry `TELEMETRY_LOG_INTERVAL_SCREEN_OFF=5s` / mode file `MODE_FILE_REWRITE_INTERVAL_SCREEN_OFF=30s` / 兜底 `EVENT_POLL_MS_SCREEN_OFF=2s`**（thermal 2s 不动，热保护不降频）。动机不是省电而是**减少息屏期唤醒与落盘**：每次唤醒都可能 `pm_wakeup_pending()` 打断 freeze，使 `dpm_suspend_start` 全序列重跑，抬高挂起路径耗时（两份 minidump：vWdog 客侧 bark 实际窗口仅 ≈6.18 s，挂起路径 6.225553 s 即撞线）。推送事件（负载/模式/触摸/屏幕）仍即时打断 `recv_timeout`，**亮屏响应不受影响**；落地同时在 screen 事件分支加「判定→落地时延」INFO 打点（`screen_detect::detect_latency_ms()` + i18n `scheduler-screen-latency`，三处推送 prop/backlight/leds 发送前 `mark_detect()`）用于实测确认 <250 ms。注意 `CLG_STALE_MAX=5s` 的断投判定挂在超时分支上，息屏档兜底 2s < 5s ⇒ 断投发现时间不变。
 - **SceneMode 线程摆放与 reduce 对齐**：`apply_affinity_and_corectl` 删除 scenemode 专用分支（原先 `affinity.release()` + `set_power_state(false, enabled && scenemode_offline)`），scenemode 期间只抑制 boost（`!scene_mode_active`），线程摆放/CoreCtl 走与 reduce 完全相同的普通分支 ⇒ 不下线小核、不独占大核、**CPU0 留在正常 cpuset 与迁移集**；频率压制只由 CLG 的 scenemode 档（`perf_ceil`/uclamp）承担。饱和退出判据因此覆盖全部在线核（sm8750 little 是空区间，即 8 核全量）。`core_ctl.rs` 的下线机器保留但不可达，见本节上一条与 `07-todos.md`。
 
 ### 遥测数据源（Telemetry，ChiRi 专属）
@@ -355,7 +356,7 @@ WebUI 侧：
   ② `/proc/stat` 连续失败 > 50 拍（≈8 s）返回 Err 交回看门狗 release —— 宁可不接管，也不发一串
   全 0 把频率压到底。不做 BpfStats 伪造（procfs 无等价来源，留空优于填 0）。
 
-- chiri scheduler_ipc 以 `TELEMETRY_LOG_INTERVAL=1s` 消费：写 `logs/status.csv`（logger.rs `status_log_snapshot`，1s 一行，功耗精度 1s）+ 20s 一条 debug 摘要 `telemetry-summary`。BpfStats 不刷新 CLG 看门狗心跳（探针失效不影响负载源判定）。
+- chiri scheduler_ipc 以 `TELEMETRY_LOG_INTERVAL=1s`（**息屏档 `TELEMETRY_LOG_INTERVAL_SCREEN_OFF=5s`**）消费：写 `logs/status.csv`（logger.rs `status_log_snapshot`，1s 一行，功耗精度 1s）+ 20s 一条 debug 摘要 `telemetry-summary`。BpfStats 不刷新 CLG 看门狗心跳（探针失效不影响负载源判定）。
 
 - BCC 失效可见性（2026-09-11）：`bcc_parms` 下标 6/8（电压/电流）缺失或非整数时此前 `?` 静默回退标准节点，「BCC 从未生效、功耗列一直来自 10s 缓存节点」完全不可见（8550 实测 batt_current_ma 99% 在 ±5、74% 为 0）。现 warn 一次 `telemetry-bcc-unusable`（去重）后回退，便于从 daemon.log 确认功耗列口径。
 
