@@ -328,7 +328,8 @@ match (bl, act, tgt) {
 } */
 
 // [prop]
-/// 屏幕状态检测（现役）：读 debug.tracing.screen_state，当前值 == 息屏判定值（common::screen_off_value，meta.yaml `screen_off_value`，缺省 1）即息屏，其余一切值含缺失/异常一律亮屏；属性缺失时 warn 一条留痕
+/// 屏幕状态检测（现役）：读 debug.tracing.screen_state，当前值 == **亮屏**判定值（common::screen_on_value，meta.yaml `screen_on_value`，缺省 2 = AOSP ON）即亮屏，
+/// 其余一切取值（含 3/4 等 doze 子态）一律息屏；属性缺失/为空无法判息屏，按亮屏兜底并 warn 一条留痕
 /// TODO: 恢复 sysfs 投票检测（[source]/[select]/[read]）后移除属性轮询路径
 static PROP_MISSING_LOGGED: AtomicBool = AtomicBool::new(false);
 
@@ -365,17 +366,18 @@ pub fn read_screen_prop_raw() -> Option<String> {
     Some(trimmed.to_string())
 }
 
-/// 现役判定：当前值 == 息屏判定值 → 息屏；其余一切（含缺失/异常）→ 亮屏
+/// 现役判定：当前值 == 亮屏判定值 → 亮屏；其余一切取值（含 3/4 等 doze 子态）→ 息屏；属性缺失（None）→ 亮屏兜底
 fn read_screen_prop() -> bool {
     let raw = read_screen_prop_raw();
+    let on_value = crate::common::screen_on_value();
     let state = match &raw {
-        Some(v) => *v != crate::common::screen_off_value().to_string(),
+        Some(v) => v.trim() == on_value.to_string(),
         None => true,
     };
     trace!(
-        "screen-detect: screen_state={} off_value={} -> {}",
+        "screen-detect: screen_state={} on_value={} -> {}",
         raw.as_deref().unwrap_or("<missing>"),
-        crate::common::screen_off_value(),
+        on_value,
         if state { "on" } else { "off" }
     );
     state

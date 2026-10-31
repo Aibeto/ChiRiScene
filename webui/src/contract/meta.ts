@@ -33,8 +33,8 @@ export const META_FIELDS = [
   'unit_divisor',
   'nofix',
   'power_max_w',
-  /** 息屏判定值（debug.tracing.screen_state 等于该值视为息屏，仅 0/1） */
-  'screen_off_value'
+  /** 亮屏判定值（debug.tracing.screen_state 等于该值视为亮屏，非负整数，缺省 2） */
+  'screen_on_value'
 ] as const
 export type MetaField = (typeof META_FIELDS)[number]
 
@@ -54,7 +54,7 @@ export const WRITABLE_FIELDS = [
   'voltage_divisor',
   'current_divisor',
   'power_max_w',
-  'screen_off_value'
+  'screen_on_value'
 ] as const
 export type WritableField = (typeof WRITABLE_FIELDS)[number]
 
@@ -206,11 +206,11 @@ export function validateMeta(values: Record<string, unknown>): string[] {
   ) {
     problems.push('devimp_aff_secs 必须是整数')
   }
-  // 息屏判定值：仅 0/1 合法（daemon 侧其它值回退默认 1，不判整文件非法，界面从严）
-  if ('screen_off_value' in values) {
-    const v = values.screen_off_value
-    if (typeof v !== 'number' || !Number.isInteger(v) || (v !== 0 && v !== 1)) {
-      problems.push('screen_off_value 只能是 0 或 1')
+  // 亮屏判定值：任意非负整数合法（daemon 侧其它值回退默认 2，不判整文件非法，界面从严）
+  if ('screen_on_value' in values) {
+    const v = values.screen_on_value
+    if (typeof v !== 'number' || !Number.isInteger(v) || v < 0) {
+      problems.push('screen_on_value 必须是非负整数')
     }
   }
   for (const f of ['unit_divisor', 'voltage_divisor', 'current_divisor'] as const) {
@@ -246,11 +246,13 @@ export function validateFieldValue(
         ? null
         : '校准值必须是大于 0 的数字（缺省 1000000；OPlus 私有节点由安装脚本写成 1000）'
     }
-    case 'screen_off_value': {
+    case 'screen_on_value': {
       // 布尔必须显式拒绝（Number(true) === 1 会混过数值检查；daemon 侧 serde u32 也不收布尔）
-      if (typeof value === 'boolean') return '息屏判定值只能是 0 或 1'
-      const n = Number(value)
-      return n === 0 || n === 1 ? null : '息屏判定值只能是 0 或 1'
+      if (typeof value === 'boolean') return 'screen_on_value 必须是非负整数'
+      // 任意非负整数合法（0/1/2/3… 都行），小数、负数、空串一律拒绝
+      if (typeof value === 'string' && value.trim() === '') return 'screen_on_value 必须是非负整数'
+      const n = typeof value === 'number' ? value : Number(value.trim())
+      return Number.isInteger(n) && n >= 0 ? null : 'screen_on_value 必须是非负整数'
     }
     case 'dev_record':
     case 'fas_enabled':

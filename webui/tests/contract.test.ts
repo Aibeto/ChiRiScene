@@ -130,13 +130,18 @@ describe('meta.yaml 校验（复刻守护进程口径）', () => {
     expect(validateFieldValue('oplus_chg', 1 as unknown as boolean)).not.toBeNull()
   })
 
-  it('息屏判定值：仅 0/1 合法', () => {
-    expect(validateFieldValue('screen_off_value', 1)).toBeNull()
-    expect(validateFieldValue('screen_off_value', 0)).toBeNull()
-    expect(validateFieldValue('screen_off_value', 2)).not.toBeNull()
-    expect(validateFieldValue('screen_off_value', true as unknown as number)).not.toBeNull()
-    expect(validateMeta({ ...valid, screen_off_value: 0 })).toEqual([])
-    expect(validateMeta({ ...valid, screen_off_value: 2 }).length).toBe(1)
+  it('亮屏判定值：任意非负整数合法（缺省 2）', () => {
+    expect(META_FIELDS as readonly string[]).toContain('screen_on_value')
+    expect(validateFieldValue('screen_on_value', 2)).toBeNull()
+    expect(validateFieldValue('screen_on_value', 0)).toBeNull()
+    expect(validateFieldValue('screen_on_value', 1)).toBeNull()
+    expect(validateFieldValue('screen_on_value', -1)).not.toBeNull()
+    expect(validateFieldValue('screen_on_value', 1.5)).not.toBeNull()
+    expect(validateFieldValue('screen_on_value', true as unknown as number)).not.toBeNull()
+    expect(validateMeta({ ...valid, screen_on_value: 0 })).toEqual([])
+    expect(validateMeta({ ...valid, screen_on_value: 2 })).toEqual([])
+    expect(validateMeta({ ...valid, screen_on_value: -1 }).length).toBe(1)
+    expect(validateMeta({ ...valid, screen_on_value: 1.5 }).length).toBe(1)
   })
 
   it('devimp 手改字段：整数校验（usize 解析失败会整份重置）', () => {

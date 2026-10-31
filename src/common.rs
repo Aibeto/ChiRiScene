@@ -643,18 +643,19 @@ pub fn screen_on() -> bool {
     SCREEN_ON.load(Ordering::Acquire)
 }
 
-/// 息屏判定值（screen_off_value`，缺省 1）：debug.tracing.screen_state 等于该值视为息屏，其余数字视为亮屏，Config::load 同步原子量，
+/// 亮屏判定值（screen_on_value，缺省 2 = AOSP `ON`）：debug.tracing.screen_state 的取值与该值**相等即亮屏**，其余一切取值（含 3/4 等 doze 子态）视为息屏；
+/// 取值不设范围（任意 u32 都接受，纯单值比较），属性缺失时按亮屏兜底（无源可判，见 screen_detect.rs），Config::load 同步原子量，
 /// 屏幕检测（monitor/screen_detect.rs [prop]）只读原子量，不在 tick 内读磁盘
-static SCREEN_OFF_VALUE: AtomicU32 = AtomicU32::new(1);
+static SCREEN_ON_VALUE: AtomicU32 = AtomicU32::new(2);
 
-/// 设置息屏判定值（meta.yaml 的 screen_off_value，Config::load 时调用）
-pub fn set_screen_off_value(value: u32) {
-    SCREEN_OFF_VALUE.store(value, Ordering::Release);
+/// 设置亮屏判定值（meta.yaml 的 screen_on_value，Config::load 时调用）
+pub fn set_screen_on_value(value: u32) {
+    SCREEN_ON_VALUE.store(value, Ordering::Release);
 }
 
-/// 息屏判定值（meta.yaml 的 screen_off_value，缺省 1）
-pub fn screen_off_value() -> u32 {
-    SCREEN_OFF_VALUE.load(Ordering::Acquire)
+/// 亮屏判定值（meta.yaml 的 screen_on_value，缺省 2）
+pub fn screen_on_value() -> u32 {
+    SCREEN_ON_VALUE.load(Ordering::Acquire)
 }
 
 /// 设置 FAS 总开关（meta.yaml 的 fas_enabled，Config::load 时调用）
@@ -1180,7 +1181,9 @@ struct MetaYamlFile {
     nofix: Option<bool>,
     /// 耗电读数满量程 W（缺省 12），见 ExternalMetaOverrides
     power_max_w: Option<f32>,
-    /// 息屏判定值（0/1，缺省 1），见 ExternalMetaOverrides
+    /// 亮屏判定值（任意 u32，缺省 2），见 ExternalMetaOverrides
+    screen_on_value: Option<u32>,
+    /// 旧键（曾经的息屏判定值 0/1）：仍接收，按 0→1、其余→2 迁移到 screen_on_value，见 ExternalMetaOverrides
     screen_off_value: Option<u32>,
 }
 
@@ -1229,9 +1232,10 @@ pub struct ExternalMetaOverrides {
     pub nofix: Option<bool>,
     /// 耗电读数满量程 W（power_max_w，缺省 12）：只影响 WebUI 状态页仪表盘进度换算，不参与任何调度决策
     pub power_max_w: Option<f32>,
-    /// 息屏判定值（screen_off_value，缺省 1）：debug.tracing.screen_state 等于该值视为息屏；取值仅 0/1，其它值在 parse_disk_meta 回退默认（不判整文件非法）消费点：
-    /// Config::load 合并后 set_screen_off_value 同步原子量，customize.sh [screen-detect] 安装期按属性值翻转该字段
-    pub screen_off_value: Option<u32>,
+    /// 亮屏判定值（screen_on_value，缺省 2）：debug.tracing.screen_state 等于该值视为亮屏、其余视为息屏；**不限制取值**（任意 u32 都合法，判定就是单值比较，
+    /// 3/4 等 doze 子态本身就是合法判定面，不再回退默认）消费点：
+    /// Config::load 合并后 set_screen_on_value 同步原子量，customize.sh [screen-detect] 安装期按属性实测值校正该字段
+    pub screen_on_value: Option<u32>,
 }
 
 /// 读磁盘 meta.yaml（先经 sync_meta_snapshot 校验/纠正）：文件缺失或仍非法返回 None，调用方沿用嵌入默认——绝不 panic，不让坏文件拖垮配置加载
@@ -1340,8 +1344,10 @@ fn parse_disk_meta(text: &str) -> Option<ExternalMetaOverrides> {
     };
     let voltage_divisor = f.voltage_divisor.or(f.unit_divisor).map(sane);
     let current_divisor = f.current_divisor.map(sane);
-    // 息屏判定值：仅 0/1 合法，其它回退默认 1（同 power_max_w 口径，单字段笔误不判整文件非法）
-    let screen_off_value = f.screen_off_value.map(|v| if v <= 1 { v } else { 1 });
+    // 亮屏判定值：不设范围（任意 u32 都合法，判定就是单值相等比较）；旧键 screen_off_value 仍接收，按旧语义「等于该值即息屏」迁移：0→1、其余→2
+    let screen_on_value = f
+        .screen_on_value
+        .or_else(|| f.screen_off_value.map(|v| if v == 0 { 1 } else { 2 }));
     Some(ExternalMetaOverrides {
         loglevel: match f.loglevel.as_deref() {
             Some(v) => Some(sanitize_loglevel(v)?),
@@ -1367,7 +1373,7 @@ fn parse_disk_meta(text: &str) -> Option<ExternalMetaOverrides> {
         current_divisor,
         nofix: f.nofix,
         power_max_w,
-        screen_off_value,
+        screen_on_value,
     })
 }
 

@@ -645,9 +645,9 @@ class AppStore {
   /** 口径开关写入中（高级设置直写 meta.yaml） */
   powerAvgPending = $state(false)
   powerAvgError = $state('')
-  /** 息屏判定值写入中的状态（高级设置） */
-  screenOffPending = $state(false)
-  screenOffError = $state('')
+  /** 亮屏判定值写入中的状态（高级设置） */
+  screenOnPending = $state(false)
+  screenOnError = $state('')
   /** 当前功耗（W，status.csv 最后一行的 batt_power_w，1s 采样）：null = 无行/无读数，显示 — */
   powerNowWatt = $state<number | null>(null)
 
@@ -656,9 +656,10 @@ class AppStore {
     return this.metaSnapshot?.values?.power_avg === true
   }
 
-  /** 息屏判定值（meta.yaml `screen_off_value`，缺省 1）：debug.tracing.screen_state 等于该值视为息屏；非法值与缺失一律按默认 1 呈现（daemon 侧同口径） */
-  get screenOffValue(): number {
-    return this.metaSnapshot?.values?.screen_off_value === 0 ? 0 : 1
+  /** 亮屏判定值（meta.yaml `screen_on_value`，缺省 2）：debug.tracing.screen_state 等于该值即亮屏，其余（含 3/4 等 doze 子态）视为息屏；非法值与缺失一律按默认 2 呈现（daemon 侧同口径） */
+  get screenOnValue(): number {
+    const v = this.metaSnapshot?.values?.screen_on_value
+    return typeof v === 'number' && Number.isInteger(v) && v >= 0 ? v : 2
   }
 
   // [powerMax]
@@ -779,19 +780,19 @@ class AppStore {
     }
   }
 
-  /** 高级设置：直写 meta.yaml 的 `screen_off_value`（不走草稿，立即热重载）；debug.tracing.screen_state 等于该值视为息屏，默认 1，安装脚本按安装期读数自动校正
+  /** 高级设置：直写 meta.yaml 的 `screen_on_value`（不走草稿，立即热重载）；debug.tracing.screen_state 等于该值视为亮屏，默认 2（AOSP ON），安装脚本按安装期实测自动校正
    *  写后回读 */
-  async setScreenOffValue(value: 0 | 1): Promise<void> {
-    if (this.screenOffPending || this.metaWritePending) return
-    this.screenOffPending = true
+  async setScreenOnValue(value: number): Promise<void> {
+    if (this.screenOnPending || this.metaWritePending) return
+    this.screenOnPending = true
     this.metaWritePending = true
-    this.screenOffError = ''
+    this.screenOnError = ''
     try {
-      const result = await writeMetaFields({ screen_off_value: value })
+      const result = await writeMetaFields({ screen_on_value: value })
       if (result.kind !== 'ok') {
-        this.screenOffError =
+        this.screenOnError =
           result.kind === 'failed' ? result.error : t('state.unsupportedEnv')
-        toast(this.screenOffError)
+        toast(this.screenOnError)
         return
       }
       this.metaSnapshot = result.value
@@ -800,9 +801,9 @@ class AppStore {
       this.metaPath = result.value.path
       // meta 直写成功：强制补拉静态项（meta 快照刚被改；fire-and-forget 不拖慢返回）
       void this.loadStatic(true)
-      toast(t('config.screenoff.saved'))
+      toast(t('config.screenon.saved'))
     } finally {
-      this.screenOffPending = false
+      this.screenOnPending = false
       this.metaWritePending = false
     }
   }

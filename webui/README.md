@@ -56,7 +56,7 @@ Android 上回落 `system-ui`，故不再加载 Poppins）、中文走 Noto Sans
 - **可写接触点**：`meta.yaml`（写入口 = `contract/meta.ts::WRITABLE_FIELDS`，当前 15 项：language /
   loglevel / dev_record / fas_enabled / scenemode_enabled / power_avg / notify /
   oplus_chg / oplus_dual_cell / voltage_double / current_double / voltage_divisor / current_divisor /
-  power_max_w / screen_off_value），`rhine.chr`（实验室状态，写模式 key、空内容或保留字
+  power_max_w / screen_on_value），`rhine.chr`（实验室状态，写模式 key、空内容或保留字
   `off` 强制关闭），以及 `down.chr`（DOWN 停摆，写 `down` 开、写空内容关）。
   都做「tmp→rename」的原子写；meta 还需顶层行替换以保住注释，且都要写后回读——守护进程会把非法
   字段那一行恢复成默认值（其余内容保留）。

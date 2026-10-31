@@ -17,4 +17,4 @@ current_double: false
 voltage_divisor: 1000000
 current_divisor: 1000000
 power_max_w: 12
-screen_off_value: 1
+screen_on_value: 2

@@ -62,8 +62,8 @@ fn apply_meta_overrides(meta: &mut Meta, o: &crate::common::ExternalMetaOverride
     if let Some(v) = o.power_max_w {
         meta.power_max_w = v;
     }
-    if let Some(v) = o.screen_off_value {
-        meta.screen_off_value = v;
+    if let Some(v) = o.screen_on_value {
+        meta.screen_on_value = v;
     }
     if let Some(v) = o.nofix {
         meta.nofix = v;
@@ -111,10 +111,10 @@ pub struct Meta {
     #[serde(default, alias = "PowerAvg")]
     pub power_avg: bool,
 
-    /// 息屏判定值（meta.yaml `screen_off_value`，缺省 1）：debug.tracing.screen_state 属性等于该值视为息屏（高级设置，安装脚本按安装期自动校正）
-    /// Config::load 同步到 common::SCREEN_OFF_VALUE
-    #[serde(default = "default_screen_off_value", alias = "ScreenOffValue")]
-    pub screen_off_value: u32,
+    /// 亮屏判定值（meta.yaml `screen_on_value`，缺省 2 = AOSP `ON`）：debug.tracing.screen_state 属性等于该值视为亮屏，其余（含 3/4 等 doze 子态）视为息屏（高级设置，安装脚本按安装期自动校正）
+    /// 取值不设范围（任意 u32，单值相等比较）；Config::load 同步到 common::SCREEN_ON_VALUE
+    #[serde(default = "default_screen_on_value", alias = "ScreenOnValue")]
+    pub screen_on_value: u32,
 
     /// 耗电读数满量程（W，meta.yaml `power_max_w`，可选，默认 12）：只影响 WebUI 状态页仪表盘的进度换算，不参与任何调度决策
     #[serde(default = "crate::utils::default_power_max_w", alias = "PowerMaxW")]
@@ -175,9 +175,9 @@ fn d_devimp_top_n() -> usize {
 fn d_devimp_aff_secs() -> usize {
     1
 }
-/// 息屏判定值缺省值（meta.yaml `screen_off_value`）：debug.tracing.screen_state = 1 视为息屏
-fn default_screen_off_value() -> u32 {
-    1
+/// 亮屏判定值缺省值（meta.yaml `screen_on_value`）：debug.tracing.screen_state = 2（AOSP Surface.ON）视为亮屏
+fn default_screen_on_value() -> u32 {
+    2
 }
 
 impl Meta {
@@ -1799,7 +1799,7 @@ impl Config {
         // 功能总开关同步到进程级原子标志（覆盖启动 + config_watcher 热重载两条路径）
         crate::common::set_fas_enabled(config.meta.fas_enabled);
         crate::common::set_scenemode_enabled(config.meta.scenemode_enabled);
-        crate::common::set_screen_off_value(config.meta.screen_off_value);
+        crate::common::set_screen_on_value(config.meta.screen_on_value);
         // 线程功能总闸与机型内的两个子开关取「与」：关掉后 affinity 走 release()（逐线程恢复全核 + cpuset/uclamp 快照回写）、core_ctl 回 Normal（恢复 min_cpus/online 快照）
         // 热重载后由 scheduler_ipc 的 config_dirty 分支调 apply_affinity_and_corectl 落地，周期块（2s）也会兜一次；thread_bind 是实验室 frozen 专用闸，frozen 期间为 false 交还线程亲和/绑核与 core_ctl
         config.affinity.enabled &= config.meta.thread_bind;

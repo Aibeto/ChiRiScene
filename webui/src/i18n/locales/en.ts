@@ -159,9 +159,9 @@ export default {
   'lab.subtitle': 'Experimental feature warning',
   'lab.notice.stability': 'Features on this page are highly unstable and may be removed at any time',
   'lab.notice.reboot': 'Use under developer guidance',
-  'config.screenoff': 'Screen-off value',
-  'config.screenoff.hint': 'Set the screen-off detection value',
-  'config.screenoff.saved': 'Screen-off value saved',
+  'config.screenon': 'Screen-on value',
+  'config.screenon.hint': 'debug.tracing.screen_state equal to this value means the screen is on (default 2, corrected at install)',
+  'config.screenon.saved': 'Screen-on value saved',
 
   // Notification test: fixed tag ChiRi-Test, prefilled editable title/body, shows raw script output
   // (printing only "sent" would hide a real failure)

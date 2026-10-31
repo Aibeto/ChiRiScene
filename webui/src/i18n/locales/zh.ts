@@ -155,9 +155,9 @@ export default {
   'lab.subtitle': '实验性功能警告',
   'lab.notice.stability': '本页面功能高度不稳定，随时可能移除',
   'lab.notice.reboot': '建议在开发者指导下使用',
-  'config.screenoff': '息屏值',
-  'config.screenoff.hint': '设置息屏判定值',
-  'config.screenoff.saved': '息屏判定值已保存',
+  'config.screenon': '亮屏判定值',
+  'config.screenon.hint': 'debug.tracing.screen_state 等于该值视为亮屏（默认 2，安装时按实测校正）',
+  'config.screenon.saved': '亮屏判定值已保存',
 
   // 通知测试：固定 tag ChiRi-Test，标题/正文预填可改，显示脚本原始输出（只显示「已发送」会把真失败藏起来）
   'config.notifyTest': '通知测试',

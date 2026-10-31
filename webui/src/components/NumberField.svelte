@@ -9,6 +9,7 @@
     unit = '',
     min = 0,
     max = 1e9,
+    step = 'any',
     disabled = false,
     pending = false,
     onchange
@@ -20,6 +21,8 @@
     unit?: string
     min?: number
     max?: number
+    /** 步进（默认 any = 允许小数；整数项传 1 让微调按钮按整数走） */
+    step?: string | number
     disabled?: boolean
     /** 有未提交的改动（界面标记，不影响表单语义） */
     pending?: boolean
@@ -75,7 +78,7 @@
       class="g-input num__input"
       type="number"
       inputmode="decimal"
-      step="any"
+      {step}
       {disabled}
       aria-invalid={invalid || undefined}
       min={String(min)}

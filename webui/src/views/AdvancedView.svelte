@@ -1,5 +1,5 @@
 <script lang="ts">
-  // AdvancedView.svelte: [bar] [fields] [notify-test] 高级设置二级页：DOWN 停摆、息屏判定值，与电池读数页同一套二级页逻辑
+  // AdvancedView.svelte: [bar] [fields] [notify-test] 高级设置二级页：DOWN 停摆、亮屏判定值，与电池读数页同一套二级页逻辑
   // 直写状态文件 / meta.yaml（不走草稿，写后回读），与 daemon 热重载对齐；末组是通知测试（经 module 根目录 notify.sh 投递，tag 固定 ChiRi-Test）
   import NumberField from "@/components/NumberField.svelte";
   import Panel from "@/components/Panel.svelte";
@@ -63,18 +63,18 @@
       {#if app.downError}
         <p class="u-note u-danger u-mt-2">{app.downError}</p>
       {/if}
-      <!-- 息屏判定值：debug.tracing.screen_state 等于该值视为息屏（默认 1，安装时校正）；失焦/回车提交，直写 screen_off_value -->
+      <!-- 亮屏判定值：debug.tracing.screen_state 等于该值视为亮屏（默认 2，安装时按实测校正）；失焦/回车提交，直写 screen_on_value -->
       <NumberField
-        label={t("config.screenoff")}
-        hint={t("config.screenoff.hint")}
-        value={app.screenOffValue}
+        label={t("config.screenon")}
+        hint={t("config.screenon.hint")}
+        value={app.screenOnValue}
         min={0}
-        max={1}
-        disabled={app.screenOffPending}
-        onchange={(next) => app.setScreenOffValue(next as 0 | 1)}
+        step={1}
+        disabled={app.screenOnPending}
+        onchange={(next) => app.setScreenOnValue(next)}
       />
-      {#if app.screenOffError}
-        <p class="u-note u-danger u-mt-2">{app.screenOffError}</p>
+      {#if app.screenOnError}
+        <p class="u-note u-danger u-mt-2">{app.screenOnError}</p>
       {/if}
     </div>
   </Panel>

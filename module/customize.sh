@@ -54,7 +54,7 @@ MSG_OPLUS_SKIP="No OPlus private node on this device; falling back to the standa
 MSG_VOLT_CHECK="Reading the standard voltage node to calibrate the unit divisors..."
 MSG_VOLT_APPLY="Calibration divisors written (same value for voltage and current)"
 MSG_VOLT_FAIL="Standard voltage node unreadable or out of the 3-4.5 V range; divisors left as they are"
-MSG_SCREEN_FLIP="Screen-state property read 1 at install; screen_off_value flipped to 0 in meta.yaml"
+MSG_SCREEN_FLIP="Screen-state property read 1 at install (1 = ON on this device); screen_on_value set to 1 in meta.yaml"
 
 if echo "$CURRENT_LOCALE" | $BUSYBOX grep -qi "zh"; then
   LANG_CODE="zh"
@@ -93,7 +93,7 @@ if echo "$CURRENT_LOCALE" | $BUSYBOX grep -qi "zh"; then
   MSG_VOLT_CHECK="正在读取标准节点电压，推算校准倍数..."
   MSG_VOLT_APPLY="已写入校准倍数（电压与电流同值）"
   MSG_VOLT_FAIL="标准节点电压读数不可用或不在 3~4.5V 量级，校准倍数保持原样，安装完成后请打开webui手动校准"
-  MSG_SCREEN_FLIP="安装时屏幕状态属性读数为 1，已把 meta.yaml 的 screen_off_value 改为 0"
+  MSG_SCREEN_FLIP="安装时屏幕状态属性读数为 1（该机 1 表示亮屏），已把 meta.yaml 的 screen_on_value 改为 1"
 
 fi
 
@@ -340,10 +340,12 @@ apply_battery_defaults() {
         apply_standard_divisor "$META_FILE"
     fi
 
-    # [screen-detect] debug.tracing.screen_state=1 与模板默认「1 为息屏」相反，翻转写入 0，读到 0 或缺失不动
+    # [screen-detect] 亮屏判定值：安装期屏幕必为亮（人正看着屏装模块），此时 debug.tracing.screen_state 的读数即本机「亮屏值」。
+    # 模板默认 2（AOSP ON）；只有读到 1（该机 1 才表示亮屏的口径）才认为是反相机型并对齐写入，读到 0/3/4 等 doze 子态、空值一律不动，
+    # 免得把 doze 值写死成亮屏值（新语义下「等于该值即亮屏」，写错等于让息屏永远判不出来）。
     local prop_val=$(getprop debug.tracing.screen_state 2>/dev/null | tr -d ' \t\r\n')
-    if [ "$prop_val" = "1" ] && grep -q "^screen_off_value: 1" "$META_FILE"; then
-        $SED_CMD -i "s/^screen_off_value: 1/screen_off_value: 0/" "$META_FILE"
+    if [ "$prop_val" = "1" ] && grep -q "^screen_on_value: 2" "$META_FILE"; then
+        $SED_CMD -i "s/^screen_on_value: 2/screen_on_value: 1/" "$META_FILE"
         ui_print "$MSG_SCREEN_FLIP"
     fi
 }

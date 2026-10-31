@@ -28,6 +28,6 @@ voltage_divisor: 1000000
 current_divisor: 1000000
 # 耗电读数满量程（W，WebUI 状态页仪表盘用；可选，默认 12）：只影响显示，不参与调度。
 power_max_w: 12
-# 息屏判定值（高级设置，默认 1）：debug.tracing.screen_state 属性等于该值视为息屏。
-# 安装时会按属性实测值自动校正，一般无需手改。
-screen_off_value: 1
+# 亮屏判定值（高级设置，默认 2 = AOSP ON）：debug.tracing.screen_state 属性等于该值视为亮屏，
+# 其余取值（含 3/4 等 doze 子态）视为息屏；安装时会按属性实测值自动校正，一般无需手改。
+screen_on_value: 2
