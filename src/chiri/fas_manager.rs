@@ -21,6 +21,11 @@ use fas_process::ProcessIdentity;
 /// 活跃实例温度刷新周期（喂给 FAS 引擎内部限温逻辑，core_temp_threshold=0 时无效）
 const FAS_TEMP_REFRESH: Duration = Duration::from_secs(3);
 
+/// 开环（仅负载控制）持续多久才给用户发通知：帧反馈静默 500ms 即进开环，而退游/加载切场
+/// 的空窗实测中位 1s、p90 7s，逐次通知会变成打扰（A02-15 日志 417 次开环 / 207 条通知）。
+/// 取 10s：覆盖 p90 瞬态，真正的「FAS 功能长期失效」仍会通知。
+const OPEN_LOOP_NOTIFY_AFTER: Duration = Duration::from_secs(10);
+
 /// 接管期间写入 `sched_migration_cost_ns` 的节点（配置 None 时不动）。
 /// 2026-10-24 A02-14 实测：5 台机型该节点**都不存在**（GKI 未导出），写入侧已改为
 /// 读不到即 warn 并跳过；恢复侧同口径（write_sysfs 不吞错 + warn）。真机取证到
@@ -56,8 +61,12 @@ pub struct FasManager {
     exit_delay: Duration,
     /// performance 调速器接管（activate 时切，deactivate 时按快照恢复）
     governor: GovernorGuard,
-    /// 上次 on_load_update 时的开环状态：false→true 翻转沿发警告通知（拦截器在 notify 侧限流）
+    /// 上次 on_load_update 时的开环状态：false→true 翻转沿开始计时
     was_open_loop: bool,
+    /// 本段开环的起点（None = 当前闭环）：通知按「持续时长」而非「翻转沿」触发
+    open_loop_since: Option<Instant>,
+    /// 本段开环是否已发过通知：一段最多一次，避免恢复前反复打扰
+    open_loop_notified: bool,
     last_temp: f64,
     last_temp_read: Instant,
     /// FAS 温度源节点路径，原始读数刻度因内核而异，每次刷新经 `utils::battery_temp_divisor()` 取全局预识别结论（与 CLG 热保护同源）
@@ -85,6 +94,8 @@ impl FasManager {
             )),
             governor: GovernorGuard::new(),
             was_open_loop: false,
+            open_loop_since: None,
+            open_loop_notified: false,
             last_temp: 0.0,
             last_temp_read: Instant::now(),
             temp_path,
@@ -138,6 +149,8 @@ impl FasManager {
                 // 新会话（PID 替换）同样重置开环沿状态：reset_frame_feedback 使 warmup_remaining>0，
                 // 该会话开局即 uses_load_control()=true；不复位则上一会话残留的 was_open_loop=true 会把这条沿吞掉
                 self.was_open_loop = false;
+                self.open_loop_since = None;
+                self.open_loop_notified = false;
             }
             self.exit_deadline = None;
             self.set_frame_feedback_enabled(true);
@@ -242,6 +255,8 @@ impl FasManager {
         // 会话拆除即复位开环沿状态：否则上一会话在开环态收尾后，下一会话「开局即开环」（warmup_remaining>0 使 uses_load_control() 恒为 true）时 false→true 沿永不触发
         // 通知与 [fas] warn 一并静默（对齐 controller.rs 的 load_only_warned = false）
         self.was_open_loop = false;
+        self.open_loop_since = None;
+        self.open_loop_notified = false;
         self.fas_signal.set_frame_source(None);
         // 迁移成本与 perfmgr 先于频率恢复，让后续 governor 快照到系统原状。
         // 恢复口径与激活侧一致（write_sysfs 不吞错）：激活侧只会在「读到过原值且写入成功」时
@@ -411,21 +426,51 @@ impl FasManager {
             }
             inst.controller.update_core_utils(core_utils);
             inst.controller.update_load_control();
-            // 开环翻转沿检测：false→true（进入开环）发警告通知（拦截器在 notify 侧限流）；true→false（恢复闭环）只记 INFO
+            // 开环状态机：翻转沿只开始/结束计时，通知等「持续 >= OPEN_LOOP_NOTIFY_AFTER」再发一次
+            // 本函数每个负载事件（40/160ms）调用一次，计时精度足够，不需要额定时器
             let open_loop = inst.controller.uses_load_control();
-            if open_loop && !self.was_open_loop {
-                let title = crate::i18n::t("notify-fas-openloop-title");
-                let body = t_with_args(
-                    "notify-fas-openloop-body",
-                    &fluent_args! {"pkg" => inst.package.as_str()},
-                );
-                log::warn!(
-                    "[fas] open-loop entered: {} — posting ChiRi-FAS warning",
-                    inst.package
-                );
-                crate::notify::post_notification(&title, "ChiRi-FAS", &body);
-            } else if !open_loop && self.was_open_loop {
-                log::info!("[fas] closed-loop restored: {}", inst.package);
+            match (open_loop, self.was_open_loop) {
+                (true, false) => {
+                    self.open_loop_since = Some(Instant::now());
+                    self.open_loop_notified = false;
+                    log::info!("[fas] open-loop entered: {}", inst.package);
+                }
+                (true, true) => {
+                    if !self.open_loop_notified
+                        && self
+                            .open_loop_since
+                            .is_some_and(|since| since.elapsed() >= OPEN_LOOP_NOTIFY_AFTER)
+                    {
+                        self.open_loop_notified = true;
+                        let title = crate::i18n::t("notify-fas-openloop-title");
+                        let body = t_with_args(
+                            "notify-fas-openloop-body",
+                            &fluent_args! {"pkg" => inst.package.as_str()},
+                        );
+                        log::warn!(
+                            "[fas] open-loop sustained {}s: {} - posting ChiRi-FAS warning",
+                            OPEN_LOOP_NOTIFY_AFTER.as_secs(),
+                            inst.package
+                        );
+                        crate::notify::post_notification(&title, "ChiRi-FAS", &body);
+                    }
+                }
+                (false, true) => {
+                    // 恢复闭环如实记录这轮开环持续多久：短瞬态（不足阈值的）在日志上就是一行 info，
+                    // 不落 error、不打扰用户
+                    let held_ms = self
+                        .open_loop_since
+                        .map(|since| since.elapsed().as_millis())
+                        .unwrap_or(0);
+                    log::info!(
+                        "[fas] closed-loop restored: {} (open-loop {}ms)",
+                        inst.package,
+                        held_ms
+                    );
+                    self.open_loop_since = None;
+                    self.open_loop_notified = false;
+                }
+                (false, false) => {}
             }
             self.was_open_loop = open_loop;
         }

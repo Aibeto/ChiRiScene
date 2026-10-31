@@ -12,6 +12,7 @@ monitor-fps-crashed = [Main] FPS 监控崩溃: { $error }
 monitor-fps-tokio-failed = [Main] 无法为 FPS 监控创建 Tokio 运行时
 monitor-cpu-crashed = [Main] CPU 负载监控崩溃: { $error }
 monitor-cpu-tokio-failed = [Main] 无法为 CPU 监控创建 Tokio 运行时
+monitor-cpu-ebpf-unavailable = [Main] eBPF CPU 负载探针不可用（{ $error }），已改用 /proc/stat 用户态负载源；调频与放置仍闭环，唤醒/迁移遥测暂缺
 monitor-rlimit-memlock-failed = [Main] 提升 RLIMIT_MEMLOCK 失败，eBPF Map 可能加载失败
 main-chdir = [Main] 切换工作目录到: { $dir }
 main-module-root = [Main] 模块根目录: { $path }
@@ -85,6 +86,8 @@ cpu-monitor-fg-baseline-reset = [CPU Monitor] 前台 PID 变化，重置利用�
 cpu-monitor-util-fallback = [CPU Monitor] TGID map 无数据，降级到线程级计算 (pid={ $pid }, raw_tgid={ $raw })
 cpu-monitor-tick-log = [CPU Monitor] 核心=[{ $cores }] 前台pid={ $pid } 前台最大利用率={ $util }% 跟踪线程数={ $threads } 耗时={ $delta }ms
 cpu-monitor-channel-closed = [CPU Monitor] 通道已关闭，退出循环
+cpu-monitor-proc-fallback-started = [CPU Monitor] procfs 负载源已启动 | 逐核时间片={ $cpus }
+cpu-monitor-proc-stat-read-failed = [CPU Monitor] /proc/stat 读取失败（连续第 { $count } 次）: { $error }
 fps-monitor-init = [FPS Monitor] 初始化 eBPF FPS 监控
 fps-monitor-attached = [FPS Monitor] 已挂载 uprobe 到 PID: { $pid }
 fps-monitor-attach-failed-initial = [FPS Monitor] 初始挂载失败: { $error }

@@ -1,4 +1,4 @@
-//! cpu_monitor.rs: [consts] [helpers] [setup] [global-util] [fg-util] [telemetry] [interval] [snap-procs]
+//! cpu_monitor.rs: [consts] [helpers] [proc-stat-fallback] [setup] [global-util] [fg-util] [telemetry] [interval] [snap-procs]
 //! [tgid-util] [thread-util]
 
 use crate::common::{DaemonEvent, ProcSnap};
@@ -86,6 +86,131 @@ pub fn get_thread_tids(pid: u32) -> Vec<u32> {
         }
     }
     tids
+}
+
+// [proc-fallback]
+/// /proc/stat 逐核累计 jiffies（忙/总）：忙 = user+nice+system+irq+softirq+steal，
+/// 闲 = idle+iowait；guest/guest_nice 已计入 user/nice，不重复累加
+#[derive(Clone, Copy, Default)]
+struct CoreTimes {
+    busy: u64,
+    total: u64,
+}
+
+/// 读 /proc/stat 的逐核时间片：返回按 CPU ID 索引的向量（缺失核保持 default）
+fn read_proc_stat_core_times() -> std::io::Result<Vec<CoreTimes>> {
+    let text = std::fs::read_to_string("/proc/stat")?;
+    let mut out: Vec<CoreTimes> = Vec::new();
+    for line in text.lines() {
+        let Some((id, times)) = parse_cpu_times_line(line) else {
+            continue;
+        };
+        if out.len() <= id {
+            out.resize(id + 1, CoreTimes::default());
+        }
+        out[id] = times;
+    }
+    if out.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "no per-cpu lines in /proc/stat",
+        ));
+    }
+    Ok(out)
+}
+
+/// 解析一行 /proc/stat 逐核数据；汇总行 "cpu ..."（cpu 后直接空白）与字段不全的行返回 None
+fn parse_cpu_times_line(line: &str) -> Option<(usize, CoreTimes)> {
+    let rest = line.strip_prefix("cpu")?;
+    let digits = rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len());
+    if digits == 0 {
+        return None;
+    }
+    let id = rest[..digits].parse::<usize>().ok()?;
+    let vals: Vec<u64> = rest[digits..]
+        .split_whitespace()
+        .take(8)
+        .filter_map(|v| v.parse::<u64>().ok())
+        .collect();
+    if vals.len() < 5 {
+        return None;
+    }
+    let idle = vals[3] + vals.get(4).copied().unwrap_or(0);
+    let total: u64 = vals.iter().sum();
+    Some((
+        id,
+        CoreTimes {
+            busy: total.saturating_sub(idle),
+            total,
+        },
+    ))
+}
+
+/// 用两拍 /proc/stat 累计值算逐核忙时占比，写入 out（按 CPU ID 索引）
+/// total 未推进（同一 jiffie 内重复采样、或该核本拍缺失）时沿用 out 里的上一拍，
+/// 避免把利用率抖成 0 触发 CLG 降频
+fn update_core_utils(last: &[CoreTimes], current: &[CoreTimes], out: &mut Vec<f32>) {
+    if out.len() < current.len() {
+        out.resize(current.len(), 0.0);
+    }
+    // 核下线（热插拔）时截断：旧核的利用率不能留在向量尾部继续喂给 CLG
+    out.truncate(current.len());
+    for (id, now) in current.iter().enumerate() {
+        let before = last.get(id).copied().unwrap_or_default();
+        let busy_delta = now.busy.saturating_sub(before.busy);
+        let total_delta = now.total.saturating_sub(before.total);
+        if total_delta > 0 {
+            out[id] = (busy_delta as f32 / total_delta as f32).clamp(0.0, 1.0);
+        }
+    }
+}
+
+/// 读单线程累计运行时间（utime+stime，单位 USER_HZ）：/proc/<pid>/task/<tid>/stat
+fn read_task_cpu_ticks(pid: u32, tid: u32) -> Option<u64> {
+    let text = std::fs::read_to_string(format!("/proc/{pid}/task/{tid}/stat")).ok()?;
+    parse_task_stat_ticks(&text)
+}
+
+/// 解析 /proc/<pid>/task/<tid>/stat 的 utime+stime（单位 USER_HZ）
+/// comm 字段可能含空格与括号，先定位最后一个 ')'；其后从 state(field 3) 起算，
+/// utime(field 14) = 第 12 项、stime(field 15) = 第 13 项
+fn parse_task_stat_ticks(text: &str) -> Option<u64> {
+    let rest = &text[text.rfind(')')? + 1..];
+    let mut fields = rest.split_whitespace();
+    let utime = fields.nth(11)?.parse::<u64>().ok()?;
+    let stime = fields.next()?.parse::<u64>().ok()?;
+    Some(utime + stime)
+}
+
+/// 前台进程最大单线程利用率：逐 TID 的 utime+stime 差分 / (墙钟 x USER_HZ)
+/// prev 跨采样保存；线程新建/退出自然淘汰（整表替换），首帧只建基线返回 0
+fn fg_thread_max_util(
+    pid: u32,
+    prev: &mut std::collections::HashMap<u32, u64>,
+    elapsed: std::time::Duration,
+) -> f32 {
+    // Android 的 USER_HZ 恒为 100（/proc/stat 与 /proc/<pid>/stat 同一刻度）
+    const USER_HZ: f32 = 100.0;
+    let secs = elapsed.as_secs_f32();
+    if secs <= 0.0 {
+        return 0.0;
+    }
+    let mut next = std::collections::HashMap::with_capacity(prev.len());
+    let mut best = 0.0_f32;
+    for tid in get_thread_tids(pid) {
+        let Some(ticks) = read_task_cpu_ticks(pid, tid) else {
+            continue;
+        };
+        next.insert(tid, ticks);
+        if let Some(old) = prev.get(&tid) {
+            let util = ticks.saturating_sub(*old) as f32 / (secs * USER_HZ);
+            best = best.max(util.clamp(0.0, 1.0));
+        }
+    }
+    *prev = next;
+    best
 }
 
 // [setup]
@@ -478,6 +603,130 @@ pub async fn start_cpu_loop(
     Ok(())
 }
 
+// [proc-stat-fallback]
+/// 用户态负载源：eBPF 探针不可用时的兜底（内核 < 5.8 无 BPF_MAP_TYPE_RINGBUF、
+/// SELinux/权限拒绝加载、或产物缺 program/map）
+///
+/// 为什么需要：eBPF 加载失败会让 start_cpu_loop 直接返回，线程结束后进程仍在但
+/// 永不发 SystemLoadUpdate，CLG/tuned 的看门狗会在数秒后释放控制权并长期空转
+/// （sm8250 / kernel 4.19.157 实测 68 分钟 26 次）。本路径用 procfs 提供同量纲负载，
+/// 让调频与放置链路在旧内核上仍然闭环。
+///
+/// 口径与 eBPF 路径对齐：core_utils 是每核忙时占比（jiffies 差分），
+/// foreground_max_util 是前台进程最重线程的运行时间占比。BpfStats（唤醒/迁移/频切）
+/// 在 procfs 无等价来源，本路径不发该事件——下游留空优于填 0。
+pub async fn start_proc_stat_fallback(
+    tx: SyncSender<DaemonEvent>,
+    mut rx_pid: watch::Receiver<u32>,
+    ak_active: Arc<AtomicBool>,
+    sample_ms_normal: u64,
+) -> Result<(), anyhow::Error> {
+    if crate::common::is_chiri_soc() && crate::common::fas_available() {
+        FAS_FG_UTIL_ENABLED.store(true, Ordering::Relaxed);
+    }
+
+    let mut fg_pid: u32 = *rx_pid.borrow();
+    let mut last = read_proc_stat_core_times()?;
+    let mut core_utils = vec![0.0_f32; last.len()];
+    let mut last_fg_scan = std::time::Instant::now();
+    let mut fg_prev: std::collections::HashMap<u32, u64> = std::collections::HashMap::new();
+    let mut fg_cached = 0.0_f32;
+    let mut read_fail_streak: u32 = 0;
+
+    info!(
+        "{}",
+        t_with_args(
+            "cpu-monitor-proc-fallback-started",
+            &fluent_args!("cpus" => last.len().to_string())
+        )
+    );
+
+    let mut interval = tokio::time::interval(std::time::Duration::from_millis(sample_ms_normal));
+    loop {
+        interval.tick().await;
+        if rx_pid.has_changed().unwrap_or(false) {
+            fg_pid = *rx_pid.borrow_and_update();
+            fg_prev.clear();
+            fg_cached = 0.0;
+        }
+
+        let current = match read_proc_stat_core_times() {
+            Ok(v) => {
+                read_fail_streak = 0;
+                v
+            }
+            Err(e) => {
+                read_fail_streak += 1;
+                // 连续失败超过约 8s（常规 160ms 约 50 拍）交回上层：没有负载事件时看门狗会释放
+                // 控制权；继续发全 0 会把系统当成空闲、把频率压到底，更危险
+                if read_fail_streak > 50 {
+                    return Err(anyhow::anyhow!(
+                        "{}",
+                        t_with_args(
+                            "cpu-monitor-proc-stat-read-failed",
+                            &fluent_args!(
+                                "error" => e.to_string(),
+                                "count" => read_fail_streak.to_string()
+                            )
+                        )
+                    ));
+                }
+                if read_fail_streak == 1 || read_fail_streak % 50 == 0 {
+                    warn!(
+                        "{}",
+                        t_with_args(
+                            "cpu-monitor-proc-stat-read-failed",
+                            &fluent_args!(
+                                "error" => e.to_string(),
+                                "count" => read_fail_streak.to_string()
+                            )
+                        )
+                    );
+                }
+                continue;
+            }
+        };
+
+        update_core_utils(&last, &current, &mut core_utils);
+        last = current;
+
+        // 前台利用率只在 FAS 消费时计算：扫 /proc/<pid>/task 是每线程一次读文件，
+        // 500ms 节流后仍是毫秒级开销，非 FAS 场景必须完全跳过
+        let foreground_max_util = if FAS_FG_UTIL_ENABLED.load(Ordering::Relaxed) && fg_pid != 0 {
+            if last_fg_scan.elapsed() >= std::time::Duration::from_millis(500) {
+                let elapsed = last_fg_scan.elapsed();
+                last_fg_scan = std::time::Instant::now();
+                fg_cached = fg_thread_max_util(fg_pid, &mut fg_prev, elapsed);
+            }
+            fg_cached
+        } else {
+            0.0
+        };
+
+        if tx
+            .send(DaemonEvent::SystemLoadUpdate {
+                core_utils: core_utils.clone(),
+                foreground_max_util,
+            })
+            .is_err()
+        {
+            warn!("{}", t("cpu-monitor-channel-closed"));
+            break;
+        }
+
+        // 与 eBPF 路径同一套节拍：特调 40ms 快速跟随，否则常规周期
+        let target = if ak_active.load(Ordering::Relaxed) {
+            std::time::Duration::from_millis(SAMPLE_MS_TUNED)
+        } else {
+            std::time::Duration::from_millis(sample_ms_normal)
+        };
+        if interval.period() != target {
+            interval = tokio::time::interval_at(tokio::time::Instant::now() + target, target);
+        }
+    }
+    Ok(())
+}
+
 // [snap-procs]
 /// 读进程名：cmdline 首段优先（应用即包名，native 取文件名段），退化 /proc/<pid>/comm（15 字节截断），全失败给 "<pid>"
 /// 供 `snapshot_procs` 的 pid→name 缓存填充，命中后不再读 /proc
@@ -685,4 +934,94 @@ fn compute_thread_level_util(
 
     *last_thread_run = current_thread_run;
     max_util
+}
+
+// [tests]
+#[cfg(test)]
+mod proc_stat_parse_tests {
+    use super::{parse_cpu_times_line, parse_task_stat_ticks};
+
+    #[test]
+    fn proc_stat_aggregate_line_is_skipped() {
+        assert!(parse_cpu_times_line("cpu  100 0 50 800 50 0 0 0 0 0").is_none());
+    }
+
+    #[test]
+    fn proc_stat_per_core_busy_excludes_idle_and_iowait() {
+        // user=100 nice=0 system=50 idle=800 iowait=50 irq=10 softirq=0 steal=0
+        let (id, t) = parse_cpu_times_line("cpu3 100 0 50 800 50 10 0 0 0 0").unwrap();
+        assert_eq!(id, 3);
+        assert_eq!(t.total, 1010);
+        // iowait 计入空闲：与 eBPF 路径「线程在等 IO = 该核空闲」口径一致
+        assert_eq!(t.busy, 160);
+    }
+
+    #[test]
+    fn task_stat_ticks_handles_comm_with_spaces_and_parens() {
+        // state 后连续 10 项（ppid..cmajflt），utime=700 stime=300
+        let line = "4242 (a b (c)) S 1 2 3 4 5 6 7 8 9 10 700 300 0 0";
+        assert_eq!(parse_task_stat_ticks(line), Some(1000));
+    }
+
+    #[test]
+    fn task_stat_ticks_rejects_truncated_line() {
+        assert_eq!(parse_task_stat_ticks("42 (x) S 1 2 3"), None);
+    }
+
+    #[test]
+    fn core_utils_use_jiffie_deltas_and_hold_on_zero_delta() {
+        use super::{CoreTimes, update_core_utils};
+        let last = vec![
+            CoreTimes {
+                busy: 100,
+                total: 200,
+            },
+            CoreTimes {
+                busy: 50,
+                total: 100,
+            },
+        ];
+        // 核 0：忙 50 / 总 100 = 0.5；核 1：本拍累计未动（同一 jiffie 重复采样）→ 沿用上一拍 0.9
+        let current = vec![
+            CoreTimes {
+                busy: 150,
+                total: 300,
+            },
+            CoreTimes {
+                busy: 50,
+                total: 100,
+            },
+        ];
+        let mut out = vec![0.0_f32, 0.9];
+        update_core_utils(&last, &current, &mut out);
+        assert!((out[0] - 0.5).abs() < 1e-6);
+        assert!((out[1] - 0.9).abs() < 1e-6);
+    }
+
+    #[test]
+    fn core_utils_grow_when_a_core_comes_online() {
+        use super::{CoreTimes, update_core_utils};
+        let last = vec![CoreTimes {
+            busy: 0,
+            total: 100,
+        }];
+        let current = vec![
+            CoreTimes {
+                busy: 10,
+                total: 200,
+            },
+            CoreTimes {
+                busy: 5,
+                total: 100,
+            },
+        ];
+        let mut out = vec![0.0_f32];
+        update_core_utils(&last, &current, &mut out);
+        assert_eq!(out.len(), 2);
+        assert!((out[0] - 0.1).abs() < 1e-6);
+        assert!((out[1] - 0.05).abs() < 1e-6);
+        // 核下线：向量必须截断，旧核数据不得残留
+        update_core_utils(&current, &last, &mut out);
+        assert_eq!(out.len(), 1);
+    }
 }

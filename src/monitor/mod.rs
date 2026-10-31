@@ -1,6 +1,6 @@
 //! mod.rs: [mods] [guard] [fas_signal] [start] [init] [watchers] [ebpf] [detect]
 
-use log::error;
+use log::{error, warn};
 use std::error::Error;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::SyncSender;
@@ -375,10 +375,13 @@ pub fn start_monitor(
         })?;
     }
 
-    // 7. 启动 eBPF CPU 负载监控线程
+    // 7. 启动 eBPF CPU 负载监控线程；探针不可用时降级到 procfs 负载源（旧内核 / 权限 / 产物缺失）
     log::debug!("{}", t("monitor-thread-start-cpu"));
     let tx_cpu = tx.clone();
+    let tx_cpu_fb = tx.clone();
     let ak_active_cpu = ak_active.clone();
+    let ak_active_cpu_fb = ak_active.clone();
+    let rx_pid_cpu_fb = rx_pid_cpu.clone();
     spawn_guarded("cpu_monitor_ebpf", move || {
         // 同 fps_monitor：单线程 runtime（current_thread + enable_time），省 multi-thread 空闲线程池
         if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
@@ -386,17 +389,43 @@ pub fn start_monitor(
             .build()
         {
             rt.block_on(async {
-                if let Err(e) =
-                    cpu_monitor::start_cpu_loop(tx_cpu, rx_pid_cpu, ak_active_cpu, sample_ms_normal)
-                        .await
+                match cpu_monitor::start_cpu_loop(
+                    tx_cpu,
+                    rx_pid_cpu,
+                    ak_active_cpu,
+                    sample_ms_normal,
+                )
+                .await
                 {
-                    error!(
-                        "{}",
-                        t_with_args(
-                            "monitor-cpu-crashed",
-                            &fluent_args!("error" => e.to_string())
+                    Ok(()) => {}
+                    Err(e) => {
+                        // 降级不是致命错误：内核 <5.8（无 BPF_MAP_TYPE_RINGBUF）、SELinux 拒绝、
+                        // 产物缺 map 都走这里。没有负载事件时 CLG/tuned 看门狗会反复释放控制权，
+                        // 所以必须换数据源而不是让线程退出
+                        warn!(
+                            "{}",
+                            t_with_args(
+                                "monitor-cpu-ebpf-unavailable",
+                                &fluent_args!("error" => e.to_string())
+                            )
+                        );
+                        if let Err(fallback_err) = cpu_monitor::start_proc_stat_fallback(
+                            tx_cpu_fb,
+                            rx_pid_cpu_fb,
+                            ak_active_cpu_fb,
+                            sample_ms_normal,
                         )
-                    );
+                        .await
+                        {
+                            error!(
+                                "{}",
+                                t_with_args(
+                                    "monitor-cpu-crashed",
+                                    &fluent_args!("error" => fallback_err.to_string())
+                                )
+                            );
+                        }
+                    }
                 }
             });
         } else {

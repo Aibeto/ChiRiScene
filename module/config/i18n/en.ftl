@@ -12,6 +12,7 @@ monitor-fps-crashed = [Main] FPS Monitor crashed: { $error }
 monitor-fps-tokio-failed = [Main] Failed to create Tokio runtime for FPS monitor
 monitor-cpu-crashed = [Main] CPU Load Monitor crashed: { $error }
 monitor-cpu-tokio-failed = [Main] Failed to create Tokio runtime for CPU monitor
+monitor-cpu-ebpf-unavailable = [Main] eBPF CPU load probe unavailable ({ $error }), switched to the /proc/stat userspace load source; frequency and placement control stay closed-loop, wakeup/migration telemetry is unavailable
 monitor-rlimit-memlock-failed = [Main] Failed to raise RLIMIT_MEMLOCK, eBPF maps may fail to load
 main-chdir = [Main] Changed working directory to: { $dir }
 main-module-root = [Main] Module root: { $path }
@@ -85,6 +86,8 @@ cpu-monitor-fg-baseline-reset = [CPU Monitor] foreground PID changed, util basel
 cpu-monitor-util-fallback = [CPU Monitor] TGID map missing, falling back to thread-level (pid={ $pid }, raw_tgid={ $raw })
 cpu-monitor-tick-log = [CPU Monitor] cores=[{ $cores }] fg_pid={ $pid } fg_max_util={ $util }% threads_tracked={ $threads } delta={ $delta }ms
 cpu-monitor-channel-closed = [CPU Monitor] channel closed, exiting loop
+cpu-monitor-proc-fallback-started = [CPU Monitor] procfs load source started | per-core timeslices={ $cpus }
+cpu-monitor-proc-stat-read-failed = [CPU Monitor] failed to read /proc/stat (consecutive #{ $count }): { $error }
 fps-monitor-init = [FPS Monitor] initializing eBPF FPS monitor
 fps-monitor-attached = [FPS Monitor] attached uprobe to PID: { $pid }
 fps-monitor-attach-failed-initial = [FPS Monitor] initial attach failed: { $error }
