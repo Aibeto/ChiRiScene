@@ -49,16 +49,16 @@
 
 白名单在 `src/chiri/special_tuned.yaml`（编译期嵌入），参数组在 `module/config/normal/tuned_profiles.yaml`。
 
-| 字段           | akmode                                        | playback                                                   |
-| -------------- | --------------------------------------------- | ---------------------------------------------------------- |
-| 用途           | 游戏（明日方舟）                              | 视频播放稳态                                               |
+| 字段           | akmode                                        | playback                                                    |
+| -------------- | --------------------------------------------- | ----------------------------------------------------------- |
+| 用途           | 游戏（明日方舟）                              | 视频播放稳态                                                |
 | 触发           | arknights 国服/日服 + `re:(?i)arknights` 兜底 | B 站 `tv.danmaku.bili` + `re:(?i)(bilibili\|danmaku\.bili)` |
-| headroom       | 1.15                                          | 1.05                                                       |
-| perf_floor     | 0.0                                           | 0.0                                                        |
-| hysteresis     | 0.03                                          | 0.04                                                       |
-| down_hold_ms   | 100                                           | 100                                                        |
-| util_smoothing | 1.0（不平滑）                                 | 0.35                                                       |
-| boost_affinity | true                                          | false                                                      |
+| headroom       | 1.15                                          | 1.05                                                        |
+| perf_floor     | 0.0                                           | 0.0                                                         |
+| hysteresis     | 0.03                                          | 0.04                                                        |
+| down_hold_ms   | 100                                           | 100                                                         |
+| util_smoothing | 1.0（不平滑）                                 | 0.35                                                        |
+| boost_affinity | true                                          | false                                                       |
 
 特调只给长稳态场景做。daily 组（桌面/聊天/资讯等 17 个应用）2026-09-17 晚上机实测后移除：高频短交互收益低、侵入高。
 

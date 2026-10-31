@@ -33,6 +33,9 @@ output/
 logd/
 .tmp-log/
 zzzlink/
+.Trash-0/
+.dsh-progress/
+.agent-teams/
 
 # TRAE & CodeBuddy
 .trae-html-share-packages/
@@ -47,7 +50,6 @@ socpk/
 
 # devimp
 devimpbin/
-.Trash-0/
 
 # WebUI（原 webui/.gitignore 合并于此，2026-09-22）
 webui/logs
