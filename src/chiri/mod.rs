@@ -1964,7 +1964,7 @@ fn build_aff_snapshot(
 
 // [affinity]
 /// 应用 CPU 亲和布局与 core_ctl 在线策略（ChiRi 专属，跟随模式/屏幕/前台 PID），内部去重：布局与 PID 未变化时无 sysfs 写入，可安全周期性调用
-/// `scene_mode_active` 是 scenemode 激活标志（与配置字段 `CoreCtl.scenemode_offline` 不同），激活时抑制 boost；little 簇下线与 `max_cpus` 钳核由 `config.core_ctl.scenemode_offline` 门控
+/// `scene_mode_active` 是 scenemode 激活标志：激活时只抑制 boost（线程摆放与 CoreCtl 走与 reduce 档完全相同的路径——不下线小核、不独占大核，CPU0 留在正常迁移集）
 fn apply_affinity_and_corectl(
     affinity: &mut affinity::AffinityManager,
     corectl: &mut core_ctl::CoreCtlManager,
@@ -1987,18 +1987,10 @@ fn apply_affinity_and_corectl(
         corectl.set_power_state(false, false);
         return;
     }
-    // stardust 家族（scenemode）：停线程迁移与动态分组、全部 cpuset 恢复全核，压频只压 CLG 频率上限；核心层面下线 little 簇 + 钳制 `max_cpus` 由 `CoreCtl.scenemode_offline` 决定
-    // 仅在持有接管时 release 一次，避免息屏全程每 2s 重复回写后台组 uclamp max 并刷「已释放接管」日志
-    if scene_mode_active {
-        if affinity.is_active() {
-            affinity.release();
-        }
-        corectl.set_power_state(
-            false,
-            config.core_ctl.enabled && config.core_ctl.scenemode_offline,
-        );
-        return;
-    }
+    // scenemode（stardust 家族）不再有专用分支：[2026-10-31 对齐 reduce] 原先「停线程迁移 + release 全部 cpuset + 下线 little 簇除 CPU0 + 独占一颗大核」的路径已废弃——
+    // 它把 CPU0 从正常迁移集里摘出去（little 簇只剩引导核 + self_pinned 钉核），而 reduce 档从不这么做。
+    // 现在 scenemode 与 reduce 同口径：boost 被 `!scene_mode_active` 抑制，线程摆放走下方普通分支（affinity 正常分组、core_ctl 回 NONE 不在线压制），
+    // 频率压制只由 CLG 的 scenemode 档（`Config.scenemode.cpu_load_governor`，perf_ceil/uclamp）承担。
     // fas 模式按 boost 处理：FAS 只负责调频，线程摆放沿用 boost 布局（top-app/foreground 收窄 prime∪big + 前台钉核 + core_ctl 保大核），与屏幕状态解耦
     // boost 只看 mode、不查 FAS 引擎是否活跃（冷却期与重激活间隙内布局照常生效）；省电型特调（boost_affinity=false）不走 boost：不收窄 cpuset、不保大核常在线
     let boost = ((is_boost_mode(mode) && tuned_boost_affinity(config, mode)) || mode == "fas")
@@ -4169,7 +4161,7 @@ pub fn start_scheduler_thread(
                                             }
                                             log::info!("{}", t("scheduler-scene-mode-enter"));
                                             scene_mode_active = true;
-                                            // 立即应用 scenemode 核心压制（不等 2s 周期块）：下线 little 簇（除引导核）+ core_ctl `max_cpus` 钳制保留核数（`scenemode_keep_cpus()`）+ 专用大核 cpuset 独占
+                                            // 立即落地 scenemode 的线程摆放（不等 2s 周期块）：与 reduce 同口径——不 boost、不下线核心、CPU0 仍在正常迁移集，只让 CLG 的 scenemode 频率档压频
                                             {
                                                 let cfg = config_clone.read().unwrap();
                                                 apply_affinity_and_corectl(
@@ -4189,8 +4181,8 @@ pub fn start_scheduler_thread(
                             }
                         }
 
-                        // scenemode 饱和退出：常驻核（little 引导核 + 全部 big）里任一核 max_util 持续顶满（≥SCENEMODE_SAT_UTIL 且持续 SAT_SECS=10s）→ 退回 reduce（恢复全部在线核）+ 300s 冷却不得重进
-                        // util 是忙时占比（与频率无关），饱和即真饱和；scenemode 下线 little 簇后判据主要落在 big 上
+                        // scenemode 饱和退出：全部在线核里任一核 max_util 持续顶满（≥SCENEMODE_SAT_UTIL 且持续 SAT_SECS=10s）→ 退回 reduce + 300s 冷却不得重进
+                        // util 是忙时占比（与频率无关），饱和即真饱和；scenemode 不再下线小核，判据覆盖全部在线核（sm8750 little 是空区间，chain 出来即 8 核全量）
                         if scene_mode_active && !is_screen_on {
                             let ranges = crate::common::chiri_core_ranges();
                             let standby_max = ranges

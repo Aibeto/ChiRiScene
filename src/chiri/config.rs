@@ -1637,8 +1637,10 @@ pub struct CoreCtlConfig {
     /// 总开关：false 时不写任何 core_ctl 节点
     #[serde(default = "crate::utils::default_true")]
     pub enabled: bool,
-    /// scenemode 是否下线核心（息屏深度省电）：true = 进入 scenemode 时下线 little 簇（除引导核）并用 WALT core_ctl `max_cpus` 钳住保留核数（见 core_ctl.rs 的 `scenemode_targets`）
-    /// false = 不下线任何核，仅靠 scenemode.yaml 的频率上限（`perf_ceil`）+ uclamp 压制省电
+    /// **已废弃（2026-10-31）**：SceneMode 不再下线核心、不再钳 `max_cpus`（与 reduce 档同口径，CPU0 留在正常迁移集），
+    /// daemon 不再消费此键，六个机型 feature.yaml 里的值仅为旧配置兼容保留、改动无任何效果；
+    /// 历史语义：true = 进入 scenemode 时下线 little 簇（除引导核）并用 WALT core_ctl `max_cpus` 钳住保留核数（见 core_ctl.rs 的 `scenemode_targets`）
+    #[allow(dead_code)] // 仅承载旧 feature.yaml 的 serde 反序列化，运行期无读者
     #[serde(default = "crate::utils::default_true")]
     pub scenemode_offline: bool,
 }

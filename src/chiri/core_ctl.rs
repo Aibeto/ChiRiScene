@@ -1,6 +1,8 @@
 //! core_ctl.rs: [types] [helpers] [state] [boost] [max_cpus] [scenemode] [online_reader] [restore]
 
-/// 核心在线控制器接管：Boost 抬 min_cpus 保大核常在线，Scenemode 逐核下线 little 簇并钳 max_cpus，Normal 按快照恢复
+/// 核心在线控制器接管：Boost 抬 min_cpus 保大核常在线，Normal 按快照恢复
+/// **Scenemode 下线机器已停用**（2026-10-31 起 SceneMode 与 reduce 档同口径：不下线核心、CPU0 回归正常迁移集）；
+/// 下方 `[scenemode]` 段仅为回滚路径保留，全仓调用方一律传 `scenemode=false`，待下个版本整体删除（见 agentsdocs/07-todos.md）
 /// cluster 按 cpufreq policy 去重发现，写 sysfs 不依赖 core_ctl 节点，由 core_ctl.enabled 门控
 use crate::chiri::affinity::{io_result_tag, set_tid_affinity};
 use crate::chiri::get_cpu_policies;
@@ -247,7 +249,9 @@ impl CoreCtlManager {
         }
     }
 
-    /// 统一状态入口（内部去重，可被 2s 周期安全调用）：boost = min_cpus 全组常在线，scenemode = little 簇除引导核外下线 + 独占一颗大核给调度服务，两者互斥
+    /// 统一状态入口（内部去重，可被 2s 周期安全调用）：boost = min_cpus 全组常在线，两者互斥
+    /// `scenemode` 参数**已停用**（2026-10-31）：SceneMode 不再下线 little 簇、不再独占大核，与 reduce 档同口径，
+    /// 全仓调用方一律传 false；该分支仅为回滚路径保留，待下个版本删除（见 agentsdocs/07-todos.md）
     /// 稳态每 2s 重试恢复失败残留核（restore 失败不 clear），否则被下线的核会离线到下次模式切换
     pub fn set_power_state(&mut self, boost: bool, scenemode: bool) {
         let target = if boost {
