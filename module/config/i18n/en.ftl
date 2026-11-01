@@ -119,6 +119,10 @@ scheduler-doze-restore = [Scheduler] screen ON: restoring previous performance c
 scheduler-clg-init = [Scheduler] CPU Load Governor: initialized at startup (mode={ $mode })
 scheduler-event-screen = [Scheduler] screen event received: on={ $on } (last={ $last })
 scheduler-screen-latency = [Scheduler] screen event applied: on={ $on }, detect->apply latency={ $ms }ms
+scheduler-wake-guard-hold = [Scheduler] screen-off wake lock held: { $lock } (reason={ $reason }), skipping s2idle this time
+scheduler-wake-guard-release = [Scheduler] screen-off wake lock released: { $lock } (reason={ $reason })
+scheduler-wake-guard-unavailable = [Scheduler] kernel provides no { $node } (missing CONFIG_PM_WAKELOCKS), screen-off wake lock disabled
+scheduler-wake-guard-failed = [Scheduler] screen-off wake lock write to { $node } failed: { $error } (further identical failures are silent)
 scheduler-event-mode-change = [Scheduler] mode change event: pkg={ $pkg } { $old } -> { $new } (temp={ $temp })
 scheduler-event-load = [Scheduler] load event: core_utils=[{ $cores }]
 scheduler-event-frame = [Scheduler] frame event: delta={ $delta_ms }ms

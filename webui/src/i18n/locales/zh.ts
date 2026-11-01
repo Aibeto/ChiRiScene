@@ -94,6 +94,9 @@ export default {
   'config.fasEnabled.hint': '帧时间间隔感知调度',
   'config.scenemodeEnabled': 'SceneMode',
   'config.scenemodeEnabled.hint': '趁月亮还未听到 趁灯火还未睡着',
+  'config.wakeGuardEnabled': 'Wake Lock',
+  'config.wakeGuardEnabled.hint':
+    '持有息屏唤醒锁',
 
   'battery.title': '电池读数',
   'battery.action.back': '返回配置',

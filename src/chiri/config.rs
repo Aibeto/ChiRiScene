@@ -35,6 +35,11 @@ fn apply_meta_overrides(meta: &mut Meta, o: &crate::common::ExternalMetaOverride
     if let Some(v) = o.thread_bind {
         meta.thread_bind = v;
     }
+    // 息屏保活锁：缺键按机型兜底（仅 sm8750 默认开）——老安装的 meta.yaml 不含该键、快照自愈也不会补写，
+    // 只靠模板会让这些机器恒为关，故不能写成 `if let Some(v)`
+    meta.wake_guard_enabled = o
+        .wake_guard_enabled
+        .unwrap_or_else(crate::common::default_wake_guard_enabled);
     if let Some(v) = o.power_avg {
         meta.power_avg = v;
     }
@@ -105,6 +110,15 @@ pub struct Meta {
     /// 与 `Affinity.enabled` / `CoreCtl.enabled` 取「与」（Config::load 合并，下游只看子开关）
     #[serde(default = "crate::utils::default_true", alias = "ThreadBind")]
     pub thread_bind: bool,
+
+    /// 息屏保活锁（meta.yaml `wake_guard_enabled`，缺省按机型：仅 sm8750 true，其余 false）：true = 息屏期间持一把
+    /// 系统 wake_lock（`chiri_screen_off`），让挂起尝试直接吃 -EBUSY，绕开 vWdog 约 6.2 s 的挂起窗口
+    /// （三份 minidump 同型撞线，见 wake_guard.rs 头注）；代价是息屏不进 s2idle。热重载即时生效
+    #[serde(
+        default = "crate::common::default_wake_guard_enabled",
+        alias = "WakeGuardEnabled"
+    )]
+    pub wake_guard_enabled: bool,
 
     /// 功耗口径开关（meta.yaml `power_avg`，默认 false = 参考值）：控制 1s 状态采样写模块根 `PowerAVG.chr` 的口径，false 写参考值（(旧值 × 10 + 新值) / 11 递推，偏历史，含息屏样本）
     /// true 写累计平均（(旧值 × 次数 + 新值) / (次数 + 1)，等权全史，仅亮屏）；均只取放电样本，热重载即时生效，仅 ChiRi 有 1s 采样

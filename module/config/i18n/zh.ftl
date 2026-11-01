@@ -119,6 +119,10 @@ scheduler-doze-restore = [Scheduler] 亮屏: 恢复之前的性能限制
 scheduler-clg-init = [Scheduler] CPU 负载调频器: 在启动时初始化 (模式={ $mode })
 scheduler-event-screen = [Scheduler] 收到屏幕状态事件: on={ $on } (此前 last={ $last })
 scheduler-screen-latency = [Scheduler] 屏幕事件已生效: on={ $on }, 判定→落地时延={ $ms }ms
+scheduler-wake-guard-hold = [Scheduler] 息屏保活锁已持有: { $lock } (触发={ $reason })，本次息屏不进 s2idle
+scheduler-wake-guard-release = [Scheduler] 息屏保活锁已释放: { $lock } (触发={ $reason })
+scheduler-wake-guard-unavailable = [Scheduler] 内核未提供 { $node }（缺 CONFIG_PM_WAKELOCKS），息屏保活锁功能停用
+scheduler-wake-guard-failed = [Scheduler] 息屏保活锁写入 { $node } 失败: { $error }（后续同类失败不再重复告警）
 scheduler-event-mode-change = [Scheduler] 收到模式切换事件: 包={ $pkg } { $old } -> { $new } (温度={ $temp })
 scheduler-event-load = [Scheduler] 收到负载事件: 核心利用率=[{ $cores }]
 scheduler-event-frame = [Scheduler] 收到帧事件: 帧间隔={ $delta_ms }ms

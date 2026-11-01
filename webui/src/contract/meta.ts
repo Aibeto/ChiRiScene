@@ -21,6 +21,8 @@ export const META_FIELDS = [
   'fas_enabled',
   'scenemode_enabled',
   'thread_bind',
+  /** 息屏保活锁（息屏持系统 wake_lock 避开 vWdog 撞线；缺键按机型：仅 sm8750 默认开） */
+  'wake_guard_enabled',
   'power_avg',
   'notify',
   'oplus_chg',
@@ -45,6 +47,7 @@ export const WRITABLE_FIELDS = [
   'dev_record',
   'fas_enabled',
   'scenemode_enabled',
+  'wake_guard_enabled',
   'power_avg',
   'notify',
   'oplus_chg',
@@ -165,6 +168,7 @@ export function validateMeta(values: Record<string, unknown>): string[] {
     'fas_enabled',
     'scenemode_enabled',
     'thread_bind',
+    'wake_guard_enabled',
     'power_avg',
     'notify',
     'oplus_chg',
@@ -257,6 +261,7 @@ export function validateFieldValue(
     case 'dev_record':
     case 'fas_enabled':
     case 'scenemode_enabled':
+    case 'wake_guard_enabled':
     case 'power_avg':
     case 'notify':
     case 'oplus_chg':

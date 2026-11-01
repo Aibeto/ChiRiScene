@@ -248,6 +248,14 @@ pub(crate) fn matched_soc_config_name() -> Option<&'static str> {
     matched_soc_hint().map(soc_hint_config_name)
 }
 
+/// 息屏保活锁（meta.yaml `wake_guard_enabled`）的**缺省值**：仅 sm8750（骁龙 8 Elite / OnePlus 13 PJZ110）默认开，
+/// 其余机型一律 false。按机型给缺省而不是只靠模板，是因为老安装的 meta.yaml 不含该键时 sync_meta_snapshot 不会补写
+/// （文件合法就原样不动），只有代码侧兜底才能让这些机器也吃到默认；模板写了该键时文件值优先。
+/// 依据：三份 minidump 同型 vWdog 撞线只在这一台上复现，见 chiri/wake_guard.rs 头注
+pub(crate) fn default_wake_guard_enabled() -> bool {
+    matched_soc_config_name() == Some("sm8750")
+}
+
 fn matched_soc_config_dir() -> Option<PathBuf> {
     matched_soc_config_name().map(|name| get_module_root().join("config").join(name))
 }
@@ -1164,6 +1172,8 @@ struct MetaYamlFile {
     scenemode_enabled: Option<bool>,
     /// 线程摆放总开关（affinity + core_ctl），见 ExternalMetaOverrides
     thread_bind: Option<bool>,
+    /// 息屏保活锁开关，见 ExternalMetaOverrides（缺键按机型：仅 sm8750 缺省 true）
+    wake_guard_enabled: Option<bool>,
     /// 功耗口径开关（PowerAVG.chr），见 ExternalMetaOverrides（缺省 false）
     power_avg: Option<bool>,
     /// 常驻状态通知开关，见 ExternalMetaOverrides（缺省 true）
@@ -1205,6 +1215,11 @@ pub struct ExternalMetaOverrides {
     /// 线程摆放总闸（`thread_bind`）：实验室 frozen 专用机制——用户侧开关已移除，仅 frozen 模式写 false 交还线程亲和/绑核与 core_ctl， 与机型内嵌 feature
     /// yaml 的两个子开关取「与」，见 chiri/config.rs::Config::load
     pub thread_bind: Option<bool>,
+    /// 息屏保活锁（`wake_guard_enabled`，缺键按机型：仅 sm8750 缺省 true，其余 false）：true = 息屏期间向
+    /// `/sys/power/wake_lock` 写一把 `chiri_screen_off`，让 PowerManager 的挂起尝试直接吃 -EBUSY，
+    /// 绕开 vWdog 只给约 6.2 s 的挂起窗口（三份 minidump 同型撞线，见 chiri/wake_guard.rs 头注）；
+    /// 代价是息屏不进 s2idle（待机功耗上升），故非 sm8750 默认关。热重载即时生效（改写后立即持/放锁）
+    pub wake_guard_enabled: Option<bool>,
     /// 功耗口径开关（PowerAVG.chr）：false（默认）= 参考值（旧值先乘 10 再按 10:1 加权递推，偏历史，含息屏样本）；true = 累计平均（等权全史，仅亮屏放电样本）两者都只在放电时取样；
     /// 仅 ChiRi 1s 状态采样消费；写侧走单次读-改-写顶层行替换，见 WebUI contract/meta.ts
     pub power_avg: Option<bool>,
@@ -1363,6 +1378,7 @@ fn parse_disk_meta(text: &str) -> Option<ExternalMetaOverrides> {
         fas_enabled: f.fas_enabled,
         scenemode_enabled: f.scenemode_enabled,
         thread_bind: f.thread_bind,
+        wake_guard_enabled: f.wake_guard_enabled,
         power_avg: f.power_avg,
         notify: f.notify,
         oplus_chg: f.oplus_chg,

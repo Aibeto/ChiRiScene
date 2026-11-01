@@ -181,24 +181,59 @@
 
 ### vWdog 撞线取证与息屏静默档（2026-10-31 落地，待真机复核）
 
-取证包：`devimpbin/SYSTEM_LAST_KMSG@c6cca54b…@16_40_59` 与 `…@cf831898…@23_40_47`；报告 `devimpbin/1031-2340/FINDINGS_2340.md`。
+取证包：`devimpbin/SYSTEM_LAST_KMSG@c6cca54b…@16_40_59`、`…@cf831898…@23_40_47`、`…@f6f7b34f…@2026_11_01_08_53_37`；报告 `devimpbin/1031-kmsg/FINDINGS.md`、`devimpbin/1031-2340/FINDINGS_2340.md`、`devimpbin/1101-0853/FINDINGS_1101.md`。
 
 - [x] **两份 minidump 同型定位**：`QCOM Apps Watchdog bark` → `qcom_wdt_bark_handler` ← GIC ← `cpuidle_enter_s2idle`；
       vWdog 206 tick ÷ 6.365202 s = 30.899 ms/tick（32.36 Hz，32.768 kHz/1024）⇒ 客侧 bark 20000 ms 未生效，
       **实际窗口 ≈200 tick ≈6.18 s**；挂起路径 6.225553 s + s2idle 空转 139.612 ms 即撞线。两份是不同构建
       （`phantom-oki cc067c49…` / `abogki537459655-4k`）⇒ 不是单版本回归。
+- [x] **第三份 dump 同型确认（2026-11-01 08:53:37）+ 6.226 s 拆分订正**：第三次崩溃仍是
+      `bark Now=4597.287886 / last pet 4590.939412`（Δ **6.348474 s**）、`vWdog-time since last pet: 206`
+      （30.82 ms/tick ⇒ 32.45 Hz）、栈 `cpuidle_enter_s2idle+0x98/0xb0 ← do_idle ← cpu_startup_entry`
+      逐帧相同，内核与 10-31 23:40 同构建 `cc067c49…` ⇒ **三次崩溃、两个构建、同一失败链**。
+      **订正**：上文与 `FINDINGS_2340.md` §2.4 把 `last pet → s2idle 首条打印` 的 6.225553 s 判成
+      "挂起路径耗时"不成立——printk ring 文本区仅 ~2.0 MB 而该 debug 打印 ~129 B/轮，16231–16236 条正好填满，
+      **ring 里永远只留最后 ~106–140 ms**（10-31 实测跨度 139.612 ms = 16236×8.5 µs、本次 105.871 ms =
+      16231×6.458 µs，均与 ring 深度吻合）。现状只可断言"pet 后 ≥6.24 s 无 printk 留存"，其中 CPU 做什么
+      只能强推断（≈98 万轮 s2idle 空转 × 24 IRQ/轮 ≈ `Top10 irqs Total 23624040/6.348 s`）⇒ 见下方
+      "6.24 s 不可观测窗口"条目。
 - [x] **息屏静默档（L1）** `[screen_off_quiet]`：`TELEMETRY_LOG_INTERVAL_SCREEN_OFF=5s` /
       `MODE_FILE_REWRITE_INTERVAL_SCREEN_OFF=30s` / `EVENT_POLL_MS_SCREEN_OFF=2s`（thermal 2s 不动）；
       推送事件即时打断，`CLG_STALE_MAX=5s` 断投判定不受影响。
 - [x] **亮屏时延打点**：`screen_detect::mark_detect()/detect_latency_ms()` + screen 事件分支
       `scheduler-screen-latency` INFO（判定→落地，预期 <250 ms）。
+- [x] **F4 息屏保活锁（wake_guard，2026-11-01 落地）** `[wake_guard]`：息屏向 `/sys/power/wake_lock` 写
+      `chiri_screen_off`（**不写内核超时**：该 sysfs 的超时单位在分支间是秒还是毫秒无保证，写错只会静默提前释放；
+      改为「启动盲释放清上一实例遗留 + 屏幕事件/DOWN 停摆/配置热重载三处对齐 + 重启清除」兜底），
+      PowerManager 的挂起尝试因 `pm_wakeup_pending()` 直接吃 -EBUSY ⇒ 根本不进 s2idle，绕开 ~6.2 s 撞线窗口。
+      `meta.yaml wake_guard_enabled` **缺键按机型**（`common::default_wake_guard_enabled`）：仅 sm8750 默认 true
+      （老安装 meta.yaml 不含该键也生效，因为 `sync_meta_snapshot` 对合法文件原样不动、不会补写新键），其余机型 false；
+      模板 `config/sm8750/meta.yaml` 写 true、根 `config/meta.yaml` 写 false；WebUI 开关在 **SceneMode 下方**；
+      节点缺失（内核无 `CONFIG_PM_WAKELOCKS`）静默停用并打一条 info。**代价**：息屏不进 s2idle，待机功耗上升。
+- [ ] **真机复核 wake_lock**：`grep -c scheduler-wake-guard-hold logs/daemon.log` 应≈息屏次数；
+      息屏时 `cat /sys/power/wake_lock` 应含 `chiri_screen_off`、亮屏后消失；同时量待机电流（兜底代价）。
+      注意这是**唯一**能挡住"干净挂起撞线"的应用侧手段——10-31 23:40 那份只有 2 次 freeze abort、WLAN 故障面≈0，
+      照样崩，故 L2 观测与 L3 降噪只能降概率。
 - [ ] **真机复核息屏档**：`grep scheduler-screen-latency logs/daemon.log` 抽样确认亮屏时延未被拖慢；
       对比改造前后息屏段 `Freezing user space processes aborted` 次数（两份 dump 实测 39 → 2）。
 - [ ] **L2 挂起可观测**：`CLOCK_BOOTTIME - CLOCK_MONOTONIC` 差值 + 亮屏后读 `/sys/power/suspend_stats`
       （success/fail/last_failed_dev）写 `logs/daemon.log`，用于判「这次挂起用了多久、卡在哪个设备」。
 - [ ] **L3 临界避让 + 降噪**：连续失败/长挂起后息屏期主动降低事件密度；并确认 eBPF ring buffer
       是阻塞 poll 还是 40/160 ms 定时轮询（决定唤醒源清单）。
-- [ ] **6.226 s 卡点定位（真正的根因）**：console 已被 `suspend_console()` 静音，需 ftrace
-      `power/suspend_resume` + `irq_handler_entry` 或 `suspend_stats` 落 pstore；只在驱动侧能收敛。
+- [ ] **6.24 s 不可观测窗口定位（真正的根因，口径已按 ring 深度订正）**：console 已被 `suspend_console()`
+      静音且 s2idle debug 打印把 ring 冲刷殆尽（见上方订正条），需 ftrace `power/suspend_resume` +
+      `irq_handler_entry` 或 `/sys/power/suspend_stats/*` 落 pstore；只在驱动侧能收敛。
+      附：三份 dump 的 `CPU0 next event is …` 均越界（4597 那份 460451274096161、10-31 那份 127872281363636），
+      可能是"定时器被编程成过期值 ⇒ 补 pet work 永不触发"的真线索，需 `clockevents` 侧交叉验证。
+- [ ] **B2 关掉 s2idle 路径的 debug 打印对**：vendor cpuidle 在每次 `s2idle_enter` 前后打
+      `suspend ns / suspend cycles / resume cycles`（~129 B/轮 × 15 万轮/s ≈ **19 MB/s**），2 MB printk ring
+      每 ~106 ms 自毁一次 ⇒ 崩溃现场被自己的日志吃掉。应默认关或降为 `pr_debug`；这属于独立缺陷，
+      不修 A 系列也应修。
+- [ ] **WLAN 半挂死收敛**（第三份 dump 唯一外部推力）：`NETDEV WATCHDOG: transmit queue 0 timed out
+      5340 ms`（4582.8）+ `Host TSF sync is not initialized` 88 次 + `vdev is NULL` 84 次 +
+      `osif_twt_enable_complete_cb: obsolete request` 33 次 + `wake interrupt received on irq 299` 39 次，
+      配合 `adsp_sleepmon … LPI duration 0`（283 s）⇒ 挂起从未成功，41 次重试 / 15 次 freeze abort /
+      9 次 device-fail。期望行为：`cnss_pci_suspend` 遇 TX 超时或 vdev NULL 立即 abort + 重载固件，
+      `hdd_restart_tsf_sync_post_wlan_resume` 在 resume 前重同步而非只报错。
 
 

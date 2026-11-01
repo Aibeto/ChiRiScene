@@ -195,6 +195,7 @@ pub mod max_freq_pin;
 pub mod placement;
 pub mod touch_detect;
 pub mod tuned;
+pub mod wake_guard;
 
 use crate::common;
 use crate::common::DaemonEvent;
@@ -2537,6 +2538,9 @@ pub fn start_scheduler_thread(
             let mut is_screen_on = true;
             // 初值同步到进程级原子量（缺省也是 true）：CLG 接管时只读这个原子量
             crate::common::set_screen_on(is_screen_on);
+            // 息屏保活锁（wake_guard）启动先释放一次：上一个实例被 SIGKILL 时锁会留在内核里，
+            // 本实例内存态是「没持锁」，只有盲写一次 wake_unlock 才清得掉（节点不存在时本行什么都不做）
+            crate::chiri::wake_guard::release("startup");
             // 息屏计时：屏幕熄灭时记录，超过 scene_mode_delay_secs 后切到 scenemode 低功耗
             let mut screen_off_at: Option<Instant> = None;
             // 是否已进入 scenemode（一次性切换，亮屏/模式变更时复位）
@@ -2785,6 +2789,15 @@ pub fn start_scheduler_thread(
                         log::info!("{}", t("scheduler-down-exit"));
                     }
                     halted = down;
+                    // 停摆/退出停摆对齐保活锁：DOWN 是「完全不干预」语义，不能替系统扛着不让睡；
+                    // 退出停摆立即回到「按屏幕状态 + 开关」的目标态
+                    {
+                        let enabled = config_clone.read().unwrap().meta.wake_guard_enabled;
+                        crate::chiri::wake_guard::sync(
+                            enabled && !halted && !is_screen_on,
+                            "down",
+                        );
+                    }
                 }
 
                 // 当前模式文件自愈：每 5s 巡检一次，内容未变不重写（外部清空/改写/删除最多 5s 内自愈）；停摆期只推进计时不落盘
@@ -2823,6 +2836,12 @@ pub fn start_scheduler_thread(
                     // 诊断采集开关与停摆无关（停摆只停调度）：无条件同步，改 meta.dev_record 即时生效
                     let cfg = config_clone.read().unwrap();
                     crate::logger::set_diag_active(cfg.meta.dev_record);
+                    // 保活锁随配置联动：WebUI 关掉开关要立刻放开（否则界面显示关、系统仍不能被挂起），
+                    // 打开时若当前正息屏也要立刻补上
+                    crate::chiri::wake_guard::sync(
+                        cfg.meta.wake_guard_enabled && !halted && !is_screen_on,
+                        "config",
+                    );
                 }
                 if config_dirty && !halted && is_screen_on {
                     let current_mode = mode_clone.lock().unwrap().clone();
@@ -3632,6 +3651,12 @@ pub fn start_scheduler_thread(
                             log::info!("{}", t("scheduler-screen-on"));
                         } else {
                             log::info!("{}", t("scheduler-screen-off"));
+                        }
+                        // 息屏保活锁：息屏持一把系统 wake_lock 挡住 s2idle（sm8750 上 vWdog 只给约 6.2s 窗口，
+                        // 见 wake_guard.rs 头注），亮屏立刻释放；开关来自 meta.yaml（缺省仅 sm8750 开）
+                        {
+                            let enabled = config_clone.read().unwrap().meta.wake_guard_enabled;
+                            crate::chiri::wake_guard::sync(enabled && !is_screen_on, "screen");
                         }
                         let current_mode = mode_clone.lock().unwrap().clone();
 

@@ -19,6 +19,11 @@ dev_record: true
 fas_enabled: true
 scenemode_enabled: true
 thread_bind: true
+# 息屏保活锁（wake_guard_enabled，缺省按机型：仅 sm8750 默认 true，其余含本回退配置为 false）：
+#   true = 息屏期间持一把系统 wake_lock（chiri_screen_off），让挂起尝试直接吃 -EBUSY，
+#   绕开 vWdog 只给约 6.2 s 的挂起窗口（sm8750 上三份 minidump 同型撞线 → 异常重启）。
+#   代价是息屏不进 s2idle（待机功耗上升），故只对确实会撞线的机型开；热重载即时生效。
+wake_guard_enabled: false
 # 功耗口径（PowerAVG.chr，仅 ChiRi）：false = 参考值（旧值先乘 10，与新值 10:1 加权递推，偏历史，含息屏样本）；
 #                                   true  = 累计平均值（等权全史，仅亮屏放电样本）。两者都只在放电时取样，热重载即时生效。
 power_avg: true

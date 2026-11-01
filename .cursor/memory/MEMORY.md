@@ -242,3 +242,38 @@
 - **`activate()` 是设备依赖路径**：先查编译期白名单，再 `load_policies` 读真机 sysfs。
   写/改它的单测不能假设宿主机能通过（`fas_manager` 现有 3 条:588/:683/:694 即因此恒红）。
 
+## 内核取证口径（minidump，2026-11-01 三次取证后定）
+
+- **容器形态**：近三份 `SYSTEM_LAST_KMSG@….dat.gz` 解出来都是 **tar（PAX）**，成员
+  `olc_get_log.txt` / `device.info` / `minidump.bin`(256 MiB) / `prop.txt`，**不是裸 ELF**
+  ⇒ `ELF at 0x2db8 / shoff=0x40` 的段表解析无效，用全文件 grep + 结构体签名定位。解包目录 ~257 MB，
+  中间 tar 用完即删。
+- **printk ring 自毁（关键）**：s2idle 路径上的 `suspend ns / suspend cycles / resume cycles` 调试打印
+  每轮 ~129 B、约 15 万轮/s ≈ **19 MB/s**，2 MB ring **每 ~106 ms 冲刷一次** ⇒ minidump 里只能看到
+  崩溃前最后 **~100–140 ms** 的 s2idle 记录；"首条打印时间戳 − last pet = 6.2 s"是 **ring 深度产物，
+  不是挂起路径耗时**（2026-10-31 报告曾据此误判，已订正）。
+- **撞线判据**：只看 `bark Now − last pet at` 与 `vWdog-time since last pet` 的 tick 数——
+  三次实测 Δ 6.348–6.390 s / tick 均 **206** ⇒ 30.82–30.90 ms/tick（32.45 Hz = 32.768 kHz/1024）
+  ⇒ 客侧 `bark 20000 ms` 不生效，实际窗口 **≈200 tick ≈6.16–6.18 s**。栈指纹 `qcom_wdt_bark_handler`
+  ← GIC ← `cpuidle_enter_s2idle+0x98/0xb0` ← `do_idle`（三份逐帧相同、跨两个内核构建）。
+- **suspend cycles 时基不可靠**：不同 dump 内 ns/cycle 比值不同（1.9697 vs 0.16415 即 6.09 GHz）
+  ⇒ 只用 sched_clock 差 + vWdog tick 反推，不折算成时间。
+- **`prop.txt`/`device.info` 是重启后快照**：只能用于计数（`persist.sys.oplus.total_abnormalreboot_count
+  = total_N_dump_N_pmic_N`），**不能**判崩溃瞬间亮/息屏或电量。minidump 只留少量用户态串，
+  不能据某个 daemon 日志串缺失就断言该构建没装机。
+
+
+## 息屏保活锁（wake_guard）契约（2026-11-01 落地）
+
+- **是什么**：息屏期间向 `/sys/power/wake_lock` 写一把 `chiri_screen_off`，让 PowerManager 的挂起尝试
+  因 `pm_wakeup_pending()` 吃 -EBUSY ⇒ 不进 s2idle ⇒ 绕开 vWdog ≈6.18 s 撞线窗口（sm8750 三份 minidump
+  同型崩溃的唯一应用侧"挡"法；静默档/观测/降噪都只降概率）。代价：息屏不进 s2idle。
+- **代码**：`src/chiri/wake_guard.rs`（`acquire/release/sync`，无需超时，启动盲释放清遗留）；
+  调用点只三处——screen 事件、DOWN 停摆切换、`config_dirty` 热重载，统一表达式
+  `enabled && !halted && !is_screen_on`。
+- **开关**：`meta.yaml wake_guard_enabled`；**缺键按机型**（`common::default_wake_guard_enabled()`，
+  仅 `matched_soc_config_name() == Some("sm8750")` 为 true）。只改模板不够：`sync_meta_snapshot`
+  对合法 meta.yaml 原样不动，老安装不会补写新键。WebUI 开关在 SceneMode 下方，缺键回退
+  `app.configRel.startsWith('sm8750/')`。
+- **新增 meta 字段仍是"五处同步"**：`MetaYamlFile` / `ExternalMetaOverrides` / `chiri::config::Meta`(+apply) /
+  meta.yaml 模板 / WebUI `contract/meta.ts`（META_FIELDS + WRITABLE_FIELDS + 布尔清单 + validateFieldValue）。

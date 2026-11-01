@@ -97,6 +97,9 @@ export default {
   'config.fasEnabled.hint': 'Frame-interval-aware scheduling',
   'config.scenemodeEnabled': 'SceneMode',
   'config.scenemodeEnabled.hint': 'Before the moon overhears, before the lights doze off',
+  'config.wakeGuardEnabled': 'Wake Lock',
+  'config.wakeGuardEnabled.hint':
+    'Holds a system wake lock while the screen is off',
 
   'battery.title': 'Battery readings',
   'battery.action.back': 'Back to config',

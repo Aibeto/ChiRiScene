@@ -7,6 +7,10 @@ dev_record: true
 fas_enabled: true
 scenemode_enabled: true
 thread_bind: true
+# 息屏保活锁（缺省按机型：仅本机型默认开）：true = 息屏期间持一把系统 wake_lock（chiri_screen_off），
+# 让挂起尝试直接吃 -EBUSY，绕开 vWdog 只给约 6.2 s 的挂起窗口（本机型三份 minidump 同型撞线 → 异常重启）。
+# 代价：息屏不再进 s2idle，待机功耗上升。不想兜底或要复现问题时改 false，热重载即时生效。
+wake_guard_enabled: true
 # 功耗口径（PowerAVG.chr，仅 ChiRi）：false = 参考值（旧值先乘 10，与新值 10:1 加权递推，偏历史，含息屏样本）；
 #                                   true  = 累计平均值（等权全史，仅亮屏放电样本）。两者都只在放电时取样，热重载即时生效。
 power_avg: true

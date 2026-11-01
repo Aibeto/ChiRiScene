@@ -31,6 +31,11 @@
   // FAS 开关暂时被注释（见下方 ToggleField），声明同步注释；恢复开关时一并恢复
   // const fasEnabled = $derived(Boolean(value('fas_enabled', true)))
   const scenemodeEnabled = $derived(Boolean(value('scenemode_enabled', true)))
+  // 息屏保活锁：缺键按机型兜底（与守护进程 common::default_wake_guard_enabled 同口径，仅 sm8750 默认开），
+  // 否则老 meta.yaml 不含该键时界面会显示成关、与实际行为相反
+  const wakeGuardEnabled = $derived(
+    Boolean(value('wake_guard_enabled', app.configRel.startsWith('sm8750/')))
+  )
 
   /** 实验室接管的开关：置灰不可切换（守护进程正按实验室定义写它，手改也会被写回去） */
   const takeover = $derived(new Set(app.labTakeover))
@@ -129,6 +134,15 @@
         pending={app.draft.scenemode_enabled !== undefined}
         disabled={!app.metaValid || takeover.has('scenemode_enabled')}
         onchange={next => app.setDraft('scenemode_enabled', next)}
+      />
+
+      <ToggleField
+        label={t('config.wakeGuardEnabled')}
+        hint={hint('wake_guard_enabled', t('config.wakeGuardEnabled.hint'))}
+        checked={wakeGuardEnabled}
+        pending={app.draft.wake_guard_enabled !== undefined}
+        disabled={!app.metaValid}
+        onchange={next => app.setDraft('wake_guard_enabled', next)}
       />
     </div>
 
