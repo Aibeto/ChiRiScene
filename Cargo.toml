@@ -29,7 +29,7 @@ include_dir = "0.7"
 
 # --- 异步与 eBPF (新增) ---
 # Aya 用于加载和与内核 eBPF 程序交互
-aya = "0.14.0"
+aya = "0.16.0"
 mio = { version = "1.0", features = ["os-ext"] }
 # 只开用到的特性：current_thread runtime 的 block_on/spawn（rt）、
 # time::interval（time）、sync::watch（sync）。未用 macros（无 #[tokio::main]），
