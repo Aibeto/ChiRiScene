@@ -24,7 +24,7 @@
     "@sveltejs/vite-plugin-svelte": "^7.3.0",
     "@types/node": "^26.6.4",
     "@typescript/native": "npm:typescript@^7.0.2",
-    "svelte": "^5.57.2",
+    "svelte": "^5.57.3",
     "svelte-check": "^4.7.6",
     "subset-font": "^2.3.0",
     "typescript": "^6.0.3",
