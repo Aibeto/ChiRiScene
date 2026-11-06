@@ -159,7 +159,12 @@ impl FasController {
     // [decay]
     // Phase 6: 快速衰减
 
-    fn apply_steady_decay(&mut self, avg_fps: f32) {
+    pub(super) fn apply_steady_decay(&mut self, avg_fps: f32) {
+        // [perf_lock] 锁频档不做稳态衰减：下调的 perf 会被 apply_freqs 覆盖回 perf_ceil，
+        // 但内部状态与 fas-tick-log 会显示一条假的下降轨迹，直接跳过
+        if self.cfg.perf_lock {
+            return;
+        }
         let floor = self.effective_perf_floor();
         let ceil = self.effective_perf_ceil();
         let thresh = scale_frames(

@@ -96,6 +96,8 @@ WebUI 侧：
 
 - 调度能力范围（相对 CLG 的扩展仅频率维度）：per-policy min=max 锁频（PolicyController，1.5s 回读校验防内核覆写）+ 容量加权分频 + util 软封顶 + PID/Jank 帧级响应；FAS 自身不做 cpuset/uclamp/core_ctl——线程摆放复用 boost 布局（fas 亮屏入 boost，见亲和章节），uclamp.max 放开经 fas_affinity_hook（特调同机制但经 `apply_affinity_and_corectl` 按模式同步，见上条）。
 
+- **性能优先档 `[perf_lock]`（2026-11-07，`src/fas_types.rs` 的 `perf_lock: bool`，缺省 false）**：`normal/fas/<应用>.yaml` 显式开启后，该应用的 FAS 会话把每个 policy 恒定锁在 `perf_ceil`（=1.0 即硬件最高频），**Perf 自适应全部旁路**——PID 衰减、`apply_steady_decay`、util 软封顶（`ema_fg_util` 200ms 滞后的误压）、开环降频（帧反馈静默时 `update_load_control` 原按 `max(core_utils)` 下探，是 FAS 游戏最典型的 P 锯齿源）、`adjust_target_for_util` 的 target 下压。落点唯一：`policy_mgmt.rs::apply_freqs` 里在 util 软封顶之后、`thermal_cap` 之前执行 `self.perf_index = ceiling; effective_perf = ceiling;`，并令 `load_only = !locked && self.uses_load_control()` 与锁频互斥。**顺序是硬约束**：热降频压顶必须写在锁频之后（内核热限频的安全边界不能被锁频档击穿，`scripts/tests/fas_perf_tier_regression.rs` 的 `lock_applies_before_thermal_cap` 守这条）。开启时 `load_policies` 打 i18n `fas-perf-lock` 留痕（日志里 P 恒 1.00 是意图不是 PID 失效），`reload_rules` 支持热重载。**配套约定**：单档 `fps_gears`（如终末地 `[60.0]`）让 `next_gear/prev_gear` 恒 None，齿轮机升/降两段整段不执行，顺手掐掉「降档加速把 P 硬压到 ≤0.90」与「原生档识别 60↔120 翻面」两条已观测掉频来源。首个使用者 = `com.hypergryph.endfield`（用户 2026-11-07 指令：忽略功耗、绝对流畅）。代价是功耗与温升，故**逐应用显式开启、禁止改缺省值**。
+
 ### CLG 调频语义（动态上限制）
 
 - CLG 不再锁频 min=max，改为 schedutil 动态上限：接管时把 `scaling_min_freq` 一次性压到硬件最低，之后只写 `scaling_max_freq`（CLG 决定性能上限），schedutil 在 \[硬件最低, 上限] 内按瞬时负载自主调频，空闲间隙内核微秒级降频到地板，消除锁频方案"采样间隔（160ms）内频率下不来"的空转发热（8550 实测主要热源）。

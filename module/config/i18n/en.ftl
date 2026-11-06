@@ -249,6 +249,7 @@ fas-auto-capacity-core = [FAS]   P{ $pid }: cap={ $cap } -> w={ $weight }
 fas-capacity-probe-failed = [FAS] capacity auto-probe failed, falling back to manual weights: probes={ $probes } zero_cap={ $zero }
 fas-policy-init = [FAS] P{ $pid } { $min }-{ $max } MHz | w={ $weight }
 fas-init-summary = [FAS] init | { $fps }fps margin:{ $margin } clusters:{ $clusters } P:{ $perf } profiles:{ $profiles }
+fas-perf-lock = [FAS] performance-first tier armed: every cluster locked to max frequency, PID/steady-decay/util-cap bypassed (power ignored, kernel thermal still applies)
 fas-app-switch = [FAS] app switch ({ $ms }ms) | P -> { $perf }
 fas-loading-start = [FAS] entering loading state ({ $frames } frames, { $ms }ms) | P { $old_perf } -> { $new_perf }
 fas-loading-exit = [FAS] exit loading state | P -> { $perf }

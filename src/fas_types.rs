@@ -206,6 +206,13 @@ pub struct FasRulesConfig {
     /// CPU 负载辅助：前台线程利用率封顶的除数（越小越激进）
     #[serde(default = "d_util_cap_divisor")]
     pub util_cap_divisor: f32,
+
+    /// 性能优先档（锁频，缺省关闭）：开启后各簇恒定锁在 perf_ceil（=1.0 时即硬件最高频），
+    /// PID 衰减 / 稳态衰减 / util 软封顶 / 开环降频 / 档位机全部旁路，代价是功耗与温升。
+    /// 只给「掉一帧都能看出来」的应用按需开启（配置面 = normal/fas/<应用>.yaml），
+    /// 内核热限频（thermal_cap）仍然生效，安全边界不变。
+    #[serde(default)]
+    pub perf_lock: bool,
 }
 
 pub fn default_fps_gears() -> Vec<f32> {
@@ -514,6 +521,7 @@ impl Default for FasRulesConfig {
             core_temp_throttle_perf: d_temp_perf(),
             migration_cost_ns: None,
             util_cap_divisor: d_util_cap_divisor(),
+            perf_lock: false,
         }
     }
 }

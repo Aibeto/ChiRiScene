@@ -68,6 +68,12 @@ impl FasController {
         self.cfg.pid = new_rules.pid.clone();
         self.cfg.fps_margin = new_rules.fps_margin.clone();
         self.cfg.util_cap_divisor = new_rules.util_cap_divisor;
+        // [perf_lock] 锁频档随配置热更立即生效：改配置不该等重启；关闭时不打点（日志里 P 会自己动回去）
+        let perf_lock_changed = self.cfg.perf_lock != new_rules.perf_lock;
+        self.cfg.perf_lock = new_rules.perf_lock;
+        if perf_lock_changed && self.cfg.perf_lock {
+            info!("{}", t("fas-perf-lock"));
+        }
 
         // PID 系数变更时重置积分器
         if (old_kp - new_rules.pid.kp).abs() > 0.001
@@ -173,7 +179,10 @@ impl FasController {
         }
 
         self.update_thermal_hold();
-        let load_only = self.uses_load_control();
+        // [perf_lock] 性能优先档：各簇恒定锁在 perf_ceil。load_only 分支按每簇 util 单独算 ratio，
+        // 与「恒锁最高频」互斥，必须一起旁路（帧反馈静默时仍照常打 fas-loop-open，但频率不随 util 下探）
+        let locked = self.cfg.perf_lock;
+        let load_only = !locked && self.uses_load_control();
         let ceiling = self.effective_perf_ceil();
         let thermal_cap = self.thermal_perf_cap();
         let mut effective_perf = self.perf_index.clamp(0.0, ceiling);
@@ -194,6 +203,14 @@ impl FasController {
                 // 平滑系数 0.92/0.08，降低封顶激进度防断崖
                 effective_perf = effective_perf * 0.92 + util_cap * 0.08;
             }
+        }
+
+        // [perf_lock] 自适应下调（util 软封顶 / PID / 稳态衰减 / 开环降频）在本档一律不生效。
+        // 放在软封顶之后是刻意的：上面那些分支照常执行（状态推进、日志留痕），但写频只认 perf_ceil；
+        // 紧随其后的 thermal_cap 仍然能压它 —— 内核热限频的安全边界不被锁频档击穿
+        if locked {
+            self.perf_index = ceiling;
+            effective_perf = ceiling;
         }
 
         if let Some(cap) = thermal_cap {
@@ -495,6 +512,12 @@ impl FasController {
                 )
             )
         );
+
+        // [perf_lock] 锁频档必须留痕：此后日志里 P 恒为 1.00、频率恒为最高档，
+        // 排障时要能一眼看出这是配置意图而不是 PID 失效
+        if self.cfg.perf_lock {
+            info!("{}", t("fas-perf-lock"));
+        }
     }
 
     // [reset]

@@ -365,6 +365,11 @@ impl FasController {
     /// 基于 CPU 利用率动态偏移 target_fps（每秒采样一次）：util ≤ 0.10 重置；util ≤ 0.55 逐步降低 -0.1/s、最多 -3fps；util ≥ 0.65 逐步恢复 +0.1/s 至 0
     /// GPU bound 场景自动放宽帧率目标，减少无效拉频
     pub(super) fn adjust_target_for_util(&mut self) {
+        // [perf_lock] 锁频档下 target 偏移只影响 budget/判据、不影响实际频率（恒 perf_ceil），
+        // 留着只会把日志里的目标帧率拖到 57fps，误导后续判读，直接不调
+        if self.cfg.perf_lock {
+            return;
+        }
         if self.util_sample_timer.elapsed().as_millis() < 1000 {
             return;
         }
@@ -717,5 +722,54 @@ pub(crate) mod tests {
         controller.update_load_control();
         assert!(controller.policies[0].current_freq < controller.policies[1].current_freq);
         assert_eq!(controller.policies[1].current_freq, 500);
+    }
+
+    // [perf_lock] 性能优先档：util 软封顶 / PID 衰减 / 卡顿冷却三条下调路径全部失效，写频恒为最高档
+    #[test]
+    fn perf_lock_keeps_max_freq_under_util_cap_and_jank() {
+        let mut controller = controller_with_policy();
+        controller.cfg.perf_lock = true;
+        controller.perf_index = 0.30;
+        controller.jank_cooldown = 30;
+        controller.update_cpu_util(0.10);
+        controller.apply_freqs();
+        assert_eq!(controller.perf_index, 1.0);
+        assert_eq!(controller.policies[0].current_freq, 500);
+    }
+
+    // [perf_lock] 帧源静默转开环（load_only）时也不再按 max(core_utils) 下探频率
+    #[test]
+    fn perf_lock_bypasses_load_only_demand() {
+        let mut controller = controller_with_policy();
+        controller.cfg.perf_lock = true;
+        controller.set_frame_feedback_enabled(false);
+        controller.update_core_utils(&[0.05]);
+        controller.update_load_control();
+        assert_eq!(controller.policies[0].current_freq, 500);
+    }
+
+    // [perf_lock] target_fps 偏移关闭：避免日志里的目标帧率被 util 拖到 57fps
+    #[test]
+    fn perf_lock_freezes_target_fps_offset() {
+        let mut controller = controller_with_policy();
+        controller.cfg.perf_lock = true;
+        controller.ema_fg_util = 0.30;
+        controller.util_sample_timer =
+            std::time::Instant::now() - std::time::Duration::from_secs(2);
+        for _ in 0..20 {
+            controller.adjust_target_for_util();
+        }
+        assert_eq!(controller.target_fps_offset, 0.0);
+    }
+
+    // [perf_lock] 稳态衰减整段跳过：perf 不再随「连续正常帧」下探
+    #[test]
+    fn perf_lock_skips_steady_decay() {
+        let mut controller = controller_with_policy();
+        controller.cfg.perf_lock = true;
+        controller.perf_index = 0.95;
+        controller.consecutive_normal_frames = 100_000;
+        controller.apply_steady_decay(60.0);
+        assert_eq!(controller.perf_index, 0.95);
     }
 }

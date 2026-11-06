@@ -249,6 +249,7 @@ fas-auto-capacity-core = [FAS]   P{ $pid }: 算力={ $cap } -> 权重={ $weight 
 fas-capacity-probe-failed = [FAS] capacity 权重自动探测失败，回退手工权重: probes={ $probes } zero_cap={ $zero }
 fas-policy-init = [FAS] P{ $pid } { $min }-{ $max } MHz | 权重={ $weight }
 fas-init-summary = [FAS] 初始化 | { $fps }fps 冗余:{ $margin } 集群:{ $clusters } P:{ $perf } 配置数:{ $profiles }
+fas-perf-lock = [FAS] 性能优先档已启用：各簇锁定最高频，PID/稳态衰减/软封顶全部旁路（忽略功耗，仅内核热限频仍可压）
 fas-app-switch = [FAS] 应用切换 ({ $ms }ms) | P -> { $perf }
 fas-loading-start = [FAS] 进入加载状态 ({ $frames } 帧, { $ms }ms) | P { $old_perf } -> { $new_perf }
 fas-loading-exit = [FAS] 退出加载状态 | P -> { $perf }
