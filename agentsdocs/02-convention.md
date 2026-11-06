@@ -158,7 +158,8 @@
 
 ### Rust 风格与资源占用
 
-- release profile 体积优先（`opt-level = "z"`, lto, strip），避免引入重依赖；优先复用现有依赖（serde/anyhow/log/tokio/nix 等），新增第三方库选社区高星、维护活跃的 crate。
+- release profile 体积优先（`opt-level = "z"`、`lto = "fat"`（full LTO）、strip），避免引入重依赖；优先复用现有依赖（serde/anyhow/log/tokio/nix 等），新增第三方库选社区高星、维护活跃的 crate。
+- **LTO 档位由 xtask 统一下发（2026-11-07）**：`cargo xtask build --lto full|thin|off` 或 `CHIRI_LTO`；本地构建（含 `scripts/build-arch/build-arch.sh`）在终端询问一次、全部模块共用，固定档失败不回退；CI 用 `CHIRI_LTO=auto`——每个模块先 full，失败按模块回退 thin → off。这里的“模块”= 独立 cargo 构建单元：`chiri` 主程序与 `yumi-ebpf` 探针（后者由 `build.rs` 单独构建），WebUI 非 Rust 不参与。用户口径 `full` 在 Cargo/rustc 侧必须写 `fat`（传 `full` 会报 `incorrect value`）。
 
 - 守护进程跑在 Android 后台，注意内存分配（避免频繁 Vec 分配）、锁粒度和线程唤醒次数。
 

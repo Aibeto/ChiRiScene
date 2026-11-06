@@ -21,3 +21,5 @@ DSH 沙箱（workspace-write）里 ~/.rustup 与 ~/.cargo **整个只读**：无
 订正旧记忆「host target 因缺 libc 符号失败」：已给 src/monitor/screen_detect.rs 的 libc::__system_property_get 加 #[cfg(not(target_os="android"))] 桩，故 **`YUMI_SKIP_EBPF=1 cargo check` 在 host 上全仓 0 error 可用**，是最快的全量验证手段。aarch64-linux-android 交叉 check 仍需 NDK 环境变量（CC/CXX/AR/RANLIB/CFLAGS_aarch64_linux_android 指向 NDK r29 的 bin/clang，CFLAGS 带 --target=aarch64-linux-android26），否则 cc-rs 找不到 clang，zstd-sys/ring 构建失败。
 §
 ChiRi EEM（相对能效模型）已落地 commit 6b1cff4，**取代 CLG-PF 与 FDP**。数据面：soc.yaml 的 `frontier_policy.per_cluster` 只保留 capacity/freq_khz/power_w(簇级溯源)/single_core_power_w(单核，运行期唯一消费项)，`demand_buckets`/`modes`/`anticipate`/`frontier`/`anchors` 已全部移除。口径铁律：跨簇比较**绝不能扣首档基线**（首档功耗就是该簇静态开销，扣掉等于「开一颗核」免费，prime 会永远胜出）。EEM 开启时 FDP 自动让位。
+§
+构建 LTO 档位由 xtask 下发：`cargo xtask build --lto full|thin|off|auto` 或环境变量 `CHIRI_LTO`。本地固定档（build-arch.sh 先问一次，全部模块共用、失败不回退）；CI 用 auto（每个模块先 full，失败按模块回退 thin→off）。模块 = chiri 主程序 + build.rs 单独构建的 yumi-ebpf（WebUI 不参与）。用户口径 full 在 Cargo/rustc 侧必须写 fat。契约见 agentsdocs/02-convention.md。

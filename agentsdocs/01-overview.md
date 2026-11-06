@@ -58,6 +58,15 @@ cargo xtask build
 # 仅组装模块目录、不打包 zip（CI 用；目录名按 module.prop 动态命名，GitHub 下载时自动压缩）
 cargo xtask build --no-pack
 
+# LTO 档位：full（缺省，等价 cargo 的 fat）/ thin / off
+#   本地直接跑 xtask 会在终端询问一次，答案对全部模块（chiri + yumi-ebpf）共用；
+#   auto = CI 策略：各模块先 full，失败按模块回退 thin → off（非交互时自动走这条）
+cargo xtask build --lto full
+cargo xtask build --lto off --no-pack      # 快速迭代可用 off
+
+# 环境变量等价写法（脚本/CI 用；设置后不再询问）
+CHIRI_LTO=thin cargo xtask build
+
 # 本地静态检查（验证 chiri crate 本身；需 nightly + aarch64-linux-android target + bpf-linker）
 cargo +nightly check -p chiri --target aarch64-linux-android
 

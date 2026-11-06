@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# build-arch.sh: [meta] [menu] [dl] [deps] [pkg] [toolchain] [lint] [xtask] [pack]
+# build-arch.sh: [meta] [menu] [lto] [dl] [deps] [pkg] [toolchain] [lint] [xtask] [pack]
 # ChiRi 本地构建脚本,供 Arch Linux 及衍生发行版(pacman 系)使用,与 CI(.github/workflows/build.yml) 等效,最后追加 zip 打包
 # 只检查依赖、永不自动安装,缺失时交互式选「预构建拉取 / 给出包管理器命令 / 跳过」
 set -euo pipefail
@@ -88,6 +88,27 @@ ask() {
     sel="${sel:-1}"
     [[ "$sel" =~ ^[0-9]+$ ]] && (( sel>=1 && sel<=${#opts[@]} )) || die "无效选择: $sel"
     printf -v "$__var" '%s' "${opts[$((sel-1))]}"
+}
+
+# [lto] 本地构建前询问一次,全部模块(chiri + yumi-ebpf)共用;导出 CHIRI_LTO 后 xtask 不再二次询问
+#   固定档位不回退:用户选 full 就按 full 构建,失败直接报错(CI 的 auto 才按模块回退 thin→off)
+ask_lto() {
+    # auto 留给 xtask 判定（本地 TTY 下会自行询问），这里不当作已定档
+    if [[ -n "${CHIRI_LTO:-}" && "${CHIRI_LTO}" != "auto" ]]; then
+        c_grn "LTO: $CHIRI_LTO（来自环境变量,不再询问）"
+        return
+    fi
+    ask LTO_CHOICE "LTO 模式(本次构建全部模块共用)" \
+        "full(完全 LTO,产物最小/最快,构建最慢;缺省)" \
+        "thin(增量 LTO,构建快一些,优化略弱)" \
+        "off(关闭 LTO,构建最快,产物体积最大)"
+    case "$LTO_CHOICE" in
+        full*) export CHIRI_LTO=full ;;
+        thin*) export CHIRI_LTO=thin ;;
+        off*)  export CHIRI_LTO=off ;;
+        *) die "无法解析 LTO 选择: $LTO_CHOICE" ;;
+    esac
+    c_grn "LTO: $CHIRI_LTO —— 全部模块共用,失败不回退"
 }
 
 # [deps] 依赖检查(不报不装)+ 预构建拉取,无网络时就地 IGNORE,NDK 可从 ANDROID_NDK_HOME 豁免
@@ -397,6 +418,7 @@ pack_zip() {
 main() {
     check_deps
     setup_toolchain
+    ask_lto
 
     local steps=()
     ask DO_LINT "跑 fmt+check+clippy?(CI 前置,几分钟)" "跑" "不跑"

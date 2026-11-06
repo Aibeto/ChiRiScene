@@ -1,9 +1,10 @@
-//! xtask/src/main.rs: [cli-entry] [version-helpers] [build-flow] [sub-builders]
+//! xtask/src/main.rs: [cli-entry] [lto] [version-helpers] [build-flow] [sub-builders]
 
 mod zip_ext;
 
 use std::{
-    fs,
+    env, fs,
+    io::{self, IsTerminal, Write},
     path::{Path, PathBuf},
 };
 
@@ -32,6 +33,10 @@ enum Commands {
         /// 不打包 zip，仅组装模块目录（CI 使用，交由 GitHub 下载时自动打包）
         #[arg(long)]
         no_pack: bool,
+        /// LTO 等级：full | thin | off | auto
+        /// （auto：本地终端只询问一次；CI/非交互下各模块先 full，失败按模块回退 thin → off）
+        #[arg(long, value_name = "LEVEL")]
+        lto: Option<String>,
     },
 }
 
@@ -40,10 +45,133 @@ fn main() -> Result<()> {
     let sh = Shell::new()?;
 
     match cli.command {
-        Commands::Build { no_pack } => build(&sh, no_pack)?,
+        Commands::Build { no_pack, lto } => build(&sh, no_pack, lto.as_deref())?,
     }
 
     Ok(())
+}
+
+// [lto]
+
+/// LTO 等级（用户口径）。
+///
+/// Cargo/rustc 只接受 `fat` / `thin` / `off`：直接传 `full` 会报
+/// `incorrect value `full` for codegen option `lto``。所以用户口中的 `full`
+/// 在这里显式映射为 `fat`，CLI 与环境变量仍统一用 full / thin / off。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LtoLevel {
+    Full,
+    Thin,
+    Off,
+}
+
+impl LtoLevel {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::Thin => "thin",
+            Self::Off => "off",
+        }
+    }
+
+    fn cargo_value(self) -> &'static str {
+        match self {
+            Self::Full => "fat",
+            Self::Thin => "thin",
+            Self::Off => "off",
+        }
+    }
+
+    /// 按模块的回退阶梯：full → thin → off（None = 已到底）
+    fn next(self) -> Option<Self> {
+        match self {
+            Self::Full => Some(Self::Thin),
+            Self::Thin => Some(Self::Off),
+            Self::Off => None,
+        }
+    }
+
+    fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "full" | "fat" | "true" => Some(Self::Full),
+            "thin" => Some(Self::Thin),
+            "off" | "false" | "none" => Some(Self::Off),
+            _ => None,
+        }
+    }
+}
+
+/// 本次构建的 LTO 方案
+#[derive(Clone, Copy, Debug)]
+enum LtoPlan {
+    /// 固定等级（本地询问 / 显式 --lto / CHIRI_LTO）：全部模块共用，失败即失败
+    Fixed(LtoLevel),
+    /// CI 缺省：每个模块先 full，失败按模块回退 thin → off
+    Auto,
+}
+
+const LTO_ENV: &str = "CHIRI_LTO";
+
+/// 决定本次构建的 LTO 方案。
+///
+/// 优先级：`--lto` > `CHIRI_LTO` > auto。auto 时：
+/// - 本地（stdin 是终端且无 CI 环境变量）→ 询问一次，全部模块共用；
+/// - CI / 管道 / 重定向 → 不询问，按模块 full → thin → off 回退。
+fn resolve_lto(cli_value: Option<&str>) -> Result<LtoPlan> {
+    let raw = match cli_value {
+        Some(value) => Some(value.to_string()),
+        None => env::var(LTO_ENV).ok().filter(|v| !v.trim().is_empty()),
+    };
+    match raw.as_deref().map(str::trim) {
+        None | Some("auto") => {
+            if io::stdin().is_terminal() && env::var_os("CI").is_none() {
+                Ok(LtoPlan::Fixed(ask_lto()?))
+            } else {
+                println!("LTO: auto（非交互：各模块先 full，失败按模块回退 thin → off）");
+                Ok(LtoPlan::Auto)
+            }
+        }
+        Some(value) => {
+            let level = LtoLevel::parse(value).ok_or_else(|| {
+                anyhow::anyhow!("无效 LTO 等级 `{value}`：只接受 full / thin / off / auto")
+            })?;
+            println!("LTO: {}（全部模块固定，不回退）", level.as_str());
+            Ok(LtoPlan::Fixed(level))
+        }
+    }
+}
+
+/// 本地构建只问一次，答案对全部模块生效（chiri + yumi-ebpf）
+fn ask_lto() -> Result<LtoLevel> {
+    let mut stderr = io::stderr();
+    write!(
+        stderr,
+        "\n选择 LTO 模式（本次构建全部模块共用）:\n\
+         1) full —— 完全 LTO，产物最小/最快，构建最慢（缺省）\n\
+         2) thin —— 增量 LTO，构建快一些，优化略弱\n\
+         3) off  —— 关闭 LTO，构建最快，产物体积最大\n\
+         选择 [1-3, 回车=1]: "
+    )?;
+    stderr.flush()?;
+
+    loop {
+        let mut line = String::new();
+        if io::stdin().read_line(&mut line)? == 0 {
+            // 终端被关掉：按缺省走，不让构建无谓失败
+            eprintln!("（stdin 已关闭，按缺省 full）");
+            return Ok(LtoLevel::Full);
+        }
+        match line.trim() {
+            "" | "1" | "full" | "fat" => return Ok(LtoLevel::Full),
+            "2" | "thin" => return Ok(LtoLevel::Thin),
+            "3" | "off" => return Ok(LtoLevel::Off),
+            other => {
+                eprintln!("无效选择 `{other}`，请输入 1 / 2 / 3");
+                write!(stderr, "选择 [1-3, 回车=1]: ")?;
+                stderr.flush()?;
+            }
+        }
+    }
 }
 
 // [version-helpers]
@@ -81,8 +209,10 @@ fn read_module_prop() -> Result<(String, String)> {
 
 // [build-flow]
 
-fn build(sh: &Shell, no_pack: bool) -> Result<()> {
+fn build(sh: &Shell, no_pack: bool, lto: Option<&str>) -> Result<()> {
     let temp_dir = temp_dir();
+    // 先定 LTO 方案：本地询问要在耗时构建（webui）之前发生
+    let lto_plan = resolve_lto(lto)?;
 
     // 产物命名以 module.prop 为准（name-version-提交数-时分），同日多次构建靠时分、跨天靠版本号+提交数区分
     let (module_name, module_version) = read_module_prop()?;
@@ -99,7 +229,7 @@ fn build(sh: &Shell, no_pack: bool) -> Result<()> {
 
     build_webui(sh)?;
 
-    build_core(sh)?;
+    build_core(sh, lto_plan)?;
 
     let module_dir = Path::new("module").to_path_buf();
     dir::copy(
@@ -194,8 +324,55 @@ fn aarch64_bin_path() -> PathBuf {
         .join("chiri")
 }
 
-fn build_core(sh: &Shell) -> Result<()> {
-    println!("正在编译 Rust Core");
+/// 核心模块（chiri）：独立 cargo 构建单元。
+/// Fixed 模式失败直接上报；Auto 模式按模块回退 thin → off，全部失败时报告第一档的错误。
+fn build_core(sh: &Shell, plan: LtoPlan) -> Result<()> {
+    match plan {
+        LtoPlan::Fixed(level) => run_core(sh, level, false),
+        LtoPlan::Auto => {
+            let mut first_error = None;
+            let mut level = LtoLevel::Full;
+            loop {
+                match run_core(sh, level, true) {
+                    Ok(()) => {
+                        if level != LtoLevel::Full {
+                            println!(
+                                "⚠ chiri 已回退到 LTO={}（full 档构建失败，见上方日志）",
+                                level.as_str()
+                            );
+                        }
+                        return Ok(());
+                    }
+                    Err(err) => {
+                        first_error.get_or_insert(err);
+                        let Some(next) = level.next() else { break };
+                        println!(
+                            "⚠ chiri 在 LTO={} 下构建失败，按模块回退 {} 重试",
+                            level.as_str(),
+                            next.as_str()
+                        );
+                        level = next;
+                    }
+                }
+            }
+            let err = first_error.expect("full 档必然已尝试");
+            Err(err.context("chiri 在 full / thin / off 三档 LTO 下均构建失败"))
+        }
+    }
+}
+
+/// 跑一次核心构建。`fallback_allowed` 只影响下发给 build.rs 的 eBPF 模块策略：
+/// Auto 时 eBPF 也允许独立回退；本地固定档时 eBPF 必须使用同一档。
+fn run_core(sh: &Shell, level: LtoLevel, fallback_allowed: bool) -> Result<()> {
+    println!("正在编译 Rust Core（chiri，LTO={}）", level.as_str());
+    // Cargo 用 CARGO_PROFILE_RELEASE_LTO 覆盖 [profile.release].lto（full 必须写成 fat）
+    let _lto = sh.push_env("CARGO_PROFILE_RELEASE_LTO", level.cargo_value());
+    // 下发给 build.rs（eBPF 模块）：等级 + 是否允许该模块自行回退
+    let _module_lto = sh.push_env(LTO_ENV, level.as_str());
+    let _module_fallback = sh.push_env(
+        "CHIRI_LTO_FALLBACK",
+        if fallback_allowed { "1" } else { "0" },
+    );
     // push_env 在当前作用域内设置环境变量，离开作用域自动恢复
     let _env = sh.push_env("RUSTFLAGS", "-C default-linker-libraries");
     // 不写 `+<spec>`：`+` 的优先级高于仓库根的 rust-toolchain.toml，
@@ -271,6 +448,36 @@ fn strip_comments(root: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 用户口径 full 必须映射成 cargo 的 fat（rustc 拒绝 `lto=full`）
+    #[test]
+    fn lto_full_maps_to_cargo_fat() {
+        assert_eq!(LtoLevel::Full.cargo_value(), "fat");
+        assert_eq!(LtoLevel::Thin.cargo_value(), "thin");
+        assert_eq!(LtoLevel::Off.cargo_value(), "off");
+    }
+
+    /// CI 的按模块回退阶梯：full → thin → off → 结束
+    #[test]
+    fn lto_fallback_ladder_is_full_then_thin_then_off() {
+        assert_eq!(LtoLevel::Full.next(), Some(LtoLevel::Thin));
+        assert_eq!(LtoLevel::Thin.next(), Some(LtoLevel::Off));
+        assert_eq!(LtoLevel::Off.next(), None);
+    }
+
+    /// CLI/env 接受用户口径与 cargo 别名（大小写、空白不敏感）；auto 由上层解析
+    #[test]
+    fn lto_parse_accepts_user_and_cargo_aliases() {
+        for raw in ["full", "FAT", " true "] {
+            assert_eq!(LtoLevel::parse(raw), Some(LtoLevel::Full), "{raw}");
+        }
+        assert_eq!(LtoLevel::parse("thin"), Some(LtoLevel::Thin));
+        for raw in ["off", "false", "none"] {
+            assert_eq!(LtoLevel::parse(raw), Some(LtoLevel::Off), "{raw}");
+        }
+        assert_eq!(LtoLevel::parse("auto"), None);
+        assert_eq!(LtoLevel::parse(""), None);
+    }
 
     /// 与历史 CI 谓词等价的语义：整行 # 删；shebang、行内 #、META-INF/、scripts/ 保留
     #[test]

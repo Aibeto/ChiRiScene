@@ -637,6 +637,35 @@
       "trustScore": 1,
       "createdAt": "2026-10-22T16:38:29.851Z",
       "updatedAt": "2026-10-22T16:38:29.851Z"
+    },
+    {
+      "id": "holo-321a8b97-7e86-4602-9996-8935dce8aece",
+      "content": "ChiRi 构建 LTO 契约（2026-11-07 落地）：入口 `cargo xtask build --lto full|thin|off|auto`，其次读环境变量 `CHIRI_LTO`。本地构建（scripts/build-arch/build-arch.sh 先 ask 一次）选固定档：全部模块共用、失败不回退；CI 用 `CHIRI_LTO=auto`：每个模块先 full，失败按模块回退 thin → off。模块 = 独立 cargo 构建单元：chiri 主程序 + build.rs 单独构建的 yumi-ebpf 探针（WebUI 非 Rust 不参与）。用户口径 full 在 Cargo/rustc 侧必须写 fat（传 full 报 `incorrect value ... either a boolean ..., thin, fat`）；根 Cargo.toml 现为 lto = \"fat\"。实测同一提交：chiri LTO=off 7,117,024 B vs full 6,059,000 B；eBPF off 3824 B vs full 3504 B。契约正文在 agentsdocs/02-convention.md，命令示例在 01-overview.md [cmds]。",
+      "category": "decision",
+      "tags": [
+        "构建",
+        "LTO",
+        "CI",
+        "契约"
+      ],
+      "entities": [
+        "ChiRi",
+        "xtask",
+        "CHIRI_LTO",
+        "yumi-ebpf",
+        "Cargo.toml",
+        "CI",
+        "build-arch.sh",
+        "fat",
+        "LTO",
+        "WebUI",
+        "Rust",
+        "Cargo"
+      ],
+      "trustScore": 0.8,
+      "importance": 4,
+      "createdAt": "2026-11-06T21:37:37.743Z",
+      "updatedAt": "2026-11-06T21:37:37.743Z"
     }
   ]
 }

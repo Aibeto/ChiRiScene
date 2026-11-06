@@ -1,4 +1,4 @@
-//! build.rs: [bpf-linker-install] [ebpf-build] [webui-embed]
+//! build.rs: [bpf-linker-install] [lto] [ebpf-build] [webui-embed]
 
 use std::env;
 use std::fs;
@@ -79,6 +79,69 @@ fn ensure_bpf_linker(tools_dir: &Path) -> Result<PathBuf, Box<dyn std::error::Er
     Ok(linker)
 }
 
+// [lto]
+
+/// 模块级 LTO 等级。用户口径是 full / thin / off，Cargo/rustc 侧 full 必须写成 `fat`
+///（直接传 `full` 会报 `incorrect value `full` for codegen option `lto``）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LtoLevel {
+    Full,
+    Thin,
+    Off,
+}
+
+impl LtoLevel {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::Thin => "thin",
+            Self::Off => "off",
+        }
+    }
+
+    fn cargo_value(self) -> &'static str {
+        match self {
+            Self::Full => "fat",
+            Self::Thin => "thin",
+            Self::Off => "off",
+        }
+    }
+
+    /// 按模块的回退阶梯：full → thin → off（None = 已到底）
+    fn next(self) -> Option<Self> {
+        match self {
+            Self::Full => Some(Self::Thin),
+            Self::Thin => Some(Self::Off),
+            Self::Off => None,
+        }
+    }
+}
+
+/// eBPF 模块的 LTO 策略（由 xtask 通过环境变量下发）
+///
+/// - `CHIRI_LTO`：full / thin / off；未设置（例如直接 `cargo build --release`）按 full。
+/// - `CHIRI_LTO_FALLBACK`：1 = 允许本模块独立回退（CI 的 auto），
+///   0 = 固定档位（本地已询问过一次，全部模块共用同一档）。未设置按 1。
+fn lto_policy() -> (LtoLevel, bool) {
+    // 档位变化必须重跑本构建脚本，否则 eBPF 产物会沿用旧 LTO 设置
+    println!("cargo:rerun-if-env-changed=CHIRI_LTO");
+    println!("cargo:rerun-if-env-changed=CHIRI_LTO_FALLBACK");
+
+    let level = match env::var("CHIRI_LTO").ok().as_deref().map(str::trim) {
+        Some("thin") => LtoLevel::Thin,
+        Some("off") => LtoLevel::Off,
+        Some("full") | Some("fat") | Some("auto") | Some("") | None => LtoLevel::Full,
+        Some(other) => {
+            println!("cargo:warning=⚠ 未知 CHIRI_LTO={other}，按 full 处理");
+            LtoLevel::Full
+        }
+    };
+    let fallback = env::var("CHIRI_LTO_FALLBACK")
+        .map(|value| value.trim() != "0")
+        .unwrap_or(true);
+    (level, fallback)
+}
+
 // [ebpf-build]
 
 /// 写 eBPF 占位产物使 include_bytes! 可解析（内容无效，仅类型检查用），返回 OUT_DIR 下的 ebpf_target 目录
@@ -143,18 +206,46 @@ fn build_ebpf() -> Result<PathBuf, Box<dyn std::error::Error>> {
     #[cfg(not(debug_assertions))]
     ebpf_args.push("--release");
 
-    let status = Command::new("cargo")
-        .arg("build")
-        .args(&ebpf_args)
-        .current_dir(&ebpf_dir)
-        .env_remove("RUSTUP_TOOLCHAIN")
-        .env("PATH", add_path(linker_bin.parent().unwrap())?)
-        // 新版 bpf-linker 内嵌 LLVM 只支持 -O0~O3：workspace release 的 opt-level="z" 会导致链接失败，eBPF 目标局部覆盖为 -O2
-        .env("CARGO_PROFILE_RELEASE_OPT_LEVEL", "2")
-        .status()?;
+    // LTO：eBPF 是独立构建模块，档位由 xtask 下发；debug 构建走 dev profile，LTO 不生效。
+    let (mut lto, lto_fallback) = lto_policy();
+    if cfg!(debug_assertions) {
+        lto = LtoLevel::Off;
+    }
+    let linker_path = add_path(linker_bin.parent().unwrap())?;
 
-    if !status.success() {
-        panic!("yumi-ebpf 编译失败");
+    // 失败时按模块回退（CI 的 auto 模式允许；本地固定档不允许），全部失败才 panic
+    loop {
+        let status = Command::new("cargo")
+            .arg("build")
+            .args(&ebpf_args)
+            .current_dir(&ebpf_dir)
+            .env_remove("RUSTUP_TOOLCHAIN")
+            .env("PATH", &linker_path)
+            // 新版 bpf-linker 内嵌 LLVM 只支持 -O0~O3：workspace release 的 opt-level="z" 会导致链接失败，eBPF 目标局部覆盖为 -O2
+            .env("CARGO_PROFILE_RELEASE_OPT_LEVEL", "2")
+            // full 必须写成 fat（rustc 拒绝 lto=full）
+            .env("CARGO_PROFILE_RELEASE_LTO", lto.cargo_value())
+            .status()?;
+
+        if status.success() {
+            println!(
+                "cargo:warning=✅ yumi-ebpf 编译成功（LTO={}）",
+                lto.as_str()
+            );
+            break;
+        }
+
+        match (lto_fallback, lto.next()) {
+            (true, Some(next)) => {
+                println!(
+                    "cargo:warning=⚠ yumi-ebpf 在 LTO={} 下编译失败，按模块回退 {} 重试",
+                    lto.as_str(),
+                    next.as_str()
+                );
+                lto = next;
+            }
+            _ => panic!("yumi-ebpf 编译失败（LTO={}）", lto.as_str()),
+        }
     }
 
     // 3. 产物路径（binary crate 直接输出到 <target>/<profile>/<name>，无 deps/hash）

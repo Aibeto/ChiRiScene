@@ -65,5 +65,7 @@ zstd = { version = "0.13", features = ["zstdmt"] }
 [profile.release]
 strip = true
 opt-level = "z"
-lto = true
+# 缺省 full LTO（cargo/rustc 的合法名是 "fat"）；xtask 用 CARGO_PROFILE_RELEASE_LTO
+# 按构建覆盖为 thin/off（CI 失败按模块回退，本地构建前询问一次），见 xtask/src/main.rs [lto]
+lto = "fat"
 codegen-units = 1

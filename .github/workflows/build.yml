@@ -211,10 +211,14 @@ jobs:
       #    语义不变：删整行 #，保留 shebang 与行内 #，跳过 META-INF/ 与 scripts/。
 
       # 11. 运行 xtask 构建（仅组装目录，不预打包 zip；GitHub 下载产物时会自动压缩）
+      #     LTO：CHIRI_LTO=auto = 每个模块先 full，失败按模块回退 thin → off；
+      #     CI 无 TTY，xtask 不会进入本地交互询问分支（本地构建脚本会先问一次）。
       #     xtask 内部不再用 `cargo +<spec>`（`+` 优先级高于 rust-toolchain.toml，
       #     两者不同就会解析到两个编译器、共用 target/ 时报 E0514），
       #     故 CHIRI_RUSTUP_TOOLCHAIN 环境变量已删除，工具链由文件统一决定。
       - name: Run xtask build
+        env:
+          CHIRI_LTO: auto
         run: cargo xtask build --no-pack
 
       # 12. 动态获取 xtask 生成的模块目录（按 module.prop 命名）
