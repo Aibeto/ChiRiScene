@@ -263,3 +263,15 @@
 - [x] **写掩码未与可行域求交**（同文件）：C3 只按簇剔除，簇内部分核被 cpuset 排除时仍照写并被静默摘。新增 `dst_mask`（`a.mask ∩ allowed`），空集 `eem.abort` 不发 syscall；`mask_write_allowed`/`set_tid_affinity`/`clipped`/日志 dst 全用 `dst_mask`，`clipped` 以「实际写下」为基准。
 - [x] **`status.csv` 的 28 列契约同步到 WebUI**（`webui/src/data/status-csv.ts`、`tests/data-parse.test.ts`、`src/dev/mock-shell.ts`、`README.md`）：解析器原先按「字段数 == 27」过滤，加列后会**整文件丢行**；现同时接受 27/28（旧归档 `daemonRssKb=null`），mock 与单测同步。
 - [ ] **待真机复核（自审轮不写结论）**：① 1s TTL 是否让 cpuset 变化在 1s 内滞后（切换应用瞬间允许集变宽/变窄）——看 `aff_action` 的 `clipped` 是否在换包 ±1s 出现尖峰；② `dst_mask` 求交后空集路径：已加 `result=skip reason=dst_empty` 留痕，且 `abort` 的 `fail_streak` 会走 `FAIL_BACKOFF_BASE` 退避（4s→30s），理论上不会每拍重试——下轮看 `skip` 计数与同一 tid 的重复频率即可定论。
+
+### 终末地性能优先档 `[perf_lock]`（2026-11-07 落地，待真机复核）
+
+> 用户 2026-11-07 指令：为终末地提供性能增强，忽略功耗开销，以「绝对流畅、绝对不卡不掉帧、尤其没有小卡顿」为唯一目标。机制与取舍见 `agentsdocs/03-chiri.md` 的 `[perf_lock]` 条；配置 = `module/config/normal/fas/endfield.yaml`；回归 = `scripts/tests/fas_perf_tier_regression.rs`。
+
+- [x] **`perf_lock` 落代码**：`src/fas_types.rs` 新增 `perf_lock: bool`（`#[serde(default)]`，缺省 false）；`policy_mgmt.rs::apply_freqs` 在 util 软封顶之后、`thermal_cap` 之前 `self.perf_index = ceiling; effective_perf = ceiling;`，且 `let load_only = !locked && self.uses_load_control();`（开环分支按 util 下探，与锁频互斥）；`controller.rs::adjust_target_for_util` 与 `frame_pipeline.rs::apply_steady_decay` 在锁频档直接 return（`apply_steady_decay` 顺带由私有改 `pub(super)` 供单测）；`load_policies` 打 i18n `fas-perf-lock`，`reload_rules` 支持热重载。
+- [x] **终末地改性能档**：`perf_lock: true` + `fps_gears: [60.0]`（单档 ⇒ `next_gear/prev_gear` 恒 None，齿轮机整段不执行，掐掉「降档加速压到 0.90」与「原生档 60↔120 翻面」）+ per-app `target_fps: [60]`；`core_temp_threshold: 0.0` 保留（FAS 侧不降频，热量交内核 thermal）。
+- [x] **验证基线**：`cargo fmt` 干净；`cargo check -p chiri` exit 0（13 条既有告警）；新增 4 条单测全过（`perf_lock_keeps_max_freq_under_util_cap_and_jank` / `_bypasses_load_only_demand` / `_freezes_target_fps_offset` / `_skips_steady_decay`）；离线 `fas_perf_tier_regression` 4 passed；全量 `cargo test -p chiri --bin chiri` = **278 passed / 3 failed**（既有 `fas_manager::tests` 三条环境依赖）。
+- [ ] **真机复核**：① `daemon.log` 出现 `fas-perf-lock`；② `[FAS] ... | P:` 全程 1.00、`snap` 里三簇 `cur/max` 恒 100%；③ `fas-gear-switch` / `fas-downgrade-boost` / `fas-native-gear-detected` 零条；④ `fas-loop-open` 期间频率不掉（这是本档的核心收益）；⑤ 观察 `qos_clamped`——若内核 thermal 把 `scaling_max_freq` 压到目标以下会告警但不重写，持续钳制说明得降温（或回退到保留 `core_temp_threshold`）。
+- [ ] **GPU 锁频评估（未做，需证据）**：FAS 现在完全不碰 GPU（`src/chiri/gpu.rs` 的 `GpuGuard` 只给 lab contingency 用）。开锁的判据 = 真机日志 `gpu_busy` 长期 ≥95% 且 CPU 已锁最高频仍有掉帧。**风险**：8550 实测读 GPU 节点会把 GPU 拉起（+47% 功耗），锁最高频显著抬 SoC 温度，可能诱发内核 thermal 压 CPU → 更卡。故无证据不开。
+- [ ] **是否套用到 sgame/lolm/speedmobile（待裁决）**：1107 包 sgame 的三条掉频来源（开环锯齿 58 次、降档加速 P→0.90 三十条、原生档 60↔120 翻面）都被 `perf_lock` 一并解决，但电竞长时场景热负载更高，「忽略功耗」需用户定。套用 = 该应用 yaml 加 `perf_lock: true`，`fps_gears` 是否收成单档按机型刷新率决定（单档会让齿轮机失效，但 `perf_lock` 仍把频率钉在最高）。
+- [ ] **`effective_perf_floor()` 的 0.45 硬顶（未改）**：`controller.rs` 的 `(base + fps_bonus).min(0.45)` 让任何 `perf_floor > 0.45` 失效。`perf_lock` 绕过它（写频只认 `perf_ceil`），本轮不动；将来若要做「半锁」（floor 0.8 保底 + PID 微调），需改成可配字段并同步 `normalize()` 的交叉约束段。

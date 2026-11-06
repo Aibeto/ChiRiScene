@@ -307,3 +307,19 @@
   此前按成本取最便宜与文档不符；`cheaper_elsewhere` 有 `supply >= demand` 闸，生产行为不变。
 - **自审轮验证基线**：单测 30 passed；离线 energy_model 40 / affinity_cpuset 19 / app_mode_activity 10 /
   clg_tuning 5 / diag_slice 6；WebUI vitest 107 passed（8 文件）。
+
+## FAS 性能优先档 `[perf_lock]` 契约（2026-11-07 落地，首个使用者 = 终末地）
+
+- **落点唯一**：`src/scheduler/fas/policy_mgmt.rs::apply_freqs`，`if locked { self.perf_index = ceiling; effective_perf = ceiling; }`，
+  位置必须在 util 软封顶块**之后**、`thermal_cap` 压顶**之前**。FAS 全部降频路径（PID / steady decay / util 软封顶 / 开环 load_only /
+  loading / post_loading / app_switch / 齿轮机 min(0.90) / floor-rescue / post-jank / damped cap）只改 `perf_index`，写频必经此处 ⇒ 一处收口即可全旁路。
+- **`load_only = !locked && self.uses_load_control()`**：开环按 util 下探与锁频互斥，不能同时成立。
+- **辅助闸**：`controller.rs::adjust_target_for_util` 与 `frame_pipeline.rs::apply_steady_decay`（`pub(super)`）在锁频档开头 return；
+  这两处不改也不会掉频（最终仍被 apply_freqs 夹回），改的目的是不让内部状态漂移误导判读（如 target 60→57）。
+- **缺省必须 false**：`fas_types.rs` 的 `#[serde(default)] pub perf_lock: bool`，只给掉帧敏感应用逐应用显式开；禁止为了让某档更稳而改缺省值。
+- **单档配套**：`fps_gears: [60.0]` ⇒ `next_gear/prev_gear` 恒 None ⇒ 齿轮机升/降两段整段不执行（这是掐「降档加速压到 0.90」与「原生档翻面」的唯一手段）。
+- **热限频仍生效**：`core_temp_threshold > 0` 时 `thermal_cap` 写在锁频之后，内核 thermal 也独立生效（`qos_clamped` 只告警不重写）。
+- **热重载**：`reload_rules` 同步 `perf_lock`，由关到开才补一条 `fas-perf-lock` 日志（i18n `zh.ftl`/`en.ftl` 键位对称）。
+- **验证基线**：`cargo test -p chiri --bin chiri -- perf_lock` 4 passed；离线 `scripts/tests/fas_perf_tier_regression.rs` 4 passed；
+  全量 `278 passed / 3 failed / 1 ignored`（3 failed 为 `chiri::fas_manager::tests::` 既有环境依赖）。
+- **未改**：`controller.rs::effective_perf_floor()` 的 `.min(0.45)` 硬顶仍在（`perf_lock` 绕过它；做「半锁」时才需改成可配字段并同步 `normalize()`）。
