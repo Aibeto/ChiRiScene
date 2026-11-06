@@ -2,15 +2,32 @@
 # FAS 配置：com.hypergryph.endfield（明日方舟：终末地）
 # 编译期嵌入（随 module/config 目录整体收录，common::embedded_fas_app_str 按配置名查找），不可编辑，不对外暴露。
 # 未列出的字段取 src/fas_types.rs::FasRulesConfig 默认值。
+#
+# 【性能优先档，2026-11-07】用户要求：为终末地提供性能增强，忽略功耗开销，
+# 以「绝对流畅、绝对不卡、不掉帧、尤其没有小卡顿」为唯一目标。
+# 手段是 perf_lock（新字段，见 src/fas_types.rs 与 agentsdocs/03-chiri.md 的 [perf_lock] 契约）：
+# 三簇全程锁在硬件最高频，以下下调路径全部旁路 ——
+#   PID 衰减 / 稳态衰减（apply_steady_decay）/ util 软封顶（ema_fg_util 200ms 滞后的误压）/
+#   开环降频（帧源静默时原来按 max(core_utils) 下探，是 FAS 游戏最典型的锯齿来源）/ target_fps 偏移。
+# 内核热限频（thermal_perf_cap / QoS 钳制）仍然照压，安全边界不变。
 fas_rules:
-  fps_gears: [30.0, 60.0, 90.0, 120.0]
+  # 锁频档：各簇恒定 perf_ceil=1.0 → find_nearest_freq 取硬件最高档
+  perf_lock: true
+
+  # 单档 60：gear_state 的 next_gear/prev_gear 在该配置下恒为 None，升档段与降档段整段不执行，
+  # 顺手掐掉两条已观测到的掉频来源（1107 包 sgame 现场证据）：
+  #   ①「降档加速」把 P 硬压到 ≤0.90（gear_state.rs 的 min(0.90)）并保持 downgrade_boost_duration 帧；
+  #   ②「原生档识别」在 60/120 之间翻面（60.8fps → 降 60 → 1s 后升回 120）。
+  # 终末地移动端实测按 60fps 档配置（历史 per-app target 为 [30,45,60]），故取 60。
+  fps_gears: [60.0]
   fps_margin: 3.0
   per_app_profiles:
     com.hypergryph.endfield:
-      target_fps: [30, 45, 60]
+      target_fps: [60]
       fps_margin: 3.0
   # FAS 引擎侧温度护栏：看电池温度不看处理器（处理器长期 95℃ 属正常工作区，
   # 不作为降频依据）。电池温度 ≥45℃ 时 perf 压到 0.70（回落 42℃ 解除）；
   # 8475 实测内核 thermal 只盯 SoC 温度不管电池，电池安全边界由本护栏兜底。0 = 禁用
   # 【2026-10-16 用户要求】FAS 温度护栏关闭，安全关闭（0 = 禁用；说明见 sm8550/feature.yaml 同段）。
+  # 【2026-11-07】性能优先档延续该设置：FAS 自己不再降频，热量交给内核 thermal 兜底。
   core_temp_threshold: 0.0
