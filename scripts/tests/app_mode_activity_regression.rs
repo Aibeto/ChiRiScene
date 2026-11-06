@@ -98,3 +98,81 @@ fn activity_key_is_exact_not_prefix_match() {
         Some("boost")
     );
 }
+
+// ---------------------------------------------------------------------------
+// 特调白名单层（2026-11-07 新增，activity-first）
+// ---------------------------------------------------------------------------
+// `determine_mode` 里特调白名单是 activity 查表之外的**包名级早退**，历史上先于 activity；
+// 带 activity-first 的条目改为「查到 activity 规则就让位」。这里镜像新的判定顺序，锁住三条契约：
+//   1) 条目未声明标志位 → 包名回退优先（bili 现状，逐位不变）
+//   2) 声明了标志位但本轮没有 activity 规则 → 仍用包名回退（播放页靠它兜底）
+//   3) 声明了标志位且有 activity 规则 → 用 activity 规则（详情页拉回 default）
+
+/// 与 src/monitor/app_detect.rs::special_yields_to_activity 同语义
+fn special_yields_to_activity(activity_first: bool, has_activity_rule: bool) -> bool {
+    activity_first && has_activity_rule
+}
+
+/// 镜像 determine_mode 的前台选择（FAS 段不建模）：activity 先查 → 特调白名单 → app_modes 包名级。
+/// `special` = Some((回退模式, activity_first))。
+fn select_with_special<'a>(
+    app_modes: &'a HashMap<String, String>,
+    package: &str,
+    activity: &str,
+    activity_aware: bool,
+    special: Option<(&'a str, bool)>,
+) -> Option<String> {
+    let activity_mode = activity_lookup(app_modes, activity, activity_aware);
+    if let Some((fallback, activity_first)) = special {
+        if !special_yields_to_activity(activity_first, activity_mode.is_some()) {
+            return Some(fallback.to_string());
+        }
+    }
+    activity_mode
+        .or_else(|| app_modes.get(package))
+        .cloned()
+}
+
+#[test]
+fn special_entry_without_flag_keeps_package_fallback_priority() {
+    // 历史行为：白名单包整包进特调，rules.yaml 里的 activity 规则写而不生效（bili 现状，勿改）
+    let m = modes(&[(ACT, "default")]);
+    assert_eq!(
+        select_with_special(&m, PKG, ACT, true, Some(("playback", false))).as_deref(),
+        Some("playback")
+    );
+}
+
+#[test]
+fn activity_first_entry_yields_to_explicit_activity_rule() {
+    // 腾讯视频详情页：包名回退是 playback，但这一页被显式拉回 default（触摸密度 28.1%）
+    let m = modes(&[(ACT, "default")]);
+    assert_eq!(
+        select_with_special(&m, PKG, ACT, true, Some(("playback", true))).as_deref(),
+        Some("default")
+    );
+}
+
+#[test]
+fn activity_first_entry_keeps_fallback_when_activity_unknown() {
+    // 播放器 activity 名尚未观测到（activity 为空或没配键）→ 仍走包名回退的 playback 兜底
+    let m = modes(&[(ACT, "default")]);
+    assert_eq!(
+        select_with_special(&m, PKG, "", true, Some(("playback", true))).as_deref(),
+        Some("playback")
+    );
+    assert_eq!(
+        select_with_special(&m, PKG, "com.tencent.qqlive/.PlayerActivity", true, Some(("playback", true))).as_deref(),
+        Some("playback")
+    );
+}
+
+#[test]
+fn activity_first_does_not_affect_activity_aware_off() {
+    // 采样关闭（旧配置/无 activity 键）时 activity 恒不可用 → 标志位无从生效，退回包名回退
+    let m = modes(&[(ACT, "default")]);
+    assert_eq!(
+        select_with_special(&m, PKG, ACT, false, Some(("playback", true))).as_deref(),
+        Some("playback")
+    );
+}

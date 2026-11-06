@@ -45,6 +45,16 @@ app_modes:
   tv.danmaku.bili/.MainActivityV2: default
   tv.danmaku.bili/com.bilibili.search2.main.BiliMainSearchActivity: default
 
+  # --- 腾讯视频（2026-11-07，配合 special_tuned.yaml 的 activity-first）---
+  # 包名回退进 playback（播放页/全屏播放按包名兜底），但已观测到的详情页与启动页是高频短交互：
+  # 触摸密度 28.1%（同期 B 站 0.03%）、big util p50 0.71，而**特调路径没有触摸升频**
+  # （触摸事件只喂 CLG），playback 的 util_smoothing 0.25 又会滤平滚动尖峰 → 这些页拉回 default。
+  # 播放器 activity 名本轮未观测到（81.1 s 全在详情页），不写即继续走包名回退的 playback；
+  # 拿到播放页日志后应改成显式键（那时 special_tuned.yaml 的 activity-first 条目可删）。
+  com.tencent.qqlive/.kmm.VideoDetailKmmActivityBk: default
+  com.tencent.qqlive/.ona.activity.HotStartSplashActivity: default
+  com.tencent.qqlive/.ona.activity.SplashHomeActivity: default
+
   # --- 包名级 reduce：整包只有长稳态一种形态，全包充裕 ---
   # 阅读器
   com.dragon.read: reduce

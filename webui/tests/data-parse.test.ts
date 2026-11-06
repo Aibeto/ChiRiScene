@@ -7,7 +7,7 @@ const HEADER =
   'timestamp,type,mode,package,charge,screen_on,batt_temp,cpu_temp,thermal_cap_pct,thermal_free_pct,' +
   'clg_active,psi_cpu_some,psi_io_some,psi_mem_some,gpu_busy_pct,batt_voltage_v,batt_current_ma,' +
   'batt_power_w,wakeups,migrations,freq_trans,fps,screen_prop,daemon_utime_ms,daemon_stime_ms,' +
-  'cpu_dyn_w,resid_w'
+  'cpu_dyn_w,resid_w,daemon_rss_kb'
 
 function row(overrides: Partial<Record<string, string>> = {}): string {
   const base: Record<string, string> = {
@@ -37,7 +37,8 @@ function row(overrides: Partial<Record<string, string>> = {}): string {
     daemon_utime_ms: '12340',
     daemon_stime_ms: '560',
     cpu_dyn_w: '0.42',
-    resid_w: '1.53'
+    resid_w: '1.53',
+    daemon_rss_kb: '28416'
   }
   return [
     'timestamp',
@@ -66,16 +67,25 @@ function row(overrides: Partial<Record<string, string>> = {}): string {
     'daemon_utime_ms',
     'daemon_stime_ms',
     'cpu_dyn_w',
-    'resid_w'
+    'resid_w',
+    'daemon_rss_kb'
   ]
     .map(col => overrides[col] ?? base[col])
     .join(',')
 }
 
 describe('status.csv 解析', () => {
-  it('列数常量与守护进程表头一致（27 列）', () => {
-    expect(STATUS_COLUMN_COUNT).toBe(27)
-    expect(HEADER.split(',')).toHaveLength(27)
+  it('列数常量与守护进程表头一致（28 列）', () => {
+    expect(STATUS_COLUMN_COUNT).toBe(28)
+    expect(HEADER.split(',')).toHaveLength(28)
+  })
+
+  it('旧 27 列归档仍可解析（末尾 daemon_rss_kb 缺失）', () => {
+    const legacy = [HEADER.split(',').slice(0, 27).join(','), row().split(',').slice(0, 27).join(',')].join('\n')
+    const rows = parseStatusCsv(legacy)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].daemonRssKb).toBeNull()
+    expect(rows[0].battPower).toBeCloseTo(-1.95)
   })
 
   it('跳过表头并按列名取值', () => {

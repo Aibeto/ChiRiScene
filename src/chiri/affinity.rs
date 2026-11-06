@@ -164,6 +164,10 @@ pub(crate) const PIN_FAIL_BACKOFF_MAX: Duration = Duration::from_secs(60);
 /// 全为同一个 pid 的线程钉同一颗核）；太长则进程真回到前台（cgroup cpuset 放宽）后
 /// 提升迟迟不生效。15s 覆盖「同一场景的连续 boost 重试」，又能在场景稳定后自愈。
 pub(crate) const NARROW_PID_TTL: Duration = Duration::from_secs(15);
+/// [eem_cpuset] 前台可行域的缓存有效期：ChiRi 每 2s 刷新一次 top-app/foreground cpuset，
+/// 而 EEM 每拍（160ms）都要用一次可行域 —— 1s 内复用即可，既不会用到比刷新更旧的值，
+/// 也把两次 cgroup 读的频次从 12.5 次/s 降到 2 次/s。
+pub(crate) const EEM_ALLOWED_TTL: Duration = Duration::from_secs(1);
 /// 核心过载阈值：钉定核 util 超此值重钉到低占用核，分散负载压制峰值频率（前台/promoted 共用）
 pub(crate) const CORE_OVERLOAD_UTIL: f32 = 0.70;
 
@@ -932,13 +936,23 @@ pub struct AffinityManager {
     eem_min_util_pct: f32,
     /// [eem] 各 CPU 容量（真机 cpu_capacity 优先，缺则 soc.yaml [capacity]）：进程内一次解析
     core_caps: Vec<Option<u32>>,
-    /// [narrow] 进程级窄核域备忘：pid → (被拒的簇, 到期时刻)
+    /// [narrow] 进程级窄核域备忘：(pid, 被拒的簇) → 到期时刻
     ///
     /// 取证（2026-10-26 sm8550/PHB110）：一次 boost 里 417 个前台线程被钉向同一颗 big 核、
     /// 整批 EINVAL（单秒 431 条），随后整批每轮重试 —— 这类拒绝的判据是**进程级**的
     /// （cgroup cpuset 把该 pid 收窄、或目标核此刻不可用），逐线程各撞一次纯属浪费。
     /// 记住一次，同进程其余线程直接跳过，到期自动重试。
-    narrow_pid: HashMap<i32, (CoreGroup, Instant)>,
+    ///
+    /// 键必须是 **(pid, 簇) 二元组**：单槽 `pid → (簇, 到期)` 会被「该 pid 最近一次被拒的簇」
+    /// 覆盖 —— 跨簇并集掩码（2-5 / 1-5 / 0-7）先后撞两个簇时，后写的记录把前一条挤掉，
+    /// `narrow_skip` 只看当前簇就漏判，同一 (pid,簇) 对在 60s 内被摘 ≥3 次（1107 包 59 对，
+    /// 单对最多 37 次）。
+    narrow_pid: HashMap<(i32, CoreGroup), Instant>,
+    /// [eem_cpuset] 落点可行域缓存 `(算出的时刻, 值)`：cpuset 由 ChiRi 每 2s 刷新，
+    /// 而本表每拍（160ms）都要用 —— 1s TTL 内复用，省掉每拍两次 cgroup seq_file 读。
+    eem_allowed_cache: Option<(Instant, Option<Vec<usize>>)>,
+    /// [eem_cpuset] 上一次**已打日志**的可行域（只在变化时打，避免每拍刷屏）
+    eem_allowed_last: Option<Vec<usize>>,
 }
 
 impl AffinityManager {
@@ -981,6 +995,8 @@ impl AffinityManager {
             eem_min_util_pct: 8.0,
             core_caps: Vec::new(),
             narrow_pid: HashMap::new(),
+            eem_allowed_cache: None,
+            eem_allowed_last: None,
         }
     }
 
@@ -1282,8 +1298,8 @@ impl AffinityManager {
         pid > 0
             && self
                 .narrow_pid
-                .get(&pid)
-                .is_some_and(|&(c, until)| c == cluster && now < until)
+                .get(&(pid, cluster))
+                .is_some_and(|&until| now < until)
     }
 
     /// [narrow] 记一次**进程级**拒绝（EINVAL）：同 pid 同簇在 `NARROW_PID_TTL` 内不再尝试。
@@ -1294,10 +1310,15 @@ impl AffinityManager {
         if pid <= 0 || err != Some(libc::EINVAL) {
             return;
         }
-        self.narrow_pid.insert(pid, (cluster, now + NARROW_PID_TTL));
-        // 表按 pid 增长：超过阈值先清过期项（正常情况下一条 pid 只占一条）
+        self.remember_narrow(pid, cluster, now);
+    }
+
+    /// [narrow] 落一条备忘并按需清理过期项（`note_narrow` / `note_stripped` 共用）
+    fn remember_narrow(&mut self, pid: i32, cluster: CoreGroup, now: Instant) {
+        self.narrow_pid.insert((pid, cluster), now + NARROW_PID_TTL);
+        // (pid,簇) 组合最多 ≈ 进程数 × 3：超阈值先清过期项，正常路径这里恒不触发
         if self.narrow_pid.len() > 512 {
-            self.narrow_pid.retain(|_, &mut (_, until)| until > now);
+            self.narrow_pid.retain(|_, until| *until > now);
         }
     }
 
@@ -1315,10 +1336,7 @@ impl AffinityManager {
         if pid <= 0 {
             return;
         }
-        self.narrow_pid.insert(pid, (cluster, now + NARROW_PID_TTL));
-        if self.narrow_pid.len() > 512 {
-            self.narrow_pid.retain(|_, &mut (_, until)| until > now);
-        }
+        self.remember_narrow(pid, cluster, now);
     }
 
     /// normal 组绑定的真实写入结果；身份未知时不建立退避
@@ -2446,6 +2464,48 @@ impl AffinityManager {
         }
     }
 
+    /// [eem_cpuset] 落点可行域 = 前台组 cpuset ∩ 在线核（None = 读不到，退回不裁剪）。
+    ///
+    /// EEM 只按「算力/功耗」选核，从不看 cgroup cpuset 是否允许；而 `normal_fg_exclude_little`
+    /// 每 2s 把 top-app/foreground 收窄到 big∪prime（本机缺省开启）。于是每轮都会规划出
+    /// 含小核的窗口、每轮被内核**静默摘核**（写返回 0、回读少核）：1107 包 4,295 个被摘核次里
+    /// 86.1% 是小核，`place` ok 帧 38.3% 带 clipped=true，其中 59 个 (pid,簇) 对在 60s 内被摘
+    /// ≥3 次（单对最多 37 次）。规划池先与可行域求交，这类「空转写 + 假窗口 + 下一拍重规划」
+    /// 一起消失；代价是每秒两次小文件读（按 1s TTL 摊薄）。
+    fn eem_allowed_cpus(&mut self, now: Instant) -> Option<Vec<usize>> {
+        // [eem_cpuset] 1s TTL：cpuset 由 ChiRi 每 2s 刷新，本表每拍 160ms 调用一次，
+        // 不缓存就是 6.25 次/s 的 cgroup 读（每次 2 个 seq_file 打开 + 解析 + 分配）。
+        if let Some((at, cached)) = &self.eem_allowed_cache
+            && now.saturating_duration_since(*at) < EEM_ALLOWED_TTL
+        {
+            return cached.clone();
+        }
+        // 组只有两个，且 ChiRi 对它们写同一集合（normal → big∪prime、boost → boost_list），
+        // 取交集即实际前台核域；单组缺失（部分 ROM 无 foreground）时退化为单组口径。
+        let mut acc: Option<Vec<usize>> = None;
+        for group in [GROUP_TOP_APP, GROUP_FOREGROUND] {
+            let Some(raw) = read_cpuset_cpus(group) else {
+                continue;
+            };
+            let list = parse_cpu_list(&raw);
+            if list.is_empty() {
+                continue;
+            }
+            acc = Some(match acc {
+                Some(prev) => prev.into_iter().filter(|c| list.contains(c)).collect(),
+                None => list,
+            });
+        }
+        // 再与在线位图求交：hotplug 掉的核心写进去同样只会被摘（位图空 = 尚未刷新，不裁剪）
+        let allowed: Vec<usize> = acc?
+            .into_iter()
+            .filter(|&c| self.online.get(c).copied().unwrap_or(false))
+            .collect();
+        let out = (!allowed.is_empty()).then_some(allowed);
+        self.eem_allowed_cache = Some((now, out.clone()));
+        out
+    }
+
     /// [eem] 相对能效放置的一轮：对**所有**已建档线程（不分前后台）做「同算力取更低功耗」的动态迁移。
     ///
     /// 与旧路径的关键差异：
@@ -2480,7 +2540,37 @@ impl AffinityManager {
             }
             self.core_caps = caps;
         }
-        let online = energy_model::online_clusters();
+        let online_all = energy_model::online_clusters();
+        if online_all.is_empty() {
+            return;
+        }
+        // [eem_cpuset] 规划池 ∩ 可行域：簇内一颗允许核都没有就整簇剔除 —— `decide` 的跨簇候选
+        // 直接遍历这个列表，剔除即不再对那簇出窗口（本机 = 不再往小核规划前台线程）。
+        let allowed = self.eem_allowed_cpus(now);
+        let online: Vec<(CoreGroup, usize)> = match &allowed {
+            None => online_all,
+            Some(a) => online_all
+                .into_iter()
+                .filter(|(g, _)| placement::cluster_pool(*g).iter().any(|c| a.contains(c)))
+                .collect(),
+        };
+        if self.eem_allowed_last != allowed {
+            if let Some(a) = &allowed {
+                info!(
+                    "{}",
+                    t_with_args(
+                        "affinity-eem-allowed",
+                        &fluent_args!(
+                            "cores" => match (a.first(), a.last()) {
+                                (Some(lo), Some(hi)) => format!("{lo}-{hi}"),
+                                _ => "-".to_string(),
+                            }
+                        )
+                    )
+                );
+            }
+            self.eem_allowed_last = allowed.clone();
+        }
         if online.is_empty() {
             return;
         }
@@ -2600,8 +2690,40 @@ impl AffinityManager {
                 Some(st) => (st.pid, st.comm.clone()),
                 None => continue,
             };
+            // [eem_cpuset] 写前把意图掩码与前台可行域求交：越界核写进去只会被内核**静默摘掉**
+            // （写返回 0、回读少核），于是日志记 ok、线程原地不动、下一拍又按同一个假窗口
+            // 重新规划 —— 1107 包 4,295 个被摘核次里 86.1% 是核 0-2，ok 帧 38.3% 带 clipped。
+            // 求交后为空 = 这一步在可行域里没有任何落点（规划池已按簇过滤，剩下的只可能是
+            // 「簇内部分核被排除」或 hotplug 竞态），直接回滚本步、不发起 syscall。
+            let dst_mask: Vec<usize> = match &allowed {
+                Some(al) => a.mask.iter().copied().filter(|c| al.contains(c)).collect(),
+                None => a.mask.clone(),
+            };
+            if dst_mask.is_empty() {
+                // 留痕：result=skip 与 ok / e{errno} 分开计，下一轮日志能一眼看出
+                // 「计划窗口整段落进可行域之外」的量；静默跳过会让这类浪费隐形。
+                if crate::logger::diag_active() {
+                    crate::logger::aff_action(
+                        "place",
+                        pid,
+                        a.tid,
+                        "-",
+                        &comm,
+                        &format!(
+                            "{}-{}",
+                            a.mask.first().copied().unwrap_or(0),
+                            a.mask.last().copied().unwrap_or(0)
+                        ),
+                        "gain=0.000",
+                        "skip",
+                        "dst_empty",
+                    );
+                }
+                self.eem.abort(a.tid, now);
+                continue;
+            }
             // 32 位线程不能上无 AArch32 的簇
-            if !self.mask_write_allowed(a.tid, &a.mask) {
+            if !self.mask_write_allowed(a.tid, &dst_mask) {
                 continue;
             }
             // cpuset 前置：纯后台线程的组通常只含小核，掩码写到 big/prime 会被内核静默裁剪。
@@ -2646,8 +2768,8 @@ impl AffinityManager {
             // 但**必须回滚引擎记账**：`tick` 已把 window/cluster 改成目标，不回滚下一轮
             // 就会按假窗口重新规划（正是「每轮再失败一次」的来源）。
             let dst_core = match a.dir {
-                energy_model::Dir::Up => a.mask.last().copied(),
-                _ => a.mask.first().copied(),
+                energy_model::Dir::Up => dst_mask.last().copied(),
+                _ => dst_mask.first().copied(),
             };
             let dst_group = dst_core.and_then(|c| crate::common::core_group_of(c as u32));
             if let Some(g) = dst_group
@@ -2656,12 +2778,13 @@ impl AffinityManager {
                 self.eem.abort(a.tid, now);
                 continue;
             }
-            let res = set_tid_affinity(a.tid, &a.mask);
+            let res = set_tid_affinity(a.tid, &dst_mask);
             // 写后读回：cgroup cpuset 会**静默裁剪**越界核（写返回 0 但掩码没生效）。
             // 不校验就会把「内核没答应」记成成功迁移，日志与事实分叉。
             let effective = res.as_ref().ok().and_then(|_| read_tid_mask(a.tid));
+            // clipped 以**实际写下的掩码**为基准：意图里被可行域提前剔掉的核不算裁剪
             let clipped = match (&res, &effective) {
-                (Ok(()), Some(got)) => a.mask.iter().any(|c| !got.contains(c)),
+                (Ok(()), Some(got)) => dst_mask.iter().any(|c| !got.contains(c)),
                 _ => false,
             };
             // INFO：只写线程 + 方向（用户口径）
@@ -2674,7 +2797,7 @@ impl AffinityManager {
                             "tid" => a.tid.to_string(),
                             "comm" => comm.clone(),
                             "dir" => a.dir.as_str().to_string(),
-                            "cores" => format!("{}-{}", a.mask.first().copied().unwrap_or(0), a.mask.last().copied().unwrap_or(0))
+                            "cores" => format!("{}-{}", dst_mask.first().copied().unwrap_or(0), dst_mask.last().copied().unwrap_or(0))
                         )
                     )
                 );
@@ -2689,8 +2812,8 @@ impl AffinityManager {
                     &comm,
                     &format!(
                         "{}-{}",
-                        a.mask.first().copied().unwrap_or(0),
-                        a.mask.last().copied().unwrap_or(0)
+                        dst_mask.first().copied().unwrap_or(0),
+                        dst_mask.last().copied().unwrap_or(0)
                     ),
                     &format!(
                         "gain={:.3},settled={},reason={},clipped={},eff={}",
@@ -2734,8 +2857,7 @@ impl AffinityManager {
                     // [strip] 意图里有、回读里**整簇没有**的簇：记窄域备忘，15s 内不再往那簇写。
                     // 与 EINVAL 的区别只在「内核用返回值说了」还是「用回读说了」，后果一样。
                     for cl in [CoreGroup::Little, CoreGroup::Big, CoreGroup::Prime] {
-                        let wanted = a
-                            .mask
+                        let wanted = dst_mask
                             .iter()
                             .any(|&c| crate::common::core_group_of(c as u32) == Some(cl));
                         let got = eff

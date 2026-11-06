@@ -1,5 +1,6 @@
-// status-csv.ts: [columns] [types] [parse] logs/status.csv 契约（src/logger.rs STATUS_HEADER / status_log_snapshot）：27 列、首行表头、type 恒为 snap，timestamp 是设备本地时间 HH:MM:SS.mmm（无日期），缺测值统一 -，screen_on/clg_active 用 0/1，screen_prop 是 debug.tracing.screen_state 原始值，fps 仅 FAS 激活且帧窗口有样本时有效
-// 末两列 cpu_dyn_w（CPU 动态功率估计，W，无功耗表的 SoC 恒 -）/ resid_w = batt_power_w − cpu_dyn_w（残差 = 屏幕/modem/GPU/静态），充电行 resid_w 无意义，只看放电行
+// status-csv.ts: [columns] [types] [parse] logs/status.csv 契约（src/logger.rs STATUS_HEADER / status_log_snapshot）：28 列、首行表头、type 恒为 snap，timestamp 是设备本地时间 HH:MM:SS.mmm（无日期），缺测值统一 -，screen_on/clg_active 用 0/1，screen_prop 是 debug.tracing.screen_state 原始值，fps 仅 FAS 激活且帧窗口有样本时有效
+// cpu_dyn_w（CPU 动态功率估计，W，无功耗表的 SoC 恒 -）/ resid_w = batt_power_w − cpu_dyn_w（残差 = 屏幕/modem/GPU/静态），充电行 resid_w 无意义，只看放电行
+// 末列 daemon_rss_kb 是 daemon 自身 VmRSS（kB）——只用于跨会话看增长趋势，单点值受分配器影响不可作判据；旧 27 列文件兼容读取
 
 // [columns]
 export const STATUS_COLUMNS = [
@@ -29,7 +30,8 @@ export const STATUS_COLUMNS = [
   'daemon_utime_ms',
   'daemon_stime_ms',
   'cpu_dyn_w',
-  'resid_w'
+  'resid_w',
+  'daemon_rss_kb'
 ] as const
 
 export const STATUS_COLUMN_COUNT = STATUS_COLUMNS.length
@@ -68,6 +70,8 @@ export interface StatusRow {
   daemonUtimeMs: number | null
   /** daemon 自身累计内核态 CPU 时间（ms，自测量基线；读 /proc/self/stat 失败为 null） */
   daemonStimeMs: number | null
+  /** daemon 自身 VmRSS（kB）；旧 27 列文件或读失败为 null */
+  daemonRssKb: number | null
 }
 
 // [parse]
@@ -90,7 +94,7 @@ function str(raw: string | undefined): string {
   return v === NA ? '' : v
 }
 
-/** 解析 CSV 为快照行：窗口可能从行中间开始（tail -c），按「字段数必须等于 27」过滤残缺行，表头按首列名识别；按文件顺序返回，展示方向由调用方定 */
+/** 解析 CSV 为快照行：窗口可能从行中间开始（tail -c），按「字段数必须是 27 或 28」过滤残缺行（28 = 现役含 daemon_rss_kb，27 = 旧归档兼容），表头按首列名识别；按文件顺序返回，展示方向由调用方定 */
 export function parseStatusCsv(text: string, maxRows = 300): StatusRow[] {
   const rows: StatusRow[] = []
   const lines = text.split('\n')
@@ -98,7 +102,8 @@ export function parseStatusCsv(text: string, maxRows = 300): StatusRow[] {
     const raw = line.trim()
     if (!raw) continue
     const cells = raw.split(',')
-    if (cells.length !== STATUS_COLUMN_COUNT) continue
+    // 27 = 2026-11-07 之前的归档（无 daemon_rss_kb），28 = 现役表头；其余一律按残缺行丢弃
+    if (cells.length !== STATUS_COLUMN_COUNT && cells.length !== STATUS_COLUMN_COUNT - 1) continue
     if (cells[0] === 'timestamp' || cells[1] !== 'snap') continue
     rows.push({
       timestamp: str(cells[0]),
@@ -124,7 +129,8 @@ export function parseStatusCsv(text: string, maxRows = 300): StatusRow[] {
       fps: num(cells[21]),
       screenProp: str(cells[22]),
       daemonUtimeMs: num(cells[23]),
-      daemonStimeMs: num(cells[24])
+      daemonStimeMs: num(cells[24]),
+      daemonRssKb: num(cells[27])
     })
   }
   return rows.length > maxRows ? rows.slice(rows.length - maxRows) : rows

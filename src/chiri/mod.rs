@@ -3043,6 +3043,8 @@ pub fn start_scheduler_thread(
                         daemon_stime_ms,
                         cpu_dyn_w,
                         resid_w,
+                        // 自身 RSS（VmRSS，kB）：1s 一次读 /proc/self/status，用于跨会话看增长趋势
+                        crate::logger::self_rss_kb(),
                     );
                     // PowerAVG（耗电参考/平均）：紧跟 status 行顺序写入；① 仅电池放电；② 平均模式再排除息屏；③ 参考值保留息屏
                     // 判定式 `!use_average || is_screen_on`：平均 = 放电 && 亮屏，参考 = 放电（含息屏）；不满足时传 None 跳过，开关 meta.power_avg 热重载即时生效

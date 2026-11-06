@@ -392,6 +392,26 @@ mod activity_tests {
         ));
         assert!(!activity_observation_changed(false, "", "com.game/.A"));
     }
+
+    /// activity-first 真值表：标志位 / 动态模式开关 / 是否查到 activity 规则 三者全真才让位。
+    /// 任一条件不成立都必须保持历史行为（包名回退优先），否则 bili 等既有条目会被改动。
+    #[test]
+    fn special_yields_only_when_flag_dynamic_and_rule_all_present() {
+        assert!(special_yields_to_activity(true, true, true));
+        assert!(
+            !special_yields_to_activity(true, true, false),
+            "无 activity 规则时不能放弃包名回退"
+        );
+        assert!(
+            !special_yields_to_activity(true, false, true),
+            "动态模式关闭时 activity 规则不生效，让位会落到 global_mode（白名单应用丢特调）"
+        );
+        assert!(
+            !special_yields_to_activity(false, true, true),
+            "未声明标志位的条目行为必须逐位不变"
+        );
+        assert!(!special_yields_to_activity(false, false, false));
+    }
 }
 
 /// 归一主包名（去掉 com.xx:push 子进程后缀），与 set_current_package 的归一保持同一口径
@@ -585,8 +605,25 @@ fn activity_lookup<'a>(
     app_modes.get(activity)
 }
 
-/// 模式判定：FAS 白名单 > **Activity 级规则** > 特调白名单 > app_modes(包名) > 特调映射 > 全局模式
-/// `activity` 为查表键，为空或查不到时完全落回包名级，只有显式配了 `pkg/.Activity` 键才命中 activity 层
+/// 特调条目是否让位给显式 activity 规则（纯函数，便于离线回归）
+///
+/// 三个条件必须同时成立才让位：
+/// 1. 条目声明了 activity-first（只有这类条目会改变历史行为）；
+/// 2. **动态模式开关打开**——activity 规则本身只在 `dynamic_enabled` 下生效
+///    （`determine_mode` 里 activity 查表结果在 dynamic 闸之后才使用）。少了这一条，
+///    关掉动态模式时会「先让位、再落到 global_mode」，白名单应用反而丢掉特调；
+/// 3. 本轮确实查到 activity 规则（否则包名回退优先，逐位不变）。
+fn special_yields_to_activity(
+    activity_first: bool,
+    dynamic_enabled: bool,
+    has_activity_rule: bool,
+) -> bool {
+    activity_first && dynamic_enabled && has_activity_rule
+}
+
+/// 模式判定：FAS 白名单 > 特调白名单(activity-first 条目除外) > **Activity 级规则** > app_modes(包名) > 特调映射 > 全局模式
+/// `activity` 为查表键，为空或查不到时完全落回包名级，只有显式配了 `pkg/.Activity` 键才命中 activity 层；
+/// activity-first 条目在查到 activity 规则时让位，用于「播放页特调、浏览页普通调度」这类同包分场景需求
 fn determine_mode(config: &RulesConfig, current_package: &str, activity: &str) -> String {
     // 特调仅 Chiri SoC 且 tuned_profiles.yaml 加载成功时生效；缺配置的机型白名单应用回退 CLG 普通模式调度
     let chiri = crate::common::is_chiri_soc();
@@ -612,24 +649,10 @@ fn determine_mode(config: &RulesConfig, current_package: &str, activity: &str) -
         }
     }
 
-    // 白名单应用始终进特调（ChiRi 专属），不管 rules.yaml 配了什么；配置的普通模式只作特调起始档，由 scheduler 侧识别
-    if special_enabled {
-        if let Some(entry) = crate::common::special_tuned_entry(current_package) {
-            debug!(
-                "{}",
-                t_with_args(
-                    "app-detect-special-fallback",
-                    &fluent_args!("pkg" => current_package, "mode" => entry.fallback.as_str())
-                )
-            );
-            return entry.fallback.clone();
-        }
-    }
-    if !config.dynamic_enabled {
-        return global_mode;
-    }
-    // 特调为 ChiRi 专属且仅白名单应用生效：非 ChiRi SoC 或非白名单包名映射到特调模式时回退全局模式并告警，WebUI 扫描后会同步清理非法条目
-    // [rules] 前台名与规则键都已归一为主包名，精确查表不做回退链；[activity] 总开关开启、activity 非空且显式配了 `pkg/.Activity` 键才命中，否则落回包名级（采样器不限 FAS 刷新）
+    // [activity] 显式 activity 规则先查：它既覆盖包名级 app_modes，也是 activity-first 条目
+    // 「只在播放页特调、浏览页回落普通调度」的落点（该标志语义见 common::SpecialTunedEntry::activity_first）。
+    // [rules] 前台名与规则键都已归一为主包名，精确查表不做回退链；[activity] 总开关开启、activity 非空且
+    // 显式配了 `pkg/.Activity` 键才命中，否则落回包名级（采样器不限 FAS 刷新）
     let activity_mode = activity_lookup(
         &config.app_modes,
         current_package,
@@ -645,6 +668,31 @@ fn determine_mode(config: &RulesConfig, current_package: &str, activity: &str) -
             )
         );
     }
+
+    // 白名单应用始终进特调（ChiRi 专属），不管 rules.yaml 配了什么；配置的普通模式只作特调起始档，由 scheduler 侧识别。
+    // 例外是 activity-first 条目：本轮查到显式 activity 规则时让位，否则浏览页会被锁在特调里（特调路径没有触摸升频）
+    if special_enabled {
+        if let Some(entry) = crate::common::special_tuned_entry(current_package) {
+            if !special_yields_to_activity(
+                entry.activity_first,
+                config.dynamic_enabled,
+                activity_mode.is_some(),
+            ) {
+                debug!(
+                    "{}",
+                    t_with_args(
+                        "app-detect-special-fallback",
+                        &fluent_args!("pkg" => current_package, "mode" => entry.fallback.as_str())
+                    )
+                );
+                return entry.fallback.clone();
+            }
+        }
+    }
+    if !config.dynamic_enabled {
+        return global_mode;
+    }
+    // 特调为 ChiRi 专属且仅白名单应用生效：非 ChiRi SoC 或非白名单包名映射到特调模式时回退全局模式并告警，WebUI 扫描后会同步清理非法条目
     let app_mode = activity_mode.or_else(|| config.app_modes.get(current_package));
     if let Some(mode) = app_mode {
         if crate::common::is_special_mode(mode) || crate::common::is_fas_mode(mode) {

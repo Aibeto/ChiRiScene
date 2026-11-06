@@ -443,7 +443,17 @@ pub fn best_placement(
                 match (b_ok, c_ok) {
                     (true, false) => b,
                     (false, true) => cand,
-                    _ => {
+                    (false, false) => {
+                        // 都供不上：取**供给更大**的那个（与函数文档一致）。按成本取便宜簇
+                        // 会返回「更省电但更落不了地」的候选，调用方拿它判「已到硬件上限」
+                        // 就建在错误的簇上；供给相同才保持先到者（避免无意义抖动）。
+                        if cand.supply > b.supply + f32::EPSILON {
+                            cand
+                        } else {
+                            b
+                        }
+                    }
+                    (true, true) => {
                         let gain = (b.cost - cand.cost) / b.cost.max(f32::EPSILON);
                         if cand.cost < b.cost && gain >= hysteresis {
                             cand

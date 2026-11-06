@@ -8,11 +8,11 @@
 
 - 白名单数据在独立文件 `src/chiri/special_tuned.yaml`，经 `include_str!` 编译进二进制（common.rs 的 `parse_special_tuned` 解析、OnceLock 缓存），用户/WebUI 不可修改。
 
-- 格式：每行 `匹配器:模式列表(逗号分隔):优先回退模式`。匹配器支持精确包名与 `re:` 前缀正则（忽略大小写用 `(?i)`，匹配器内不能含 ':'）；`special_tuned_entry(pkg)` 先精确匹配（文件顺序）、未命中再按正则条目匹配。每项含可用模式列表 `modes` 与优先回退模式 `fallback`（用户未显式配置则采用 `fallback`）。
+- 格式：每行 `匹配器:模式列表(逗号分隔):优先回退模式[:标志位]`。第四段可省略，逗号分隔的布尔标志位，现仅 `activity-first`（语义见「白名单应用」条）；未知标志 warn 忽略、条目不丢弃。匹配器支持精确包名与 `re:` 前缀正则（忽略大小写用 `(?i)`，匹配器内不能含 ':'）；`special_tuned_entry(pkg)` 先精确匹配（文件顺序）、未命中再按正则条目匹配。每项含可用模式列表 `modes` 与优先回退模式 `fallback`（用户未显式配置则采用 `fallback`）。
 
-- 当前条目：明日方舟国服 `com.hypergryph.arknights`、日服 `com.YoStarJP.Arknights`、正则兜底 `re:(?i)arknights`（覆盖台服/Mod 变体），模式均为 `akmode`（fallback 同）；**playback 组**（视频播放，2026-09-17 8550 日志分析新增）：`tv.danmaku.bili` + `re:(?i)(bilibili|danmaku\.bili)`，模式 `playback`。**daily 组已于 2026-09-17 晚上机实测后移除**（桌面/聊天/工具属高频短交互，特调收益低、侵入高——「不是所有程序都需要特调」；移除条目留档在 special_tuned.yaml 注释里，特调只保留长稳态场景）。新增特调模式 = 本表加条目 + `normal/tuned_profiles.yaml` 的 `tuned_profiles` 段加同名参数组，无需改 .rs。
+- 当前条目：明日方舟国服 `com.hypergryph.arknights`、日服 `com.YoStarJP.Arknights`、正则兜底 `re:(?i)arknights`（覆盖台服/Mod 变体），模式均为 `akmode`（fallback 同）；**playback 组**（视频播放，2026-09-17 8550 日志分析新增）：`tv.danmaku.bili` + `re:(?i)(bilibili|danmaku\.bili)`，模式 `playback`；**2026-11-07 增补腾讯视频** `com.tencent.qqlive`（`playback` + `activity-first`）——只让播放页吃 playback，详情页/启动页由 rules.yaml 的 activity 规则拉回 default（1030 包只采到 81.1s 详情页、触摸密度 28.1%、无 fps，整包 playback 会让高频短交互失去触摸升频；证据与验证判据见 `.cursor/docs/2026-11-07-EEM的k口径缺陷与快速切应用延迟治理.md` 第 3 节）。**daily 组已于 2026-09-17 晚上机实测后移除**（桌面/聊天/工具属高频短交互，特调收益低、侵入高——「不是所有程序都需要特调」；移除条目留档在 special_tuned.yaml 注释里，特调只保留长稳态场景）。新增特调模式 = 本表加条目 + `normal/tuned_profiles.yaml` 的 `tuned_profiles` 段加同名参数组，无需改 .rs。
 
-- main.rs 启动时把精确条目导出到运行时文件 `special_tuned.yaml`（每行 `包名:模式列表(逗号分隔):优先回退模式`，正则条目无法按包名精确查找故不导出）并 info 打点。导出仅 `is_chiri_soc()` 下发生，非 ChiRi 机型不生成该文件。
+- main.rs 启动时把精确条目导出到运行时文件 `special_tuned.yaml`（每行 `包名:模式列表(逗号分隔):优先回退模式`，带标志位的条目追加第四段 `:activity-first`；正则条目无法按包名精确查找故不导出）并 info 打点。导出仅 `is_chiri_soc()` 下发生，非 ChiRi 机型不生成该文件。
 
 生效范围与门控：
 
@@ -20,9 +20,9 @@
 
 - 只在 chiri 的 `Config` 挂载独立特调字段 `akmode`（缺省段：游戏特调兼未注册模式的回退）与 `tuned_profiles: HashMap<模式名, SpecialTunedConfig>`（**特调参数组**，2026-09-17 加：`normal/tuned_profiles.yaml` 的 `tuned_profiles:` 段，`get_tuned_profile(mode)` 按模式名取、缺省回退 `akmode` 段，**全部调用点唯一的取参入口**——不要再加第二个取参方法）；不要注册进 `get_mode`（只认 CLG 常规模式）。
 
-- 白名单应用始终进特调：前台命中 `special_tuned_entry()` 就返回特调模式，不管 app_modes/global_mode 配了什么（`determine_mode` 开头直接判定）。rules.yaml 里给该应用配的普通模式只作为特调起始档（scheduler 侧 `get_ak_initial_tier` 识别）。
+- 白名单应用默认进特调：前台命中 `special_tuned_entry()` 就返回特调模式，不管 app_modes/global_mode 配了什么（`determine_mode` 里特调判定先于 app_modes）。rules.yaml 里给该应用配的普通模式只作为特调起始档（scheduler 侧 `get_ak_initial_tier` 识别）。**唯一例外 = `activity-first` 标志位（2026-11-07）**：条目声明该标志位、且本轮查到了**显式 activity 规则**（rules.yaml `app_modes` 里 `pkg/.Activity` 形式的键）时，特调**让位**——该 activity 按 app_modes 走普通模式（走 CLG，带触摸升频）；查不到 activity 规则时仍走包名回退。判定是纯函数 `special_yields_to_activity(activity_first, has_activity_rule) = activity_first && has_activity_rule`（`app_detect.rs`），未声明标志位的既有条目行为逐位不变。
 
-- 非白名单应用的模式优先级仍为用户 `app_modes` > `global_mode`；后端门控：非白名单包名映射到特调模式时 warn 并回退 `global_mode`（`app_detect.rs` 的 `determine_mode`）。
+- 全序（`determine_mode`）= FAS 白名单 > 特调（`activity-first` 且命中 activity 规则时让位）> activity 级 `app_modes` > 包名级 `app_modes` > `global_mode`。非白名单应用的模式优先级仍为用户 `app_modes` > `global_mode`；后端门控：非白名单包名映射到特调模式时 warn 并回退 `global_mode`（`app_detect.rs` 的 `determine_mode`）。
 
 调度行为：
 
@@ -55,7 +55,7 @@ WebUI 侧：
 - **窗口证据**：cgroup 是低成本候选，不是可见性证明。可疑前台变化按需启用单后台 **两条** `dumpsys` 查询并合并：`-t 1 window`（提供 `mCurrentFocus`/`mFocusedApp`）+ `-t 1 window windows`（提供 `mObscured`/`mViewVisibility`/`mHasSurface`）。两条**互补**，只用后者会让焦点判定恒不可达，只用前者会缺遮挡字段而连 `VisibleUnfocused`/`Hidden` 都判不出。段间以 `== CHIRI-DUMPSYS-SEGMENT ==` 分隔，按段取字段。正常稳定前台不扫描。查询最小间隔 3s；**每段各自** 800ms 超时（不共享预算，否则第一段耗时会挤掉第二段）；单段输出上限 512KiB；错误退避 5s、Unknown/不支持退避 15s，证据从查询开始时计龄且仅 5s 有效。请求绑定 owner PID、generation 和 raw 前台，revision 防止旧/乱序结果回填。可见且 `mObscured=false` 的失焦窗口保持 owner/load-only；隐藏、格式缺失、失败或过期仅使用有界退出宽限，不无限续期。返回确认在模式去重与 deadline 到期前处理，离开请求幂等且 pending 目标随最新前台更新。分屏、小窗、PiP 依靠相同窗口证据，不凭包名分类。**ROM 字段支持已由 2026-10-16 真机验证**（8550/PHB110，ColorOS），详见下条；**真实遮挡仍需更多设备验证**。
 - **解析兼容（2026-10-16 真机实测补充）**：`window_visibility::parse_windows` 必须容忍 ROM 差异，三条已实测入测：① `window` 段的 `Window #` 有两种格式 —— `Window #N: WindowStateAnimator{…}`（无组件名）与 `Window #N Window{token u0 pkg/Act}`，各 26 条并存；② `mSession=Session{…}` 是**行内**出现的（`mDisplayId=0 taskId=851 mSession=… mClient=…`），不能按行首匹配；③ AID 形式 `u0aNNNNN` 与同块 `mOwnerUid=NNNNN` **必须归一到同一 uid**（AOSP 文本形式里 appId 已是最终值，`android_uid` 不得再加 10000，否则两者恒不相等 → 所有窗口落 `unknown_owned` → 恒 `Unknown`）。**教训**：合成 fixture 的字段布局会掩盖真实 ROM 形态，两处旧 bug 都因 fixture 恰好写成行首/恰好没触发偏差而长期逃过测试；新增解析逻辑一律用**真机原文**做夹具。
 
-- 白名单与模式判定：`module/config/normal/fas.yaml` 精确包名→配置名；`determine_mode` 优先级 = FAS 白名单 > 特调 > app_modes > global_mode；rules.yaml 中 "fas" 映射视为非法（`app-detect-fas-rejected` / `app-detect-fas-global-rejected` 告警回退）；`fas_available()` = 白名单非空且至少一个应用配置解析成功（fps_monitor/FAS_FG_UTIL 联动门控见「架构与事件流」）。
+- 白名单与模式判定：`module/config/normal/fas.yaml` 精确包名→配置名；`determine_mode` 优先级 = FAS 白名单 > 特调 > activity 级 app_modes > 包名级 app_modes > global_mode（特调声明 `activity-first` 且命中 activity 规则时让位，见「特调」节）；rules.yaml 中 "fas" 映射视为非法（`app-detect-fas-rejected` / `app-detect-fas-global-rejected` 告警回退）；`fas_available()` = 白名单非空且至少一个应用配置解析成功（fps_monitor/FAS_FG_UTIL 联动门控见「架构与事件流」）。
 
 - **单实例 + 延迟进出（2026-09-17 重构，原多实例已废弃）**：`src/chiri/fas_manager.rs` 的 `FasManager` 同一时刻至多一个白名单应用被接管（`instance: Option<FasInstance>`）。白名单前台 → `activate`（FasController.load_policies 快照频率 + **GovernorGuard 把各 policy 的 `scaling_governor` 切 performance**，原值快照待恢复）。**governor 的两个写者 2026-09-28 统一走 `utils::write_sysfs`**（写前 `enable_perm`、**不**在收尾 chmod 0444、失败读回校验即算成功）：原引擎侧用 `try_write_file`，写完把节点留在 0444，随后治理层 `GovernorGuard` 的裸 `fs::write` 必然 `EACCES`——全部已收 daemon.log 里它的成功行（`governor-switched`）**0 次**，FAS 期的 performance 实际只由引擎写入、guard 从未拿到快照（退出时也不做恢复）。**凡 sysfs 结点写入一律走 `write_sysfs`**，普通配置文件才用 `write_to_file`/`try_write_file`；失去前台不立即退出 → `request_delayed_exit` 进入 **延迟期**（`FasRulesConfig.deactivate_delay_secs`，**缺省 2026-10-16 由 15s 改 3s**（用户定：非白名单前台接管时 mode 残留 fas 污染归因，3s 足以覆盖白名单应用间快速切换），normalize 夹 1..=600，`mdocs/fas-example.yaml` 可配）：mode 保持 fas、FAS 仍持有接管（频率停在最后状态、governor=performance），期间切回白名单应用由 activate 无缝续期；到期由 1s 遥测块的 `tick()` 完成退出（reset_all_freqs + clear_game + governor 按快照恢复），并按延迟期记住的目标模式（`pending_mode_after_fas`，fas→X 的 ModeChange 被延迟时记录）重新接管——contingency/babel 走 apply 的 lab 分支，其余走 `apply_mode_takeover`。ModeChange 的 fas→非fas 分支因此**不再立即切换**（拦截在 mode_clone 更新之前，避免「文件写 default、FAS 还持着频率」的中间态）。C5 收尾 deactivate_all（DOWN/panic/进程收尾/fas_enabled=false 热重载）立即全退。事件路由：FrameUpdate/SystemLoadUpdate/温度只喂活跃实例。
 
@@ -127,6 +127,7 @@ WebUI 侧：
 - **方向稳定：死区 gate 双向对称（2026-09-27 修，P1-2）**：`on_load_update` 的 `[dir_stabilize]`——**上边补齐与下边同源的死区 gate**（落点与当前频差 <= `deadzone_band(write_deadzone)` = 写不进 sysfs 的 no-op up → 记 `hold`、不累计 `up_wait`、**不清 `down_wait`**），下边的 `up_wait = 0` 从死区判定**之前**挪到之后。根因改动前只有下边有这条 gate，上边任意 `+1e-6` 的目标抬升都走 up 分支并清零 `down_wait`，于是「本 tick 根本写不出一次频差」的单 tick 噪声也在翻转方向（实测 big 簇 52~86 次/分：coolapk 4.4 min 379 次、1s 内最多 6 次；QQ 达 7 次/s），两个方向的确认进度被互相抹掉。修后方向只由「真能写出一个死区以上频差」的 intent 决定，翻转至少要跨一个 OPP 档；没有新增参数，保守化的旋钮就是 `write_deadzone`（每档死区 = 该值 × 簇硬件最高频）。
 
 - **CLG 高位升频门槛 `[high_zone]`（2026-10-13 新增）**：高位区（perf ≥ `high_zone_gate`）升频除 util×headroom 外还需「≥`high_zone_count` 个核且每核 util ≥`high_zone_util`」共同确认，防单核毛刺把上限推上去（修前高位只受 util×headroom 驱动、到达路径太松）。四参数（`CpuLoadGovernorConfig`，serde default）：`high_zone_gate` 缺省 0.85（perf ≥ 该值进入高位区）、`high_zone_count` 缺省 0（**0 = 关闭**）、`high_zone_util` 缺省 0.90（单核达标占用）、`high_zone_hold_ticks` 缺省 20（被连续阻塞满 N tick 强制放行一次，防错配永久卡死）；normalize 把 gate/util 钳 [0,1]、count > 0 才生效。`ClusterState` 增 `high_zone_wait` + `high_zone_hits()`（本簇 util ≥ 阈值的核数）；`on_load_update` 在 target 计算后插门槛块：old_perf ≥ gate 且 candidate > old_perf 时查 hits —— 达标即清 wait 放行；未达标则 `high_zone_wait += 1`，未到 `hold_ticks` 就**阻塞本 tick、冻结状态早退**（日志 `dev_tgt_perf = old_perf`、`decision = "hz_hold"`，不进 up/down 分支、不动 `up_wait`/`down_wait`），到 `hold_ticks` 强制放行一次并清零重新计数；**降频方向零影响**。门槛只压「决策意图」：不回写 `current_perf`、不碰写频 / 热钳 / 触摸 / CLG-PF 路径，故与「随时可到最高频」硬口径相容（重放自检断言 2000 tick 内 perf==1.0、freq==hw_max，阻塞下靠 hold 兜底收敛）。**回退 = 删三行 `high_zone_*`（`count` 归 0 即关闭）**。8550 reduce/default/boost 三段全部启用 `gate 0.85 / count 2 / util 0.90`（big 4 核取 2 = 50%；little 3 核取 2 = 67%，宁可略紧防 A510 贴顶；boost `perf_init 0.60` 起步即过 gate）。工具链：改 `on_load_update` 决策函数须同步更新 replay 三件套（`scripts/tests/clg_replay.rs` 模板 `ClusterState` + replay 版 `high_zone_hits` + `scripts/devimp/replay_clg.py` fields 提取），否则 scratch 编译失败。
+- **升频速率闸判据前置 `[up_fast]`（2026-11-07）**：`on_load_update` 原先把 `up_wait < up_rate_limit_ticks` 的闸门放在 `is_high_load` / `is_significant_jump` 计算**之前**并秒回早退，注释承诺的「显著跳变立即升频」从未生效。1107 包 default 档实测 **30.6%** 的 tick 落在 `up_wait`、`up_wait`→真 `up` 中位 **478ms（3×160ms）**、36,278 次等满 3 拍、37.9k 段纯白等（playback/boost/reduce 全 1 拍，只有 default 吃 3 拍）。现改为先算两判据，闸门只拦「非显著跳变」：`if !is_significant_jump && up_wait < up_rate_limit_ticks { up_wait; return; }`；显著跳变路径直接 `up_wait = 0; current_perf = target_perf`（**一次给足上限**——CLG 写的是上限、schedutil 自己决定实际频点，抬上限几乎不耗能），高负载非跳变路径仍按 `smoothing_up` 爬坡。稳态无跳变时行为逐位不变；验证列 = decision 里 `up_wait` 占比、`len3` run 占比。
 
 ### 稳态下探（T11）与相对能效模型（EEM）
 
@@ -171,10 +172,15 @@ WebUI 侧：
   prime 1958/4320 MHz；sm8550 little 1018/2016、big 1402/2803、prime 1709/3187。
 - **成本口径按忙核数**：`cost(gear,k) = pow[gear] × k`、`supply(gear,k) = cap[gear] × k`，
   `k` = 真正承接工作的核数。这是相对旧 PF 的**根本修正**（不再假设整簇满载）。
-  **实现口径（2026-10-30 对齐）**：代码里 `k = ceil(Σ clamp(util,0,1))`，是**核当量**近似而非实测忙核数；
-  它只保证总量够、不保证**每一颗**够，所以另有下面的「逐核下限」补丁。
-  **实现口径（2026-10-30 对齐）**：代码里 `k = ceil(Σ clamp(util,0,1))`，是**核当量**近似而非实测忙核数；
-  它只保证总量够、不保证**每一颗**够，所以另有下面的「逐核下限」补丁。
+  **实现口径（2026-11-07 对齐，`[eem_k_busy]`）**：`k` = 本簇 util > `EEM_BUSY_UTIL`(0.02) 的**核数**，
+  再 `clamp(1, 本簇核数)`。2026-10-30 曾用 `k = ceil(Σ clamp(util,0,1))`（核当量），错在把「工作量」
+  当成了「并发的核数」：6 颗核各 0.5 时 Σ=3 ⇒ k=3、`demand = max(Σ, busiest×k) = 3`（等价 3 颗满核），
+  可真实情形是 6 颗半载、每颗只要 0.5；`supply(gear,k) = cap×k ≥ 3` 于是要求 `cap(f) ≥ 1`，
+  即**只有最高档才「够用」** ⇒ 甜点封顶永远解不开（模型算例：sm8550 big 两线程各 50%，
+  Σ=1.0 ⇒ k=1 ⇒ 需求 1.0 核算力，实际只需每核 0.5，从 g19 4.424W 降到 g8 1.200W）。
+  取忙核数后 `cap(f) ≥ busiest` 就是「整簇共享一个频点时每核都够用」的物理条件；
+  均匀轻载不再被误判为重载，也消掉 Σ 整数边界上的功耗台阶（0.999→1.001 时 −2.58W）。
+  `Σ` 只留给饱和判据 `cluster_busy_gate`。
 - **调频侧（CLG，`eem_target_freq`）**——三分支，仍守 `target = min(ratio_freq, eem)` 只降不升：
   1. **甜点档就够用** → 封顶在甜点（零损失：需求本就能满足，再升频纯烧电）；
   2. **本簇占用达 `ceil(n/2)` 核当量** → 允许越过甜点（多核共享同一档位，升频收益覆盖全簇；
@@ -215,10 +221,17 @@ WebUI 侧：
     无上限会让大批线程同时判「同一簇最便宜」而齐涌（FDP 的 `max_inserts` 教训）。
   * **cpuset 前置**：纯后台线程的组通常只含小核，掩码写到 big/prime 会被内核**静默裁剪**
     （写返回 0 但掩码没生效）。故跨到更高能级簇时先 `move_group → top-app`，升组失败即本轮放弃。
+    **2026-11-07 起规划池先剔除不可达簇（`[eem_allowed_cpus]`）**：`eem_place_round` 每轮读
+    `GROUP_TOP_APP` / `GROUP_FOREGROUND` 的 `cpuset.cpus` 取交集、再与在线位图求交，簇内一颗允许核
+    都没有就整簇不进候选（变化时 INFO `affinity-eem-allowed`）。根因：`normal_fg_exclude_little` 把前台组
+    长期收窄到 big∪prime，而 EEM 规划池仍看全部在线簇 ⇒ 每轮对小核发窗口、每轮被静默摘；
+    1107 包被摘 4,295 核次里 **86.1% 落在核 0-2**、65 个 (pid,簇) 对 60s 内被摘 ≥3 次（单对最多 37 次）。
+     **2026-11-07 自审补两条**：① 该读取带 1s TTL 缓存（`EEM_ALLOWED_TTL`）——写路径 160ms 一拍，不缓存等于 6.25 次/s 的 seq_file 读；② **写前**把意图掩码与可行域求交（`dst_mask = a.mask ∩ allowed`），只剔除整簇挡不住「簇内部分核被排除」；求交后为空则该步回滚、**不发 syscall**，并留 `act=place result=skip reason=dst_empty` 的 `@A` 帧（静默跳过会让这类浪费彻底隐形）。
   * **写后读回校验**：`set_tid_affinity` 成功后回读掩码，发现越界核被裁剪即记 `clipped=true`
     且不发 INFO 迁移日志——不校验就会把「内核没答应」记成成功迁移。
     **2026-10-26 起按回读掩码记账**（`Engine::note_applied`）：此前「clipped 就不更新记账」会让引擎
     留着意图窗口、与内核实际掩码分叉；现在记的是「实际生效的那个」，`@A` 的 `value` 也追加 `eff=<lo>-<hi>`。
+     2026-11-07 起 `clipped` 以**实际写下的掩码**（求交后的 `dst_mask`）为基准——被可行域提前剔掉的核不算裁剪，否则 `clipped` 比例里混着「本来就没打算写」的核，读数无法指向 cpuset。
   * **写失败是一等状态，不是重试信号（2026-10-26）**：掩码写被内核拒（EINVAL）后三条路径各自收敛——
     ① `pin_core` 记 `pin_fail_streak` 并按 `REPIN_DEBOUNCE(8s) × 2^(n-1)`（封顶 **60s**）退避，
        退避期内连 `@A` 帧都不产生；成功即清零；

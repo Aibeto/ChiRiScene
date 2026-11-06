@@ -354,6 +354,7 @@ affinity-normal-restore = [Affinity] normal affinity layout restored
 
 affinity-eem-released = [Affinity] relative efficiency placement disabled, restored { $n } thread masks
 affinity-migrate = [Affinity] thread { $tid } ({ $comm }) migrate { $dir } cores { $cores }
+affinity-eem-allowed = [Affinity] EEM placement domain (fg cpuset ∩ online cores): { $cores }
 affinity-promoted = [Affinity] background thread { $tid } promoted to big core (util { $util }%)
 affinity-demoted = [Affinity] background thread { $tid } demoted back to the little cluster (util { $util }%)
 affinity-write-fail-summary = [Affinity] affinity write failures in this 25-tick window: mask={ $mask } cpuset={ $cpuset } uclamp={ $uclamp }

@@ -36,6 +36,12 @@ static PF_ENABLED_LOGGED: AtomicBool = AtomicBool::new(false);
 /// 「甜点档供给重新够用」（见 `eem_target_freq` 的 [cap_suspend] 段），真正的滞回。
 const EEM_CAP_RELEASE_TICKS: u32 = 10;
 
+/// [eem] 「忙核」判据（util 门限）：算 EEM 的 k（承接核数）时只数 util 超过它的核。
+/// 2% 是噪声地板（eBPF 采样窗口的舍入 + 背景线程零星占用）；取 0 会把所有在线核都算忙，
+/// 取太高（如 10%）会把「4 核各 5%」这种真实轻载误判成 0 核 → 需求算出 0 档。
+/// 口径见 `eem_target_freq` 的 [k_busy] 段。
+const EEM_BUSY_UTIL: f32 = 0.02;
+
 /// [activity_params] CLG 的降频确认 tick 周期（ms，近似值）：`down_hold_ms` 折算成
 /// `down_rate_limit_ticks` 时用。CLG 实际 tick 周期由 scheduler 传入（ChiRi 160ms / 非 ChiRi 200ms），
 /// 这里取 160ms——`down_hold_ms` 本就是「大致保持多久」的软约束，折算差一档不影响语义，
@@ -682,18 +688,30 @@ impl CoreGroupWorker {
             self.cluster.down_wait = 0;
             self.cluster.up_wait += 1;
 
-            // 升频速率限制：必须连续 up_rate_limit_ticks 才执行
-            if self.cluster.up_wait < self.eff_cfg.up_rate_limit_ticks {
+            // [up_fast] 判据先算、速率闸后置 —— 「显著跳变立即升频」原先只是注释：
+            // 旧顺序把速率闸放在判据之前，永远轮不到 is_significant_jump 生效。
+            // 取证（1107 包 8 会话 1,900,788 tick）：default 有 220,174 tick（30.6%）停在 up_wait，
+            // up_wait run 长 3 拍的 42,723 次，首个 up_wait → 真 up 中位 **478ms**、p90 487ms
+            // （= 3×160ms 控制节拍），其中 53% 是「等满 3 拍」；另有 37.9k 个 run（33%）在
+            // hold/down 终止 = 纯白等。换应用/点按后的首帧延迟主要就是这段白等。
+            let is_high_load = util >= self.eff_cfg.up_threshold;
+            let is_significant_jump = target_perf > old_perf + self.eff_cfg.up_jump_threshold;
+
+            // 升频速率限制：必须连续 up_rate_limit_ticks 才执行；**显著跳变直接放行**
+            if !is_significant_jump && self.cluster.up_wait < self.eff_cfg.up_rate_limit_ticks {
                 self.dev_decision = "up_wait";
                 return;
             }
             self.dev_decision = "up";
 
             // 动态上限：抬 ceiling 不强制频率跳变（schedutil 按实际需求在 [硬件最低, ceiling] 内取频），直接平滑抬升
-            let is_high_load = util >= self.eff_cfg.up_threshold;
-            let is_significant_jump = target_perf > old_perf + self.eff_cfg.up_jump_threshold;
-
-            if is_high_load || is_significant_jump {
+            if is_significant_jump {
+                // [up_fast] 跳变时不再按 smoothing_up 逐步逼近，直接给到 target：
+                // 写的是**上限**，抬上限不强制频率跳变（schedutil 在 ceiling 内按需取频），
+                // 所以「一次给足」几乎不额外耗电，却省掉 3–4 拍爬坡；稳态无跳变时逐位不变。
+                self.cluster.up_wait = 0;
+                self.cluster.current_perf = target_perf;
+            } else if is_high_load {
                 self.cluster.current_perf += (target_perf - old_perf) * self.eff_cfg.smoothing_up;
             } else {
                 // 滞回带内升频：速率随 util 接近 up_threshold 线性提升
@@ -945,7 +963,26 @@ impl CoreGroupWorker {
 
         // 供给按**忙核数**算：需求是簇内逐核 util×cap 的累加，供给必须用同样多的核去承接，
         // 否则「6 核各 50%」会被当成「1 核要吃 3 倍算力」而误判成必须升频。
-        let k = (occupied.ceil() as usize).max(1);
+        //
+        // [k_busy] 口径推导（决定 k 到底取什么）：设 m = 忙核数、B = 最忙核的核当量需求，则
+        //   demand = max(Σ, B×k)、供给 = cap(f)×k ⇒「够用」⟺ cap(f) ≥ max(Σ/k, B)。
+        // 取 k = m 时 Σ/m = 均载 ≤ B，Σ 项永不生效，判据收敛成 **cap(f) ≥ B** —— 这正是
+        // 「整簇共享频率、每颗核拿到的频率必须够自己用」的物理判据，也与比例路径的基准
+        // （max_util）同源。旧口径 k = ceil(Σ) 在 m > ceil(Σ) 时把均载放大 m/k 倍：均匀轻载
+        // 被当成重载（6 核各 50% 判成 cap ≥ 1.00 = 顶档），EEM 封顶形同虚设 —— 这才是
+        // 「EEM 不生效、功耗压不下来」的机制性原因（见 .cursor/docs/2026-11-07 EEM 模型审计）。
+        // 上限钳到簇拓扑核数：hotplug 期间 affected_cpus 可能多于 n_cores。
+        let busy_cores = self
+            .cluster
+            .affected_cpus
+            .iter()
+            .filter(|&&c| {
+                core_utils
+                    .get(c)
+                    .is_some_and(|u| u.is_finite() && *u > EEM_BUSY_UTIL)
+            })
+            .count();
+        let k = busy_cores.clamp(1, curve.cores().max(1));
 
         // [per_core_floor] 逐核供给下限：同一簇共享频率域，供给按 k 核平均分摊，
         // 但**最忙那颗核**拿到的份额必须够它自己用。「1 核 85% + 三核各 10%」时

@@ -529,9 +529,11 @@ fn report_status_failure() {
     }
 }
 
-/// CSV 表头（27 列，列序由 status_log_snapshot 保证对齐，列名见 STATUS_HEADER）：fps 为预留列，非 FAS 恒 "-"，列只在末尾追加
-/// 末尾 daemon_utime_ms / daemon_stime_ms 是 daemon 自身 CPU 时间；cpu_dyn_w / resid_w 是功耗分解（无表的 SoC 恒 "-"）
-const STATUS_HEADER: &str = "timestamp,type,mode,package,charge,screen_on,batt_temp,cpu_temp,thermal_cap_pct,thermal_free_pct,clg_active,psi_cpu_some,psi_io_some,psi_mem_some,gpu_busy_pct,batt_voltage_v,batt_current_ma,batt_power_w,wakeups,migrations,freq_trans,fps,screen_prop,daemon_utime_ms,daemon_stime_ms,cpu_dyn_w,resid_w";
+/// CSV 表头（28 列，列序由 status_log_snapshot 保证对齐，列名见 STATUS_HEADER）：fps 为预留列，非 FAS 恒 "-"，列只在末尾追加
+/// daemon_utime_ms / daemon_stime_ms 是 daemon 自身 CPU 时间；cpu_dyn_w / resid_w 是功耗分解（无表的 SoC 恒 "-"）；
+/// 末尾 daemon_rss_kb 是 daemon 自身常驻内存（VmRSS，kB），用于排查泄漏/增长趋势——
+/// 旧版 27 列文件仍可读（DictReader 按列名取，缺列即缺值）
+const STATUS_HEADER: &str = "timestamp,type,mode,package,charge,screen_on,batt_temp,cpu_temp,thermal_cap_pct,thermal_free_pct,clg_active,psi_cpu_some,psi_io_some,psi_mem_some,gpu_busy_pct,batt_voltage_v,batt_current_ma,batt_power_w,wakeups,migrations,freq_trans,fps,screen_prop,daemon_utime_ms,daemon_stime_ms,cpu_dyn_w,resid_w,daemon_rss_kb";
 
 /// 常驻写入器：append 句柄 + 巡检计数
 struct StatusWriter {
@@ -728,6 +730,7 @@ pub fn status_log_snapshot(
     daemon_stime_ms: u64,
     cpu_dyn_w: Option<f32>,
     resid_w: Option<f32>,
+    daemon_rss_kb: u64,
 ) {
     // frozen（待春归）：status.csv 属于该模式要停的「额外开销」；闸口集中在此，所有写入路径过同一道
     if mode == "frozen" {
@@ -761,7 +764,23 @@ pub fn status_log_snapshot(
         &daemon_stime_ms.to_string(),
         &fmt_num(cpu_dyn_w),
         &fmt_num(resid_w),
+        &daemon_rss_kb.to_string(),
     ]);
+}
+
+/// daemon 自身常驻内存（kB）：读 `/proc/self/status` 的 VmRSS（**单位就是 kB，与页大小无关**，
+/// 4K/16K 内核同一口径）。读失败返回 0：与 [`self_cpu_ms`] 一致，一次读失败不丢整行。
+/// 存在的意义是**趋势**——单点值受分配器与页缓存影响，只有几十小时序列才能区分
+/// 「稳定平台 + 锯齿」与「单调增长」（1107 包 static 审计无泄漏证据，缺的正是这条序列）。
+pub fn self_rss_kb() -> u64 {
+    let Ok(text) = fs::read_to_string("/proc/self/status") else {
+        return 0;
+    };
+    text.lines()
+        .find_map(|line| line.strip_prefix("VmRSS:"))
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0)
 }
 
 /// daemon 自身累计 CPU 时间（ms）：读 `/proc/self/stat` 的 utime/stime（第 14/15 字段，单位

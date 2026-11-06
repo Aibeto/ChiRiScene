@@ -1,11 +1,15 @@
 # ChiRi 内部特调白名单 —— 经 include_str! 编译进守护进程二进制。
 # 运行时磁盘上任何同名文件都只是导出快照，改动不生效（防篡改）。
 #
-# 格式：每行一条 `匹配器:模式列表(逗号分隔):优先回退模式`
+# 格式：每行一条 `匹配器:模式列表(逗号分隔):优先回退模式[:标志位]`
 #   匹配器     = 精确包名；或 "re:" 前缀 + 正则表达式（匹配器内不要包含 ':'，
 #                正则自身忽略大小写请写 (?i) 前缀）
 #   模式列表   = 该应用可用的特调模式，须已在 chiri Config::get_mode 注册
 #   优先回退   = 用户未显式配置该应用时采用的模式，必须在模式列表内
+#   标志位     = 可选，逗号分隔；目前只有 activity-first 一个（未知标志告警并忽略）
+#                activity-first = 若 rules.yaml 的 app_modes 里配了本轮前台的
+#                `包名/.Activity` 键，则让位给该 activity 规则，否则仍用优先回退。
+#                用于「播放页特调、浏览页普通调度」这类同包分场景需求（详见下方腾讯视频条目）
 #
 # 匹配顺序：精确包名优先（按文件内顺序），未命中再按正则条目（按文件内顺序）。
 # WebUI 导出的 special_tuned.yaml 只包含精确条目（正则条目无法按包名精确查找）。
@@ -33,6 +37,25 @@ re:(?i)(bilibili|danmaku\.bili):playback:playback
 # little cap 66.2/u0.64 已贴负载，prime 26.9/u0.16 余量大——playback 贴负载收紧
 # 对它是纯收益；本地音乐无视频解码、GPU 占用低（12%），掉帧风险小）
 com.salt.music:playback:playback
+
+# 腾讯视频（2026-11-07 新增，第四节 activity-first）
+# 证据与缺口（勿在此基础上加码）：只命中过一次可用日志 —— devimpbin/1030-175147 的 81.1 s
+# （两次约 40 s 会话，17:48:43 与 17:50:53），且两次都停在**详情页**（activity 全程
+# .kmm.VideoDetailKmmActivityBk），没有任何播放页/全屏播放样本，也没有 fps 数据；
+# 触摸密度 28.1%（同期 B 站 0.03%）、big util p50 0.71/p95 1.00、81 样本 4.81 W。
+# 见 devimpbin/_x1030/tencent-video.md。
+#
+# 为什么不整包给 playback（两条机制性理由，不是偏好）：
+#   1) 特调路径没有触摸升频 —— TunedGovernor 侧根本没有 on_touch（触摸事件只喂 CLG：
+#      mod.rs 的 touch_rx → cpu_governor.on_touch），而该应用浏览/详情页触摸密度 28.1%，
+#      整包特调等于把「滑动跟手」这项直接关掉；
+#   2) playback 参数组用 util_smoothing 0.25（为长稳态视频调的），会把滚动/输入的 util
+#      尖峰滤平，升频滞后于手指 —— 对详情页是负收益。
+# 故只在「播放器 activity」上特调：播放器 activity 名本轮未观测到，用包名回退兜底；
+# 已观测到的详情页/启动页在 module/rules.yaml 的 app_modes 里显式拉回 default（走 CLG）。
+# 待验证（下轮日志）：播放页 mode=playback 且 fps 无 >52ms 长尾；详情页 mode=default；
+# 该包能量占比下降或持平；若播放器 activity 名出现，改成显式键并去掉包名回退。
+com.tencent.qqlive:playback:playback:activity-first
 
 # daily 组已移除（2026-09-17 晚，按上机实测反馈）：不是所有程序都需要特调——
 # 桌面/聊天/资讯/工具属高频短交互，特调接管收益低、侵入高（实测这批应用在

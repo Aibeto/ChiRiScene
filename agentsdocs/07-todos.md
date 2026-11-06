@@ -237,3 +237,29 @@
       `hdd_restart_tsf_sync_post_wlan_resume` 在 resume 前重同步而非只报错。
 
 
+
+### 1107 包分析产出（2026-11-07 落地，待真机复核）
+
+> 证据与机制见 `.cursor/docs/2026-11-07-EEM的k口径缺陷与快速切应用延迟治理.md`；数据底盘 = `devimpbin/1107-011543`（sm8550，8 批，20,556,921 行，46.77h）。
+
+- [ ] **复核 C1 `[eem_k_busy]`（EEM k = 忙核数）**：`clg-eem-tick-log` 的 `cores` 应为「util>0.02 的核数」而非 `ceil(Σutil)`；重点看两类场景是否恢复升频：① 6 核各 50%（旧口径 k=3 永远欠供、封在甜点）② 两核各 0.7。判据 = 这两类场景 `eem_khz` 回到甜点以上、且同一时段 `batt_power_w` 不升。回退 = 恢复 `let k = (occupied.ceil() as usize).max(1)`（`cpu_load_governor.rs`）。
+- [ ] **复核 C2 `[up_fast]`（升频速率闸判据前置）**：1107 基线 default 档 `up_wait` 占 tick **30.6%**、`up_wait→up` 中位 **478ms**、len3 run 42,723、白等 run 37.9k。目标 = `up_wait` 占比 **<18%**、len3 占比 **<5%**、`up` 总次数增幅 ≤30%（防升频次数爆炸）。另看 `decision=up` 的相邻频差是否变大（跳变一次给足的直接后果）。
+- [ ] **复核 C3 `[eem_allowed_cpus]`（规划池可行域）**：1107 基线 `place` ok 里 `clipped=true` **38.3%**、被摘核 **86.1% 落在核 0-2**、65 个 (pid,簇) 对 60s 内被摘 ≥3 次。目标 = `clipped` 降到 <5%、被摘小核占比降到 <20%。注意 `affinity-eem-allowed` 若在部分机型上频繁变化（cpuset 抖动），说明读 cpuset 本身成了热路径，需加缓存（TTL 1s）——**2026-11-07 自审已做**：`EEM_ALLOWED_TTL=1s` 的 `eem_allowed_cache`，且写掩码与可行域**求交**（簇内被排除的核既不写也不计 `clipped`），空集直接 `eem.abort` 不发 syscall。
+- [ ] **腾讯视频下轮取证（判定线）**：本仓只命中 1030 包的 81.1s **详情页**（触摸 28.1%、无 fps），因此本轮只加 `activity-first` + 三条拉回规则，**未验证播放页**。下轮判据 = 连续 ≥10min、`mode=playback`、touch <1%、big util 不贴顶、`gpu_busy` 10–40%、fps 无长尾；同时确认详情页/启动页落在 `default`。不满足就撤 `special_tuned.yaml` 的 qqlive 条目（回退 = 删一行 + 三条 app_modes）。
+- [ ] **接管种子 `perf_init`（未做，P1 流畅度）**：换模式时 `apply_mode_takeover → reload_config/init_policies` 把 `current_perf` 重置为 `perf_init`（default 0.35）并立即写频 ⇒ 切换瞬间上限从 0.35 重新爬坡（1107 实测切换自身 0.9J/次、开应用爬坡 15.3J/次）。建议种子改为「读 `scaling_max_freq` 或当前 `scaling_cur_freq` ÷ 本簇 hw_max，夹在 `[perf_floor, perf_ceil]`」，无读数才回落 `perf_init`。**注意这是既有契约的取舍点**：`03-chiri.md` 的「热切换配置重放 perf_init」条明确写着「重置并立即写频，避免接管间隙 current_perf 掉到 0 后从地板缓慢爬升」——那条解决的是「掉到 0」，本条要解决的是「从运行值掉到 0.35」。两者不冲突，但**不要直接删掉重放**；改动需与 reduce 档省电口径一起评估（reduce 的 perf_init 0.20 本身就是省电取向）。
+- [ ] **`@S` 快照预算闸（未做，P1 流畅度）**：`selfcost` 8 会话 88,987 帧、成本 **68.9% 在 `tid_stat`**（443 次/帧 × 0.06ms），`mean_build_ms ≈ 13.1ms + 61.8µs×tids` ⇒ 1500 tid ≈ 106ms，最长 10.29s（/proc 被 D 状态拖住）。两条一起做：① `meta.yaml devimp_aff_secs` 1→2（零代码，先降频次）② `build_aff_snapshot` 的 tid 循环加 20ms 墙钟预算，超时即截断并在帧头记 `full=0`（口径变更要同步 `05-maint.md` 判读说明）。
+- [x] **`status.csv` 加 `daemon_rss_kb`（可观测性缺口，2026-11-07 自审轮完成）**：`STATUS_HEADER` 末尾追加第 28 列；`logger::self_rss_kb()` 读 `/proc/self/status` 的 `VmRSS`（kB，与页大小无关，失败返 0），`status_log_snapshot` 加参。旧 27 列归档按缺列读（WebUI 解析同时接受 27/28，`STATUS_COLUMN_COUNT=28`，mock 与单测同步）。**用法**：只看跨会话趋势（同包两批的 p50/p95 斜率），不看单点；下轮 `dvstatus` 若需按包统计再补列名。
+- [ ] **FAS 帧源静默 58 次（王者细微卡顿的候选根因）**：1107 包 `[ERROR] [FAS] 帧反馈静默，进入开环` 58 次、`[FPS Monitor] 帧源静默` 123 次，全部落在 `com.levelinfinite.sgameGlobal`；FAS 转开环后「档位不再调整」，只能靠负载控制。待查：探针 attach 后为何 Ns 无帧事件（SurfaceFlinger 层名/进程重启/choreographer 失效），以及开环期间是否应改用「负载 + 掉帧估计」的降级闭环。
+- [ ] **bili 两条 activity 规则裁决**：`rules.yaml` 给 `tv.danmaku.bili/.MainActivityV2`、`/BiliMainSearchActivity` 配了 `default`，但 bili 是特调白名单包（无 `activity-first`）⇒ 两条规则**写而不生效**，1107 实测这两个 activity 共 63,587 tick 全走 `playback`。要么给 bili 也加 `activity-first`（搜索页/详情页回 default，有触摸升频），要么删掉这两条规则（承认整包 playback）。**不要只改优先级顺序**——那会一次性改掉所有白名单包的行为。判据 = 这两个 activity 的触摸密度与 fps 长尾，对照 1107 的 `playback` 段。
+- [x] **`energy_model::best_placement` 文档与实现不符（2026-11-07 自审轮完成）**：`(false,false)` 改为取**供给更大**者（`cand.supply > b.supply + f32::EPSILON`），供给并列才保留先到者；`(true,true)` 仍按 cost+`hysteresis`。回归 `placement_prefers_max_supply_when_none_can_supply`（demand=2.0 / cores=1，断言取各簇 top 档最大单核供给）。生产侧 `cheaper_elsewhere` 已有 `p.supply >= demand` 闸，无行为变化。
+- [x] **`narrow_skip` 多槽（2026-11-07 自审轮完成）**：按簇分键 `narrow_pid: HashMap<(i32, CoreGroup), Instant>`，`narrow_skip` 查 `(pid, cluster)`；新增 `remember_narrow` 统一 insert + 超 512 条按到期清理；`note_narrow`（仅 EINVAL）与 `note_stripped`（回读缺簇）共用。跨簇并集掩码不再能绕过另一簇的禁令。
+
+### 2026-11-07 自审轮修复（C1–C4 落地后自查发现，均已改 + 回归）
+
+> 审查对象 = 上一条 1107 包的 C1–C4；判据 = 不改变已验证行为的前提下补齐机制缺口。回归全绿：`cargo fmt` / `cargo check -p chiri`（exit 0，13 条既有告警）/ `cargo test -- special_tuned_tests activity_tests` 30 passed / 离线 energy_model 40、affinity_cpuset 19、app_mode_activity 10、clg_tuning 5、diag_slice 6。
+
+- [x] **activity-first 漏 `dynamic_enabled` 闸**（`src/monitor/app_detect.rs`）：原判据只看 `activity_first && has_activity_rule`，而 activity 规则只在 `config.dynamic_enabled` 时生效 → 关闭动态模式后白名单应用**先让位、再落到 global_mode**，特调整包丢失。改为 `special_yields_to_activity(activity_first, dynamic_enabled, has_activity_rule)`，测试五断言含「动态关时让位即掉出特调」。
+- [x] **`eem_allowed_cpus` 每拍读 cgroup**（`src/chiri/affinity.rs`）：`apply` 160ms 一拍、每次 2 个 seq_file；加 `eem_allowed_cache: Option<(Instant, Option<Vec<usize>>)>` + `EEM_ALLOWED_TTL=1s`。
+- [x] **写掩码未与可行域求交**（同文件）：C3 只按簇剔除，簇内部分核被 cpuset 排除时仍照写并被静默摘。新增 `dst_mask`（`a.mask ∩ allowed`），空集 `eem.abort` 不发 syscall；`mask_write_allowed`/`set_tid_affinity`/`clipped`/日志 dst 全用 `dst_mask`，`clipped` 以「实际写下」为基准。
+- [x] **`status.csv` 的 28 列契约同步到 WebUI**（`webui/src/data/status-csv.ts`、`tests/data-parse.test.ts`、`src/dev/mock-shell.ts`、`README.md`）：解析器原先按「字段数 == 27」过滤，加列后会**整文件丢行**；现同时接受 27/28（旧归档 `daemonRssKb=null`），mock 与单测同步。
+- [ ] **待真机复核（自审轮不写结论）**：① 1s TTL 是否让 cpuset 变化在 1s 内滞后（切换应用瞬间允许集变宽/变窄）——看 `aff_action` 的 `clipped` 是否在换包 ±1s 出现尖峰；② `dst_mask` 求交后空集路径：已加 `result=skip reason=dst_empty` 留痕，且 `abort` 的 `fail_streak` 会走 `FAIL_BACKOFF_BASE` 退避（4s→30s），理论上不会每拍重试——下轮看 `skip` 计数与同一 tid 的重复频率即可定论。

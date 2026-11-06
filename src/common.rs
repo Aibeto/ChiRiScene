@@ -732,6 +732,15 @@ pub struct SpecialTunedEntry {
     pub modes: Vec<String>,
     /// 优先回退模式：用户未显式配置该应用时默认采用（必须在 modes 内）
     pub fallback: String,
+    /// [activity-first] 第四字段标志位（缺省 false）：显式 activity 规则（rules.yaml app_modes 的
+    /// `pkg/.Activity` 键）**优先于本条目**的包名回退。
+    ///
+    /// 用途：视频类应用「只在播放页特调、浏览页回落普通调度」。特调路径（TunedGovernor）没有触摸升频
+    /// （触摸事件只喂 CLG，见 mod.rs 的 touch_rx → cpu_governor.on_touch），且 playback 的
+    /// util_smoothing 0.25 是为长稳态调的——把它套在 20~30% 触摸密度的浏览页上会让滚动发涩。
+    /// 不写第四字段 = false = 包名回退优先（历史行为；bili 等既有条目正是靠它把浏览页也锁在 playback，
+    /// 与 rules.yaml 里那两条 bili 的 activity 规则「写而不生效」是同一件事，见 07-todos 的待裁决条目）。
+    pub activity_first: bool,
 }
 
 impl SpecialTunedEntry {
@@ -763,12 +772,23 @@ fn parse_special_tuned(text: &str) -> Vec<SpecialTunedEntry> {
             Some(rest) => (true, rest),
             None => (false, line),
         };
-        let mut parts = body.splitn(3, ':');
+        // 四段：匹配器:模式列表:回退[:标志位]；splitn(4) 让第三段仍是「其余部分」（旧三字段行解析结果不变）
+        let mut parts = body.splitn(4, ':');
         let (Some(pkg), Some(modes), Some(fallback)) = (parts.next(), parts.next(), parts.next())
         else {
             log::warn!("special-tuned: malformed entry skipped: {}", line);
             continue;
         };
+        // [activity-first] 第四段是逗号分隔的标志位；未知标志只告警不拒绝条目（向前兼容：旧构建读新文件时忽略即可）
+        let mut activity_first = false;
+        if let Some(flags) = parts.next() {
+            for flag in flags.split(',').map(str::trim).filter(|f| !f.is_empty()) {
+                match flag {
+                    "activity-first" => activity_first = true,
+                    other => log::warn!("special-tuned: unknown flag ignored: {}", other),
+                }
+            }
+        }
         let modes: Vec<String> = modes
             .split(',')
             .map(|s| s.trim().to_string())
@@ -798,6 +818,7 @@ fn parse_special_tuned(text: &str) -> Vec<SpecialTunedEntry> {
             regex,
             modes,
             fallback,
+            activity_first,
         });
     }
     out
@@ -2019,5 +2040,90 @@ mod frontier_config_tests {
     fn sm8550_frontier_usable() {
         let got = check("sm8550", include_str!("../module/config/sm8550/soc.yaml"));
         assert_eq!(got.len(), 3, "sm8550 三簇都应给出甜点");
+    }
+}
+
+#[cfg(test)]
+mod special_tuned_tests {
+    use super::*;
+
+    /// 三字段行（全部既有条目）解析后 activity_first 必须为 false —— 这是「零爆炸半径」的契约：
+    /// 不写第四字段就逐位保持历史行为（包名回退优先，bili 等继续整包 playback）。
+    #[test]
+    fn three_field_entry_keeps_package_fallback_priority() {
+        let got = parse_special_tuned("# 注释\n\ncom.salt.music:playback:playback\n");
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].package, "com.salt.music");
+        assert_eq!(got[0].modes, vec!["playback".to_string()]);
+        assert_eq!(got[0].fallback, "playback");
+        assert!(!got[0].activity_first);
+        assert!(got[0].regex.is_none());
+    }
+
+    /// 第四字段 activity-first 打开让位语义；模式列表与回退解析不受影响
+    #[test]
+    fn fourth_field_enables_activity_first() {
+        let got =
+            parse_special_tuned("com.tencent.qqlive:playback,default:playback:activity-first\n");
+        assert_eq!(got.len(), 1);
+        assert_eq!(
+            got[0].modes,
+            vec!["playback".to_string(), "default".to_string()]
+        );
+        assert_eq!(
+            got[0].fallback, "playback",
+            "回退仍是第三段，不能被标志位挤掉"
+        );
+        assert!(got[0].activity_first);
+    }
+
+    /// 未知标志只告警、不拒绝条目，也不误开 activity-first（向前兼容：旧构建读新文件时语义退回历史行为）
+    #[test]
+    fn unknown_flag_is_ignored_without_dropping_entry() {
+        let got = parse_special_tuned("com.example.app:akmode:akmode:future-flag\n");
+        assert_eq!(got.len(), 1);
+        assert!(!got[0].activity_first);
+        assert_eq!(got[0].fallback, "akmode");
+    }
+
+    /// 多标志位逗号分隔：已知的生效、空段跳过
+    #[test]
+    fn multiple_flags_are_split() {
+        let got = parse_special_tuned("com.example.app:akmode:akmode:activity-first, ,other\n");
+        assert!(got[0].activity_first);
+    }
+
+    /// re: 条目仍是「前缀 + 三段」，正则里的 (?i) 与点号不被当成字段分隔
+    #[test]
+    fn regex_entry_parses_three_segments_after_prefix() {
+        let got = parse_special_tuned("re:(?i)(bilibili|danmaku\\.bili):playback:playback\n");
+        assert_eq!(got.len(), 1);
+        assert!(got[0].regex.is_some());
+        assert_eq!(got[0].fallback, "playback");
+        assert!(!got[0].activity_first);
+        // 端到端：正则条目按 is_match 命中，而不是全等
+        assert!(got[0].matches("tv.danmaku.bili"));
+    }
+
+    /// 字段不足的行整条跳过（不 panic、不产生半条记录）
+    #[test]
+    fn malformed_entry_is_skipped() {
+        let got = parse_special_tuned("com.example.app:akmode\n");
+        assert!(got.is_empty());
+    }
+
+    /// 内置白名单必须能解析出腾讯视频的 activity-first 条目（防止 yaml 手改后被静默丢弃）
+    #[test]
+    fn bundled_whitelist_contains_qqlive_activity_first() {
+        let all = parse_special_tuned(SPECIAL_TUNED_TEXT);
+        let hit = all
+            .iter()
+            .find(|e| e.package == "com.tencent.qqlive")
+            .expect("内置 special_tuned.yaml 应含 com.tencent.qqlive 条目");
+        assert!(
+            hit.activity_first,
+            "腾讯视频条目必须带 activity-first（否则浏览页失去触摸升频）"
+        );
+        assert_eq!(hit.fallback, "playback");
     }
 }

@@ -277,3 +277,33 @@
   `app.configRel.startsWith('sm8750/')`。
 - **新增 meta 字段仍是"五处同步"**：`MetaYamlFile` / `ExternalMetaOverrides` / `chiri::config::Meta`(+apply) /
   meta.yaml 模板 / WebUI `contract/meta.ts`（META_FIELDS + WRITABLE_FIELDS + 布尔清单 + validateFieldValue）。
+
+## 调度修复契约（2026-11-07，A02-16 之后）
+
+- **EEM 成本口径 `k` = 忙核数**（`cpu_load_governor.rs` `[eem_k_busy]`）：`k = count(util > EEM_BUSY_UTIL 0.02).clamp(1, 本簇核数)`。
+  **不要再用 `ceil(Σ clamp(util))`**：均匀轻载（6 核各 0.5）会被当成 3 核重载永久封顶，
+  而 `supply(cap×k)` 同比例放大 ⇒ 判据永远欠供。取忙核数后判据收敛为 `cap(f) ≥ busiest`。
+- **EEM 规划池 = 可行域交集**（`affinity.rs` `eem_allowed_cpus`）：每轮读 `GROUP_TOP_APP`/`GROUP_FOREGROUND`
+  的 `cpuset.cpus` 取交集、再与在线位图求交，簇内无允许核即整簇剔除（变化打 INFO `affinity-eem-allowed`）。
+  根因：`normal_fg_exclude_little` 把前台组收窄到 big∪prime，规划池却看全部在线簇 ⇒ 每轮发窗口每轮被摘。
+  读 cpuset 带 **`EEM_ALLOWED_TTL=1s` 缓存**（写路径 160ms 一拍）；**写前还要与可行域求交**（`dst_mask = a.mask ∩ allowed`），
+  只剔整簇挡不住「簇内部分核被排除」；空集回滚、不发 syscall，留 `act=place result=skip reason=dst_empty` 的 @A 帧。
+  `clipped` 以**实际写下的掩码**为基准（被提前剔掉的核不算裁剪）。
+- **升频速率闸判据前置**（`[up_fast]`）：`if !is_significant_jump && up_wait < up_rate_limit_ticks` 才拦；
+  显著跳变直接 `up_wait=0; current_perf=target_perf`（CLG 写上限，抬上限几乎不耗能）。稳态无跳变逐位不变。
+- **`activity-first` 是特调优先级的唯一例外**（`special_tuned.yaml` 第四段标志位）：
+  `special_yields_to_activity(flag, dynamic_enabled, has_rule) = flag && dynamic_enabled && has_rule`
+  （**三条件缺一不可**：activity 规则本身只在 `config.dynamic_enabled` 时生效，漏了它会在关闭动态模式时
+  「先让位、再落到 global_mode」，白名单包丢特调）。命中显式规则时该 activity 走 app_modes 普通模式（带触摸升频），
+  其余仍走包名回退；未声明标志位的条目行为不变。
+- **全序** = FAS 白名单 > 特调(activity-first 让位例外) > activity 级 app_modes > 包名级 app_modes > global_mode。
+- **1107 基线（用于下轮对比）**：up_wait 30.6% / up_wait→up 中位 478ms / place clipped 38.3% /
+  被摘核 86.1% 在核 0-2 / 小核被摘率 79-94% vs 大核 2-14%。daemon 自耗 playback 档 p50 7.9% 单核。
+- **`narrow_pid` 按 (pid, 簇) 分键**（2026-11-07 自审）：`HashMap<(i32, CoreGroup), Instant>`，`remember_narrow`
+  超 512 条按到期清理；`note_narrow`（仅 EINVAL）与 `note_stripped`（回读缺簇）共用。单槽会被异簇覆盖。
+- **`status.csv` 28 列**：末尾 `daemon_rss_kb`（`logger::self_rss_kb()` 读 `/proc/self/status` 的 VmRSS，失败 0）。
+  **只作跨会话趋势**，单点不可判；WebUI `STATUS_COLUMNS` 已 28、解析兼容 27/28（旧归档 `daemonRssKb=null`）。
+- **`best_placement` 两簇都供不上时取供给更大者**（`(false,false)` 分支，并列留先到者）：
+  此前按成本取最便宜与文档不符；`cheaper_elsewhere` 有 `supply >= demand` 闸，生产行为不变。
+- **自审轮验证基线**：单测 30 passed；离线 energy_model 40 / affinity_cpuset 19 / app_mode_activity 10 /
+  clg_tuning 5 / diag_slice 6；WebUI vitest 107 passed（8 文件）。

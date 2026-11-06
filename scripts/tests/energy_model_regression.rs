@@ -540,6 +540,25 @@ fn placement_never_claims_supply_beyond_hardware() {
     assert_eq!(p.gear, c.top(), "供不上时应取本簇顶档");
 }
 
+/// 两簇都供不上时必须返回**供给最大**的候选，而不是成本最低的那个。
+/// 调用方（`eem_target_freq` 的 `cheaper_elsewhere`）用 `supply >= demand` 判「搬得动」，
+/// 若返回的是更便宜但供给更小的簇，「已到硬件上限」就会判在错误的簇上。
+#[test]
+fn placement_prefers_max_supply_when_none_can_supply() {
+    let online = em::online_clusters();
+    let demand = 2.0f32; // 远超任一双簇单核供给
+    let p = em::best_placement(demand, &online, None, 0.0, 1).expect("有候选");
+    let max_supply = online
+        .iter()
+        .filter_map(|(g, _)| em::curve(*g).map(|c| c.supply(c.top(), 1)))
+        .fold(0.0f32, f32::max);
+    assert!(
+        (p.supply - max_supply).abs() <= f32::EPSILON,
+        "都供不上时应取供给最大：选中 supply={} 而最大为 {max_supply}",
+        p.supply
+    );
+}
+
 /// 成本更低的簇如果**供不上**需求，放置必须选能供上的那个（哪怕更贵）。
 /// 这条锁的是「别处更便宜」判据的前置条件：供给不足的候选不构成迁移理由。
 #[test]

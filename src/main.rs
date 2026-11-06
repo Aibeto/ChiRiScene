@@ -158,7 +158,8 @@ fn main() -> Result<()> {
         common::sync_rules_snapshot(&root.join("rules.yaml"));
     }
 
-    // 导出内部特调白名单（编译期嵌入）供 WebUI 展示：每行 `包名:特调模式列表:优先回退模式`，只导出精确包名条目
+    // 导出内部特调白名单（编译期嵌入）供 WebUI 展示：每行 `包名:特调模式列表:优先回退模式[:标志位]`，只导出精确包名条目
+    // 带 activity-first 的条目追加第四段，避免导出快照丢语义（磁盘副本只是展示，daemon 不读）
     // daemon 不读磁盘，仅 Chiri 激活时导出；日志延后到 logger::init 之后输出
     let mut exported_special: Option<usize> = None;
     let mut exported_fas: Option<usize> = None;
@@ -169,7 +170,19 @@ fn main() -> Result<()> {
             .collect();
         let special_tuned_content: String = exact
             .iter()
-            .map(|e| format!("{}:{}:{}\n", e.package, e.modes.join(","), e.fallback))
+            .map(|e| {
+                // 只有带标志位的条目才写第四段：既有条目的导出字节保持不变（快照 diff 干净）
+                if e.activity_first {
+                    format!(
+                        "{}:{}:{}:activity-first\n",
+                        e.package,
+                        e.modes.join(","),
+                        e.fallback
+                    )
+                } else {
+                    format!("{}:{}:{}\n", e.package, e.modes.join(","), e.fallback)
+                }
+            })
             .collect();
         // 用真实 Result 判成败：失败入 deferred（init 后补打），exported_special 仅真成功置位
         if let Err(e) = utils::write_to_file(
