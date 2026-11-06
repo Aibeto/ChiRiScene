@@ -5,11 +5,11 @@
 # 注意：fps_gears 必须覆盖游戏内实际可选档位——表里多出的档会被 PID 顶着跑、
 # 少了档会被误判降档；若游戏内无 90 帧档，把 90 从 fps_gears 与 target_fps 两处删掉。
 fas_rules:
-  fps_gears: [30.0, 60.0, 90.0, 120.0]
+  fps_gears: [30.0, 60.0, 90.0, 120.0, 144.0, 165.0, 185.0]
   fps_margin: 3.0
   per_app_profiles:
     com.tencent.tmgp.dfm:
-      target_fps: [60, 90, 120]
+      target_fps: [60, 90, 120, 144, 165, 185]
       fps_margin: 3.0
   # 接管/切回后的起始性能 0.50（与 sgame/speedmobile 一致）
   perf_init: 0.50
