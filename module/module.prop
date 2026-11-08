@@ -1,7 +1,7 @@
 id=chiri
 name=ChiRiScene
-version=#3 Transition 相变临界 A02-18
-versionCode=30216
+version=#4 Animism 万物有灵
+versionCode=40000
 author=Aibeto
-description=ChiRi Schedule 千漓调度 (Canary)
+description=ChiRiScene 千漓调度 Release
 updateJson=https://raw.githubusercontent.com/Aibeto/ChiRiScene/updatepush/update.json
