@@ -60,7 +60,7 @@ serde_json = "1"
 # --- 日志归档压缩（内置库，进程内压缩，不依赖设备任何压缩二进制；2026-10-12 由 tar.lz4/gzip 迁移到 tar.zst）---
 # zstd 走 vendored C（zstd-sys + cc，本仓第一个 C 依赖）；级别口径：启动归档 2／导出 CLI 19（接近极限压缩率），
 # 压缩统一 6 线程（zstdmt feature 开 multithread API）
-zstd = { version = "0.13", features = ["zstdmt"] }
+zstd = { version = "0.14", features = ["zstdmt"] }
 
 [profile.release]
 strip = true
