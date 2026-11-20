@@ -2,9 +2,9 @@
   "version": 1,
   "entries": [
     {
-      "content": "【铁律】ChiRi 仓库开工前必先读其他人留下的工作记录：AGENTS.md（索引，勿通读正文）→ agentsdocs/ 对应子块（Grep [tag] 定位）→ 各 IDE 环境记忆 .cursor/memory/MEMORY.md、.codebuddy/memory/MEMORY.md（2026-09-13~09-23 历史长期事实，各环境互读不互写）、.trae/memory/MEMORY.md，再加最近几天的 YYYY-MM-DD.md 日志。用户 2026-10-11 明确要求永久记住这一习惯。",
+      "content": "【铁律】ChiRi 仓库开工前必先读其他人留下的工作记录：AGENTS.md（索引，勿通读正文）→ agentsdocs/ 对应子块（Grep [tag] 定位）→ Mnemon 检索（mnemon_document_search / mnemon_recall，长期契约与教训都在这里）→ .codebuddy/memory/MEMORY.md（2026-09-13~09-23 历史长期事实，只读）。2026-11-20 起记忆主库迁 Mnemon，.cursor/memory/ 已删除（原件镜像 .archive/.cursor/memory/，蒸馏稿 .cursor/docs/2026-11-20-记忆蒸馏-Cursor到Mnemon.md）。用户 2026-10-11 明确要求永久记住开工必读这一习惯。",
       "created_at": "2026-10-11T09:51:51.635Z",
-      "updated_at": "2026-10-11T09:51:51.635Z",
+      "updated_at": "2026-11-20T15:50:12.564Z",
       "target": "memory",
       "importance": "critical"
     },
@@ -89,6 +89,13 @@
       "content": "构建 LTO 档位由 xtask 下发：`cargo xtask build --lto full|thin|off|auto` 或环境变量 `CHIRI_LTO`。本地固定档（build-arch.sh 先问一次，全部模块共用、失败不回退）；CI 用 auto（每个模块先 full，失败按模块回退 thin→off）。模块 = chiri 主程序 + build.rs 单独构建的 yumi-ebpf（WebUI 不参与）。用户口径 full 在 Cargo/rustc 侧必须写 fat。契约见 agentsdocs/02-convention.md。",
       "created_at": "2026-11-06T21:42:10.393Z",
       "updated_at": "2026-11-06T21:42:10.393Z",
+      "target": "memory",
+      "importance": "normal"
+    },
+    {
+      "content": "调度优化前先读 Mnemon 文档「ChiRi 调度优化标准流程与注意点（2026-11-20）」（七步流程/九条注意点/三条决策指导）；四条红线：失败态是一等状态、优先修结构性重犯、预算打满说明是限流器、先量谁在迁再改。",
+      "created_at": "2026-11-20T15:50:29.418Z",
+      "updated_at": "2026-11-20T15:50:29.418Z",
       "target": "memory",
       "importance": "normal"
     }

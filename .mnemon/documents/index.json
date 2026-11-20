@@ -315,6 +315,50 @@
       "contentHash": "d1d1ace12866a82b482c92029d35aa5ae78dd407c87b4a4f445e084ce1990799",
       "sizeBytes": 10167,
       "memoryBodyIds": []
+    },
+    {
+      "id": "21b38ad9-e9b4-4ffe-b0de-78b995c89abf",
+      "title": "ChiRi 调度优化标准流程与注意点（2026-11-20）",
+      "description": "调度优化的七步流程、九条踩坑注意点、三条决策指导：含硬地板能量口径、写失败一等状态、日志口径禁令、验证命令与本机工具链限制。",
+      "status": "active",
+      "filename": "chiri-2026-11-20-21b38ad9.md",
+      "relativePath": "documents/active/chiri-2026-11-20-21b38ad9.md",
+      "sourcePaths": [
+        "agentsdocs/05-maint.md"
+      ],
+      "sessionIds": [
+        "session-c3195d85-1409-4552-a706-f4834a248c60"
+      ],
+      "createdAt": "2026-11-20T15:49:38.752Z",
+      "updatedAt": "2026-11-20T15:49:38.752Z",
+      "lastAccessedAt": "2026-11-20T15:49:38.752Z",
+      "revision": 1,
+      "contentHash": "21d37b9b7839882d88473bc3d3ff8894f00c06d942bc184432cc7cc0251a227f",
+      "sizeBytes": 7260,
+      "memoryBodyIds": []
+    },
+    {
+      "id": "37bd8d91-1f1f-4a1f-a1f2-8e83dbb1f165",
+      "title": "ChiRi 长期契约与教训（自 Cursor 记忆蒸馏，2026-11-20）",
+      "description": "铁律与协作、配置与数据契约、调度语义现状、亲和放置与 EEM、负载源降级、内核取证、通知与脚本、能量与收益口径、工具与环境、流程红线；含全部关键数字与作废口径标注。",
+      "status": "active",
+      "filename": "chiri-cursor-2026-11-20-37bd8d91.md",
+      "relativePath": "documents/active/chiri-cursor-2026-11-20-37bd8d91.md",
+      "sourcePaths": [
+        "agentsdocs/05-maint.md",
+        "agentsdocs/03-chiri.md",
+        ".archive/.cursor/memory/MEMORY.md"
+      ],
+      "sessionIds": [
+        "session-c3195d85-1409-4552-a706-f4834a248c60"
+      ],
+      "createdAt": "2026-11-20T15:49:57.147Z",
+      "updatedAt": "2026-11-20T15:49:57.147Z",
+      "lastAccessedAt": "2026-11-20T15:49:57.147Z",
+      "revision": 1,
+      "contentHash": "8c13b481e91968e2e1474de55db3507ac15c306f2485769ef8588f2e75230d3a",
+      "sizeBytes": 19483,
+      "memoryBodyIds": []
     }
   ]
 }

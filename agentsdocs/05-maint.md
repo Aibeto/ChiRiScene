@@ -104,3 +104,33 @@
 **沉淀与归档（2026-09-26 首轮、2026-10-19 第二轮，均已执行）**：全部记录性 md 已沉淀进 `agentsdocs/01~07` 并归档至 **`.archive/`**（镜像原相对路径，如 `.archive/.codebuddy/plans/`）——memory 工作日志（`.codebuddy/.cursor/.trae/memory/YYYY-MM-DD.md`）、计划（`.codebuddy/plans/`、`.cursor/docs/plans/`、`.trae/documents/`、`.trae/specs/`）、分析报告（`.codebuddy/docs/`、`.cursor/docs/` 根与 `kernel-analysis/`）、`mdocs/TechAnalyze.md` 与 `mdocs/updateWith.md`、`.workbuddy/` 整目录。**第二轮（2026-10-19，分界 ≤2026-10-18 全量归档）增补**：`.cursor/memory/` 9 份日志 + `.cursor/docs/` 11 份 + `.cursor/plans/` 已完成 2 份；`.trae/memory/` 4 份日志 + `.trae/docs/` 3 份 md；`.codebuddy/memory/` 9 份日志 + `.codebuddy/docs/` 2 份 + `.codebuddy/plans/` 5 份（含 `d924b09f…/plan.md` v19——其 R1/R2/R4/R5/R6/R7 六条硬口径与回退三项已先行并入 `04-hard-lessons.md` `[hard]` 区、uclamp 天花板签字阻塞项已入台账，故可释放）；`.workbuddy/memory/2026-10-09.md`（首轮归档后又写入的残留）；`.codebuddy/memory/2026-09-26.md` 与归档区同名件内容互补（前者「全仓注释精简」、后者「屏幕检测切换 + status.csv 新列」），已合并进归档件并删原件。归档后：TODO 台账唯一权威 = `agentsdocs/07-todos.md`，内核机制权威摘要 = `agentsdocs/06-kernel.md`。**保留原位**：README、webui/README、`mdocs/ModeInfo.md` / `socList.md` / 三个 `*-example.yaml` / `mdocs/sm8550/`（`sm8550.dtsi` 与 `sm8550-freq-power.md`；该目录 2026-10-19 由 `mdocs/8550/` 改名）、`updateInformation/`（发版契约文件，空文件待填）、`.codebuddy/memory/MEMORY.md` 与 `.cursor/memory/MEMORY.md` 与 `.trae/memory/MEMORY.md`（跨环境长期事实索引）、`.codebuddy/memory/MEMORY-system-index.md` 与 7 个 `feedback_*.md`（生效协作约定，`feedback_fix_scope.md` 被 `04-hard-lessons.md` 硬引用）、`.cursor/commands|rules|skills/`、`.trae/rules/`、`scripts/devimp/dvselfcost.py` 的 `--manifest` 输入 `.trae/docs/2026-10-07-daemon-selfcost-inputs.json`（非记录性 md，属工具运行期输入）、两份仍活跃的 `.cursor/plans/` 计划（`2026-10-07-daemon-selfcost-implementation-plan.md` 与 `2026-10-11-调度改进方案.md`：后者待实机验收；两者属计划原件、非台账条目）、submodule（AppOptR、LittleYouran_CTS_3）内部文件。仓库内指向归档件的路径已统一改为 `.archive/...`（第二轮同步 20 处，另修 3 处首轮遗留的历史坏链）。
 
 **历史快照里的失效引用（2026-10-20 订正，按 AGENTS.md「文件名含日期的 md 不回改」不回改原件）**：`src/chiri/power_base.rs` 已随 `dcae0c4` 删除，两处历史件仍指向它——① `.cursor/plans/2026-10-07-daemon-selfcost-implementation-plan.md:159` 的 C4「PowerBase 电池状态 TTL」条目**整体作废**（不再实施）；② `.mnemon/documents/active/chiri-clg-high-zone-2026-10-13-2fb841f8.md:38` 引用 `power_base.rs:478`。判读这两份件时以本条为准；`devimp-log-analysis.md` 的同款判读指令已就地改正（不在日期文件名内，属活文档）。**同类时效风险**：`.codebuddy/` `.trae/` `.cursor/` 的 `memory/MEMORY.md` 属「跨环境只读区」，其中「量产机型只有 8550/8475/8998」「`CHIRI_SOC_HINTS` 只有两条」等表述已被 2026-10-20 的 39 条 hints 覆盖——这些文件**只做对账、不改写**，现行口径以 `src/common.rs` 与 `mdocs/socList.md` 为准。
+
+## [workflow] 调度优化标准流程与注意点（2026-11-20 固化）
+
+### 一、七步流程
+
+1. **预热**：`AGENTS.md` 索引 → `03-chiri.md` 调度语义 → `06-kernel.md` 内核机制 → `07-todos.md` 台账 → Mnemon 检索（`mnemon_document_search` / `mnemon_recall`）+ 最近工作日志。别人的改动会推翻你印象里的代码，动手前先 `git log --oneline -10` + `git status`，**不要凭记忆改**。
+2. **取证（现象→数据）**：日志包放 `devimpbin/`（gitignored），解包 `scripts/devimp/dvextract.py`（一次一个输入），分析 `dvmain/dvstatus/dvpower/dvenergy/dvaff`。判读口径唯一副本 = `.cursor/commands/devimp-log-analysis.md`（已知坑逐条读）。先看 `main_*.log` 第 3 行 `# soc= board= model=` 定 SoC；同批次按「main 字节 + aff 字节」去重 —— 跨包重复解包是常态。
+3. **定位（数据→代码）**：每个异常量都要落到源码路径。三条硬规矩：① 先确认它是不是设计如此（`07-todos.md` 的「勿当回归」清单与已知坑条目）；② 分清「限流器」与「失败态」—— 预算打满说明策略在限流，写失败（EINVAL）说明环境在拒绝，两者处理方式完全不同；③ 日志行数只表示复现频率，不是机制。
+4. **定量（改前先算盘子）**：能量先扣硬地板 —— 屏幕 6.35Wh + 息屏地板 4.38~8.14Wh = 10.73~14.49Wh（16.1%~21.8%），调度侧现实可动只有 1.6~5.0Wh（2.5%~7.6%，中枢 3.3Wh / 5.0%）。**报收益必须声明用的是哪个 B 锚点**（B1 0.608W / B2 0.466W / B3 0.327W）。`resid_w` 负值占 4.24%（最小 −5.13W）⇒ `cpu_dyn` 表在重载段系统性偏差，**只做相对排序，不做绝对功耗预测**。
+5. **设计（最小可回退）**：机制进通用路径、参数进 `soc.yaml` / `feature.yaml`；新增状态字段一律带「写成功后记账 + 失败后退避 + 写后回读掩码校验」三件套（2026-10-26 亲和写失败的教训：失败不占位会整批塌缩到同一颗核）。默认值必须等于旧行为，回退路径写进改动说明。
+6. **验证（离线先绿）**：`cargo fmt`；`YUMI_SKIP_EBPF=1 cargo check -p chiri`（本机可用约 36s，无 NDK 不能真机交叉编译，真机走 CI）；`sh -n module/customize.sh`；五套离线回归 `energy_model`(34) / `affinity_cpuset`(19) / `app_mode_activity`(6) / `clg_tuning`(5) / `diag_slice`(6)，跑法 `rustc --edition=2024 --test <file> -o devimpbin/_xlog/<bin>`（**二进制必须落项目内**，`/tmp` 每次执行消失）；新增逻辑补 `[replay]` 例（守恒 / 回滚 / 回读）+ 源码契约测试。
+7. **收口**：五套全绿才汇报；`list_agents` + `job_list` + `ps -eo pid,etimes,args` 三重核查无残留子代理与后台任务；文档同步三处（`agentsdocs/` 活文档、Mnemon 长期事实、当日工作日志）；**未经授权不 commit**。
+
+### 二、注意点（踩过的坑，按出现频率排）
+
+- **写失败是一等状态**：sm8550 `place` EINVAL 占 80%（126,555 次），根因是「进程级核域受限」，不是核下线也不是静态 cpuset。修法不是加重试而是三条：失败也记锚点与计数（`fail_streak`）；按 (pid, 簇, TTL 15s) 记账直接跳过（`narrow_pid`）；退避取 `max(FAIL_BACKOFF_BASE=4s × 2^n, 30s 上限)`。判定看 `@A` 行 `eff=<lo>-<hi>`（**回读掩码，不是目标掩码**）与 `dst=` 的差集。
+- **选核塌缩**：`pick_core_pref` / `core_pinned` 只在写成功后 `add_pinned`，失败不占位 ⇒ 同一 pid 的几百个线程整批撞同一颗核（单秒最高 431 条、单核一分钟 390~417 次）。任何「记录已用核」的逻辑都要自问：写失败时它还成立吗？
+- **三方分叉**：`Engine::tick` 无条件推进两拍状态机并改 `e.window`，而 `st.eem_window` 只在成功且未裁剪时更新 ⇒ 每 `MIN_DWELL`(2s) 重犯一次。状态机的「推进」与「生效」必须同源，事后补时间戳救不了。
+- **预算就是限流器**：有 place 动作的秒里 78% 打满 `EEM_MAX_MOVES_PER_ROUND`=4。放宽前先证明「多迁真的更省电」，否则只是把抖动换成更多抖动。
+- **迁移大头可能不在你改的子系统**：akmode wakeups 21,929/s、migrations 10,395/s，boost 12,999/7,272，default 10,724/5,649，而 ChiRi 自身 `@A` 生效迁移 ≈0.2/s。先量「谁在迁」，再决定改哪。
+- **日志口径三条禁令**：① `@A` 帧变少属预期（记录本身有开销），不能当退化；② 判动作看 `place settled=false` 与 `pin/restore ok`，不看「有没有尝试」；③ 同一指标多口径必须并列 —— 决策占比至少有全 mode 合并 / default 单独 / 按 tick / 按秒 四套，且 tick 行 `screen_on` 恒为 `-`，无法按屏筛选。
+- **温控与安全现状**：软件温控三处同关才算关（`feature.yaml` 的 `Thermal.enabled`、同段 `tuned_resp_enabled`、FAS `core_temp_threshold=0.0`）；FAS 活跃时 `src/chiri/mod.rs` 会整体跳过 ChiRi 热保护。动任何提频/压频逻辑前先确认这三处。
+- **内核侧只读事实**：`sched_migration_cost_ns` / `sched_nr_migrate` 在零售 GKI 不存在（`CONFIG_SCHED_DEBUG=n`，只挂 debugfs）；`BPF_MAP_TYPE_RINGBUF` 需内核 ≥5.8，sm8250/4.19 必失败 → 走 `/proc/stat` 兜底。
+- **量能反例**：整机均值 2.24W 的包里「无一次热压制」（cap=100），说明瓶颈不是温度；别把热节流当解释。
+
+### 三、决策指导
+
+- **该做**：把失败态建模进状态机；缓存重复计算但必须带 TTL 与失效条件（前台/boost 变化即清表）；把单 SoC 的手工参数收敛成 `soc.yaml` 表项（39/40 已有 `frontier_policy`，仅 `sm8475` 缺）；优先修「每 2s 重犯一次」的结构性问题 —— 收益是 O(重犯次数)，不是 O(1)。
+- **不该做**：为通过测试放宽阈值；用更少的采样或更粗的日志换性能；在没有回读校验时相信写成功；用并行/交错 A/B 对照当验证（本仓禁止，判据 = 逻辑必然 + 模型折算 + 功能回归观察）；把「现存磁盘日志量」当累计量（账本只增不减）。
+- **拿不准时**：在 `devimpbin/_tmp/` 写一次性探针复现（不得落项目根），把「能不能复现」变成「日志里有没有这条」，再决定改不改。宁可少改一处，也不要同时改三处。

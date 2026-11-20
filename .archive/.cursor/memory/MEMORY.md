@@ -338,3 +338,11 @@
 - 规则见 `agentsdocs/05-maint.md` 的 `[analysis]` 段「devimpbin 清理规则」：清理只清日志、不删资产；**保留** = 最新一包的批次目录及其 tar、含 `FINDINGS*.md` / `REPORT*.md` 的批次、`web/`（`cape.dtsi` 等 DT 证据，gitignored 换机需重取）、`_hf-cache/`（bge-m3-onnx 560MB，本机 huggingface 不可达）、`rustup-home/`、`_cargo_home/`、`batch_ingest.py` / `gen_soc_config.py` 等工具、`_x1030/`、`_tmp/tmp_chk_speed6.py`；**可删** = 其余批次日录、解包中转 `_x*`、重复副本、一次性 `*.final.log`。
 - 首轮实操：28G → **4.5G**（释放约 23.5G），保留 28 项、删除 74 项，全表见 `.cursor/docs/2026-11-20-devimpbin清理清单.md`。现存 22 个批次目录 = **43,861,339 行**（sm8550 35,443,991 / zumapro 6,781,858 / sm8750 1,615,490；sm8650、sm8250 现存 0）。
 - 被删目录的定量结论只在正文里留存，原始日志不可再复算；账本 `scripts/devimp/soc_batches.tsv` 行数不受影响（累计量只增不减）。
+
+## 调度优化的标准流程与红线（2026-11-20 固化，全文见 `agentsdocs/05-maint.md` 的 `[workflow]` 段）
+
+- **七步**：预热（AGENTS.md 索引 → 03/06/07 → 本环境 memory，并 `git log`/`git status` 确认别人的改动）→ 取证（dv* 工具链 + `.cursor/commands/devimp-log-analysis.md`）→ 定位（每个异常量落到源码路径）→ 定量（先扣硬地板：屏幕 6.35Wh + 息屏地板 4.38~8.14Wh，调度可动仅 1.6~5.0Wh）→ 设计（机制进通用路径、参数进 soc.yaml，默认值 = 旧行为，带回退）→ 验证（fmt + `YUMI_SKIP_EBPF=1 cargo check -p chiri` + `sh -n module/customize.sh` + 五套离线回归）→ 收口（三重核查 + 文档三处同步 + 不自行 commit）。
+- **三条禁令**：① 不降采样质量换性能；② 不做并行/交错 A/B 对照（判据 = 逻辑必然 + 模型折算 + 功能回归观察）；③ 不用「现存磁盘日志量」压低累计量（账本只增不减）。
+- **失败态是一等状态**：写失败（place/pin EINVAL）必须记锚点+计数+按 (pid,簇,TTL) 跳过+指数退避；不能只靠重试。判定看 `@A` 的 `eff=<lo>-<hi>`（回读掩码），不是目标掩码。
+- **优先修结构性重犯**：每 `MIN_DWELL`(2s) 重犯一次的路径，收益是 O(重犯次数)；预算打满（78% 的秒打满 `EEM_MAX_MOVES_PER_ROUND`=4）说明是限流器，不是 bug，放宽前先证明多迁更省电。
+- **先量谁在迁**：akmode/boost/default 的 migrations 是 5,649~10,395/s，ChiRi 自身 `@A` 生效迁移 ≈0.2/s —— 不要把别处的抖动算到自己头上。

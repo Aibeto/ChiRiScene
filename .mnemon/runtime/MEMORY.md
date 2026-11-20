@@ -1,4 +1,4 @@
-【铁律】ChiRi 仓库开工前必先读其他人留下的工作记录：AGENTS.md（索引，勿通读正文）→ agentsdocs/ 对应子块（Grep [tag] 定位）→ 各 IDE 环境记忆 .cursor/memory/MEMORY.md、.codebuddy/memory/MEMORY.md（2026-09-13~09-23 历史长期事实，各环境互读不互写）、.trae/memory/MEMORY.md，再加最近几天的 YYYY-MM-DD.md 日志。用户 2026-10-11 明确要求永久记住这一习惯。
+【铁律】ChiRi 仓库开工前必先读其他人留下的工作记录：AGENTS.md（索引，勿通读正文）→ agentsdocs/ 对应子块（Grep [tag] 定位）→ Mnemon 检索（mnemon_document_search / mnemon_recall，长期契约与教训都在这里）→ .codebuddy/memory/MEMORY.md（2026-09-13~09-23 历史长期事实，只读）。2026-11-20 起记忆主库迁 Mnemon，.cursor/memory/ 已删除（原件镜像 .archive/.cursor/memory/，蒸馏稿 .cursor/docs/2026-11-20-记忆蒸馏-Cursor到Mnemon.md）。用户 2026-10-11 明确要求永久记住开工必读这一习惯。
 §
 ChiRi 协作铁律：① 任何文件不得落在项目文件夹之外（2026-09-26 用户严令，零容忍）；AI 产出按环境分目录（Cursor：计划类→.cursor/plans/、报告类→.cursor/docs/；.codebuddy/.trae 同构），其他环境目录（.codebuddy/ .trae/ .workbuddy/ agentsdocs/）只读不写，跨环境只做对账。② 未经用户明确授权禁止创建 git 提交/推送（2026-10-07 铁律，曾因越权提交 a2ce07a 被撤销）。③ 永不再新增 A/B 对照实验（判据=逻辑必然+模型折算+功能回归观察；同版本同场景观察可以，并行/交错对照一律不做）。④ 性能优化不降采样质量红线：凡让数据变少/变粗的改动一律不做，行为延迟不算。⑤ 用户明确提出的目标不得用 AI 自选评估口径否决（2026-10-11 教训：误删「取消二段式息屏」被纠正）；评估负面时保留条目附意见，决定权交回用户。
 §
@@ -23,3 +23,5 @@ DSH 沙箱（workspace-write）里 ~/.rustup 与 ~/.cargo **整个只读**：无
 ChiRi EEM（相对能效模型）已落地 commit 6b1cff4，**取代 CLG-PF 与 FDP**。数据面：soc.yaml 的 `frontier_policy.per_cluster` 只保留 capacity/freq_khz/power_w(簇级溯源)/single_core_power_w(单核，运行期唯一消费项)，`demand_buckets`/`modes`/`anticipate`/`frontier`/`anchors` 已全部移除。口径铁律：跨簇比较**绝不能扣首档基线**（首档功耗就是该簇静态开销，扣掉等于「开一颗核」免费，prime 会永远胜出）。EEM 开启时 FDP 自动让位。
 §
 构建 LTO 档位由 xtask 下发：`cargo xtask build --lto full|thin|off|auto` 或环境变量 `CHIRI_LTO`。本地固定档（build-arch.sh 先问一次，全部模块共用、失败不回退）；CI 用 auto（每个模块先 full，失败按模块回退 thin→off）。模块 = chiri 主程序 + build.rs 单独构建的 yumi-ebpf（WebUI 不参与）。用户口径 full 在 Cargo/rustc 侧必须写 fat。契约见 agentsdocs/02-convention.md。
+§
+调度优化前先读 Mnemon 文档「ChiRi 调度优化标准流程与注意点（2026-11-20）」（七步流程/九条注意点/三条决策指导）；四条红线：失败态是一等状态、优先修结构性重犯、预算打满说明是限流器、先量谁在迁再改。
