@@ -147,9 +147,9 @@
 - daemon-perf-opt 五阶段性能优化计划：**已归档** `.archive/.cursor/docs/daemon-perf-opt-plan.md`（原路径 `.cursor/docs/` 下的副本已不存在）
   （Phase 3 前置 `.trae/specs/harden-scenemode-and-screen-detect` 的 hold 三分支）。
 
-- **devimpbin/ 口径（2026-10-11 用户纠正）**：`devimpbin/` 是**本项目工作区内的日志包目录**（`.gitignore:41` 忽略，15G，历次解包），**不是要删除的残留** —— 本轮对话早前多次把「项目外 `~/devimpbin`」当成待清理残留，是混淆了两处路径；`devimpbin/_tmp/` 是一次性探针的合法落盘处。
+- **devimpbin/ 口径（2026-10-11 用户纠正）**：`devimpbin/` 是**本项目工作区内的日志包目录**（`.gitignore:52` 忽略，2026-11-20 清理后 4.5G，历次解包），**不是要删除的残留** —— 本轮对话早前多次把「项目外 `~/devimpbin`」当成待清理残留，是混淆了两处路径；`devimpbin/_tmp/` 是一次性探针的合法落盘处。
 - **一次性分析脚本落盘位置（2026-10-11 新增）**：确需手写一次性探针时一律写 `devimpbin/_tmp/`
-  （`devimpbin/` 已被 `.gitignore:41` 忽略），**不得落在项目根目录** —— 项目根无 ignore 覆盖，
+  （`devimpbin/` 已被 `.gitignore:52` 忽略），**不得落在项目根目录** —— 项目根无 ignore 覆盖，
   会在 `git status` 里堆出上百个 `??` 脏项。优先复用 `scripts/devimp/` 常驻脚本（含 `dvselfcost.py`，
   `feas`/`diag`/`pair` 三子命令，需 `--manifest`；注意 `dvrun.py` 的 `STAGES` 未包含它）。
 
@@ -332,3 +332,9 @@
 - **累计量只增不减**：`devimpbin/` 会被清理，目录消失时已计入行数**不退**，差额记 `note=historical-gap-dir-removed` 余量行。**不得用现存磁盘总量压低历史累计值**（2026-11-18 曾据此误减 sm8550 183,641 与 zumapro 41,504，2026-11-20 撤回）。
 - 基准（2026-11-20，含余量）：sm8250 116,128 / sm8550 368,633,805 / sm8650 47,820,937 / sm8750 16,665,188 / zumapro 27,773,482 = 461,009,540；现存可核 460,784,395（252 批次目录，去重后 213，丢弃 39 个重复解包）。
 
+
+## devimpbin 清理（2026-11-20）
+
+- 规则见 `agentsdocs/05-maint.md` 的 `[analysis]` 段「devimpbin 清理规则」：清理只清日志、不删资产；**保留** = 最新一包的批次目录及其 tar、含 `FINDINGS*.md` / `REPORT*.md` 的批次、`web/`（`cape.dtsi` 等 DT 证据，gitignored 换机需重取）、`_hf-cache/`（bge-m3-onnx 560MB，本机 huggingface 不可达）、`rustup-home/`、`_cargo_home/`、`batch_ingest.py` / `gen_soc_config.py` 等工具、`_x1030/`、`_tmp/tmp_chk_speed6.py`；**可删** = 其余批次日录、解包中转 `_x*`、重复副本、一次性 `*.final.log`。
+- 首轮实操：28G → **4.5G**（释放约 23.5G），保留 28 项、删除 74 项，全表见 `.cursor/docs/2026-11-20-devimpbin清理清单.md`。现存 22 个批次目录 = **43,861,339 行**（sm8550 35,443,991 / zumapro 6,781,858 / sm8750 1,615,490；sm8650、sm8250 现存 0）。
+- 被删目录的定量结论只在正文里留存，原始日志不可再复算；账本 `scripts/devimp/soc_batches.tsv` 行数不受影响（累计量只增不减）。
