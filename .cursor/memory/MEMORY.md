@@ -324,3 +324,11 @@
 - **验证基线**：`cargo test -p chiri --bin chiri -- perf_lock` 4 passed；离线 `scripts/tests/fas_perf_tier_regression.rs` 4 passed；
   全量 `278 passed / 3 failed / 1 ignored`（3 failed 为 `chiri::fas_manager::tests::` 既有环境依赖）。
 - **未改**：`controller.rs::effective_perf_floor()` 的 `.min(0.45)` 硬顶仍在（`perf_lock` 绕过它；做「半锁」时才需改成可配字段并同步 `normalize()`）。
+
+## 累计推理量口径（2026-11-20 固化）
+
+- `mdocs/socList.md` 的「累计推理量」= 账本 `scripts/devimp/soc_batches.tsv`（只追加）+ 复算工具 `scripts/devimp/dvcount.py`。口径详见 `agentsdocs/05-maint.md` 的 `[analysis]` 段「累计推理量口径」。
+- 三规则：计入 `main_*.log`+`aff_*.log` 整文件行数；按「main 字节+aff 字节」完全相同去重重复解包（**不可按 basename 去重**：`devimp_X` 与 `x_devimp_X` 是同批次两种命名）；SoC 取 `main_*.log` 第 3 行 `soc=`，回退 `board=`（pineapple→sm8650、sun→sm8750）。
+- **累计量只增不减**：`devimpbin/` 会被清理，目录消失时已计入行数**不退**，差额记 `note=historical-gap-dir-removed` 余量行。**不得用现存磁盘总量压低历史累计值**（2026-11-18 曾据此误减 sm8550 183,641 与 zumapro 41,504，2026-11-20 撤回）。
+- 基准（2026-11-20，含余量）：sm8250 116,128 / sm8550 368,633,805 / sm8650 47,820,937 / sm8750 16,665,188 / zumapro 27,773,482 = 461,009,540；现存可核 460,784,395（252 批次目录，去重后 213，丢弃 39 个重复解包）。
+

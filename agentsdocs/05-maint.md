@@ -64,6 +64,8 @@
 
 **不接受「计划完整 = 优化完成」（计划 §10）**：专项计划的复选框全部填满**不等于**优化已交付——每阶段必须记录**实际改动 + 静态/测试/设备验收状态 + 受阻项**；未验证项一律标「未验证」，收益未测得时写未验证，不把「计划写全」当作「优化完成」或「编译/测试通过」。未知的非诊断成本可继续未知，但已授权的确定任务必须给出完成或受阻原因。
 
+**累计推理量口径（`mdocs/socList.md`，2026-11-20 固化）**：唯一权威 = 账本 `scripts/devimp/soc_batches.tsv`（只追加，一行一批：soc / batch_id / main_bytes / aff_bytes / main_lines / aff_lines / added_on / note），复算工具 `scripts/devimp/dvcount.py`。三条规则：① 计入行数 = 批次目录内 `main_*.log` + `aff_*.log` 的整文件行数，`daemon.log`、`status.csv`、`inventory.txt` 不计；② 去重键 = 「main 总字节 + aff 总字节」完全相同，同一批次被多个外层包重复解包只计一次（**不可按目录 basename 去重**：`devimp_X` 与 `x_devimp_X` 是同批次两种命名，2026-11-18 复算证明按 basename 会多计 12,210,184 行）；③ SoC 归属取 `main_*.log` 第 3 行 `# soc=<soc> board=<board> model=<model>`，`soc=-` 时回退 board（pineapple→sm8650、sun→sm8750、zumapro→zumapro、kalama→sm8550），仍缺再看同级 `daemon.log` 首行。**累计量只增不减**：`devimpbin/` 会被清理，某批次目录消失时已计入的行数**不退**，差额在账本里以 `note=historical-gap-dir-removed` 的余量行体现——**不得用「现存磁盘总量」去压低历史累计值**（2026-11-18 曾据此错误地把 sm8550 与 zumapro 各减掉一笔，2026-11-20 撤回）。基准（2026-11-20，含余量行）：sm8250 116,128 / sm8550 368,633,805 / sm8650 47,820,937 / sm8750 16,665,188 / zumapro 27,773,482，合计 461,009,540；现存可核（不含余量）= 460,784,395。
+
 **判读口径（易踩）**：
 
 - BpfStats（wakeups/migrations）是 2s 增量，换算÷2；over/under = 过 up / 低于 down 的核数；@A 的 `result=e0` = errno 不可得，非成功。
