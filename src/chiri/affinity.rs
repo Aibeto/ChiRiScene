@@ -1244,10 +1244,10 @@ impl AffinityManager {
 
     /// EEM 落盘前预检拒绝的归属（ELF32/AArch32 不可行域）：返回 true = 本步不得发起 syscall。
     ///
-    /// 与 `dst_empty` 同口径：`Engine::tick` 在写前已把目标提交进 window/cluster/state
-    /// （placement.rs 的 ledger 有界预提交不撤销），预检拒绝若只 `continue`，引擎/Subject/
-    /// `eem_window` 会停在从未写成的目标上，下一轮按假窗口重规划；失败计数保持 0 也永远
-    /// 进不了退避。故这里必须 abort：回滚到 applied 锚点并累加 fail_streak。
+    /// `Engine::tick` 在写前已把目标预提交进 `Entry`（window/cluster/state/left）和本轮
+    /// `ledger`（有界预提交，明确不撤销）。预检拒绝若只 `continue`，Entry 会停在从未写成的
+    /// 目标上、fail_streak 保持 0，下一轮按假窗口重规划且永远进不了退避。故这里必须
+    /// `abort`：回滚 Entry 到 applied 锚点（含 left 快照）并累加 fail_streak；ledger 不动。
     fn eem_precheck_reject(
         &mut self,
         a: &placement::Action,
@@ -1266,10 +1266,12 @@ impl AffinityManager {
                 a.tid,
                 "-",
                 comm,
+                // 记实际判定域 dst_mask（allowed∩online∩cluster 收窄后的结果）而不是
+                // a.mask 意图：计划混合掩码被收窄成纯 big 时，记意图会写成「含小核却拒绝」。
                 &format!(
                     "{}-{}",
-                    a.mask.first().copied().unwrap_or(0),
-                    a.mask.last().copied().unwrap_or(0)
+                    dst_mask.first().copied().unwrap_or(0),
+                    dst_mask.last().copied().unwrap_or(0)
                 ),
                 &format!("gain={:.3}", a.gain),
                 "skip",
@@ -3537,90 +3539,203 @@ mod tests {
             elf32,
             last_mask_write: None,
             util_pct: 50.0,
-            last_cpu: 4,
-            eem_window: Some(placement::Window::new(4, 4)),
-            eem_cluster: Some(CoreGroup::Big),
+            last_cpu: 0,
+            eem_window: Some(placement::Window::new(0, 1)),
+            eem_cluster: Some(CoreGroup::Little),
             starttime: None,
             normal_bind_retry: InvalidMaskRetry::default(),
         }
     }
 
-    /// P1 EEM 回执：ELF32/AArch32 预检拒绝必须归属失败状态（回滚 applied 锚点 + fail_streak），
-    /// 不能 naked continue —— 否则 tick 预提交的目标窗口留在引擎里，下一轮按假窗口重规划。
-    #[test]
-    fn eem_precheck_reject_rolls_back_anchor_and_counts_failure() {
-        use crate::chiri::placement::Action;
-
-        let now = Instant::now();
+    fn eem_test_manager() -> AffinityManager {
         let mut mgr = AffinityManager::new(Arc::new(SysPathExist::new()));
         mgr.bitwidth_aware = true;
         mgr.aarch32_clusters = vec!["little".to_string()];
+        mgr
+    }
+
+    /// P1 EEM 回执：真实预提交后，ELF32/AArch32 预检拒绝必须回滚 Entry + 累加 fail_streak，
+    /// 且不得把没写成的切换留成反跳记忆；ledger 的有界预提交按既有设计不撤销。
+    ///
+    /// 离线测试无 soc 曲线（`decide` 恒 None），预提交走 `tick` 同一 `apply_plan`；
+    /// 收敛动作仍由真实 `Engine::tick` 产出，拒绝发生在落盘前。
+    #[test]
+    fn eem_precheck_reject_rolls_back_real_precommit() {
+        let now = Instant::now();
+        let mut mgr = eem_test_manager();
         mgr.threads.insert(7, eem_test_thread(42, true));
-        mgr.eem
-            .ensure(7, CoreGroup::Big, placement::Window::new(4, 4), now);
-        // tick 在落盘前已把目标写成 big（precommit），随后预检拒绝
-        let action = Action {
-            tid: 7,
-            mask: vec![4, 5],
-            switch_cluster: Some(CoreGroup::Big),
-            dir: energy_model::Dir::Up,
-            settled: false,
-            reason: "test_precheck_reject",
-            gain: 0.25,
+        let applied = placement::Window::new(0, 1);
+        let target = placement::Window::new(3, 4);
+        mgr.eem.ensure(7, CoreGroup::Little, applied, now);
+        let s = placement::Subject {
+            demand: 0.6,
+            cluster: CoreGroup::Little,
+            window: applied,
+            past_sweet: true,
         };
-        assert!(
-            mgr.eem_precheck_reject(&action, &[4, 5], 42, "app32", now),
-            "目标 big 不在 AArch32 白名单（仅 little）时必须按拒绝处理"
-        );
+        let plan = placement::Plan {
+            cluster: CoreGroup::Big,
+            target,
+            dir: energy_model::Dir::Up,
+            gain: 0.2,
+            reason: "test_precommit",
+        };
+        // 第一拍：生产同一预提交函数把目标写进 Entry + ledger（写前）
+        let a1 = mgr
+            .eem
+            .tick_with_plan(7, &s, plan, 0.15, now)
+            .expect("precommit action");
+        assert_eq!(a1.mask, vec![0, 1, 2, 3, 4], "先扩：并集掩码 0-4");
         {
             let e = mgr.eem.entry(7).expect("engine entry");
-            assert_eq!(e.fail_streak, 1, "拒绝必须累加 fail_streak 以进入退避");
+            assert_eq!(e.window, target, "预提交先把目标写进 Entry");
+            assert_eq!(e.cluster, CoreGroup::Big);
+            assert_eq!(e.left, Some((CoreGroup::Little, now)));
+            assert_eq!(e.applied, applied);
+            assert_eq!(e.state.phase, energy_model::RangePhase::Expanding);
+        }
+        assert!(mgr.eem.ledger_delta(3) > 0.0, "预提交同时记入 ledger");
+
+        // 第二拍：真实 tick 收敛成纯 big；落盘前 ELF32 预检拒绝
+        let a2 = mgr
+            .eem
+            .tick(7, &s, &[0.0; 8], &[], 0.0, now)
+            .expect("settle action");
+        assert!(a2.settled, "第二拍必须收敛");
+        assert_eq!(a2.mask, vec![3, 4], "收敛掩码只含 big");
+        assert!(mgr.eem_precheck_reject(&a2, &a2.mask, 42, "app32", now));
+
+        {
+            let e = mgr.eem.entry(7).expect("engine entry");
+            assert_eq!(e.fail_streak, 1, "拒绝必须进入失败退避");
+            assert_eq!(e.window, applied, "必须回滚到 applied 锚点");
+            assert_eq!(e.cluster, CoreGroup::Little, "簇必须一起回滚");
             assert_eq!(
-                e.window,
-                placement::Window::new(4, 4),
-                "拒绝必须回滚到 applied 锚点"
+                e.state,
+                energy_model::RangeState::new(applied.lo, applied.hi),
+                "两拍状态机也必须回到稳态锚点"
             );
+            assert_eq!(e.left, None, "未写成的切换不得留成反跳记忆");
         }
         assert_eq!(
             mgr.threads.get(&7).and_then(|st| st.eem_window),
-            Some(placement::Window::new(4, 4)),
+            Some(applied),
             "Subject/eem_window 不得被未写成的目标污染"
         );
-        // 故障解除：成功回执清失败计数、锚点前进；下一轮正常输入回到基线节奏
-        mgr.eem
-            .note_applied(7, CoreGroup::Big, &[4, 5], now + Duration::from_secs(5));
-        {
-            let e = mgr.eem.entry(7).expect("engine entry");
-            assert_eq!(e.fail_streak, 0, "成功回执必须清零失败计数");
-            assert_eq!(e.applied, placement::Window::new(4, 5));
-        }
+        assert!(
+            mgr.eem.ledger_delta(3) > 0.0 && mgr.eem.ledger_delta(0) < 0.0,
+            "ledger 有界预提交按已留档设计不撤销"
+        );
+
+        // 故障解除：同一目标重新预提交并成功回执 → 失败计数清零、锚点推进
+        let later = now + Duration::from_secs(5);
+        let a3 = mgr
+            .eem
+            .tick_with_plan(7, &s, plan, 0.15, later)
+            .expect("re-precommit");
+        assert_eq!(a3.mask, vec![0, 1, 2, 3, 4]);
+        mgr.eem.note_applied(7, CoreGroup::Big, &[3, 4], later);
+        let e = mgr.eem.entry(7).expect("engine entry");
+        assert_eq!(e.fail_streak, 0, "成功回执必须清零失败计数");
+        assert_eq!(e.applied, target, "锚点推进到实际生效窗口");
     }
 
-    /// 空白名单（缺省 = 不限制落点）/ 关闭位宽感知时预检恒放行：不得把正常放行误计成失败。
+    /// 预检门关闭 / 空白名单（缺省 = 不限制落点）时不得触发 abort：
+    /// 真实线程 + 真实 Entry 的预提交与失败计数保持原样。
     #[test]
-    fn eem_precheck_reject_bypassed_when_unrestricted() {
-        use crate::chiri::placement::Action;
-
+    fn eem_precheck_bypass_keeps_real_entry_intact() {
         let now = Instant::now();
-        let mut mgr = AffinityManager::new(Arc::new(SysPathExist::new()));
-        let action = Action {
-            tid: 7,
-            mask: vec![4, 5],
-            switch_cluster: Some(CoreGroup::Big),
-            dir: energy_model::Dir::Up,
-            settled: false,
-            reason: "test_precheck_bypass",
-            gain: 0.25,
+        let mut mgr = eem_test_manager();
+        mgr.threads.insert(7, eem_test_thread(42, true));
+        let applied = placement::Window::new(0, 1);
+        let target = placement::Window::new(3, 4);
+        mgr.eem.ensure(7, CoreGroup::Little, applied, now);
+        let s = placement::Subject {
+            demand: 0.6,
+            cluster: CoreGroup::Little,
+            window: applied,
+            past_sweet: true,
         };
+        let plan = placement::Plan {
+            cluster: CoreGroup::Big,
+            target,
+            dir: energy_model::Dir::Up,
+            gain: 0.2,
+            reason: "test_bypass",
+        };
+        let a = mgr
+            .eem
+            .tick_with_plan(7, &s, plan, 0.15, now)
+            .expect("precommit action");
+        assert_eq!(a.mask, vec![0, 1, 2, 3, 4]);
+
         assert!(
-            !mgr.eem_precheck_reject(&action, &[4, 5], 42, "app64", now),
+            !mgr.eem_precheck_reject(&a, &a.mask, 42, "app64", now),
             "空白名单缺省放行"
         );
         mgr.bitwidth_aware = false;
         mgr.aarch32_clusters = vec!["little".to_string()];
         assert!(
-            !mgr.eem_precheck_reject(&action, &[4, 5], 42, "app64", now),
+            !mgr.eem_precheck_reject(&a, &a.mask, 42, "app64", now),
             "位宽感知关闭时放行"
         );
+
+        let e = mgr.eem.entry(7).expect("真实 Entry 必须保留");
+        assert_eq!(e.fail_streak, 0, "放行不得误计失败");
+        assert_eq!(e.window, target, "放行不得回滚预提交");
+        assert_eq!(e.left, Some((CoreGroup::Little, now)), "放行不得改反跳记忆");
+        assert_eq!(mgr.threads.get(&7).map(|st| st.elf32), Some(true));
+    }
+
+    /// AArch32 合法性按「掩码里至少一颗兼容核」判定：混合掩码含小核 → 内核可取交集，放行。
+    #[test]
+    fn eem_precheck_allows_mixed_mask_with_aarch32_core() {
+        let now = Instant::now();
+        let mut mgr = eem_test_manager();
+        mgr.threads.insert(7, eem_test_thread(42, true));
+        mgr.eem
+            .ensure(7, CoreGroup::Little, placement::Window::new(0, 1), now);
+        let action = placement::Action {
+            tid: 7,
+            mask: vec![0, 3],
+            switch_cluster: Some(CoreGroup::Big),
+            dir: energy_model::Dir::Up,
+            settled: false,
+            reason: "test_mixed_mask",
+            gain: 0.2,
+        };
+        assert!(
+            !mgr.eem_precheck_reject(&action, &[0, 3], 42, "app32", now),
+            "混合掩码含小核必须放行"
+        );
+        let e = mgr.eem.entry(7).expect("engine entry");
+        assert_eq!(e.fail_streak, 0);
+        assert_eq!(e.window, placement::Window::new(0, 1));
+    }
+
+    /// allowed 收窄后的 dst_mask 才是判定域：计划混合掩码可过，收窄成纯 big 必须拒绝。
+    #[test]
+    fn eem_precheck_rejects_dst_mask_narrowed_to_big_only() {
+        let now = Instant::now();
+        let mut mgr = eem_test_manager();
+        mgr.threads.insert(7, eem_test_thread(42, true));
+        let applied = placement::Window::new(0, 1);
+        mgr.eem.ensure(7, CoreGroup::Little, applied, now);
+        let action = placement::Action {
+            tid: 7,
+            mask: vec![0, 3],
+            switch_cluster: Some(CoreGroup::Big),
+            dir: energy_model::Dir::Up,
+            settled: false,
+            reason: "test_narrowed",
+            gain: 0.2,
+        };
+        assert!(
+            mgr.eem_precheck_reject(&action, &[3, 4], 42, "app32", now),
+            "a.mask 含小核，但收窄后的 dst_mask 纯 big 必须按拒绝处理"
+        );
+        let e = mgr.eem.entry(7).expect("engine entry");
+        assert_eq!(e.fail_streak, 1);
+        assert_eq!(e.window, applied, "拒绝必须回滚锚点");
     }
 }
