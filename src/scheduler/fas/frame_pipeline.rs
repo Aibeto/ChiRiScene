@@ -22,27 +22,32 @@ impl FasController {
             return true;
         }
 
-        if actual_ms > self.cfg.app_switch_gap_ms {
-            self.reset_runtime();
-            self.perf_index = self.cfg.app_switch_resume_perf;
-            self.gear_dampen_frames =
-                scale_frames(self.cfg.gear_dampen_frames, self.current_target_fps);
-            self.post_loading_downgrade_guard = self.cfg.post_loading_downgrade_guard;
-            self.apply_freqs();
-            info!(
-                "{}",
-                t_with_args(
-                    "fas-app-switch",
-                    &fluent_args!(
-                        "ms" => format!("{:.0}", actual_ms),
-                        "perf" => format!("{:.2}", self.perf_index)
-                    )
-                )
-            );
-            return true;
-        }
+        self.handle_app_switch(actual_ms)
+    }
 
-        false
+    /// 明确的 app 切换超时（> app_switch_gap_ms）：保持基线 trace，仅重置 runtime，
+    /// 不调用 reset_frame_feedback（不额外改写 warmup / last_frame_at）。
+    fn handle_app_switch(&mut self, actual_ms: f32) -> bool {
+        if actual_ms <= self.cfg.app_switch_gap_ms {
+            return false;
+        }
+        self.reset_runtime();
+        self.perf_index = self.cfg.app_switch_resume_perf;
+        self.gear_dampen_frames =
+            scale_frames(self.cfg.gear_dampen_frames, self.current_target_fps);
+        self.post_loading_downgrade_guard = self.cfg.post_loading_downgrade_guard;
+        self.apply_freqs();
+        info!(
+            "{}",
+            t_with_args(
+                "fas-app-switch",
+                &fluent_args!(
+                    "ms" => format!("{:.0}", actual_ms),
+                    "perf" => format!("{:.2}", self.perf_index)
+                )
+            )
+        );
+        true
     }
 
     // [phase2]
@@ -320,7 +325,7 @@ impl FasController {
         }
         if self.warmup_remaining > 0 {
             if frame_delta_ns > max_ns || actual_ms > self.cfg.app_switch_gap_ms {
-                // [静默失效排查] 预热期超长帧：整帧丢弃并回到 12 帧预热，表现为「预热迟迟不结束」
+                // [静默失效排查] 预热期超长帧：整帧丢弃且不递减预热计数，表现为「预热迟迟不结束」
                 if log::log_enabled!(log::Level::Debug) {
                     let reason = if frame_delta_ns > max_ns {
                         "预热期超长帧（>fixed_max_frame_ms）"
@@ -467,5 +472,140 @@ impl FasController {
             self.perf_index = self.perf_index.min(cap);
         }
         self.apply_freqs();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::scheduler::fas::controller::FRAME_FEEDBACK_WARMUP_FRAMES;
+    use crate::scheduler::fas::controller_with_policy;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn cold_boot_liveness_prevents_stale_reset_truncation() {
+        let mut controller = controller_with_policy();
+        controller.init_time = Instant::now();
+        controller.warmup_remaining = 0;
+        controller.last_frame_at = Some(Instant::now());
+
+        for _ in 0..3 {
+            controller.last_frame_at = controller
+                .last_frame_at
+                .map(|timestamp| timestamp - Duration::from_millis(300));
+            controller.update_frame(16_666_667);
+        }
+
+        assert_eq!(controller.warmup_remaining, 0);
+        assert!(controller.init_time.elapsed() < Duration::from_millis(3_500));
+        assert!(
+            controller
+                .last_frame_at
+                .is_some_and(|timestamp| timestamp.elapsed() < Duration::from_millis(100))
+        );
+        assert!(controller.perf_index >= controller.cfg.perf_cold_boot);
+    }
+
+    #[test]
+    fn heavy_loading_exit_keeps_post_loading_state_and_liveness() {
+        let mut controller = controller_with_policy();
+        controller.warmup_remaining = 0;
+        controller.last_frame_at = Some(Instant::now());
+
+        for _ in 0..10 {
+            controller.last_frame_at = controller
+                .last_frame_at
+                .map(|timestamp| timestamp - Duration::from_millis(300));
+            controller.update_frame(300_000_000);
+        }
+
+        assert!(controller.is_loading);
+        assert_eq!(controller.loading_frames, 10);
+        assert_eq!(controller.warmup_remaining, 0);
+        assert!(
+            controller
+                .last_frame_at
+                .is_some_and(|timestamp| timestamp.elapsed() < Duration::from_millis(100))
+        );
+
+        for _ in 0..3 {
+            controller.last_frame_at = controller
+                .last_frame_at
+                .map(|timestamp| timestamp - Duration::from_millis(300));
+            controller.update_frame(16_666_667);
+        }
+
+        assert!(!controller.is_loading);
+        assert_eq!(controller.perf_index, controller.cfg.post_loading_perf);
+        assert_eq!(
+            controller.post_loading_ignore,
+            controller.cfg.post_loading_ignore_frames.saturating_sub(1)
+        );
+        assert_eq!(controller.fps_window.count(), 0);
+    }
+
+    #[test]
+    fn warmup_timeout_above_app_switch_gap_is_dropped_without_app_switch() {
+        let mut controller = controller_with_policy();
+        let initial_perf = controller.perf_index;
+
+        controller.update_frame(3_100_000_000);
+
+        assert_eq!(controller.perf_index, initial_perf);
+        assert_eq!(controller.warmup_remaining, FRAME_FEEDBACK_WARMUP_FRAMES);
+        assert!(controller.last_frame_at.is_none());
+        assert_eq!(controller.gear_dampen_frames, 0);
+        assert_eq!(controller.post_loading_downgrade_guard, 0);
+
+        for _ in 0..FRAME_FEEDBACK_WARMUP_FRAMES {
+            controller.update_frame(16_666_667);
+        }
+        assert_eq!(controller.warmup_remaining, 0);
+    }
+
+    #[test]
+    fn warmup_timeout_frames_do_not_block_recovery() {
+        let mut controller = controller_with_policy();
+        let initial_perf = controller.perf_index;
+        for _ in 0..60 {
+            controller.update_frame(600_000_000);
+        }
+        assert_eq!(controller.perf_index, initial_perf);
+        assert_eq!(controller.warmup_remaining, FRAME_FEEDBACK_WARMUP_FRAMES);
+        assert!(controller.last_frame_at.is_none());
+
+        for _ in 0..FRAME_FEEDBACK_WARMUP_FRAMES {
+            controller.update_frame(16_666_667);
+        }
+        assert_eq!(controller.warmup_remaining, 0);
+        assert!(!controller.uses_load_control());
+    }
+
+    #[test]
+    fn normal_app_switch_keeps_baseline_reset_trace() {
+        let mut controller = controller_with_policy();
+        controller.warmup_remaining = 0;
+        controller.last_frame_at = Some(Instant::now());
+        controller.ema_actual_ms = 33.0;
+        controller.jank_streak = 4;
+        controller.fps_window.push(120.0);
+
+        controller.update_frame(3_100_000_000);
+
+        assert_eq!(controller.perf_index, controller.cfg.app_switch_resume_perf);
+        assert_eq!(controller.warmup_remaining, 0);
+        assert!(
+            controller
+                .last_frame_at
+                .is_some_and(|timestamp| timestamp.elapsed() < Duration::from_millis(100))
+        );
+        assert!(controller.gear_dampen_frames > 0);
+        assert_eq!(
+            controller.post_loading_downgrade_guard,
+            controller.cfg.post_loading_downgrade_guard
+        );
+        assert_eq!(controller.ema_actual_ms, 0.0);
+        assert_eq!(controller.jank_streak, 0);
+        assert_eq!(controller.fps_window.count(), 0);
+        assert!(controller.policies[0].current_freq >= 100);
     }
 }
