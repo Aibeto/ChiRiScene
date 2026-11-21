@@ -1900,8 +1900,12 @@ mod tests {
         assert_f32_eq(cluster.max_util(&[f32::NAN, 0.4, f32::NAN]), 0.4);
         assert_f32_eq(cluster.max_util(&[f32::NAN, f32::NAN, f32::NAN]), 0.0);
         assert_f32_eq(cluster.max_util(&[]), 0.0);
-        // thresh=0.0 时 0.0 核计入 hits（NaN 不计）；这是现有语义，不按注释“0.0 不计”推断
+        // 生产注释称“0.0 核与 max_util 同口径不计达标”，但实现是 `u >= thresh`：
+        // thresh=0.0 时 0.0 核确实计入（NaN 参与 `>=` 比较为 false，不计）。
+        // 本次仅测试、不改生产逻辑/注释：锁定实际行为为 2，并补阈值 > 0 时
+        // 0.0 核不计的断言，划清注释意图与实现的边界。
         assert_eq!(cluster.high_zone_hits(&[0.0, f32::NAN, 0.0], 0.0), 2);
+        assert_eq!(cluster.high_zone_hits(&[0.0, 0.5], f32::EPSILON), 1);
         // 无效索引（affected 越界）与短向量同口径
         let cluster = test_cluster(vec![0, 9], 0.9, 0.9);
         assert_f32_eq(cluster.max_util(&[0.3]), 0.3);
@@ -1940,26 +1944,18 @@ mod tests {
     }
 
     #[test]
-    fn clg_high_zone_eff_cfg_and_need_sources_are_locked() {
-        // gate 取 eff_cfg：cfg gate=0 时，eff gate=0.8 仍触发确认扫描并阻塞
-        let mut w = test_worker(clg_cfg(2, 0.0, 0.80, 3), vec![0, 1, 2], 0.9, 0.9);
-        w.eff_cfg.high_zone_gate = 0.8;
-        w.on_load_update(&[0.9, 0.1, 0.2]);
-        assert_eq!(w.dev_decision, "hz_hold");
-
-        // hits 阈值取 eff_cfg：cfg 阈值=0 时，eff 阈值 0.8 只数 1 核（<need=2）
-        let mut w = test_worker(clg_cfg(2, 0.80, 0.0, 3), vec![0, 1, 2], 0.9, 0.9);
-        w.eff_cfg.high_zone_util = 0.8;
-        w.on_load_update(&[0.9, 0.1, 0.2]);
-        assert_eq!(w.dev_decision, "hz_hold");
-
-        // need 取 self.cfg.high_zone_count：cfg=2、eff=3 时 hits=2 应放行
-        let mut w = test_worker(clg_cfg(2, 0.80, 0.80, 3), vec![0, 1, 2], 0.9, 0.9);
-        w.eff_cfg.high_zone_count = 3;
-        w.on_load_update(&[0.9, 0.85, 0.1]);
-        assert_ne!(w.dev_decision, "hz_hold");
-        assert_eq!(w.cluster.high_zone_wait, 0);
-        assert_f32_eq(w.dev_tgt_perf, 0.945);
+    fn clg_high_zone_cfg_sources_are_identical_at_runtime() {
+        // spawn 传入的是 effective(cluster)，eff_cfg 直接由 cfg 克隆；activity 覆盖
+        // （refresh_activity_override）只改 headroom/util_smoothing/write_deadzone/
+        // down_rate_limit_ticks 四个字段，不改 high_zone_gate/util/count/hold_ticks。
+        // 因此运行时不存在“cfg 与 eff_cfg 的 high_zone_* 不同”的状态；gate/util 的
+        // eff_cfg 取值与 need 的 self.cfg.high_zone_count 共享同一份配置。
+        // 这里锁定该不变式，取代此前用 runtime-impossible 的 eff_cfg 覆盖构造差异。
+        let w = test_worker(clg_cfg(2, 0.80, 0.80, 3), vec![0, 1, 2], 0.9, 0.9);
+        assert_eq!(w.eff_cfg.high_zone_gate, w.cfg.high_zone_gate);
+        assert_eq!(w.eff_cfg.high_zone_util, w.cfg.high_zone_util);
+        assert_eq!(w.eff_cfg.high_zone_count, w.cfg.high_zone_count);
+        assert_eq!(w.eff_cfg.high_zone_hold_ticks, w.cfg.high_zone_hold_ticks);
     }
 
     #[test]
@@ -2001,5 +1997,97 @@ mod tests {
         assert_eq!(w.dev_over, 0);
         assert_eq!(w.dev_under, 0);
         assert_eq!(w.dev_decision, "down");
+    }
+
+    #[test]
+    fn clg_affected_nonzero_subset_mapping_is_locked() {
+        // affected=[5,6,7]：必须按 CPU id 取 core_utils[5..8]，不能按 0..A 前缀
+        let utils = [0.1, 0.2, 0.3, 0.4, 0.5, 0.9, 0.7, 0.2];
+        let mut w = test_worker(clg_cfg(2, 0.80, 0.80, 3), vec![5, 6, 7], 0.9, 0.9);
+        w.on_load_update(&utils);
+        assert_f32_eq(w.dev_raw_util, 0.9);
+        assert_eq!(w.dev_over, 1); // 仅 cpu5 = 0.9 > 0.80
+        assert_eq!(w.dev_under, 1); // 仅 cpu7 = 0.2 < 0.30
+        assert_eq!(w.dev_decision, "hz_hold"); // hits=1 (cpu5) < need=2
+        assert_eq!(w.cluster.high_zone_wait, 1);
+
+        // max_util / high_zone_hits 同一映射域
+        let c = test_cluster(vec![5, 6, 7], 0.9, 0.9);
+        assert_f32_eq(c.max_util(&utils), 0.9);
+        assert_eq!(c.high_zone_hits(&utils, 0.8), 1);
+        // 若误按 0..3 前缀：max=0.3、over=0、under=2，与上面的断言可区分
+    }
+
+    #[test]
+    fn clg_high_zone_hold_multi_tick_and_wait_clear_are_locked() {
+        // hold=3：连续阻塞 tick 累加 1→2→3，第 3 个 tick 清零并放行一次
+        let mut w = test_worker(clg_cfg(2, 0.80, 0.80, 3), vec![0, 1, 2], 0.9, 0.9);
+        w.on_load_update(&[0.9, 0.1, 0.1]);
+        assert_eq!(w.dev_decision, "hz_hold");
+        assert_eq!(w.cluster.high_zone_wait, 1);
+        assert_eq!(w.cluster.up_wait, 0);
+        assert_eq!(w.cluster.down_wait, 0);
+        w.on_load_update(&[0.9, 0.1, 0.1]);
+        assert_eq!(w.dev_decision, "hz_hold");
+        assert_eq!(w.cluster.high_zone_wait, 2);
+        assert_eq!(w.cluster.up_wait, 0);
+        w.on_load_update(&[0.9, 0.1, 0.1]);
+        assert_ne!(w.dev_decision, "hz_hold");
+        assert_eq!(w.cluster.high_zone_wait, 0);
+        assert_f32_eq(w.dev_tgt_perf, 0.945);
+        assert_eq!(w.cluster.up_wait, 1);
+
+        // hits 达标即清零 high_zone_wait，不必等 hold 兜底
+        let mut w = test_worker(clg_cfg(2, 0.80, 0.80, 5), vec![0, 1, 2], 0.9, 0.9);
+        w.on_load_update(&[0.9, 0.1, 0.1]);
+        assert_eq!(w.dev_decision, "hz_hold");
+        assert_eq!(w.cluster.high_zone_wait, 1);
+        w.on_load_update(&[0.9, 0.9, 0.1]); // hits=2 >= need=2
+        assert_ne!(w.dev_decision, "hz_hold");
+        assert_eq!(w.cluster.high_zone_wait, 0);
+        assert_f32_eq(w.dev_tgt_perf, 0.945);
+    }
+
+    #[test]
+    fn clg_high_zone_need_is_capped_by_cluster_size() {
+        // count=5 > A=3：need 封顶到 3；hits=3 放行（未封顶则需 5、永远不会达标）
+        let mut w = test_worker(clg_cfg(5, 0.80, 0.80, 5), vec![0, 1, 2], 0.9, 0.9);
+        w.on_load_update(&[0.9, 0.9, 0.9]);
+        assert_ne!(w.dev_decision, "hz_hold");
+        assert_eq!(w.cluster.high_zone_wait, 0);
+        assert_f32_eq(w.dev_tgt_perf, 0.945);
+
+        // A=1（prime 单核簇）：count=3 仍按 need=min(3,1)=1 判定
+        let mut w = test_worker(clg_cfg(3, 0.80, 0.80, 3), vec![5], 0.9, 0.9);
+        w.on_load_update(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.9]);
+        assert_ne!(w.dev_decision, "hz_hold");
+        assert_eq!(w.cluster.high_zone_wait, 0);
+        assert_f32_eq(w.dev_tgt_perf, 0.945);
+
+        // A=1 且确认不足（阈值 0.95 > util 0.91）仍可阻塞
+        let mut w = test_worker(clg_cfg(3, 0.80, 0.95, 3), vec![5], 0.9, 0.9);
+        w.on_load_update(&[0.0, 0.0, 0.0, 0.0, 0.0, 0.91]);
+        assert_eq!(w.dev_decision, "hz_hold");
+        assert_eq!(w.cluster.high_zone_wait, 1);
+    }
+
+    #[test]
+    fn clg_high_zone_guard_false_keeps_pending_wait() {
+        // 首个 tick 阻塞建立等待 1
+        let mut w = test_worker(clg_cfg(2, 0.80, 0.95, 5), vec![0, 1, 2], 0.9, 0.9);
+        w.on_load_update(&[0.91, 0.9, 0.9]);
+        assert_eq!(w.dev_decision, "hz_hold");
+        assert_eq!(w.cluster.high_zone_wait, 1);
+
+        // guard=false（candidate 0.5 不大于 old 0.9）：不扫描、不增不清等待
+        w.on_load_update(&[0.5, 0.5, 0.5]);
+        assert_ne!(w.dev_decision, "hz_hold");
+        assert_eq!(w.cluster.high_zone_wait, 1);
+        assert_f32_eq(w.dev_tgt_perf, 0.5);
+        assert_eq!(w.cluster.down_wait, 1);
+        w.on_load_update(&[0.5, 0.5, 0.5]);
+        assert_ne!(w.dev_decision, "hz_hold");
+        assert_eq!(w.cluster.high_zone_wait, 1);
+        assert_eq!(w.cluster.down_wait, 2);
     }
 }
