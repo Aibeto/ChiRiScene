@@ -101,6 +101,9 @@ export default {
   'config.wakeGuardEnabled.hint':
     'Holds a system wake lock while the screen is off',
 
+  'config.pgoSampling': 'PGO sampling',
+  'config.pgoSampling.hint': 'Deprecate PGO sampling',
+
   'battery.title': 'Battery readings',
   'battery.action.back': 'Back to config',
   'battery.entry.hint': 'Where battery readings come from, and how they are calibrated',

@@ -36,6 +36,9 @@
   const wakeGuardEnabled = $derived(
     Boolean(value('wake_guard_enabled', app.configRel.startsWith('sm8750/')))
   )
+  // PGO 采样开关：缺键默认开（与守护进程 Meta::pgo_sampling 的 serde 缺省 true 同口径），
+  // 否则老 meta.yaml 不含该键时界面会显示成关、与实际行为相反
+  const pgoSampling = $derived(Boolean(value('pgo_sampling', true)))
 
   /** 实验室接管的开关：置灰不可切换（守护进程正按实验室定义写它，手改也会被写回去） */
   const takeover = $derived(new Set(app.labTakeover))
@@ -143,6 +146,15 @@
         pending={app.draft.wake_guard_enabled !== undefined}
         disabled={!app.metaValid}
         onchange={next => app.setDraft('wake_guard_enabled', next)}
+      />
+
+      <ToggleField
+        label={t('config.pgoSampling')}
+        hint={hint('pgo_sampling', t('config.pgoSampling.hint'))}
+        checked={pgoSampling}
+        pending={app.draft.pgo_sampling !== undefined}
+        disabled={!app.metaValid}
+        onchange={next => app.setDraft('pgo_sampling', next)}
       />
     </div>
 
