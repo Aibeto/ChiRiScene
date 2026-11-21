@@ -1521,6 +1521,210 @@ struct AffThState {
 }
 static AFF_TH_STATE: std::sync::OnceLock<Mutex<AffThState>> = std::sync::OnceLock::new();
 
+const AFF_SNAP_SAMPLE_WORKERS: usize = 4;
+const AFF_SNAP_SAMPLE_CHUNK: usize = 16;
+const AFF_SNAP_SAMPLE_WINDOW: usize = AFF_SNAP_SAMPLE_WORKERS * 2;
+type AffSampleJob = Box<dyn FnOnce() + Send + 'static>;
+
+struct AffSamplePool {
+    sender: std::sync::mpsc::SyncSender<AffSampleJob>,
+}
+
+impl AffSamplePool {
+    fn new() -> std::io::Result<Self> {
+        let (sender, receiver) = mpsc::sync_channel::<AffSampleJob>(AFF_SNAP_SAMPLE_WINDOW);
+        let receiver = Arc::new(Mutex::new(receiver));
+        for index in 0..AFF_SNAP_SAMPLE_WORKERS {
+            let receiver = Arc::clone(&receiver);
+            thread::Builder::new()
+                .name(format!("aff_sample_{index}"))
+                .spawn(move || {
+                    loop {
+                        let job = receiver.lock().unwrap_or_else(|e| e.into_inner()).recv();
+                        match job {
+                            Ok(job) => job(),
+                            Err(_) => break,
+                        }
+                    }
+                })?;
+        }
+        Ok(Self { sender })
+    }
+}
+
+static AFF_SAMPLE_POOL: OnceLock<Option<AffSamplePool>> = OnceLock::new();
+
+struct AffSampleBatch<T> {
+    samples: Vec<T>,
+    wall_ns: u64,
+    caller_cpu_ns: Option<u64>,
+    worker_cpu_ns: u64,
+    worker_cpu_overflow: bool,
+    worker_cpu_expected_count: u64,
+    worker_cpu_valid_count: u64,
+    clock_errors: u64,
+}
+
+fn sample_tids_serial<T, F>(tids: &[u32], reader: F, measure_cost: bool) -> AffSampleBatch<T>
+where
+    F: Fn(u32) -> T,
+{
+    let start = Instant::now();
+    let cpu_start = measure_cost.then(diag_cost::thread_cpu_ns).flatten();
+    let samples = tids.iter().map(|&tid| reader(tid)).collect();
+    let cpu_end = measure_cost.then(diag_cost::thread_cpu_ns).flatten();
+    let caller_cpu_ns = cpu_start.zip(cpu_end).and_then(|(a, b)| b.checked_sub(a));
+    let clock_errors = if measure_cost {
+        u64::from(cpu_start.is_none())
+            + u64::from(cpu_end.is_none())
+            + u64::from(cpu_start.is_some() && cpu_end.is_some() && caller_cpu_ns.is_none())
+    } else {
+        0
+    };
+    AffSampleBatch {
+        samples,
+        wall_ns: start.elapsed().as_nanos() as u64,
+        caller_cpu_ns,
+        worker_cpu_ns: 0,
+        worker_cpu_overflow: false,
+        worker_cpu_expected_count: 0,
+        worker_cpu_valid_count: 0,
+        clock_errors,
+    }
+}
+
+fn sample_tids_bounded<T, F>(tids: &[u32], reader: F, measure_cost: bool) -> AffSampleBatch<T>
+where
+    T: Send + 'static,
+    F: Fn(u32) -> T + Send + Sync + 'static,
+{
+    use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
+
+    if tids.is_empty() {
+        return AffSampleBatch {
+            samples: Vec::new(),
+            wall_ns: 0,
+            caller_cpu_ns: None,
+            worker_cpu_ns: 0,
+            worker_cpu_overflow: false,
+            worker_cpu_expected_count: 0,
+            worker_cpu_valid_count: 0,
+            clock_errors: 0,
+        };
+    }
+
+    if tids.len() <= AFF_SNAP_SAMPLE_CHUNK {
+        return sample_tids_serial(tids, reader, measure_cost);
+    }
+
+    let Some(pool) = AFF_SAMPLE_POOL
+        .get_or_init(|| AffSamplePool::new().ok())
+        .as_ref()
+    else {
+        return sample_tids_serial(tids, reader, measure_cost);
+    };
+
+    let reader = Arc::new(reader);
+    let (result_tx, result_rx) = mpsc::sync_channel(AFF_SNAP_SAMPLE_WINDOW);
+    let mut results: Vec<Option<T>> = (0..tids.len()).map(|_| None).collect();
+    let mut first_panic = None;
+    let mut next_chunk = 0usize;
+    let mut in_flight_chunks = 0usize;
+    let mut worker_cpu_ns = 0u64;
+    let mut worker_cpu_overflow = false;
+    let mut worker_cpu_expected_count = 0u64;
+    let mut worker_cpu_valid_count = 0u64;
+    let mut clock_errors = 0u64;
+    let start = Instant::now();
+    let caller_cpu_start = measure_cost.then(diag_cost::thread_cpu_ns).flatten();
+
+    let chunk_count = tids.len().div_ceil(AFF_SNAP_SAMPLE_CHUNK);
+    if measure_cost {
+        worker_cpu_expected_count = chunk_count as u64;
+    }
+    while next_chunk < chunk_count || in_flight_chunks > 0 {
+        while next_chunk < chunk_count && in_flight_chunks < AFF_SNAP_SAMPLE_WINDOW {
+            let begin = next_chunk * AFF_SNAP_SAMPLE_CHUNK;
+            let end = (begin + AFF_SNAP_SAMPLE_CHUNK).min(tids.len());
+            let chunk = tids[begin..end].to_vec();
+            let reader = Arc::clone(&reader);
+            let result_tx = result_tx.clone();
+            let track_cpu = measure_cost;
+            pool.sender
+                .send(Box::new(move || {
+                    let cpu_start = track_cpu.then(diag_cost::thread_cpu_ns).flatten();
+                    let mut chunk_results = Vec::with_capacity(chunk.len());
+                    for tid in chunk {
+                        let value = catch_unwind(AssertUnwindSafe(|| reader(tid)));
+                        chunk_results.push(value);
+                    }
+                    let cpu_end = track_cpu.then(diag_cost::thread_cpu_ns).flatten();
+                    let cpu_ns = cpu_start.zip(cpu_end).and_then(|(a, b)| b.checked_sub(a));
+                    let errors = if track_cpu {
+                        u64::from(cpu_start.is_none())
+                            + u64::from(cpu_end.is_none())
+                            + u64::from(
+                                cpu_start.is_some() && cpu_end.is_some() && cpu_ns.is_none(),
+                            )
+                    } else {
+                        0
+                    };
+                    let _ = result_tx.send((begin, chunk_results, cpu_ns, errors));
+                }))
+                .expect("affinity sampler pool disconnected");
+            next_chunk += 1;
+            in_flight_chunks += 1;
+        }
+        let (begin, chunk_results, cpu_ns, errors) = result_rx
+            .recv()
+            .expect("affinity sampler worker terminated");
+        for (offset, value) in chunk_results.into_iter().enumerate() {
+            match value {
+                Ok(value) => results[begin + offset] = Some(value),
+                Err(payload) if first_panic.is_none() => first_panic = Some(payload),
+                Err(_) => {}
+            }
+        }
+        if let Some(cpu_ns) = cpu_ns {
+            match worker_cpu_ns.checked_add(cpu_ns) {
+                Some(total) if !worker_cpu_overflow => worker_cpu_ns = total,
+                _ => worker_cpu_overflow = true,
+            }
+            worker_cpu_valid_count += 1;
+        }
+        clock_errors += errors;
+        in_flight_chunks -= 1;
+    }
+
+    let caller_cpu_end = measure_cost.then(diag_cost::thread_cpu_ns).flatten();
+    let caller_cpu_ns = caller_cpu_start
+        .zip(caller_cpu_end)
+        .and_then(|(a, b)| b.checked_sub(a));
+    if measure_cost {
+        clock_errors += u64::from(caller_cpu_start.is_none())
+            + u64::from(caller_cpu_end.is_none())
+            + u64::from(
+                caller_cpu_start.is_some() && caller_cpu_end.is_some() && caller_cpu_ns.is_none(),
+            );
+    }
+    if let Some(payload) = first_panic {
+        resume_unwind(payload);
+    }
+    AffSampleBatch {
+        samples: results
+            .into_iter()
+            .map(|sample| sample.expect("affinity sample result missing"))
+            .collect(),
+        wall_ns: start.elapsed().as_nanos() as u64,
+        caller_cpu_ns,
+        worker_cpu_ns,
+        worker_cpu_overflow,
+        worker_cpu_expected_count,
+        worker_cpu_valid_count,
+        clock_errors,
+    }
+}
+
 impl ThSnap {
     fn full_row(&mut self, tid: u32) -> String {
         let Self {
@@ -1665,29 +1869,54 @@ fn build_aff_snapshot(
         frame = st.frame;
         // 刷新帧：首帧必全量（全建基线、util 全 0），此后每 30 帧一次（防漂移）
         refresh = first || frame % AFF_SNAP_REFRESH_FRAMES == 0;
-        // [C1] 本帧已采样到的 pid 集合：判定每 pid 本帧首条线程，其净化 comm 是 p 行兜底来源，即使该线程本帧省行也必须保留 token
-        let mut seen_pid_frame: HashSet<u32> = HashSet::new();
+
+        let mut active_indices = Vec::new();
+        let mut active_tids = Vec::new();
         for (index, &(pid, tid, full)) in tids.iter().enumerate() {
+            if full || refresh || st.base.get(&tid).is_some_and(|e| e.hot_until >= frame) {
+                active_indices.push(index);
+                active_tids.push(tid);
+            } else {
+                cold_tids.push((pid, tid));
+            }
+        }
+        let batch = sample_tids_bounded(
+            &active_tids,
+            |tid| affinity::sample_one_tid(tid as i32),
+            costs.is_some(),
+        );
+        if let Some(build_costs) = costs.as_mut() {
+            build_costs.record_parallel_tid_batch(
+                active_tids.len() as u64,
+                batch.wall_ns,
+                batch.caller_cpu_ns,
+                batch.worker_cpu_ns,
+                batch.worker_cpu_overflow,
+                batch.worker_cpu_expected_count,
+                batch.worker_cpu_valid_count,
+                batch.clock_errors,
+            );
+        }
+        let mut samples_by_index: Vec<Option<Option<affinity::ThreadSample>>> =
+            (0..tids.len()).map(|_| None).collect();
+        for (index, sample) in active_indices.into_iter().zip(batch.samples) {
+            samples_by_index[index] = Some(sample);
+        }
+
+        // Diff application remains serialized and in the original stable TID order.
+        let mut seen_pid_frame: HashSet<u32> = HashSet::new();
+        for (index, &(pid, tid, _full)) in tids.iter().enumerate() {
             if diag_slice::slice_due(index) {
                 thread::yield_now();
             }
-            // 只切换编码，不动候选集与采样频率；不要提前切换：一次慢爆发不得抑制同帧后续行
-
-            let (home, pinned) = th_state.get(&tid).copied().unwrap_or((-1, false));
-            // 长尾且已退冷：本轮**不采样、不落行**（省 stat 读与行；语义由「缺失行 = 与上次落盘相同」承载），刷新帧或热窗内的仍逐帧采样
-            if !full && !refresh && !st.base.get(&tid).is_some_and(|e| e.hot_until >= frame) {
-                cold_tids.push((pid, tid));
+            let Some(sample_result) = samples_by_index[index].take() else {
                 continue;
-            }
-            let Some(s) =
-                measure_build_block(&mut costs, diag_build_cost::BuildBlock::TidStat, || {
-                    affinity::sample_one_tid(tid as i32)
-                })
-            else {
-                // 线程已退出：顺手回收基线（原地 remove，不整表重建）
+            };
+            let Some(s) = sample_result else {
                 st.base.remove(&tid);
                 continue;
             };
+            let (home, pinned) = th_state.get(&tid).copied().unwrap_or((-1, false));
             // [C1] 本帧该 pid 首条被采样线程：即使本线程省行，也要为它保留净化 comm，供 p 行兜底
             sampled_tids.insert(tid);
             let first_pid = seen_pid_frame.insert(pid);
@@ -1905,21 +2134,33 @@ fn build_aff_snapshot(
             .expect("initialized by sampling")
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        // Complete unsampled foreground/managed candidates once: never serialize an unsampled baseline.
-        cold_tids.extend(tids.iter().filter_map(|&(pid, tid, full)| {
-            (full && !sampled_tids.contains(&tid)).then_some((pid, tid))
-        }));
         cold_tids.sort_unstable_by_key(|&(pid, tid)| (tid, pid));
         cold_tids.dedup();
-        for (index, (pid, tid)) in cold_tids.into_iter().enumerate() {
+        for (index, _) in cold_tids.iter().enumerate() {
             if diag_slice::slice_due(index) {
                 thread::yield_now();
             }
-            let Some(sample) =
-                measure_build_block(&mut costs, diag_build_cost::BuildBlock::TidStat, || {
-                    affinity::sample_one_tid(tid as i32)
-                })
-            else {
+        }
+        let supplement_tids: Vec<u32> = cold_tids.iter().map(|&(_, tid)| tid).collect();
+        let batch = sample_tids_bounded(
+            &supplement_tids,
+            |tid| affinity::sample_one_tid(tid as i32),
+            costs.is_some(),
+        );
+        if let Some(build_costs) = costs.as_mut() {
+            build_costs.record_parallel_tid_batch(
+                supplement_tids.len() as u64,
+                batch.wall_ns,
+                batch.caller_cpu_ns,
+                batch.worker_cpu_ns,
+                batch.worker_cpu_overflow,
+                batch.worker_cpu_expected_count,
+                batch.worker_cpu_valid_count,
+                batch.clock_errors,
+            );
+        }
+        for ((pid, tid), sample) in cold_tids.into_iter().zip(batch.samples) {
+            let Some(sample) = sample else {
                 st.base.remove(&tid);
                 continue;
             };
@@ -4530,6 +4771,133 @@ pub fn start_scheduler_thread(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_tid_sampling_runs_once_with_stable_order_and_worker_cap() {
+        let tids: Vec<u32> = (100..167).collect();
+        let calls: Arc<Vec<_>> = Arc::new(
+            (0..tids.len())
+                .map(|_| std::sync::atomic::AtomicUsize::new(0))
+                .collect(),
+        );
+        let active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let max_active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let first_chunk_gate = Arc::new(std::sync::Barrier::new(2));
+        let release_first_chunk = Arc::new(std::sync::Barrier::new(2));
+        let total_tids = tids.len();
+        let chunk_done: Arc<Vec<_>> = Arc::new(
+            (0..total_tids.div_ceil(AFF_SNAP_SAMPLE_CHUNK))
+                .map(|_| std::sync::atomic::AtomicUsize::new(0))
+                .collect(),
+        );
+        let calls_ref = Arc::clone(&calls);
+        let active_ref = Arc::clone(&active);
+        let max_active_ref = Arc::clone(&max_active);
+        let chunk_done_ref = Arc::clone(&chunk_done);
+        let first_chunk_gate_ref = Arc::clone(&first_chunk_gate);
+        let release_first_chunk_ref = Arc::clone(&release_first_chunk);
+        let samples = sample_tids_bounded(
+            &tids,
+            move |tid| {
+                let index = (tid - 100) as usize;
+                calls_ref[index].fetch_add(1, Ordering::Relaxed);
+                let active_now = active_ref.fetch_add(1, Ordering::Relaxed) + 1;
+                max_active_ref.fetch_max(active_now, Ordering::Relaxed);
+                let chunk = index / AFF_SNAP_SAMPLE_CHUNK;
+                if index == AFF_SNAP_SAMPLE_CHUNK {
+                    first_chunk_gate_ref.wait();
+                }
+                if index == 0 {
+                    first_chunk_gate_ref.wait();
+                }
+                if index == AFF_SNAP_SAMPLE_CHUNK * 2 - 1 {
+                    chunk_done_ref[chunk].store(1, Ordering::Relaxed);
+                    release_first_chunk_ref.wait();
+                }
+                if index == AFF_SNAP_SAMPLE_CHUNK - 1 {
+                    release_first_chunk_ref.wait();
+                    chunk_done_ref[chunk].store(2, Ordering::Relaxed);
+                }
+                active_ref.fetch_sub(1, Ordering::Relaxed);
+                (tid % 2 == 0).then_some(tid)
+            },
+            false,
+        );
+
+        assert_eq!(
+            samples.samples,
+            tids.iter()
+                .map(|tid| (*tid % 2 == 0).then_some(*tid))
+                .collect::<Vec<_>>()
+        );
+        assert!(calls.iter().all(|count| count.load(Ordering::Relaxed) == 1));
+        assert!(max_active.load(Ordering::Relaxed) > 1);
+        assert!(max_active.load(Ordering::Relaxed) <= AFF_SNAP_SAMPLE_WORKERS);
+        assert!(chunk_done[1].load(Ordering::Relaxed) < chunk_done[0].load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn single_tid_chunk_uses_caller_without_worker_handoff() {
+        let tids: Vec<u32> = (10..10 + AFF_SNAP_SAMPLE_CHUNK as u32).collect();
+        let caller = thread::current().id();
+        let batch = sample_tids_bounded(
+            &tids,
+            move |_| {
+                assert_eq!(thread::current().id(), caller);
+            },
+            true,
+        );
+        assert_eq!(batch.samples.len(), AFF_SNAP_SAMPLE_CHUNK);
+        assert_eq!(batch.worker_cpu_expected_count, 0);
+        assert_eq!(batch.worker_cpu_valid_count, 0);
+    }
+
+    #[test]
+    fn small_tid_batch_uses_caller_without_worker_handoff() {
+        let caller = thread::current().id();
+        let batch = sample_tids_bounded(
+            &[10, 11, 12],
+            move |_| {
+                assert_eq!(thread::current().id(), caller);
+            },
+            true,
+        );
+        assert_eq!(batch.samples, vec![(), (), ()]);
+        assert_eq!(batch.worker_cpu_expected_count, 0);
+        assert_eq!(batch.worker_cpu_valid_count, 0);
+    }
+
+    #[test]
+    fn worker_panic_does_not_skip_remaining_tid_reads() {
+        let tids: Vec<u32> = (100..137).collect();
+        let calls: Arc<Vec<_>> = Arc::new(
+            (0..tids.len())
+                .map(|_| std::sync::atomic::AtomicUsize::new(0))
+                .collect(),
+        );
+        let calls_ref = Arc::clone(&calls);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            sample_tids_bounded(
+                &tids,
+                move |tid| {
+                    calls_ref[(tid - 100) as usize].fetch_add(1, Ordering::Relaxed);
+                    assert_ne!(tid, 101, "fixture panic");
+                    Some(tid)
+                },
+                false,
+            )
+        }));
+        assert!(result.is_err());
+        assert!(calls.iter().all(|count| count.load(Ordering::Relaxed) == 1));
+    }
+
+    #[test]
+    fn empty_tid_batch_returns_without_running_reader() {
+        let batch = sample_tids_bounded(&[], |_| panic!("reader must not run"), false);
+        assert!(batch.samples.is_empty());
+        assert_eq!(batch.wall_ns, 0);
+        assert_eq!(batch.worker_cpu_valid_count, 0);
+    }
 
     // ── [C3] 频率快照渲染：格式/顺序/读不到写 `-` ──
     #[test]

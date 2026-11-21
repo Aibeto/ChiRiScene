@@ -39,10 +39,16 @@ impl BuildBlock {
 #[derive(Clone, Debug, Default)]
 pub struct BuildBlockStats {
     pub count: u64,
+    pub wall_expected_count: u64,
     pub wall_valid_count: u64,
     pub wall_ns_sum: u64,
+    pub cpu_expected_count: u64,
     pub cpu_valid_count: u64,
     pub cpu_ns_sum: u64,
+    pub worker_cpu_expected_count: u64,
+    pub worker_cpu_valid_count: u64,
+    pub worker_cpu_ns_sum: u64,
+    pub worker_cpu_overflow: bool,
 }
 
 #[derive(Debug, Default)]
@@ -72,7 +78,9 @@ impl BuildCostStats {
         }
         let stats = &mut self.blocks[block.slot()];
         stats.count += 1;
+        stats.wall_expected_count += 1;
         stats.wall_valid_count += 1;
+        stats.cpu_expected_count += 1;
         match stats.wall_ns_sum.checked_add(wall_ns) {
             Some(total) => stats.wall_ns_sum = total,
             None => self.wall_overflow = true,
@@ -86,14 +94,63 @@ impl BuildCostStats {
         }
     }
 
-    /// 每帧仅结算一次，缺失时钟、溢出和负残差均不产生有效零值
+    /// Record concurrent TID reads as one non-overlapping wall and caller-CPU interval.
+    /// count is the number of read attempts; worker CPU has a separate aggregate.
+    pub fn record_parallel_tid_batch(
+        &mut self,
+        count: u64,
+        wall_ns: u64,
+        caller_cpu_ns: Option<u64>,
+        worker_cpu_ns: u64,
+        worker_cpu_overflow: bool,
+        worker_cpu_expected_count: u64,
+        worker_cpu_valid_count: u64,
+        clock_errors: u64,
+    ) {
+        if count == 0 {
+            return;
+        }
+        let stats = &mut self.blocks[BuildBlock::TidStat.slot()];
+        stats.count = stats.count.saturating_add(count);
+        stats.wall_expected_count = stats.wall_expected_count.saturating_add(1);
+        stats.wall_valid_count = stats.wall_valid_count.saturating_add(1);
+        stats.cpu_expected_count = stats.cpu_expected_count.saturating_add(1);
+        match stats.wall_ns_sum.checked_add(wall_ns) {
+            Some(total) => stats.wall_ns_sum = total,
+            None => self.wall_overflow = true,
+        }
+        if let Some(cpu_ns) = caller_cpu_ns {
+            stats.cpu_valid_count = stats.cpu_valid_count.saturating_add(1);
+            match stats.cpu_ns_sum.checked_add(cpu_ns) {
+                Some(total) => stats.cpu_ns_sum = total,
+                None => self.cpu_overflow = true,
+            }
+        }
+        stats.worker_cpu_expected_count = stats
+            .worker_cpu_expected_count
+            .saturating_add(worker_cpu_expected_count);
+        stats.worker_cpu_valid_count = stats
+            .worker_cpu_valid_count
+            .saturating_add(worker_cpu_valid_count);
+        stats.worker_cpu_overflow |= worker_cpu_overflow;
+        match stats.worker_cpu_ns_sum.checked_add(worker_cpu_ns) {
+            Some(total) if !stats.worker_cpu_overflow => stats.worker_cpu_ns_sum = total,
+            _ => stats.worker_cpu_overflow = true,
+        }
+        self.clock_errors = self.clock_errors.saturating_add(clock_errors);
+    }
+
+    /// Per-frame residuals use only non-overlapping batch wall intervals and caller-thread CPU.
+    /// Missing clocks, overflow, or negative residuals never become valid zero values.
     pub fn finish(&mut self, wall_ns: u64, cpu_ns: Option<u64>) {
         let children = &self.blocks[..BuildBlock::Residual.slot()];
-        let wall_sum = children
-            .iter()
-            .try_fold(0u64, |total, block| total.checked_add(block.wall_ns_sum));
+        let wall_sum = children.iter().try_fold(0u64, |total, block| {
+            (block.wall_expected_count == block.wall_valid_count)
+                .then_some(())
+                .and_then(|_| total.checked_add(block.wall_ns_sum))
+        });
         let cpu_sum = children.iter().try_fold(0u64, |total, block| {
-            (block.count == block.cpu_valid_count)
+            (block.cpu_expected_count == block.cpu_valid_count)
                 .then_some(())
                 .and_then(|_| total.checked_add(block.cpu_ns_sum))
         });
@@ -123,14 +180,34 @@ impl BuildCostStats {
     pub fn absorb(&mut self, other: &Self) {
         for (target, source) in self.blocks.iter_mut().zip(&other.blocks) {
             target.count = target.count.saturating_add(source.count);
+            target.wall_expected_count = target
+                .wall_expected_count
+                .saturating_add(source.wall_expected_count);
             target.wall_valid_count = target
                 .wall_valid_count
                 .saturating_add(source.wall_valid_count);
             target.wall_ns_sum = target.wall_ns_sum.saturating_add(source.wall_ns_sum);
+            target.cpu_expected_count = target
+                .cpu_expected_count
+                .saturating_add(source.cpu_expected_count);
             target.cpu_valid_count = target
                 .cpu_valid_count
                 .saturating_add(source.cpu_valid_count);
             target.cpu_ns_sum = target.cpu_ns_sum.saturating_add(source.cpu_ns_sum);
+            target.worker_cpu_expected_count = target
+                .worker_cpu_expected_count
+                .saturating_add(source.worker_cpu_expected_count);
+            target.worker_cpu_valid_count = target
+                .worker_cpu_valid_count
+                .saturating_add(source.worker_cpu_valid_count);
+            target.worker_cpu_overflow |= source.worker_cpu_overflow;
+            match target
+                .worker_cpu_ns_sum
+                .checked_add(source.worker_cpu_ns_sum)
+            {
+                Some(total) if !target.worker_cpu_overflow => target.worker_cpu_ns_sum = total,
+                _ => target.worker_cpu_overflow = true,
+            }
         }
         self.clock_errors = self.clock_errors.saturating_add(other.clock_errors);
         self.residual_errors = self.residual_errors.saturating_add(other.residual_errors);
@@ -158,15 +235,23 @@ impl BuildCostStats {
     pub fn summary_line(&self, session: &str, start: &str, end: &str, block: BuildBlock) -> String {
         let stats = self.stats(block);
         format!(
-            "schema=selfcost-build/1 session={session} window_start={start} window_end={end} \
-             parent=build block={} count={} wall_valid_count={} wall_ns_sum={} \
-             cpu_valid_count={} cpu_ns_sum={} clock_errors={} residual_errors={} write_errors={}",
+            "schema=selfcost-build/2 session={session} window_start={start} window_end={end} \
+             parent=build block={} count={} wall_expected_count={} wall_valid_count={} wall_ns_sum={} \
+             cpu_expected_count={} cpu_valid_count={} cpu_ns_sum={} \
+             worker_cpu_expected_count={} worker_cpu_valid_count={} worker_cpu_ns_sum={} worker_cpu_overflow={} \
+             clock_errors={} residual_errors={} write_errors={}",
             block.name(),
             stats.count,
+            stats.wall_expected_count,
             stats.wall_valid_count,
             stats.wall_ns_sum,
+            stats.cpu_expected_count,
             stats.cpu_valid_count,
             stats.cpu_ns_sum,
+            stats.worker_cpu_expected_count,
+            stats.worker_cpu_valid_count,
+            stats.worker_cpu_ns_sum,
+            stats.worker_cpu_overflow,
             self.clock_errors,
             self.residual_errors,
             self.write_errors,
@@ -187,10 +272,63 @@ mod tests {
         stats.record(BuildBlock::TidStat, 6, Some(20), Some(19));
         let block = stats.stats(BuildBlock::TidStat);
         assert_eq!(block.count, 3);
+        assert_eq!(block.cpu_expected_count, 3);
         assert_eq!(block.wall_ns_sum, 21);
         assert_eq!(block.cpu_valid_count, 1);
         assert_eq!(block.cpu_ns_sum, 2);
         assert_eq!(stats.clock_errors, 3);
+    }
+
+    #[test]
+    fn parallel_tid_batch_uses_one_wall_interval_and_separate_worker_cpu() {
+        let mut stats = BuildCostStats::default();
+        stats.record(BuildBlock::ThreadTids, 4, Some(10), Some(12));
+        stats.record_parallel_tid_batch(5, 10, Some(3), 18, false, 4, 4, 0);
+        stats.finish(30, Some(20));
+
+        let tid = stats.stats(BuildBlock::TidStat);
+        assert_eq!(tid.count, 5);
+        assert_eq!(tid.wall_expected_count, 1);
+        assert_eq!(tid.wall_valid_count, 1);
+        assert_eq!(tid.wall_ns_sum, 10);
+        assert_eq!(tid.cpu_valid_count, 1);
+        assert_eq!(tid.cpu_ns_sum, 3);
+        assert_eq!(tid.worker_cpu_expected_count, 4);
+        assert_eq!(tid.worker_cpu_valid_count, 4);
+        assert_eq!(tid.worker_cpu_ns_sum, 18);
+        assert!(
+            stats
+                .summary_line("s", "a", "b", BuildBlock::TidStat)
+                .contains(
+                    "worker_cpu_expected_count=4 worker_cpu_valid_count=4 worker_cpu_ns_sum=18 worker_cpu_overflow=false"
+                )
+        );
+        let residual = stats.stats(BuildBlock::Residual);
+        assert_eq!(residual.wall_ns_sum, 16);
+        assert_eq!(residual.cpu_ns_sum, 15);
+        assert!(
+            stats
+                .summary_line("s", "a", "b", BuildBlock::TidStat)
+                .contains("schema=selfcost-build/2 ")
+        );
+    }
+
+    #[test]
+    fn worker_cpu_overflow_is_explicit_and_cannot_become_valid_total() {
+        let mut stats = BuildCostStats::default();
+        stats.record_parallel_tid_batch(32, 10, Some(3), u64::MAX, false, 2, 2, 0);
+        stats.record_parallel_tid_batch(16, 5, Some(2), 1, false, 1, 1, 0);
+
+        let tid = stats.stats(BuildBlock::TidStat);
+        assert!(tid.worker_cpu_overflow);
+        assert_eq!(tid.worker_cpu_ns_sum, u64::MAX);
+        assert_eq!(tid.worker_cpu_expected_count, 3);
+        assert_eq!(tid.worker_cpu_valid_count, 3);
+        assert!(
+            stats
+                .summary_line("s", "a", "b", BuildBlock::TidStat)
+                .contains("worker_cpu_ns_sum=18446744073709551615 worker_cpu_overflow=true")
+        );
     }
 
     #[test]
@@ -273,9 +411,12 @@ mod tests {
         frame.record(BuildBlock::ProcessMap, 8, None, None);
         frame.finish(10, None);
         let line = frame.summary_line("session", "1", "2", BuildBlock::ProcessMap);
-        assert!(line.starts_with("schema=selfcost-build/1 "));
+        assert!(line.starts_with("schema=selfcost-build/2 "));
         assert!(line.contains("parent=build block=snapshot_procs count=1"));
-        assert!(line.contains("cpu_valid_count=0 cpu_ns_sum=0 clock_errors=2"));
+        assert!(
+            line.contains("cpu_expected_count=1 cpu_valid_count=0 cpu_ns_sum=0")
+                && line.contains("clock_errors=2")
+        );
         frame.note_write_error();
         frame.reset();
         assert!(
