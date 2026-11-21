@@ -21,6 +21,7 @@ pub struct PolicyController {
     pub min_writer: FastWriter,
     pub available_freqs: Vec<u32>,
     cached_ratios: Vec<f32>,
+    /// 最后一次 min/max 均写成功的锁频目标；写失败/半写时保持不变，下一 tick 按原目标重试
     pub current_freq: u32,
     pub policy_id: usize,
     pub(super) cpu_ids: Vec<usize>,
@@ -29,6 +30,7 @@ pub struct PolicyController {
     pub freq_min: f32,
     pub freq_max: f32,
 
+    /// 上一次成功写入、尚待校验的目标；写失败时清空（半写后的读回不再代表上次成功值）
     verify_freq: Option<u32>,
     verify_timer: Instant,
     /// 目标值最后一次变化时刻，用于等待目标稳定后再校验；None = 尚未写过
@@ -136,18 +138,32 @@ impl PolicyController {
 
     // [apply]
     /// 锁频写入 (min=max)，用于关键 cluster
+    ///
+    /// 只有 min/max 两侧都写入成功才推进 current_freq/hold/verify；任一写失败（含 raise/lower
+    /// 半写）都保留上次成功值，下一 tick 因目标不等而重试，且不保留本次 verify 目标。
     pub fn apply_freq_locked(&mut self, target_freq: u32) {
         if self.ignore_write {
             return;
         }
         // 必须在本次写入前校验上一次写入：内核调频异步，写完立刻读 scaling_cur_freq 是旧档会假性判成被改写；且要求目标已稳定 ≥ VERIFY_SETTLE，频繁改频期间跳过
         self.verify_prev_freq();
-        if target_freq >= self.current_freq {
-            self.max_writer.write_value_force(target_freq);
-            self.min_writer.write_value_force(target_freq);
+        let (max_ok, min_ok) = if target_freq >= self.current_freq {
+            let max_ok = self.max_writer.write_value_force(target_freq);
+            let min_ok = self.min_writer.write_value_force(target_freq);
+            (max_ok, min_ok)
         } else {
-            self.min_writer.write_value_force(target_freq);
-            self.max_writer.write_value_force(target_freq);
+            let min_ok = self.min_writer.write_value_force(target_freq);
+            let max_ok = self.max_writer.write_value_force(target_freq);
+            (max_ok, min_ok)
+        };
+        if !max_ok || !min_ok {
+            // [write-failed] min/max 任一写失败或半写都不算命令已应用：保留 current_freq 让下一 tick
+            // 因目标不等而重试；清空本次 verify 目标，半写后的读回不能代表上次成功写入值，
+            // 否则 verify 会把写失败误判成 QoS 钳制/篡改。
+            self.freq_hold_frames = 0;
+            self.verify_freq = None;
+            self.verify_at = None;
+            return;
         }
         let changed = target_freq != self.current_freq;
         self.current_freq = target_freq;
@@ -311,12 +327,17 @@ impl PolicyController {
         self.max_writer.write_value_force(self.current_freq);
     }
 
+    /// 退出锁频：恢复 min/max 全范围；只有两侧写成功才把 current_freq 记为新范围（写失败不伪造已恢复）
     pub fn reset(&mut self) {
         let min_f = self.available_freqs[0];
         let max_f = *self.available_freqs.last().unwrap();
-        self.max_writer.write_value_force(max_f);
-        self.min_writer.write_value_force(min_f);
-        self.current_freq = max_f;
+        let max_ok = self.max_writer.write_value_force(max_f);
+        let min_ok = self.min_writer.write_value_force(min_f);
+        // [write-failed] 写失败/半写不推进 current_freq：硬件可能仍是旧锁频，不能对外表现为已恢复；
+        // reset 仍清空校验状态（明确终止锁频校验），下一 tick 目标不同时会重新下发。
+        if max_ok && min_ok {
+            self.current_freq = max_f;
+        }
         self.verify_freq = None;
         self.verify_at = None;
         self.qos_clamped = false;
@@ -351,5 +372,169 @@ impl PolicyController {
                 &gov,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// 可写临时文件路径：FastWriter 只有拿到真实可写句柄才返回 true；
+    /// /nonexistent 路径则稳定返回 false，用作显式写失败注入，不沿用“节点无效但写入算成功”
+    fn temp_writer_path(tag: &str) -> String {
+        static SEQ: AtomicUsize = AtomicUsize::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "chiri-fas-policy-{}-{}-{}",
+            std::process::id(),
+            tag,
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::write(&path, b"").expect("create fas test sysfs file");
+        path.display().to_string()
+    }
+
+    fn controller(max_path: &str, min_path: &str, current_freq: u32) -> PolicyController {
+        PolicyController::new(
+            FastWriter::new(max_path),
+            FastWriter::new(min_path),
+            vec![100, 200, 300, 400, 500],
+            0,
+            ClusterProfile::default(),
+            current_freq,
+            None,
+            1,
+        )
+    }
+
+    fn failing_writer(tag: &str) -> FastWriter {
+        FastWriter::new(format!(
+            "/nonexistent/chiri-fas-{}-{}",
+            tag,
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn apply_both_writers_failed_keeps_last_successful_state() {
+        let max_path = temp_writer_path("max");
+        let min_path = temp_writer_path("min");
+        let mut policy = controller(&max_path, &min_path, 500);
+        policy.apply_freq_locked(300);
+        assert_eq!(policy.current_freq, 300);
+        assert_eq!(policy.verify_freq, Some(300));
+
+        // 构造后的两个 writer 同时失效（runtime 写失败）
+        policy.max_writer = failing_writer("max");
+        policy.min_writer = failing_writer("min");
+        policy.apply_freq_locked(200);
+
+        // 双写失败不得被当成命令已应用：current/hold/verify 全部停在上一成功态
+        assert_eq!(policy.current_freq, 300);
+        assert_eq!(policy.freq_hold_frames, 0);
+        assert_eq!(policy.verify_freq, None);
+        assert!(policy.verify_at.is_none());
+    }
+
+    #[test]
+    fn apply_raise_half_write_keeps_previous_state() {
+        let max_path = temp_writer_path("max");
+        let mut policy = controller(&max_path, "/nonexistent/chiri-fas-raise-min", 200);
+        policy.apply_freq_locked(400);
+
+        // raise 先写 max 成功、后写 min 失败：半写不是成功，current 停在旧目标
+        assert_eq!(policy.current_freq, 200);
+        assert_eq!(policy.freq_hold_frames, 0);
+        assert_eq!(policy.verify_freq, None);
+        assert!(policy.verify_at.is_none());
+        assert_eq!(fs::read_to_string(&max_path).unwrap(), "400\n");
+    }
+
+    #[test]
+    fn apply_lower_half_write_keeps_previous_state() {
+        let min_path = temp_writer_path("min");
+        let mut policy = controller("/nonexistent/chiri-fas-lower-max", &min_path, 400);
+        policy.apply_freq_locked(200);
+
+        // lower 先写 min 成功、后写 max 失败：同样不得推进 current
+        assert_eq!(policy.current_freq, 400);
+        assert_eq!(policy.freq_hold_frames, 0);
+        assert_eq!(policy.verify_freq, None);
+        assert!(policy.verify_at.is_none());
+        assert_eq!(fs::read_to_string(&min_path).unwrap(), "200\n");
+    }
+
+    #[test]
+    fn apply_success_matches_baseline_and_keeps_verify_anchor() {
+        let max_path = temp_writer_path("max");
+        let min_path = temp_writer_path("min");
+        let mut policy = controller(&max_path, &min_path, 500);
+
+        policy.apply_freq_locked(300);
+        assert_eq!(policy.current_freq, 300);
+        assert_eq!(policy.freq_hold_frames, 2);
+        assert_eq!(policy.verify_freq, Some(300));
+        let anchor = policy.verify_at.expect("目标变化应重启 verify 稳定计时");
+        assert_eq!(fs::read_to_string(&max_path).unwrap(), "300\n");
+        assert_eq!(fs::read_to_string(&min_path).unwrap(), "300\n");
+
+        // 同目标重复写入：hold 重置，但 verify 锚点不因目标未变而重启（保持基线语义）
+        policy.apply_freq_locked(300);
+        assert_eq!(policy.verify_at, Some(anchor));
+        assert_eq!(policy.freq_hold_frames, 2);
+        assert_eq!(policy.verify_freq, Some(300));
+    }
+
+    #[test]
+    fn apply_recovery_after_write_failure_returns_to_baseline() {
+        let mut policy = controller(
+            "/nonexistent/chiri-fas-recover-max",
+            "/nonexistent/chiri-fas-recover-min",
+            500,
+        );
+        policy.apply_freq_locked(300);
+        assert_eq!(policy.current_freq, 500);
+        assert!(policy.verify_at.is_none());
+
+        // writer 恢复后，下一次同样的正常输入应回到成功路径基线
+        let max_path = temp_writer_path("max");
+        let min_path = temp_writer_path("min");
+        policy.max_writer = FastWriter::new(&max_path);
+        policy.min_writer = FastWriter::new(&min_path);
+        policy.apply_freq_locked(300);
+
+        assert_eq!(policy.current_freq, 300);
+        assert_eq!(policy.freq_hold_frames, 2);
+        assert_eq!(policy.verify_freq, Some(300));
+        assert!(policy.verify_at.is_some());
+        assert_eq!(fs::read_to_string(&max_path).unwrap(), "300\n");
+        assert_eq!(fs::read_to_string(&min_path).unwrap(), "300\n");
+    }
+
+    #[test]
+    fn reset_commits_frequency_only_when_both_writes_succeed() {
+        let mut policy = controller(
+            "/nonexistent/chiri-fas-reset-max",
+            "/nonexistent/chiri-fas-reset-min",
+            300,
+        );
+        policy.reset();
+
+        // 写失败不推进 current：硬件可能仍是旧锁频，不能对外表现为已恢复
+        assert_eq!(policy.current_freq, 300);
+        assert_eq!(policy.verify_freq, None);
+        assert!(!policy.qos_clamped);
+
+        let max_path = temp_writer_path("max");
+        let min_path = temp_writer_path("min");
+        policy.max_writer = FastWriter::new(&max_path);
+        policy.min_writer = FastWriter::new(&min_path);
+        policy.reset();
+
+        assert_eq!(policy.current_freq, 500);
+        assert_eq!(policy.verify_freq, None);
+        assert_eq!(fs::read_to_string(&max_path).unwrap(), "500\n");
+        assert_eq!(fs::read_to_string(&min_path).unwrap(), "100\n");
     }
 }

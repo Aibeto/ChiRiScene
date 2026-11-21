@@ -511,11 +511,26 @@ pub(crate) mod tests {
     use crate::scheduler::fas::gear_state::GearDecision;
     use crate::utils::FastWriter;
 
+    /// 可写临时文件：FastWriter 必须在真实可写句柄上才返回 true。
+    /// /nonexistent 的写失败语义改由 policy_controller 单测显式注入，避免沿用假成功。
+    fn writable_test_path(tag: &str) -> String {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static SEQ: AtomicUsize = AtomicUsize::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "chiri-fas-controller-{}-{}-{}",
+            std::process::id(),
+            tag,
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::write(&path, b"").expect("create fas test sysfs file");
+        path.display().to_string()
+    }
+
     pub(crate) fn controller_with_policy() -> FasController {
         let mut controller = FasController::new();
         controller.policies.push(PolicyController::new(
-            FastWriter::new("/nonexistent/fas-test-max".to_string()),
-            FastWriter::new("/nonexistent/fas-test-min".to_string()),
+            FastWriter::new(writable_test_path("max")),
+            FastWriter::new(writable_test_path("min")),
             vec![100, 200, 300, 400, 500],
             0,
             ClusterProfile::default(),
@@ -796,8 +811,8 @@ pub(crate) mod tests {
     fn load_only_uses_each_clusters_demand() {
         let mut controller = controller_with_policy();
         controller.policies.push(PolicyController::new(
-            FastWriter::new("/nonexistent/fas-test-max".to_string()),
-            FastWriter::new("/nonexistent/fas-test-min".to_string()),
+            FastWriter::new(writable_test_path("max")),
+            FastWriter::new(writable_test_path("min")),
             vec![100, 200, 300, 400, 500],
             1,
             ClusterProfile::default(),
