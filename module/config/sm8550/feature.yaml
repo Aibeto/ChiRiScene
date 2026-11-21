@@ -247,8 +247,9 @@ default:
     # TODO(P3): 实机观察回落/翻转；回退 down_rate=2、down_fast=0.30。
     down_rate_limit_ticks: 1
     # 升频确认 tick 数（越大越难升）
-    # TODO(P2): 实机复核启动/重载响应；回退 up_rate=3、up_jump=0.45、spike_jump=0.40。
-    up_rate_limit_ticks: 4
+    # 2026-11-21 固定输入回放：rate 4→3，王者 up_wait 20.5%→15.2%、up +9.6%，该会话理想频率 P95/P99 不变；五批中一批 P95 +57.6MHz。
+    # 不是实机帧率/功耗结论；TODO(P2)：同版本同场景复核启动/重载帧延迟与低载 batt_power_w；回退 up_rate=4。up_jump/spike 保持 0.55/0.50。
+    up_rate_limit_ticks: 3
     # target = util × headroom；1.0 = 贴负载，不给余量放大
     headroom_factor: 1.00
     # headroom 的过渡带宽：util 从 (up_threshold − ramp) 爬到 up_threshold 期间
