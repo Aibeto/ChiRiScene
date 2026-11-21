@@ -78,7 +78,11 @@ def function(text, signature):
         end += 1
     return text[start:end]
 
-def build_source():
+def build_source(up_rate_limit_ticks=None, up_jump_threshold=None):
+    if up_rate_limit_ticks is not None and not 1 <= up_rate_limit_ticks <= 16:
+        raise ValueError("up_rate_limit_ticks must be between 1 and 16")
+    if up_jump_threshold is not None and (not math.isfinite(up_jump_threshold) or not 0.0 <= up_jump_threshold <= 1.0):
+        raise ValueError("up_jump_threshold must be between 0 and 1")
     production = (ROOT / "src/chiri/cpu_load_governor.rs").read_text()
     config_source = (ROOT / "src/chiri/config.rs").read_text()
     feature = (ROOT / "module/config/sm8550/feature.yaml").read_text()
@@ -87,8 +91,8 @@ def build_source():
     helpers = "\n".join(function(production, "fn " + name) for name in (
         "find_floor_freq(&self, target_ratio: f32)", "deadzone_band(&self, deadzone_ratio: f32)",
         "max_util(&self, core_utils: &[f32])", "ratio_of_freq(&self, freq: u32)"))
-    fields = sorted(set(re.findall(r"self.cfg.(\w+)", decision))
-                    | set(re.findall(r"self\.cfg\.(\w+)", helpers.split("fn max_util", 1)[-1]))
+    fields = sorted(set(re.findall(r"self\.(?:cfg|eff_cfg)\.(\w+)", decision))
+                    | set(re.findall(r"self\.(?:cfg|eff_cfg)\.(\w+)", helpers.split("fn max_util", 1)[-1]))
                     | {"perf_init"})
     block = feature.split("# [default]")[1].split("# [boost]")[0]
     scalars = dict(re.findall(r"^    (\w+): ([0-9.]+|true|false)$", block, re.M))
@@ -99,9 +103,13 @@ def build_source():
         value = scalars.get(field)
         if value is None:
             value = "true" if default_fn == "crate::utils::default_true" else re.search(r"\{\s*([0-9.]+)\s*\}", function(config_source, "fn " + default_fn + "()")).group(1)
+        if field == "up_rate_limit_ticks" and up_rate_limit_ticks is not None:
+            value = str(up_rate_limit_ticks)
+        if field == "up_jump_threshold" and up_jump_threshold is not None:
+            value = str(up_jump_threshold)
         declarations.append(f"{field}: {kind},")
         values.append(f"{field}: {value},")
-    cfg = "struct CpuLoadGovernorConfig {" + "".join(declarations) + "}\n"
+    cfg = "#[derive(Clone)]\nstruct CpuLoadGovernorConfig {" + "".join(declarations) + "}\n"
     little = re.search(r"^      little:\n        up_threshold: ([0-9.]+)", block, re.M).group(1)
     cfg += 'fn config(group: &str) -> CpuLoadGovernorConfig { let mut c = CpuLoadGovernorConfig {' + "".join(values) + '}; if group=="little" {c.up_threshold=' + little + ';} c }\n'
     freq_block = soc.split("freq_khz:")[1].split("# [idle]")[0]
@@ -122,7 +130,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("root", type=Path)
     parser.add_argument("--output", type=Path, default=ROOT / "devimpbin/p23_replay.json")
+    parser.add_argument("--up-rate-limit-ticks", type=int, choices=range(1, 17), help="counterfactual only; default uses production config")
+    parser.add_argument("--up-jump-threshold", type=float, help="counterfactual only; default uses production config")
     args = parser.parse_args()
+    default_block = (ROOT / "module/config/sm8550/feature.yaml").read_text().split("# [default]")[1].split("# [boost]")[0]
+    defaults = dict(re.findall(r"^    (\w+): ([0-9.]+|true|false)$", default_block, re.M))
+    default_up_rate = int(defaults["up_rate_limit_ticks"])
+    default_jump_threshold = float(defaults["up_jump_threshold"])
     root, output = args.root.resolve(), args.output.resolve()
     if not root.is_relative_to(ROOT) or not output.is_relative_to(ROOT):
         parser.error("input/output must stay within project")
@@ -131,7 +145,7 @@ def main():
     tmp = ROOT / "devimpbin/p23_tmp"
     tmp.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ, TMPDIR=str(tmp))
-    source = build_source()
+    source = build_source(args.up_rate_limit_ticks, args.up_jump_threshold)
     scratch.write_text(source)
     try:
         subprocess.run(["rustc", "--edition=2024", "-O", str(scratch), "-o", str(binary)], check=True, env=env)
@@ -167,7 +181,9 @@ def main():
                 recorded_freq_p95=percentile(original_freq, .95), recorded_freq_p99=percentile(original_freq,.99),
                 ratio_sink_freq_p95=percentile(freq,.95), ratio_sink_freq_p99=percentile(freq,.99), steady_decay_samples=steady))
         report = dict(schema="clg-sampled-replay/1", source_sha256=hashlib.sha256(source.encode()).hexdigest(),
-            boundaries="default changed tick samples only; screen_on unknown; FAS has no ticks; no reconstructed missing ticks; file/cluster/mode-boundary and gaps >1s or clock reversal reset; input util fixed, no frequency feedback; ideal ratio sink excludes PF, touch, thermal, dwell, sysfs and per-core counts; not real-device response/power evidence; recorded distribution is observational, not old-config replay or A/B", selfcheck=check.splitlines(), batches=batches)
+            up_rate_limit_ticks=args.up_rate_limit_ticks if args.up_rate_limit_ticks is not None else default_up_rate,
+            up_jump_threshold=args.up_jump_threshold if args.up_jump_threshold is not None else default_jump_threshold,
+            counterfactual=(args.up_rate_limit_ticks is not None and args.up_rate_limit_ticks != default_up_rate) or (args.up_jump_threshold is not None and args.up_jump_threshold != default_jump_threshold), boundaries="default changed tick samples only; screen_on unknown; FAS has no ticks; no reconstructed missing ticks; file/cluster/mode-boundary and gaps >1s or clock reversal reset; input util fixed, no frequency feedback; ideal ratio sink excludes PF, touch, thermal, dwell, sysfs and per-core counts; not real-device response/power evidence; recorded distribution is observational, not old-config replay or A/B", selfcheck=check.splitlines(), batches=batches)
         output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
         print(json.dumps(report, ensure_ascii=False, indent=2))
     finally:

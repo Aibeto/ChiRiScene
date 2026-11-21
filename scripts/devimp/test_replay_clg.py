@@ -37,9 +37,28 @@ class ReplayTests(unittest.TestCase):
     def test_source_uses_current_production_decision_verbatim(self):
         source = replay.build_source()
         self.assertIn("fn on_load_update(&mut self, core_utils: &[f32])", source)
-        self.assertIn("let target = self.cfg.up_threshold * self.cfg.steady_decay_target_ratio;", source)
-        self.assertIn("self.cluster.fast_down = util < self.cfg.down_fast_threshold;", source)
+        self.assertIn("let target = self.eff_cfg.up_threshold * self.eff_cfg.steady_decay_target_ratio;", source)
+        self.assertIn("self.cluster.fast_down = util < self.eff_cfg.down_fast_threshold;", source)
         self.assertNotIn("fn flush(", source)
+
+    def test_source_adapts_activity_effective_config_fields(self):
+        source = replay.build_source()
+        self.assertIn("up_threshold: f32,", source)
+        self.assertIn("perf_floor: f32,", source)
+        self.assertIn("up_rate_limit_ticks: 3,", source)
+        self.assertIn("up_jump_threshold: 0.55,", source)
+        self.assertIn("eff_cfg: cfg.clone()", source)
+
+    def test_counterfactual_up_rate_is_limited_to_generated_config(self):
+        source = replay.build_source(up_rate_limit_ticks=2)
+        self.assertIn("up_rate_limit_ticks: 2,", source)
+        self.assertNotIn("up_rate_limit_ticks: 3,", source)
+
+    def test_counterfactual_jump_threshold_is_limited_to_generated_config(self):
+        source = replay.build_source(up_jump_threshold=0.35)
+        self.assertIn("up_jump_threshold: 0.35,", source)
+        with self.assertRaises(ValueError):
+            replay.build_source(up_jump_threshold=1.1)
 
 if __name__ == "__main__":
     unittest.main()
