@@ -320,6 +320,10 @@ pub struct Entry {
     pub last_move: Instant,
     /// 上次迁离的簇与时刻（反跳回冷却）
     pub left: Option<(CoreGroup, Instant)>,
+    /// 本次预提交前的 `left` 快照：写入失败 `abort` 时恢复。
+    /// tick 在落盘前就把 `left` 改成「刚离开当前簇」，但写入可能被拒；失败回滚必须
+    /// 恢复到提交前的反跳记忆，不能把没写成的迁移记成真（否则 returning 冷却永久翻倍）。
+    pub left_before_commit: Option<(CoreGroup, Instant)>,
     /// **最近一次确认生效**的区间（掩码写成功后的回读掩码）：两拍协议的回滚锚点。
     ///
     /// 两拍协议（先写并集、再收敛到目标）隐含假设「每次写都落地」。写被内核拒绝
@@ -341,6 +345,7 @@ impl Entry {
             cluster,
             last_move: now,
             left: None,
+            left_before_commit: None,
             applied: window,
             applied_cluster: cluster,
             fail_streak: 0,
@@ -418,6 +423,9 @@ impl Engine {
         }
         e.fail_streak = 0;
         e.last_move = now;
+        // 成功落地后同步快照：此刻 `left` 已是真实迁移留下的反跳记忆，后续异常 abort
+        // 只能回滚到这份已生效状态，不能拿成功前的旧快照误清它。
+        e.left_before_commit = e.left;
     }
 
     /// 掩码写**失败**（EINVAL / 升组失败 / 掩码为空）后的回滚：退回上一个确认生效的区间，
@@ -431,6 +439,9 @@ impl Engine {
         e.window = e.applied;
         e.cluster = e.applied_cluster;
         e.state = RangeState::new(e.applied.lo, e.applied.hi);
+        // 动作没写成：回滚到本次预提交前的反跳记忆，不能把 tick 预置的
+        // 「刚离开当前簇」留成真——否则当前簇恒等于 left 簇，returning 冷却永久翻倍。
+        e.left = e.left_before_commit;
         e.fail_streak = e.fail_streak.saturating_add(1);
         e.last_move = now;
         Some(e.fail_streak)
@@ -491,6 +502,24 @@ impl Engine {
 
         // [ledger] 决策要看见本轮前面已承诺的迁移（同轮齐涌靠这个摊平，不是靠截断）
         let plan = decide(s, load, online, hysteresis, &self.ledger)?;
+        Self::apply_plan(e, &mut self.ledger, tid, s, plan, hysteresis, now)
+    }
+
+    /// 决策通过后的**真实预提交**：反跳回闸、Entry 记账（window/cluster/state/left）与本轮
+    /// ledger 承诺都在这里完成，之后调用方才落 sysfs。`tick` 与离线回归共用本函数，保证
+    /// 测试提交走的是生产同一条路径。
+    ///
+    /// 已知留档：ledger commit 发生在落盘**之前**，落盘被拒/失败时不撤销——本轮内留下幻影
+    /// 承诺（源核被记成更闲），影响一轮（下轮 begin_round 清账），接受不撤。
+    fn apply_plan(
+        e: &mut Entry,
+        ledger: &mut Ledger,
+        tid: i32,
+        s: &Subject,
+        plan: Plan,
+        hysteresis: f32,
+        now: Instant,
+    ) -> Option<Action> {
         // 反跳回冷却：刚离开的簇要回去，收益必须翻倍
         if let Some((c, at)) = e.left
             && c == plan.cluster
@@ -501,6 +530,8 @@ impl Engine {
             return None;
         }
 
+        // 失败回滚要用的 left 快照：下面会把它改成「刚离开 s.cluster」，但写入可能被拒。
+        e.left_before_commit = e.left;
         let switching = plan.cluster != s.cluster;
         if switching {
             e.left = Some((s.cluster, now));
@@ -513,7 +544,7 @@ impl Engine {
         // 已知留档：commit 发生在 sysfs 落盘**之前**，落盘阶段若 mask_write_allowed 拒绝 /
         // 升组失败 / clipped，承诺不撤销——本轮内留下幻影承诺（源核被记成更闲）。
         // 失败少见且 budget 封顶，影响一轮（下轮 begin_round 清账），接受不撤。
-        self.ledger.commit(old_window, plan.target, s.demand);
+        ledger.commit(old_window, plan.target, s.demand);
         // 先扩后缩：第一拍写并集（旧区间 ∪ 新区间），第二拍在下次 tick 收敛。
         // 唯一的「先扩后缩」实现在 `energy_model::step_range`，这里只负责记账。
         energy_model::step_range(&mut e.state, plan.target.lo, plan.target.hi);
@@ -527,6 +558,27 @@ impl Engine {
             reason: plan.reason,
             gain: plan.gain,
         })
+    }
+
+    /// 离线回归入口：`decide` 依赖 soc 曲线（设备探测不到 soc.yaml 时恒 `None`），
+    /// 测试用构造好的 `Plan` 走与 `tick` 完全相同的 `apply_plan`，不复制预提交逻辑。
+    #[cfg(test)]
+    pub fn tick_with_plan(
+        &mut self,
+        tid: i32,
+        s: &Subject,
+        plan: Plan,
+        hysteresis: f32,
+        now: Instant,
+    ) -> Option<Action> {
+        let e = self.entries.get_mut(&tid)?;
+        Self::apply_plan(e, &mut self.ledger, tid, s, plan, hysteresis, now)
+    }
+
+    /// 离线回归只读：本轮 ledger 对某核的承诺增量（验证预提交不随 abort 撤销）。
+    #[cfg(test)]
+    pub fn ledger_delta(&self, core: usize) -> f32 {
+        self.ledger.delta(core)
     }
 }
 
@@ -707,5 +759,83 @@ mod tests {
             .unwrap();
         assert!(a.settled);
         assert_eq!(a.mask, vec![1, 2, 3], "收敛后必须只留目标区间");
+    }
+
+    /// abort 的失败语义：只回滚**本次**预提交 —— 切换失败恢复到提交前的 `left`（未写成的
+    /// 迁移不得留成反跳记忆），非切换失败保留上一次成功切换留下的 `left`。
+    #[test]
+    fn abort_restores_left_snapshot_only_for_failed_commit() {
+        let now = Instant::now();
+        let s = Subject {
+            demand: 0.5,
+            cluster: CoreGroup::Little,
+            window: Window::new(0, 1),
+            past_sweet: true,
+        };
+
+        // 失败切换：无历史 left → 回滚后仍无；成功写入后才会留下「刚离开」。
+        let mut e = Engine::new();
+        e.ensure(7, CoreGroup::Little, Window::new(0, 1), now);
+        let switch = Plan {
+            cluster: CoreGroup::Big,
+            target: Window::new(3, 4),
+            dir: Dir::Up,
+            gain: 0.2,
+            reason: "test_switch",
+        };
+        assert!(
+            e.tick_with_plan(7, &s, switch, 0.15, now).is_some(),
+            "目标簇不同必须产出切换动作"
+        );
+        assert_eq!(
+            e.entry(7).unwrap().left,
+            Some((CoreGroup::Little, now)),
+            "预提交先记下「刚离开小核簇」"
+        );
+        e.abort(7, now);
+        let en = e.entry(7).unwrap();
+        assert_eq!(en.window, Window::new(0, 1), "回滚到 applied 锚点");
+        assert_eq!(en.left, None, "未写成的切换不得留成反跳记忆");
+        assert_eq!(en.fail_streak, 1);
+
+        // 非切换失败：历史 left 是上一次**成功**切换留下的，abort 必须保留。
+        let mut e = Engine::new();
+        e.ensure(7, CoreGroup::Little, Window::new(0, 1), now);
+        e.entries.get_mut(&7).unwrap().left = Some((CoreGroup::Prime, now));
+        let slide = Plan {
+            cluster: CoreGroup::Little,
+            target: Window::new(1, 2),
+            dir: Dir::Up,
+            gain: 0.1,
+            reason: "test_slide",
+        };
+        assert!(e.tick_with_plan(7, &s, slide, 0.15, now).is_some());
+        e.abort(7, now);
+        assert_eq!(
+            e.entry(7).unwrap().left,
+            Some((CoreGroup::Prime, now)),
+            "非切换失败不能清掉上一次成功切换的反跳记忆"
+        );
+
+        // 成功回执必须同步快照：之后异常 abort 只能回到成功后的状态，不能清掉已生效记忆。
+        let mut e = Engine::new();
+        e.ensure(7, CoreGroup::Little, Window::new(0, 1), now);
+        assert!(e.tick_with_plan(7, &s, switch, 0.15, now).is_some());
+        e.note_applied(7, CoreGroup::Big, &[3, 4], now);
+        {
+            let en = e.entry(7).unwrap();
+            assert_eq!(en.left, Some((CoreGroup::Little, now)));
+            assert_eq!(
+                en.left_before_commit,
+                Some((CoreGroup::Little, now)),
+                "note_applied 必须把快照同步到已成功状态"
+            );
+        }
+        e.abort(7, now + Duration::from_secs(1));
+        assert_eq!(
+            e.entry(7).unwrap().left,
+            Some((CoreGroup::Little, now)),
+            "成功后的异常 abort 不得清掉已生效的反跳记忆"
+        );
     }
 }
