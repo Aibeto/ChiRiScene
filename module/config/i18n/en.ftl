@@ -436,3 +436,20 @@ cpu-monitor-core-state-read-failed = [CPU Monitor] core online state read failed
 cpu-monitor-snap-handle-missing = [CPU Monitor] eBPF process-snapshot handle unregistered / map missing, @S frame process section empty
 cpu-monitor-snap-map-open-failed = [CPU Monitor] failed to open eBPF process-snapshot map, @S frame process section empty
 screen-uevent-recv-failed = [Screen] uevent recv failed, retrying in 1s: { $error }
+
+
+# --- PGO (sampling: ETM first, cpu-cycles fallback, off if neither works; event driven, no polling) ---
+pgo-thread-failed = [PGO] sampler thread failed to start, PGO sampling unavailable: { $error }
+pgo-disabled = [PGO] sampling disabled, running session aborted and partial sample discarded
+pgo-tool-missing = [PGO] /system/bin/simpleperf not found, treating as unavailable, re-probing in 30 min
+pgo-probe-etm = [PGO] CoreSight ETM available, sampling via ETM from now on
+pgo-probe-sample = [PGO] no usable ETM, falling back to cpu-cycles sampling (function heat only)
+pgo-probe-failed = [PGO] probe recording failed event={ $event }: { $error }
+pgo-off = [PGO] neither ETM nor cpu-cycles is available, sampling off, re-probing in 30 min
+pgo-start-failed = [PGO] failed to start sampling tier={ $tier }: { $error }
+pgo-reaper-failed = [PGO] reaper thread failed to start, session abandoned: { $error }
+pgo-session-start = [PGO] sampling started tier={ $tier } pid={ $pid }
+pgo-session-done = [PGO] sampling done file={ $file } size={ $size }, recorded in manifest and archived with logs
+pgo-session-empty = [PGO] too few samples, discarded file={ $file } size={ $size }
+pgo-manifest-failed = [PGO] failed to write manifest, samples stay in logs/pgo/: { $error }
+

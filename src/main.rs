@@ -9,6 +9,7 @@ pub mod i18n;
 mod logger;
 mod monitor;
 mod notify;
+mod pgo;
 mod remote_push;
 mod rhine;
 mod scheduler;
@@ -277,6 +278,10 @@ fn main() -> Result<()> {
             })
             .ok();
     }
+
+    // [pgo] PGO 采样线程：ETM 优先、回退 cpu-cycles、都不可用则关闭重试；事件驱动，不轮询、不 join
+    // 只写 logs/pgo/（随启动归档进 logd/），daemon 自身不做 profile 解析，离线换算在构建侧
+    pgo::spawn(root.clone());
 
     // [remote_push] 远程提醒线程：全天每小时拉一次 remindPush.json，命中 versionCode 就发 `ChiRi-Remote` 通知
     // 独立线程、不 join、失败只留 info 不重试，任何异常都不得影响调度与监控
