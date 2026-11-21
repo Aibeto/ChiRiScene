@@ -1781,4 +1781,225 @@ mod tests {
         assert!(stop_published);
         assert!(result_rx.try_recv().unwrap());
     }
+
+    /// 构造最小 ClusterState：只填决策路径需要的字段，写通道指向 /dev/null
+    fn test_cluster(affected: Vec<usize>, current_perf: f32, last_util: f32) -> ClusterState {
+        ClusterState {
+            policy_id: 0,
+            affected_cpus: affected,
+            available_freqs: vec![1_000_000, 1_500_000, 2_000_000],
+            cached_ratios: vec![0.0, 0.5, 1.0],
+            boost_max: 0,
+            max_writer: FastWriter::new("/dev/null"),
+            current_perf,
+            current_freq: 0,
+            down_wait: 0,
+            up_wait: 0,
+            steady_decay: 0.0,
+            steady_streak: 0,
+            last_util,
+            ema_util: -1.0,
+            last_write_at: None,
+            last_write_dir: 0,
+            last_failed: false,
+            fast_down: false,
+            high_zone_wait: 0,
+        }
+    }
+
+    fn clg_cfg(count: u32, gate: f32, zone_util: f32, hold: u32) -> CpuLoadGovernorConfig {
+        let yaml = format!(
+            "high_zone_count: {count}\n\
+             high_zone_gate: {gate:.2}\n\
+             high_zone_util: {zone_util:.2}\n\
+             high_zone_hold_ticks: {hold}\n\
+             up_threshold: 0.80\n\
+             down_threshold: 0.30\n\
+             headroom_factor: 1.05\n\
+             headroom_ramp: 0.15\n\
+             perf_floor: 0.40\n\
+             perf_ceil: 1.00\n\
+             perf_init: 0.90\n\
+             up_rate_limit_ticks: 2\n\
+             down_rate_limit_ticks: 3\n\
+             smoothing_up: 1.00\n\
+             util_smoothing: 1.00\n\
+             up_jump_threshold: 0.35\n\
+             slow_up_scale: 0.02\n\
+             down_fast_threshold: 0.10\n\
+             spike_jump_threshold: 0.35\n\
+             spike_decay: 0.30\n\
+             write_deadzone: 0.00\n\
+             steady_decay_enabled: false"
+        );
+        serde_yaml::from_str(&yaml).expect("CLG 测试配置应可反序列化")
+    }
+
+    fn test_worker(
+        cfg: CpuLoadGovernorConfig,
+        affected: Vec<usize>,
+        current_perf: f32,
+        last_util: f32,
+    ) -> CoreGroupWorker {
+        let (_load_tx, load_rx) = mpsc::sync_channel::<Arc<Vec<f32>>>(1);
+        CoreGroupWorker {
+            cluster: test_cluster(affected, current_perf, last_util),
+            cfg: cfg.clone(),
+            restore: PolicyRestore {
+                policy_id: 0,
+                governor: None,
+                min_freq: None,
+                max_freq: None,
+                hw_max: 0,
+            },
+            core_ranges: crate::common::CoreGroupRanges {
+                little: 0..3,
+                big: 3..3,
+                prime: 3..3,
+            },
+            core_capacities: Vec::new(),
+            eem: None,
+            eem_cores: 0,
+            eem_press_streak: 0,
+            eem_cap_suspended: false,
+            last_fg_pkg: Arc::from(""),
+            load_rx,
+            stop: Arc::new(AtomicBool::new(false)),
+            touch: Arc::new(AtomicTouchState::new()),
+            thermal_cap: Arc::new(AtomicU32::new(1.0f32.to_bits())),
+            thermal_free_above: Arc::new(AtomicU32::new(0)),
+            dev_decision: "hold",
+            dev_over: 0,
+            dev_under: 0,
+            dev_tgt_perf: 0.0,
+            dev_raw_util: 0.0,
+            dev_prev_perf: 0.0,
+            dev_clamp_binds: false,
+            act_override: None,
+            eff_cfg: cfg,
+        }
+    }
+
+    fn assert_f32_eq(actual: f32, expected: f32) {
+        assert!(
+            (actual - expected).abs() <= 1e-6,
+            "actual {actual} != expected {expected}"
+        );
+    }
+
+    #[test]
+    fn clg_scan_nan_short_and_invalid_index_semantics_are_locked() {
+        let cluster = test_cluster(vec![0, 1, 2], 0.9, 0.9);
+        // A = 3, P = 3：正常域
+        assert_f32_eq(cluster.max_util(&[0.9, 0.1, 0.2]), 0.9);
+        assert_eq!(cluster.high_zone_hits(&[0.9, 0.1, 0.2], 0.8), 1);
+        // 短 core_utils：get(None) 跳过，A 不变、P 变小
+        assert_f32_eq(cluster.max_util(&[0.7]), 0.7);
+        assert_eq!(cluster.high_zone_hits(&[0.7], 0.8), 0);
+        // NaN：f32::max 忽略 NaN；全 NaN 时 fold 起点 0.0 → 0.0（不是 NaN）
+        assert_f32_eq(cluster.max_util(&[f32::NAN, 0.4, f32::NAN]), 0.4);
+        assert_f32_eq(cluster.max_util(&[f32::NAN, f32::NAN, f32::NAN]), 0.0);
+        assert_f32_eq(cluster.max_util(&[]), 0.0);
+        // thresh=0.0 时 0.0 核计入 hits（NaN 不计）；这是现有语义，不按注释“0.0 不计”推断
+        assert_eq!(cluster.high_zone_hits(&[0.0, f32::NAN, 0.0], 0.0), 2);
+        // 无效索引（affected 越界）与短向量同口径
+        let cluster = test_cluster(vec![0, 9], 0.9, 0.9);
+        assert_f32_eq(cluster.max_util(&[0.3]), 0.3);
+        assert_eq!(cluster.high_zone_hits(&[0.3], 0.0), 1);
+    }
+
+    #[test]
+    fn clg_two_pass_stats_and_hits_postfix_are_locked() {
+        // A=3、P=3；hits=3 ≥ need=min(2,3) 后置放行，进入升速闸
+        let mut w = test_worker(clg_cfg(2, 0.80, 0.80, 3), vec![0, 1, 2], 0.9, 0.9);
+        w.on_load_update(&[0.9, 0.9, 0.9]);
+        assert_f32_eq(w.dev_raw_util, 0.9);
+        assert_f32_eq(w.dev_prev_perf, 0.9);
+        assert_eq!(w.dev_over, 3);
+        assert_eq!(w.dev_under, 0);
+        assert_eq!(w.cluster.high_zone_wait, 0);
+        assert_eq!(w.dev_decision, "up_wait");
+        assert_f32_eq(w.dev_tgt_perf, 0.945);
+        assert_eq!(w.cluster.up_wait, 1);
+        assert_eq!(w.cluster.down_wait, 0);
+    }
+
+    #[test]
+    fn clg_high_zone_block_keeps_over_under_and_freezes_wait() {
+        // hits=1 < need=2：阻塞早退，但 over/under 已在早退前完成，up/down_wait 冻结
+        let mut w = test_worker(clg_cfg(2, 0.80, 0.80, 3), vec![0, 1, 2], 0.9, 0.9);
+        w.on_load_update(&[0.9, 0.1, 0.2]);
+        assert_eq!(w.dev_over, 1);
+        assert_eq!(w.dev_under, 2);
+        assert_eq!(w.dev_decision, "hz_hold");
+        assert_f32_eq(w.dev_tgt_perf, 0.9);
+        assert_eq!(w.cluster.high_zone_wait, 1);
+        assert_eq!(w.cluster.up_wait, 0);
+        assert_eq!(w.cluster.down_wait, 0);
+        assert_f32_eq(w.cluster.current_perf, 0.9);
+    }
+
+    #[test]
+    fn clg_high_zone_eff_cfg_and_need_sources_are_locked() {
+        // gate 取 eff_cfg：cfg gate=0 时，eff gate=0.8 仍触发确认扫描并阻塞
+        let mut w = test_worker(clg_cfg(2, 0.0, 0.80, 3), vec![0, 1, 2], 0.9, 0.9);
+        w.eff_cfg.high_zone_gate = 0.8;
+        w.on_load_update(&[0.9, 0.1, 0.2]);
+        assert_eq!(w.dev_decision, "hz_hold");
+
+        // hits 阈值取 eff_cfg：cfg 阈值=0 时，eff 阈值 0.8 只数 1 核（<need=2）
+        let mut w = test_worker(clg_cfg(2, 0.80, 0.0, 3), vec![0, 1, 2], 0.9, 0.9);
+        w.eff_cfg.high_zone_util = 0.8;
+        w.on_load_update(&[0.9, 0.1, 0.2]);
+        assert_eq!(w.dev_decision, "hz_hold");
+
+        // need 取 self.cfg.high_zone_count：cfg=2、eff=3 时 hits=2 应放行
+        let mut w = test_worker(clg_cfg(2, 0.80, 0.80, 3), vec![0, 1, 2], 0.9, 0.9);
+        w.eff_cfg.high_zone_count = 3;
+        w.on_load_update(&[0.9, 0.85, 0.1]);
+        assert_ne!(w.dev_decision, "hz_hold");
+        assert_eq!(w.cluster.high_zone_wait, 0);
+        assert_f32_eq(w.dev_tgt_perf, 0.945);
+    }
+
+    #[test]
+    fn clg_high_zone_guard_false_and_hold_release_paths_are_locked() {
+        // old_perf < gate：guard 不成立，不做确认扫描
+        let mut w = test_worker(clg_cfg(2, 0.80, 0.80, 3), vec![0, 1, 2], 0.5, 0.9);
+        w.on_load_update(&[0.9, 0.1, 0.2]);
+        assert_ne!(w.dev_decision, "hz_hold");
+        assert_eq!(w.cluster.high_zone_wait, 0);
+
+        // count=0：3A 不可达
+        let mut w = test_worker(clg_cfg(0, 0.80, 0.80, 3), vec![0, 1, 2], 0.9, 0.9);
+        w.on_load_update(&[0.9, 0.1, 0.2]);
+        assert_ne!(w.dev_decision, "hz_hold");
+        assert_eq!(w.cluster.high_zone_wait, 0);
+
+        // hold=1：首次阻塞即兜底放行，不阻塞
+        let mut w = test_worker(clg_cfg(2, 0.80, 0.80, 1), vec![0, 1, 2], 0.9, 0.9);
+        w.on_load_update(&[0.9, 0.1, 0.2]);
+        assert_ne!(w.dev_decision, "hz_hold");
+        assert_eq!(w.cluster.high_zone_wait, 0);
+        assert_f32_eq(w.dev_tgt_perf, 0.945);
+    }
+
+    #[test]
+    fn clg_short_and_all_nan_utils_keep_domain_semantics() {
+        // P=1 < A=3：hits=1 < need=2 仍按域内可达上限判定
+        let mut w = test_worker(clg_cfg(2, 0.80, 0.80, 3), vec![0, 1, 2], 0.9, 0.9);
+        w.on_load_update(&[0.9]);
+        assert_f32_eq(w.dev_raw_util, 0.9);
+        assert_eq!(w.dev_over, 1);
+        assert_eq!(w.dev_under, 0);
+        assert_eq!(w.dev_decision, "hz_hold");
+
+        // 全 NaN：max 回到 fold 起点 0.0，over/under 均为 0，走降频
+        let mut w = test_worker(clg_cfg(2, 0.80, 0.80, 3), vec![0, 1, 2], 0.9, 0.9);
+        w.on_load_update(&[f32::NAN, f32::NAN, f32::NAN]);
+        assert_f32_eq(w.dev_raw_util, 0.0);
+        assert_eq!(w.dev_over, 0);
+        assert_eq!(w.dev_under, 0);
+        assert_eq!(w.dev_decision, "down");
+    }
 }
