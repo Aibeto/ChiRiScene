@@ -357,6 +357,16 @@ type LoadReceiver = mpsc::Receiver<Arc<Vec<f32>>>;
 /// Worker 派生成功后的返回（快照 + 线程句柄/负载发送端）；别名仅为压平类型嵌套深度（clippy::type_complexity）
 type WorkerSpawn = (PolicyRestore, (JoinHandle<()>, LoadSender));
 
+/// 接收返回后重查停止标志，防止停止唤醒包进入调度路径。
+fn recv_unless_stopped(
+    load_rx: &LoadReceiver,
+    stop: &AtomicBool,
+    timeout: Duration,
+) -> Option<Result<Arc<Vec<f32>>, mpsc::RecvTimeoutError>> {
+    let received = load_rx.recv_timeout(timeout);
+    (!stop.load(Ordering::Acquire)).then_some(received)
+}
+
 /// 单核心组独立调度 Worker：专属线程内持有 ClusterState，接收负载自主决策 + 写频，与其他核心组完全并行
 struct CoreGroupWorker {
     cluster: ClusterState,
@@ -474,7 +484,12 @@ impl CoreGroupWorker {
             // [fg_reset] 前台包换代：清空上一个 App 的负载画像（两条分支都要覆盖，故放在 recv 之前）
             self.refresh_fg_change();
 
-            match self.load_rx.recv_timeout(tick_interval) {
+            let Some(received) = recv_unless_stopped(&self.load_rx, &self.stop, tick_interval)
+            else {
+                break;
+            };
+
+            match received {
                 Ok(core_utils) => {
                     // [activity_params] 决策前刷新一次：activity 页面切换后本帧即生效，不必等模式事件
                     self.refresh_activity_override();
@@ -1666,10 +1681,16 @@ impl CpuLoadGovernor {
         self.cfg.normalize();
     }
 
-    /// 停止所有 Worker：通知停止 → 等待线程退出 → 恢复系统状态， Worker 线程退出前会自行恢复其 policy，此处仅做 join 确保退出完成
+    /// 停止所有 Worker：设置停止标志并唤醒阻塞接收，再 join 确保退出和 policy 恢复完成
     fn stop_workers(&mut self) {
         // 通知所有 Worker 停止
         self.stop.store(true, Ordering::Release);
+
+        // 唤醒阻塞在 recv_timeout 的 Worker；队列已满时其中的消息也会使其检查 stop。
+        let wake = Arc::new(Vec::new());
+        for w in &self.workers {
+            let _ = w.load_tx.try_send(Arc::clone(&wake));
+        }
 
         // join 所有 Worker 线程（Worker 退出前自行 restore_policy）
         for w in &mut self.workers {
@@ -1689,5 +1710,75 @@ impl CpuLoadGovernor {
         // 向上抬 touch_boost_tiers 档：频率表通常 15-25 档，单档 ≈ 0.05 性能比（保守估算）
         let tier_step = 0.05;
         (base + self.cfg.touch_boost_tiers as f32 * tier_step).min(self.cfg.perf_ceil)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stop_workers_wakes_blocked_receiver_before_timeout() {
+        let mut governor = CpuLoadGovernor::new();
+        let (load_tx, load_rx) = mpsc::sync_channel(1);
+        let worker_stop = Arc::clone(&governor.stop);
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        let handle = thread::spawn(move || {
+            ready_tx.send(()).unwrap();
+            let received = recv_unless_stopped(&load_rx, &worker_stop, Duration::from_secs(1));
+            result_tx.send(received.is_none()).unwrap();
+        });
+        governor.workers.push(WorkerHandle {
+            policy_id: 0,
+            load_tx,
+            handle: Some(handle),
+            dead_reported: false,
+        });
+
+        ready_rx.recv().unwrap();
+        thread::sleep(Duration::from_millis(20));
+        let started = Instant::now();
+        governor.stop_workers();
+
+        assert!(started.elapsed() < Duration::from_millis(500));
+        assert!(result_rx.try_recv().unwrap());
+    }
+
+    #[test]
+    fn stop_workers_uses_queued_message_when_wake_queue_is_full() {
+        let mut governor = CpuLoadGovernor::new();
+        let (load_tx, load_rx) = mpsc::sync_channel(1);
+        load_tx.try_send(Arc::new(vec![1.0])).unwrap();
+        let stop = Arc::clone(&governor.stop);
+        let (start_tx, start_rx) = mpsc::channel();
+        let (result_tx, result_rx) = mpsc::channel();
+        let worker_stop = Arc::clone(&stop);
+        let handle = thread::spawn(move || {
+            start_rx.recv().unwrap();
+            let received = recv_unless_stopped(&load_rx, &worker_stop, Duration::from_secs(1));
+            result_tx.send(received.is_none()).unwrap();
+        });
+        governor.workers.push(WorkerHandle {
+            policy_id: 0,
+            load_tx,
+            handle: Some(handle),
+            dead_reported: false,
+        });
+
+        let stopper = thread::spawn(move || {
+            let mut governor = governor;
+            governor.stop_workers();
+        });
+        let stop_deadline = Instant::now() + Duration::from_secs(1);
+        while !stop.load(Ordering::Acquire) && Instant::now() < stop_deadline {
+            thread::yield_now();
+        }
+        let stop_published = stop.load(Ordering::Acquire);
+        start_tx.send(()).unwrap();
+        stopper.join().unwrap();
+
+        assert!(stop_published);
+        assert!(result_rx.try_recv().unwrap());
     }
 }
