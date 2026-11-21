@@ -347,6 +347,10 @@
       "sourcePaths": [
         "agentsdocs/05-maint.md",
         "agentsdocs/03-chiri.md",
+        "agentsdocs/02-convention.md",
+        "src/chiri/mod.rs",
+        "src/common.rs",
+        "src/monitor/cpu_monitor.rs",
         ".archive/.cursor/memory/MEMORY.md"
       ],
       "sessionIds": [
@@ -354,11 +358,11 @@
         "session-547e8bd8-29af-40f5-9e93-9b6eb70405c7"
       ],
       "createdAt": "2026-11-20T15:49:57.147Z",
-      "updatedAt": "2026-11-21T03:25:08.893Z",
+      "updatedAt": "2026-11-21T17:50:14.460Z",
       "lastAccessedAt": "2026-11-21T07:05:40.063Z",
-      "revision": 2,
-      "contentHash": "f4dc9dfcc74d3754932ddc751cb8088a82be6e694850bb862d1537ba4a15f792",
-      "sizeBytes": 20867,
+      "revision": 3,
+      "contentHash": "e4dc5ae68c9f62f829b9faf20ab510f4632adfb9320530df41c4a356420c53bc",
+      "sizeBytes": 19992,
       "memoryBodyIds": []
     },
     {

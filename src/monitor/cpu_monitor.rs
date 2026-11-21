@@ -729,7 +729,7 @@ pub async fn start_proc_stat_fallback(
 
 // [snap-procs]
 /// 读进程名：cmdline 首段优先（应用即包名，native 取文件名段），退化 /proc/<pid>/comm（15 字节截断），全失败给 "<pid>"
-/// 供 `snapshot_procs` 的 pid→name 缓存填充，命中后不再读 /proc
+/// 供已选中输出 PID 的名称缓存填充；未选中的 TGID 不读 /proc
 fn proc_name(pid: u32) -> String {
     if let Ok(s) = std::fs::read_to_string(format!("/proc/{pid}/cmdline")) {
         if let Some(first) = s.split('\0').find(|s| !s.is_empty()) {
@@ -746,6 +746,55 @@ fn proc_name(pid: u32) -> String {
         .unwrap_or_else(|| format!("<{pid}>"))
 }
 
+fn resolve_proc_names<F>(
+    pids: &[u32],
+    cached: &std::collections::HashMap<u32, String>,
+    mut read_name: F,
+) -> std::collections::HashMap<u32, String>
+where
+    F: FnMut(u32) -> String,
+{
+    let mut resolved = std::collections::HashMap::with_capacity(pids.len());
+    for &pid in pids {
+        resolved
+            .entry(pid)
+            .or_insert_with(|| cached.get(&pid).cloned().unwrap_or_else(|| read_name(pid)));
+    }
+    resolved
+}
+
+static SNAP_PROC_NAMES: OnceLock<Mutex<std::collections::HashMap<u32, String>>> = OnceLock::new();
+
+pub(crate) fn proc_names_for(pids: &[u32]) -> std::collections::HashMap<u32, String> {
+    let cached = {
+        let mut names = SNAP_PROC_NAMES
+            .get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if names.len() > 4096 {
+            names.clear();
+        }
+        pids.iter()
+            .filter_map(|pid| names.get(pid).map(|name| (*pid, name.clone())))
+            .collect()
+    };
+
+    let resolved = resolve_proc_names(pids, &cached, proc_name);
+    let mut names = SNAP_PROC_NAMES
+        .get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if names.len() > 4096 {
+        names.clear();
+    }
+    for (&pid, name) in &resolved {
+        names.entry(pid).or_insert_with(|| name.clone());
+    }
+    pids.iter()
+        .filter_map(|pid| names.get(pid).map(|name| (*pid, name.clone())))
+        .collect()
+}
+
 /// @S 快照的进程级差分状态；与 foreground 基线（`last_tgid_adj`）完全独立互不干扰
 #[derive(Default)]
 struct SnapState {
@@ -753,14 +802,31 @@ struct SnapState {
     last_at: Option<std::time::Instant>,
     /// pid → 上轮 TGID 累计运行时间（raw ns），每帧整体滚动重建，死进程条目随之清除
     base: std::collections::HashMap<u32, u64>,
-    /// pid → 进程名缓存：/proc 每进程只读一次，超量整体清空防长会话无界增长
-    names: std::collections::HashMap<u32, String>,
 }
 static SNAP_STATE: OnceLock<Mutex<SnapState>> = OnceLock::new();
 
 /// TGID_RUN_TIME 共享只读句柄（跨线程给 `snapshot_procs`）：指向 Box::leak 常驻 Ebpf 内的 Map（生命周期 'static、地址稳定），以原始指针存静态量绕开 MapData 的 Send/Sync 约束
 /// 只做 get/keys 读取，与 monitor 循环并发读安全
 static SNAP_TGID_MAP: AtomicPtr<aya::maps::Map> = AtomicPtr::new(std::ptr::null_mut());
+
+fn append_proc_snapshot(
+    pid: u32,
+    raw: u64,
+    win_ns: u64,
+    previous: &std::collections::HashMap<u32, u64>,
+    next: &mut std::collections::HashMap<u32, u64>,
+    output: &mut Vec<ProcSnap>,
+) {
+    let util = match previous.get(&pid) {
+        Some(&prev) if win_ns > 0 && raw >= prev => (raw - prev) as f64 / win_ns as f64 * 100.0,
+        _ => 0.0,
+    };
+    next.insert(pid, raw);
+    output.push(ProcSnap {
+        pid,
+        util: util.min(9999.0) as f32,
+    });
+}
 
 /// 每秒进程快照供数（aff `@S` 帧）：遍历 TGID_RUN_TIME 全 map（差分基线滚动重建）产出全系统每进程 util
 /// util = 窗口（≈1s）运行时间增量 / 墙钟，**百分比**、多核并行可 >100（仅 9999 上限），首帧/新进程只建基线；仅 `diag_active()` 开启时被每秒调用，调用方自行排序取 top-N
@@ -793,34 +859,13 @@ pub fn snapshot_procs() -> Vec<ProcSnap> {
         .map(|t| now.duration_since(t).as_nanos() as u64)
         .unwrap_or(0);
     st.last_at = Some(now);
-    if st.names.len() > 4096 {
-        st.names.clear();
-    }
-
     let mut out = Vec::new();
     let mut next_base = std::collections::HashMap::new();
     // aya 0.14：keys() 直接返回 MapKeys 迭代器，逐项 Result
     for k in tgid_run_map.keys().flatten() {
         let raw = tgid_run_map.get(&k, 0).unwrap_or(0);
-        // raw 单调递增（BPF 侧只 += delta），回退（map 重建等）按首见处理
-        let util = match st.base.get(&k) {
-            Some(&prev) if win_ns > 0 && raw >= prev => (raw - prev) as f64 / win_ns as f64 * 100.0,
-            _ => 0.0,
-        };
-        next_base.insert(k, raw);
-        let comm = match st.names.get(&k) {
-            Some(n) => n.clone(),
-            None => {
-                let n = proc_name(k);
-                st.names.insert(k, n.clone());
-                n
-            }
-        };
-        out.push(ProcSnap {
-            pid: k,
-            comm,
-            util: util.min(9999.0) as f32,
-        });
+        // 全 TGID 都进入输出与新基线；名称查找在输出筛选后单独完成
+        append_proc_snapshot(k, raw, win_ns, &st.base, &mut next_base, &mut out);
     }
     st.base = next_base;
     out
@@ -942,8 +987,52 @@ mod proc_stat_parse_tests {
     use super::{parse_cpu_times_line, parse_task_stat_ticks};
 
     #[test]
+    fn proc_snapshot_keeps_all_tgids_and_rolls_every_baseline() {
+        use super::append_proc_snapshot;
+        use crate::common::ProcSnap;
+        use std::collections::HashMap;
+
+        let previous = HashMap::from([(10, 100), (20, 200)]);
+        let mut next = HashMap::new();
+        let mut snapshots: Vec<ProcSnap> = Vec::new();
+        for (pid, raw) in [(10, 160), (20, 260), (30, 40)] {
+            append_proc_snapshot(pid, raw, 1_000, &previous, &mut next, &mut snapshots);
+        }
+
+        assert_eq!(
+            snapshots.iter().map(|p| p.pid).collect::<Vec<_>>(),
+            [10, 20, 30]
+        );
+        assert_eq!(
+            snapshots.iter().map(|p| p.util).collect::<Vec<_>>(),
+            [6.0, 6.0, 0.0]
+        );
+        assert_eq!(next, HashMap::from([(10, 160), (20, 260), (30, 40)]));
+    }
+
+    #[test]
     fn proc_stat_aggregate_line_is_skipped() {
         assert!(parse_cpu_times_line("cpu  100 0 50 800 50 0 0 0 0 0").is_none());
+    }
+
+    #[test]
+    fn resolves_names_only_for_requested_pids_and_reuses_cache() {
+        use super::resolve_proc_names;
+        use std::collections::HashMap;
+
+        let mut names = HashMap::new();
+        names.insert(10, "cached".to_string());
+        let mut reads = Vec::new();
+        let resolved = resolve_proc_names(&[10, 20], &names, |pid| {
+            reads.push(pid);
+            format!("proc-{pid}")
+        });
+
+        assert_eq!(reads, vec![20]);
+        assert_eq!(resolved.get(&10).map(String::as_str), Some("cached"));
+        assert_eq!(resolved.get(&20).map(String::as_str), Some("proc-20"));
+        assert_eq!(names.len(), 1);
+        assert!(!names.contains_key(&20));
     }
 
     #[test]

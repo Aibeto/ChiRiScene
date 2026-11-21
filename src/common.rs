@@ -62,12 +62,10 @@ pub enum DaemonEvent {
 }
 
 // [proc_snap]
-/// 每秒进程快照条目（aff @S 帧供数）：全系统 TGID 级，util 来自 eBPF TGID_RUN_TIME 的 1s 窗口差分（不扫 /proc）
+/// 每秒全系统 TGID 利用率快照；名称在 aff 输出选定 PID 后按需解析
 pub struct ProcSnap {
     /// 进程 TGID
     pub pid: u32,
-    /// 进程名（cmdline 首段优先，退化 comm，见 cpu_monitor::proc_name）
-    pub comm: String,
     /// 1s 窗口内总 CPU 时间占比**百分比**：多核并行可 >100（320.0 ≈ 3.2 核满载）
     pub util: f32,
 }

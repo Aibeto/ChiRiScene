@@ -1800,6 +1800,30 @@ fn measure_build_block<Output>(
     output
 }
 
+fn snapshot_name_targets(
+    procs: &[common::ProcSnap],
+    top_len: usize,
+    extra: &[u32],
+    fg_pid: i32,
+    fg_pkg: &str,
+) -> Vec<u32> {
+    let mut pids = Vec::with_capacity(top_len + extra.len());
+    for proc in procs.iter().take(top_len) {
+        if proc.pid as i32 != fg_pid || fg_pkg.is_empty() {
+            pids.push(proc.pid);
+        }
+    }
+    for &pid in extra {
+        if (pid as i32 != fg_pid || fg_pkg.is_empty())
+            && procs.iter().any(|proc| proc.pid == pid)
+            && !pids.contains(&pid)
+        {
+            pids.push(pid);
+        }
+    }
+    pids
+}
+
 /// @S 每秒进程/线程快照帧（`devimp/aff_<ts>.log`）组装：top-N 进程 + 前台树/被管进程线程下钻，只在 `diag_active()` 时调用，行数组交 `logger::aff_snapshot`，返回本帧是否刷新帧
 /// 落行规则（字段级差分）：任一槽（comm/u/core/home/pin）与上次落盘不同才落行，未变槽写 `-`，缺省 tid = 与上次落盘相同；行格式 `p <rank> <pid> <pkg|comm> u=<util%> mask=<核占用hex> home=<核|-1>` / `t <pid> <tid> [comm] [u=] [core=] [home=] [pin=] [uclamp=]`
 fn build_aff_snapshot(
@@ -2085,12 +2109,15 @@ fn build_aff_snapshot(
     }
 
     // ── 拼行：p 行在前（top-N rank=1..N 按 util 降序，补位行 rank=0），t 行随后 ──
+    let names = crate::monitor::cpu_monitor::proc_names_for(&snapshot_name_targets(
+        &procs, top_len, &extra, fg_pid, fg_pkg,
+    ));
     let mut rows: Vec<String> = Vec::with_capacity(top_len + extra.len() + th_rows.len());
     for (rank, p) in procs.iter().take(top_len).enumerate() {
         let name = if p.pid as i32 == fg_pid && !fg_pkg.is_empty() {
             fg_pkg
         } else {
-            p.comm.as_str()
+            names.get(&p.pid).map(String::as_str).unwrap_or("-")
         };
         // comm/cmdline 可含空白与控制字符（含换行会拆帧），过 aff_token 净化
         let name = crate::logger::aff_token(name);
@@ -2106,7 +2133,7 @@ fn build_aff_snapshot(
     }
     for pid in extra {
         let (name, util) = match proc_of.get(&pid) {
-            Some(p) => (p.comm.as_str(), p.util),
+            Some(p) => (names.get(&pid).map(String::as_str).unwrap_or("-"), p.util),
             // 快照里没有（不在 TGID map 的冷进程）：comm 兜底用其下钻线程的 comm
             None => (pid_comm.get(&pid).copied().unwrap_or("-"), 0.0),
         };
@@ -4771,6 +4798,26 @@ pub fn start_scheduler_thread(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_name_targets_only_emitted_process_rows() {
+        let procs = vec![
+            crate::common::ProcSnap { pid: 10, util: 4.0 },
+            crate::common::ProcSnap { pid: 20, util: 3.0 },
+            crate::common::ProcSnap { pid: 30, util: 2.0 },
+            crate::common::ProcSnap { pid: 40, util: 1.0 },
+        ];
+        let extra = [30, 40, 50];
+
+        assert_eq!(
+            snapshot_name_targets(&procs, 2, &extra, 10, "com.foreground"),
+            vec![20, 30, 40]
+        );
+        assert_eq!(
+            snapshot_name_targets(&procs, 2, &extra, 10, ""),
+            vec![10, 20, 30, 40]
+        );
+    }
 
     #[test]
     fn bounded_tid_sampling_runs_once_with_stable_order_and_worker_cap() {

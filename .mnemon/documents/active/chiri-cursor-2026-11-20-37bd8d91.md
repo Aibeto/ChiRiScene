@@ -4,14 +4,19 @@ title: "ChiRi 长期契约与教训（自 Cursor 记忆蒸馏，2026-11-20）"
 description: "铁律与协作、配置与数据契约、调度语义现状、亲和放置与 EEM、负载源降级、内核取证、通知与脚本、能量与收益口径、工具与环境、流程红线；含全部关键数字与作废口径标注。"
 status: "active"
 created_at: "2026-11-20T15:49:57.147Z"
-updated_at: "2026-11-20T15:49:57.147Z"
-content_hash: "8c13b481e91968e2e1474de55db3507ac15c306f2485769ef8588f2e75230d3a"
+updated_at: "2026-11-21T17:50:14.460Z"
+content_hash: "e4dc5ae68c9f62f829b9faf20ab510f4632adfb9320530df41c4a356420c53bc"
 source_paths:
   - "agentsdocs/05-maint.md"
   - "agentsdocs/03-chiri.md"
+  - "agentsdocs/02-convention.md"
+  - "src/chiri/mod.rs"
+  - "src/common.rs"
+  - "src/monitor/cpu_monitor.rs"
   - ".archive/.cursor/memory/MEMORY.md"
 session_ids:
   - "session-c3195d85-1409-4552-a706-f4834a248c60"
+  - "session-547e8bd8-29af-40f5-9e93-9b6eb70405c7"
 memory_body_ids:
   []
 ---
@@ -43,6 +48,7 @@ memory_body_ids:
 - **meta 新字段五处同步**：`MetaYamlFile` / `ExternalMetaOverrides` / `chiri::config::Meta`(+apply) / meta.yaml 模板 / WebUI `contract/meta.ts`。
 - **status.csv 28 列**：末尾 `daemon_rss_kb`（VmRSS，失败 0），只作跨会话趋势；WebUI 解析兼容 27/28。
 - **main_ 45 列**：末尾 `activity`（`pkg/.MainActivity` 归一；非当前包写 `-`）；`ActivitySampler` 同包 3s 节流、换包 1s 内立即，只在配置了 Activity 级规则或 `meta.dev_record` 时查询。`aff_` 文件头只写标题 + 4 行可解析 schema（@A/@S/p/t）。
+- `@S` 进程快照仍遍历全部 TGID 并更新完整 util 差分基线；仅为最终输出 top-N 与 map-backed 前台/被管补位行解析 `/proc/<pid>/cmdline`/`comm`，前台包名覆盖、快照缺失时线程 `comm` 兜底、行字段与采样节奏不变。该实现已通过主机回归，设备长尾/交互改善仍需同机验收。
 
 ## 3. 调度语义现状
 
