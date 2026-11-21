@@ -436,3 +436,20 @@ cpu-monitor-core-state-read-failed = [CPU Monitor] 核心在线状态读取失�
 cpu-monitor-snap-handle-missing = [CPU Monitor] eBPF 进程快照句柄未注册/映射缺失，@S 帧进程段为空
 cpu-monitor-snap-map-open-failed = [CPU Monitor] eBPF 进程快照映射打开失败，@S 帧进程段为空
 screen-uevent-recv-failed = [Screen] uevent 接收失败，1s 后重试: { $error }
+
+
+# --- PGO（采样：ETM 优先，回退 cpu-cycles，均不可用则关闭；事件驱动，无轮询） ---
+pgo-thread-failed = [PGO] 采样线程启动失败，PGO 采样能力丢失: { $error }
+pgo-disabled = [PGO] 采样已关闭，正在运行的会话被中止，半截产物已丢弃
+pgo-tool-missing = [PGO] 未找到 /system/bin/simpleperf，本轮按不可用处理，30 分钟后重探
+pgo-probe-etm = [PGO] 探测到 CoreSight ETM 可用，后续按 ETM 采样
+pgo-probe-sample = [PGO] 无可用 ETM，回退 cpu-cycles 采样（仅函数热度）
+pgo-probe-failed = [PGO] 探测试录失败 event={ $event }: { $error }
+pgo-off = [PGO] ETM 与 cpu-cycles 均不可用，已关闭采样，30 分钟后重探
+pgo-start-failed = [PGO] 采样启动失败 tier={ $tier }: { $error }
+pgo-reaper-failed = [PGO] 回收线程启动失败，本轮采样放弃: { $error }
+pgo-session-start = [PGO] 开始采样 tier={ $tier } pid={ $pid }
+pgo-session-done = [PGO] 采样完成 file={ $file } size={ $size }，已写入 manifest 并随日志归档
+pgo-session-empty = [PGO] 样本不足，已丢弃 file={ $file } size={ $size }
+pgo-manifest-failed = [PGO] 写 manifest 失败，样本仍在 logs/pgo/: { $error }
+

@@ -73,6 +73,9 @@ fn apply_meta_overrides(meta: &mut Meta, o: &crate::common::ExternalMetaOverride
     if let Some(v) = o.nofix {
         meta.nofix = v;
     }
+    // PGO 采样开关：磁盘没写该键（模板同样不写）就回退代码缺省 true——不能用 if let Some，
+    // 否则 Meta::default() 派生的 false 会胜出，等于默认关掉采样
+    meta.pgo_sampling = o.pgo_sampling.unwrap_or_else(crate::utils::default_true);
 }
 #[derive(Debug, Deserialize, Default)]
 pub struct Meta {
@@ -172,6 +175,11 @@ pub struct Meta {
     /// 「不改」开关（meta.yaml 可选字段 `nofix`，默认 false）：true = 启动时跳过二进制对外部文件的覆盖类操作（webui 资产还原 + meta.yaml 快照自愈）
     #[serde(default, alias = "NoFix")]
     pub nofix: bool,
+
+    /// PGO 采样开关（meta.yaml 可选字段 `pgo_sampling`，默认 true，模板不写）：true = 采样线程探测 ETM/cpu-cycles 并周期采样，
+    /// 产物落 logs/pgo/（随启动归档）；false = 中止在跑的会话并丢弃半截产物。热插拔：Config::load 同步到进程级原子量并唤醒采样线程
+    #[serde(default = "crate::utils::default_true", alias = "PgoSampling")]
+    pub pgo_sampling: bool,
 }
 
 // Meta 缺省值：meta.yaml 省略该字段时回退到此处
@@ -1816,6 +1824,8 @@ impl Config {
         crate::common::set_fas_enabled(config.meta.fas_enabled);
         crate::common::set_scenemode_enabled(config.meta.scenemode_enabled);
         crate::common::set_screen_on_value(config.meta.screen_on_value);
+        // PGO 采样开关：值未变不会发事件，不会打扰采样线程（热插拔：关掉即中止在跑会话）
+        crate::pgo::set_enabled(config.meta.pgo_sampling);
         // 线程功能总闸与机型内的两个子开关取「与」：关掉后 affinity 走 release()（逐线程恢复全核 + cpuset/uclamp 快照回写）、core_ctl 回 Normal（恢复 min_cpus/online 快照）
         // 热重载后由 scheduler_ipc 的 config_dirty 分支调 apply_affinity_and_corectl 落地，周期块（2s）也会兜一次；thread_bind 是实验室 frozen 专用闸，frozen 期间为 false 交还线程亲和/绑核与 core_ctl
         config.affinity.enabled &= config.meta.thread_bind;

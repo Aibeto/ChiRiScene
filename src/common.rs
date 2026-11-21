@@ -640,8 +640,11 @@ static SCENEMODE_ENABLED: AtomicBool = AtomicBool::new(true);
 static SCREEN_ON: AtomicBool = AtomicBool::new(true);
 
 /// 同步亮屏状态（ScreenStateChange 事件与启动时各同步一次）
+/// 值未变不发事件：屏幕事件有双源去重，但停摆分支与启动同步会重复写，PGO 采样器只该为真实跳变醒一次
 pub fn set_screen_on(on: bool) {
-    SCREEN_ON.store(on, Ordering::Release);
+    if SCREEN_ON.swap(on, Ordering::AcqRel) != on {
+        crate::pgo::notify();
+    }
 }
 
 /// 当前是否亮屏
@@ -1208,6 +1211,8 @@ struct MetaYamlFile {
     unit_divisor: Option<f32>,
     /// 「不改」开关（模板不写），见 ExternalMetaOverrides
     nofix: Option<bool>,
+    /// PGO 采样开关（模板不写，缺省 true），见 ExternalMetaOverrides
+    pgo_sampling: Option<bool>,
     /// 耗电读数满量程 W（缺省 12），见 ExternalMetaOverrides
     power_max_w: Option<f32>,
     /// 亮屏判定值（任意 u32，缺省 2），见 ExternalMetaOverrides
@@ -1264,6 +1269,9 @@ pub struct ExternalMetaOverrides {
     /// 「不改」开关（nofix，默认 false 且模板不写）：true = 启动时跳过所有覆盖类操作——webui 资产还原（restore_webroot）与 meta
     /// yaml 快照自愈（sync_meta_snapshot）用户自担文件被篡改风险；rhine 实验与 WebUI 写入不受影响
     pub nofix: Option<bool>,
+    /// PGO 采样开关（pgo_sampling，默认 true 且模板不写）：true = 采样线程按 ETM → cpu-cycles 顺序探测并周期采样，
+    /// 产物落 logs/pgo/ 随启动归档进 logd/；false = 立即中止在跑的会话并丢弃半截产物。热插拔：保存配置即生效，无需重启
+    pub pgo_sampling: Option<bool>,
     /// 耗电读数满量程 W（power_max_w，缺省 12）：只影响 WebUI 状态页仪表盘进度换算，不参与任何调度决策
     pub power_max_w: Option<f32>,
     /// 亮屏判定值（screen_on_value，缺省 2）：debug.tracing.screen_state 等于该值视为亮屏、其余视为息屏；**不限制取值**（任意 u32 都合法，判定就是单值比较，
@@ -1407,6 +1415,7 @@ fn parse_disk_meta(text: &str) -> Option<ExternalMetaOverrides> {
         voltage_divisor,
         current_divisor,
         nofix: f.nofix,
+        pgo_sampling: f.pgo_sampling,
         power_max_w,
         screen_on_value,
     })

@@ -98,6 +98,9 @@ export default {
   'config.wakeGuardEnabled.hint':
     '持有息屏唤醒锁',
 
+  'config.pgoSampling': 'PGO 采样',
+  'config.pgoSampling.hint': '弃用 PGO 采样',
+
   'battery.title': '电池读数',
   'battery.action.back': '返回配置',
   'battery.entry.hint': '电池数据的来源与校准',

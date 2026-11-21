@@ -200,3 +200,12 @@
 - [ ] **GPU 锁频评估（未做，需证据）**：FAS 现在完全不碰 GPU（`src/chiri/gpu.rs` 的 `GpuGuard` 只给 lab contingency 用）。开锁的判据 = 真机日志 `gpu_busy` 长期 ≥95% 且 CPU 已锁最高频仍有掉帧。**风险**：8550 实测读 GPU 节点会把 GPU 拉起（+47% 功耗），锁最高频显著抬 SoC 温度，可能诱发内核 thermal 压 CPU → 更卡。故无证据不开。
 - [ ] **sgame/lolm/speedmobile 是否启用 `perf_lock`（按应用分别裁决）**：本次 1119 sgame 120↔60 原生档回摆已由 native 降档共用既有指数退避修复；不能再称该问题只有 `perf_lock` 能解决。1107 的开环、降档 boost 和长时高热负载仍是不同机制，且用户确认帧源静默时开环属预期；不要为消除合法开环而锁频。是否忽略功耗并锁最高频仍需按应用目标与设备热表现单独决定，不能把 sgame 结论外推到 lolm/speedmobile。若启用，`fps_gears` 是否收成单档须按机型刷新率评估；单档会停用齿轮切换，但 `perf_lock` 仍把频率保持在最高档。
 - [ ] **`effective_perf_floor()` 的 0.45 硬顶（未改）**：`controller.rs` 的 `(base + fps_bonus).min(0.45)` 让任何 `perf_floor > 0.45` 失效。`perf_lock` 绕过它（写频只认 `perf_ceil`），本轮不动；将来若要做「半锁」（floor 0.8 保底 + PID 微调），需改成可配字段并同步 `normalize()` 的交叉约束段。
+
+### PGO 采样（2026-11-22 落地，待真机复核）
+
+> 代码 `src/pgo.rs`（事件驱动、零轮询）；配置 `pgo_sampling`（WebUI「PGO 采样」，默认开，保存即热插拔，无需重启）；报告 `.dsh/docs/2026-11-22-PGO采样落地与离线换算.md`。
+
+- [ ] **离线换算链（未做）**：采样产物 `logs/pgo/perf_*.data` 目前只落盘 + 记 `manifest.txt`，daemon 不解 profile。下一块要做：① `llvm-objcopy --only-keep-debug` 出 `chiri.debug`；② 无 ETM 走 `simpleperf report --sort dso,symbol` → LLVM 文本采样格式（`llvm-profgen --perfdata` 依赖 Linux `perf -b` 分支栈，ARM64 无 LBR，需先冒烟）；有 ETM 走 `simpleperf inject --output autofdo`；③ 构建侧用 `CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS` 注入 `-Cprofile-sample-use=<abs>`（勿用 `RUSTFLAGS`，否则 Android flag 会污染 host build script）。
+- [ ] **`pgo` / `profile` 构建档（未做）**：`pgo` = release 参数 + `-Cprofile-sample-use`；`profile` = `debug=1, strip=false, force-frame-pointers=yes`（仅本地 QA，用于产出可与地址对应的符号二进制）。跨版本对比口径：同 SoC + 同 kernel + 同 `exe` 指纹（`manifest.txt` 已有字段）才复用旧 profile，否则重新采样。
+- [ ] **真机验收采样开销（未做）**：本轮只测过 `simpleperf record -e cpu-cycles -p <chiri> -f 200 --duration 60` = 682 samples / 0 lost / 588,817 B（≈3.41 CPU 秒 ≈5.7% 单核），未测 daemon 在采样时段的调度行为与功耗差异。验收点：`logs/pgo/manifest.txt` 每会话有行、`logd/<ts>.tar.zst` 能带出样本、采样时段 `batt_power_w` 与 main tick 间隔无异常长尾；关闭开关（WebUI 保存）后 3 s 内采样进程退出且半截 `perf.data` 被删除。
+

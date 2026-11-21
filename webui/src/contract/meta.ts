@@ -34,6 +34,8 @@ export const META_FIELDS = [
   /** 旧键（曾把电压/电流校准合成一个）：daemon 仍接收，等价于只设电压校准 */
   'unit_divisor',
   'nofix',
+  /** PGO 采样开关（可选字段，缺省 true 且模板不写）：ETM 优先、回退 cpu-cycles、都不可用时关闭重探 */
+  'pgo_sampling',
   'power_max_w',
   /** 亮屏判定值（debug.tracing.screen_state 等于该值视为亮屏，非负整数，缺省 2） */
   'screen_on_value'
@@ -48,6 +50,7 @@ export const WRITABLE_FIELDS = [
   'fas_enabled',
   'scenemode_enabled',
   'wake_guard_enabled',
+  'pgo_sampling',
   'power_avg',
   'notify',
   'oplus_chg',
@@ -169,6 +172,7 @@ export function validateMeta(values: Record<string, unknown>): string[] {
     'scenemode_enabled',
     'thread_bind',
     'wake_guard_enabled',
+    'pgo_sampling',
     'power_avg',
     'notify',
     'oplus_chg',
@@ -262,6 +266,7 @@ export function validateFieldValue(
     case 'fas_enabled':
     case 'scenemode_enabled':
     case 'wake_guard_enabled':
+    case 'pgo_sampling':
     case 'power_avg':
     case 'notify':
     case 'oplus_chg':
