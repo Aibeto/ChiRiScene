@@ -23,7 +23,7 @@ impl ClusterState {
 /* HELPERS */
 }
 struct CoreGroupWorker {
-    cluster: ClusterState, cfg: CpuLoadGovernorConfig,
+    cluster: ClusterState, cfg: CpuLoadGovernorConfig, eff_cfg: CpuLoadGovernorConfig,
     dev_decision: &'static str, dev_over: u32, dev_under: u32,
     dev_tgt_perf: f32, dev_raw_util: f32, dev_prev_perf: f32,
 }
@@ -35,7 +35,7 @@ impl CoreGroupWorker {
         let min = freqs[0] as f32;
         let span = *freqs.last().unwrap() as f32 - min;
         let ratios = freqs.iter().map(|f| (*f as f32 - min) / span).collect();
-        let mut result = Self { cfg, cluster: ClusterState {
+        let mut result = Self { eff_cfg: cfg.clone(), cfg, cluster: ClusterState {
             affected_cpus: vec![0], available_freqs: freqs, cached_ratios: ratios,
             current_perf: 0.0, current_freq: 0, down_wait: 0, up_wait: 0,
             steady_decay: 0.0, steady_streak: 0, last_util: 0.0, ema_util: -1.0, fast_down: false,

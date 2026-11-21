@@ -7,8 +7,10 @@ pub fn slow_anchor(elapsed: Duration) -> bool {
     elapsed > Duration::from_millis(200)
 }
 
+const SLICE_YIELD_INTERVAL: usize = 256;
+
 pub fn slice_due(completed: usize) -> bool {
-    completed != 0 && completed % 16 == 0
+    completed != 0 && completed % SLICE_YIELD_INTERVAL == 0
 }
 
 pub fn anchor_rows<T>(
@@ -19,6 +21,27 @@ pub fn anchor_rows<T>(
         .into_iter()
         .filter_map(|candidate| render(candidate))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{anchor_rows, slice_due};
+
+    #[test]
+    fn large_snapshot_slices_keep_all_rows_and_yield_every_256_candidates() {
+        let candidates: Vec<usize> = (0..=512).collect();
+        let rows = anchor_rows(candidates.clone(), |candidate| Some(candidate.to_string()));
+        let yields: Vec<_> = candidates
+            .iter()
+            .copied()
+            .filter(|&completed| slice_due(completed))
+            .collect();
+
+        assert_eq!(rows.len(), candidates.len());
+        assert_eq!(rows.first().map(String::as_str), Some("0"));
+        assert_eq!(rows.last().map(String::as_str), Some("512"));
+        assert_eq!(yields, [256, 512]);
+    }
 }
 
 // [reuse]
