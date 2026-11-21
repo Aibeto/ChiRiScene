@@ -44,9 +44,13 @@
 [submodule "android-gs-caimito-6.1-android15-qpr1"]
 	path = android-gs-caimito-6.1-android15-qpr1
 	url = https://android.googlesource.com/device/google/caimito-kernels/6.1
+# [submodule "common"]
+# 	path = common
+# 	url = https://android.googlesource.com/kernel/common
+	# branch = android-mainline
 [submodule "common"]
 	path = common
-	url = https://android.googlesource.com/kernel/common
+	url = https://mirrors.tuna.tsinghua.edu.cn/git/AOSP/kernel/common/
 	branch = android-mainline
 
 # Other Kernel
