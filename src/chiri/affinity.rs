@@ -1242,6 +1242,45 @@ impl AffinityManager {
         })
     }
 
+    /// EEM 落盘前预检拒绝的归属（ELF32/AArch32 不可行域）：返回 true = 本步不得发起 syscall。
+    ///
+    /// 与 `dst_empty` 同口径：`Engine::tick` 在写前已把目标提交进 window/cluster/state
+    /// （placement.rs 的 ledger 有界预提交不撤销），预检拒绝若只 `continue`，引擎/Subject/
+    /// `eem_window` 会停在从未写成的目标上，下一轮按假窗口重规划；失败计数保持 0 也永远
+    /// 进不了退避。故这里必须 abort：回滚到 applied 锚点并累加 fail_streak。
+    fn eem_precheck_reject(
+        &mut self,
+        a: &placement::Action,
+        dst_mask: &[usize],
+        pid: i32,
+        comm: &str,
+        now: Instant,
+    ) -> bool {
+        if self.mask_write_allowed(a.tid, dst_mask) {
+            return false;
+        }
+        if crate::logger::diag_active() {
+            crate::logger::aff_action(
+                "place",
+                pid,
+                a.tid,
+                "-",
+                comm,
+                &format!(
+                    "{}-{}",
+                    a.mask.first().copied().unwrap_or(0),
+                    a.mask.last().copied().unwrap_or(0)
+                ),
+                &format!("gain={:.3}", a.gain),
+                "skip",
+                "elf32",
+            );
+        }
+        // 与 dst_empty 同路径：回滚 applied 锚点、累加 fail_streak（placement.rs abort）。
+        let _ = self.eem.abort(a.tid, now);
+        true
+    }
+
     /// 写去重：write_dedup 开启时，目标掩码已生效（home/group_bind 状态）或同 tid 同 tag 在 repin_debounce 内已写过 → 返回 true 跳过写入（连 @A 帧都不产生）
     fn mask_write_skip(&self, tid: i32, tag: u64, now: Instant) -> bool {
         if !self.write_dedup {
@@ -2722,8 +2761,10 @@ impl AffinityManager {
                 self.eem.abort(a.tid, now);
                 continue;
             }
-            // 32 位线程不能上无 AArch32 的簇
-            if !self.mask_write_allowed(a.tid, &dst_mask) {
+            // 32 位线程不能上无 AArch32 的簇：这是**明确拒绝**，不是静默跳过 —— 必须回滚
+            // 引擎锚点并累加 fail_streak，否则 tick 预提交的目标窗口会留在记账里，下一轮
+            // 按从未写成的假窗口重新规划（placement.rs 的 ledger 有界预提交不撤销）。
+            if self.eem_precheck_reject(&a, &dst_mask, pid, &comm, now) {
                 continue;
             }
             // cpuset 前置：纯后台线程的组通常只含小核，掩码写到 big/prime 会被内核静默裁剪。
@@ -3469,5 +3510,117 @@ mod tests {
         assert!(cluster_is_aarch32(&clusters, CoreGroup::Little));
         assert!(!cluster_is_aarch32(&clusters, CoreGroup::Big));
         assert!(!cluster_is_aarch32(&clusters, CoreGroup::Prime));
+    }
+
+    fn eem_test_thread(pid: i32, elf32: bool) -> ThreadState {
+        ThreadState {
+            pid,
+            is_fg: false,
+            comm: "app32".to_string(),
+            is_key: false,
+            home: -1,
+            promoted: false,
+            orig_group: "background",
+            moved_group: false,
+            last_busy: None,
+            low_streak: 0,
+            last_ticks: 0,
+            last_sample: Instant::now(),
+            last_move: Instant::now(),
+            last_seen: Instant::now(),
+            group_bind: GroupBind::None,
+            prev_home: -1,
+            prev_home_at: Instant::now(),
+            last_hold_log: Instant::now(),
+            pin_incapable: false,
+            pin_fail_streak: 0,
+            elf32,
+            last_mask_write: None,
+            util_pct: 50.0,
+            last_cpu: 4,
+            eem_window: Some(placement::Window::new(4, 4)),
+            eem_cluster: Some(CoreGroup::Big),
+            starttime: None,
+            normal_bind_retry: InvalidMaskRetry::default(),
+        }
+    }
+
+    /// P1 EEM 回执：ELF32/AArch32 预检拒绝必须归属失败状态（回滚 applied 锚点 + fail_streak），
+    /// 不能 naked continue —— 否则 tick 预提交的目标窗口留在引擎里，下一轮按假窗口重规划。
+    #[test]
+    fn eem_precheck_reject_rolls_back_anchor_and_counts_failure() {
+        use crate::chiri::placement::Action;
+
+        let now = Instant::now();
+        let mut mgr = AffinityManager::new(Arc::new(SysPathExist::new()));
+        mgr.bitwidth_aware = true;
+        mgr.aarch32_clusters = vec!["little".to_string()];
+        mgr.threads.insert(7, eem_test_thread(42, true));
+        mgr.eem
+            .ensure(7, CoreGroup::Big, placement::Window::new(4, 4), now);
+        // tick 在落盘前已把目标写成 big（precommit），随后预检拒绝
+        let action = Action {
+            tid: 7,
+            mask: vec![4, 5],
+            switch_cluster: Some(CoreGroup::Big),
+            dir: energy_model::Dir::Up,
+            settled: false,
+            reason: "test_precheck_reject",
+            gain: 0.25,
+        };
+        assert!(
+            mgr.eem_precheck_reject(&action, &[4, 5], 42, "app32", now),
+            "目标 big 不在 AArch32 白名单（仅 little）时必须按拒绝处理"
+        );
+        {
+            let e = mgr.eem.entry(7).expect("engine entry");
+            assert_eq!(e.fail_streak, 1, "拒绝必须累加 fail_streak 以进入退避");
+            assert_eq!(
+                e.window,
+                placement::Window::new(4, 4),
+                "拒绝必须回滚到 applied 锚点"
+            );
+        }
+        assert_eq!(
+            mgr.threads.get(&7).and_then(|st| st.eem_window),
+            Some(placement::Window::new(4, 4)),
+            "Subject/eem_window 不得被未写成的目标污染"
+        );
+        // 故障解除：成功回执清失败计数、锚点前进；下一轮正常输入回到基线节奏
+        mgr.eem
+            .note_applied(7, CoreGroup::Big, &[4, 5], now + Duration::from_secs(5));
+        {
+            let e = mgr.eem.entry(7).expect("engine entry");
+            assert_eq!(e.fail_streak, 0, "成功回执必须清零失败计数");
+            assert_eq!(e.applied, placement::Window::new(4, 5));
+        }
+    }
+
+    /// 空白名单（缺省 = 不限制落点）/ 关闭位宽感知时预检恒放行：不得把正常放行误计成失败。
+    #[test]
+    fn eem_precheck_reject_bypassed_when_unrestricted() {
+        use crate::chiri::placement::Action;
+
+        let now = Instant::now();
+        let mut mgr = AffinityManager::new(Arc::new(SysPathExist::new()));
+        let action = Action {
+            tid: 7,
+            mask: vec![4, 5],
+            switch_cluster: Some(CoreGroup::Big),
+            dir: energy_model::Dir::Up,
+            settled: false,
+            reason: "test_precheck_bypass",
+            gain: 0.25,
+        };
+        assert!(
+            !mgr.eem_precheck_reject(&action, &[4, 5], 42, "app64", now),
+            "空白名单缺省放行"
+        );
+        mgr.bitwidth_aware = false;
+        mgr.aarch32_clusters = vec!["little".to_string()];
+        assert!(
+            !mgr.eem_precheck_reject(&action, &[4, 5], 42, "app64", now),
+            "位宽感知关闭时放行"
+        );
     }
 }
