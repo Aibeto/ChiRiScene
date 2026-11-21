@@ -22,27 +22,33 @@ impl FasController {
             return true;
         }
 
-        if actual_ms > self.cfg.app_switch_gap_ms {
-            self.reset_runtime();
-            self.perf_index = self.cfg.app_switch_resume_perf;
-            self.gear_dampen_frames =
-                scale_frames(self.cfg.gear_dampen_frames, self.current_target_fps);
-            self.post_loading_downgrade_guard = self.cfg.post_loading_downgrade_guard;
-            self.apply_freqs();
-            info!(
-                "{}",
-                t_with_args(
-                    "fas-app-switch",
-                    &fluent_args!(
-                        "ms" => format!("{:.0}", actual_ms),
-                        "perf" => format!("{:.2}", self.perf_index)
-                    )
-                )
-            );
-            return true;
-        }
+        self.handle_app_switch(actual_ms)
+    }
 
-        false
+    /// 明确的 app 切换超时（> app_switch_gap_ms）：重置反馈状态并按恢复档抬频。
+    /// 从 handle_early_exit 抽出，供预热期超时帧绕过 warmup 直接恢复。
+    fn handle_app_switch(&mut self, actual_ms: f32) -> bool {
+        if actual_ms <= self.cfg.app_switch_gap_ms {
+            return false;
+        }
+        // 与 stale 重置同口径：清掉上一会话窗口/EMA/PID，warmup 重新计数
+        self.reset_frame_feedback();
+        self.perf_index = self.cfg.app_switch_resume_perf;
+        self.gear_dampen_frames =
+            scale_frames(self.cfg.gear_dampen_frames, self.current_target_fps);
+        self.post_loading_downgrade_guard = self.cfg.post_loading_downgrade_guard;
+        self.apply_freqs();
+        info!(
+            "{}",
+            t_with_args(
+                "fas-app-switch",
+                &fluent_args!(
+                    "ms" => format!("{:.0}", actual_ms),
+                    "perf" => format!("{:.2}", self.perf_index)
+                )
+            )
+        );
+        true
     }
 
     // [phase2]
@@ -293,6 +299,7 @@ impl FasController {
         let actual_ms = frame_delta_ns as f32 / 1_000_000.0;
         let is_heavy = actual_ms > self.cfg.heavy_frame_threshold_ms;
         let max_ns = (self.cfg.fixed_max_frame_ms * 1_000_000.0) as u64;
+        let is_timeout = frame_delta_ns > max_ns;
 
         if frame_delta_ns < self.min_frame_ns() {
             // [静默失效排查] 短于半帧（>2× 最高档位）视为噪声/重复帧：帧源侧已按 1ms 下限过滤
@@ -312,17 +319,28 @@ impl FasController {
             return;
         }
 
-        if self
-            .last_frame_at
-            .is_some_and(|timestamp| timestamp.elapsed() >= std::time::Duration::from_millis(500))
+        // 只有能进入反馈窗口的非 heavy 帧才参与 stale 判定：明确超时帧与 heavy/loading 帧
+        // 本身不贡献窗口样本，若让它们触发 reset，会把 warmup 卡在 12 并反复清空 PID/窗口。
+        if !is_timeout
+            && !is_heavy
+            && self.last_frame_at.is_some_and(|timestamp| {
+                timestamp.elapsed() >= std::time::Duration::from_millis(500)
+            })
         {
             self.reset_frame_feedback();
         }
         if self.warmup_remaining > 0 {
-            if frame_delta_ns > max_ns || actual_ms > self.cfg.app_switch_gap_ms {
-                // [静默失效排查] 预热期超长帧：整帧丢弃并回到 12 帧预热，表现为「预热迟迟不结束」
+            // 预热期明确 app 切换超时：不受 warmup 拦截，否则连续长帧会让 warmup 永远停在 12
+            if actual_ms > self.cfg.app_switch_gap_ms
+                && self.init_time.elapsed().as_millis() >= self.cfg.cold_boot_ms as u128
+            {
+                self.handle_app_switch(actual_ms);
+                return;
+            }
+            if is_timeout || actual_ms > self.cfg.app_switch_gap_ms {
+                // [静默失效排查] 预热期超长帧：整帧丢弃；不刷新 last_frame_at，恢复首帧再 stale 重置
                 if log::log_enabled!(log::Level::Debug) {
-                    let reason = if frame_delta_ns > max_ns {
+                    let reason = if is_timeout {
                         "预热期超长帧（>fixed_max_frame_ms）"
                     } else {
                         "预热期超长帧（>app_switch_gap_ms）"
@@ -348,10 +366,6 @@ impl FasController {
             self.warmup_remaining -= 1;
             return;
         }
-        if frame_delta_ns <= max_ns && actual_ms <= self.cfg.app_switch_gap_ms {
-            self.last_frame_at = Some(std::time::Instant::now());
-        }
-
         if self.handle_early_exit(actual_ms) {
             return;
         }
@@ -366,7 +380,7 @@ impl FasController {
             self.post_loading_ignore -= 1;
             return;
         }
-        if frame_delta_ns > max_ns {
+        if is_timeout {
             // [静默失效排查] 超长帧既不入窗口也不进 PID：卡顿期整帧被吞，PID/EMA 看不到这次长帧
             if log::log_enabled!(log::Level::Debug) {
                 debug!(
@@ -382,6 +396,10 @@ impl FasController {
             }
             return;
         }
+
+        // 只有真正进入反馈窗口的帧才刷新“最后有效帧”时间戳：heavy/loading 与超时帧
+        // 不产生窗口样本，刷新会把窗口饥饿伪装成新鲜反馈。
+        self.last_frame_at = Some(std::time::Instant::now());
 
         // Phase 2.5: 温度护栏状态机
         self.update_thermal_hold();
@@ -467,5 +485,168 @@ impl FasController {
             self.perf_index = self.perf_index.min(cap);
         }
         self.apply_freqs();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::scheduler::fas::FasController;
+    use crate::scheduler::fas::controller::FRAME_FEEDBACK_WARMUP_FRAMES;
+    use crate::scheduler::fas::controller_with_policy;
+    use std::time::{Duration, Instant};
+
+    fn feedback_ready_controller() -> FasController {
+        let mut controller = controller_with_policy();
+        controller.warmup_remaining = 0;
+        controller.last_frame_at = Some(Instant::now());
+        controller.fps_gears = vec![60.0];
+        controller.current_target_fps = 60.0;
+        controller
+    }
+
+    #[test]
+    fn heavy_frame_does_not_refresh_feedback_timestamp_or_restart_warmup() {
+        let mut controller = controller_with_policy();
+        controller.warmup_remaining = 0;
+        controller.last_frame_at = Some(Instant::now() - Duration::from_millis(600));
+        controller.ema_actual_ms = 33.0;
+        controller.jank_streak = 4;
+        controller.fps_window.push(120.0);
+
+        controller.update_frame(300_000_000);
+
+        assert_eq!(controller.warmup_remaining, 0);
+        assert_eq!(controller.fps_window.count(), 1);
+        assert_eq!(controller.ema_actual_ms, 33.0);
+        assert_eq!(controller.jank_streak, 4);
+        assert!(controller.uses_load_control());
+
+        controller.update_frame(16_666_667);
+        assert_eq!(
+            controller.warmup_remaining,
+            FRAME_FEEDBACK_WARMUP_FRAMES - 1
+        );
+        assert_eq!(controller.fps_window.count(), 1);
+        assert_eq!(controller.ema_actual_ms, 0.0);
+    }
+
+    #[test]
+    fn continuous_timeout_frames_enter_loading_and_recover_after_one_warmup() {
+        let mut controller = controller_with_policy();
+        controller.warmup_remaining = 0;
+        controller.last_frame_at = Some(Instant::now() - Duration::from_millis(1_000));
+        controller.ema_actual_ms = 33.0;
+        controller.jank_streak = 4;
+        controller.fps_window.push(999.0);
+
+        for _ in 0..60 {
+            controller.update_frame(600_000_000);
+        }
+
+        assert_eq!(controller.warmup_remaining, 0);
+        assert_eq!(controller.ema_actual_ms, 33.0);
+        assert_eq!(controller.fps_window.count(), 1);
+        assert_eq!(controller.jank_streak, 4);
+        assert_eq!(controller.loading_frames, 60);
+        assert!(controller.is_loading);
+        assert!(controller.uses_load_control());
+
+        for _ in 0..FRAME_FEEDBACK_WARMUP_FRAMES {
+            controller.update_frame(16_666_667);
+        }
+        assert_eq!(controller.warmup_remaining, 0);
+        assert_eq!(
+            controller.fps_window.count(),
+            FRAME_FEEDBACK_WARMUP_FRAMES as usize
+        );
+        assert!(!controller.uses_load_control());
+
+        controller.fps_gears = vec![60.0];
+        controller.current_target_fps = 60.0;
+        controller.update_frame(16_666_667);
+        assert!(controller.ema_actual_ms > 0.0);
+    }
+
+    #[test]
+    fn app_switch_timeout_bypasses_warmup_and_restarts_feedback() {
+        let mut controller = controller_with_policy();
+        controller.perf_index = 0.45;
+
+        controller.update_frame(3_100_000_000);
+
+        assert_eq!(controller.perf_index, controller.cfg.app_switch_resume_perf);
+        assert_eq!(controller.warmup_remaining, FRAME_FEEDBACK_WARMUP_FRAMES);
+        assert!(controller.last_frame_at.is_none());
+        assert!(controller.gear_dampen_frames > 0);
+
+        for _ in 0..FRAME_FEEDBACK_WARMUP_FRAMES {
+            controller.update_frame(16_666_667);
+        }
+        assert_eq!(controller.warmup_remaining, 0);
+        assert!(!controller.uses_load_control());
+
+        controller.fps_gears = vec![60.0];
+        controller.current_target_fps = 60.0;
+        controller.update_frame(16_666_667);
+        assert!(controller.ema_actual_ms > 0.0);
+    }
+
+    #[test]
+    fn normal_frames_keep_feedback_path_and_refresh_timestamp() {
+        let mut controller = feedback_ready_controller();
+        for _ in 0..120 {
+            controller.update_frame(16_666_667);
+        }
+        assert_eq!(controller.fps_window.count(), 120);
+        assert!(controller.ema_actual_ms > 15.0 && controller.ema_actual_ms < 18.0);
+        assert!(
+            controller
+                .last_frame_at
+                .is_some_and(|timestamp| timestamp.elapsed() < Duration::from_millis(500))
+        );
+        assert!(!controller.uses_load_control());
+        assert!(controller.policies[0].current_freq >= 100);
+    }
+
+    #[test]
+    fn exact_heavy_threshold_frame_still_enters_feedback_window() {
+        let mut controller = feedback_ready_controller();
+        controller.update_frame(150_000_000);
+        assert_eq!(controller.fps_window.count(), 1);
+        assert_eq!(controller.loading_frames, 0);
+        assert!(controller.ema_actual_ms > 0.0);
+    }
+
+    #[test]
+    fn exact_fixed_max_frame_is_heavy_but_not_timeout() {
+        let mut controller = feedback_ready_controller();
+        controller.update_frame(500_000_000);
+        assert_eq!(controller.fps_window.count(), 0);
+        assert_eq!(controller.loading_frames, 1);
+        assert!(!controller.is_loading);
+    }
+
+    #[test]
+    fn timeout_frame_is_dropped_when_heavy_threshold_above_fixed_max() {
+        let mut controller = controller_with_policy();
+        controller.warmup_remaining = 0;
+        controller.last_frame_at = Some(Instant::now() - Duration::from_millis(600));
+        controller.cfg.heavy_frame_threshold_ms = 1_000.0;
+        controller.ema_actual_ms = 33.0;
+        controller.fps_window.push(120.0);
+
+        controller.update_frame(600_000_000);
+        assert_eq!(controller.warmup_remaining, 0);
+        assert_eq!(controller.ema_actual_ms, 33.0);
+        assert_eq!(controller.fps_window.count(), 1);
+        assert_eq!(controller.loading_frames, 0);
+        assert!(!controller.is_loading);
+
+        controller.update_frame(16_666_667);
+        assert_eq!(
+            controller.warmup_remaining,
+            FRAME_FEEDBACK_WARMUP_FRAMES - 1
+        );
+        assert_eq!(controller.fps_window.count(), 1);
     }
 }
