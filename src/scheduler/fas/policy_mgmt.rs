@@ -239,7 +239,12 @@ impl FasController {
             } else {
                 effective_perf
             };
-            if policy.freq_hold_frames > 0 && !force && !load_only && thermal_cap.is_none() {
+            if policy.freq_hold_frames > 0
+                && !force
+                && !load_only
+                && thermal_cap.is_none()
+                && !policy.write_pending
+            {
                 policy.freq_hold_frames = policy.freq_hold_frames.saturating_sub(1);
                 // [silent-skip] 频率保持期内跳过写入，每 tick 高频路径，debug 门控
                 if log::log_enabled!(log::Level::Debug) {
@@ -266,13 +271,20 @@ impl FasController {
             let adj = linear_adj * (1.0 - blend * 0.5) + pow_adj * (blend * 0.5);
             let target_freq = policy.find_nearest_freq(adj);
 
-            if target_freq != policy.current_freq {
+            if target_freq != policy.current_freq || policy.write_pending {
                 let diff = (policy.find_nearest_freq(ratio) as f32 / policy.freq_max
                     - policy.current_ratio())
                 .abs();
 
-                // 变化小于迟滞阈值且非强制时跳过
-                if diff <= self.cfg.freq_hysteresis && !force && thermal_cap.is_none() {
+                // pending 是上次写失败的重试标记：跳过迟滞，即使目标等于 current_freq 也要再写一次确认
+                if !should_write(
+                    policy,
+                    target_freq,
+                    diff,
+                    force,
+                    thermal_cap.is_some(),
+                    self.cfg.freq_hysteresis,
+                ) {
                     // [silent-skip] 迟滞窗口内跳过写入，每 tick 高频路径，debug 门控
                     if log::log_enabled!(log::Level::Debug) {
                         log::debug!(
@@ -441,8 +453,15 @@ impl FasController {
                 continue;
             }
 
-            mw.write_value_force(max_f);
-            nw.write_value_force(max_f);
+            let init_max_ok = mw.write_value_force(max_f);
+            let init_min_ok = nw.write_value_force(max_f);
+            if !init_max_ok || !init_min_ok {
+                // [write-failed] 初始 min=max 也可能半写；记下失败让首个 apply 即使目标等于 current 也重试
+                warn!(
+                    "fas-policy-init-write-failed: pid={} max_ok={} min_ok={}",
+                    pid, init_max_ok, init_min_ok
+                );
+            }
 
             let profile = auto_w
                 .as_ref()
@@ -469,7 +488,7 @@ impl FasController {
                 )
             );
 
-            self.policies.push(PolicyController::new(
+            let mut policy = PolicyController::new(
                 mw,
                 nw,
                 freqs,
@@ -478,7 +497,10 @@ impl FasController {
                 max_f,
                 orig_governor,
                 fas_rules.verify_freq_interval_secs,
-            ));
+            );
+            // 初始化写失败时标记待重试：首个 apply 即使目标回落到 max_f 也会再写一次
+            policy.write_pending = !(init_max_ok && init_min_ok);
+            self.policies.push(policy);
         }
 
         self.current_target_fps = *self
@@ -526,5 +548,67 @@ impl FasController {
         for policy in &mut self.policies {
             policy.reset();
         }
+    }
+}
+
+/// 写频门控：write_pending（上次有侧写失败）必须无条件重试，其余仍按目标变化 + 迟滞/force/thermal 判定。
+fn should_write(
+    policy: &PolicyController,
+    target_freq: u32,
+    diff: f32,
+    force: bool,
+    thermal_active: bool,
+    hysteresis: f32,
+) -> bool {
+    if policy.write_pending {
+        return true;
+    }
+    target_freq != policy.current_freq && (force || thermal_active || diff > hysteresis)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_policy(current_freq: u32, write_pending: bool) -> PolicyController {
+        let mut policy = PolicyController::new(
+            FastWriter::new("/dev/null"),
+            FastWriter::new("/dev/null"),
+            vec![100, 200, 300, 400, 500],
+            0,
+            ClusterProfile::default(),
+            current_freq,
+            None,
+            1,
+        );
+        policy.write_pending = write_pending;
+        policy
+    }
+
+    #[test]
+    fn pending_retry_bypasses_equal_target_and_hysteresis() {
+        let pending = test_policy(300, true);
+        // 失败后目标回落到 current：门控必须放行重试
+        assert!(should_write(&pending, 300, 0.0, false, false, 0.05));
+        // 迟滞窗口内也必须放行（此前会被 diff <= hysteresis 跳过，半写长期偏离）
+        assert!(should_write(&pending, 400, 0.01, false, false, 0.05));
+    }
+
+    #[test]
+    fn normal_gate_matches_baseline_without_pending() {
+        let policy = test_policy(300, false);
+        assert!(!should_write(&policy, 300, 0.0, false, false, 0.05));
+        assert!(!should_write(&policy, 400, 0.01, false, false, 0.05));
+        assert!(should_write(&policy, 400, 0.01, true, false, 0.05));
+        assert!(should_write(&policy, 400, 0.01, false, true, 0.05));
+        assert!(should_write(&policy, 400, 0.10, false, false, 0.05));
+    }
+
+    #[test]
+    fn successful_apply_clears_pending() {
+        let mut policy = test_policy(300, true);
+        policy.apply_freq_locked(300);
+        assert!(!policy.write_pending);
+        assert_eq!(policy.current_freq, 300);
     }
 }
