@@ -10,7 +10,9 @@
 
 ### 待办（性能与探针）
 
-- **FAS governor 残留 performance 的修复待真机验证**：修法与机制见 `03-chiri.md` 的 FAS 小节「governor 残留 performance 与 reset() 的快照陷阱（2026-10-20 修）」。判据 = 下一包 `daemon.log` 是否再出现「检测到残留 performance 调速器」；本机无 Android NDK，android `cargo check` 未跑（见 `01-overview.md` 的本地验证限制）。
+- [ ] **网易云 USB 独占切换卡音：同机时间对齐取证**：30216 / SM8550 PHB110 的 activity 拟合在 1117 包见 PlayerActivity n=69,138、P_avg=2.84W，在 1119 包 n=7,130、P_avg=3.28W；40000 有 rhine.music.database（454 个 main 记录，多为 default），但对应日志没有可归因到 USB 独占、切 APP/系统动画或音频 underrun 的事件，不能据包名套用 playback。现有活动/功耗聚合不说明切换时延。复现时同步记录 USB 独占状态、前后台包/activity 与 mode/PID、切换/动画时间、音频 underrun/xrun、帧间隔、CPU/GPU 负载与频率、PSI 和 batt_power_w；用同一设备会话定位音频卡顿对应的调度动作后再最小修正。
+
+- [ ] **高负载卡顿 / 低负载功耗高：建立同机负载-响应证据**：当前拟合仅给候选：40000 / SM8550 小米包 1116 的国服 sgame n=79,314、P_avg=5.45W、big util=.50、f/max=.57，但 FPS 全空；30216 / SM8550 PHB110 包 1119 的国际服 sgame n=6,092、big over=2.5、util=.63、f/max=.81、P_avg=4.20W，是单包性能不足候选，未与掉帧对齐。同一 1119 包 launcher n=42,631（big util=.32、f/max=.33、P_avg=2.08W）及 Pixez n=9,378（P_avg=1.11W）只是不同 activity 的低负载参照，不是同一连续会话，不能证明低负载功耗偏高。仍需在同一设备和版本按时间对齐工作负载、前台 mode、逐核 util/freq 与 governor 决策（up_wait/up/down/hold）、迁移计数及统计窗口、PSI、GPU busy、FPS/帧间隔、温度/thermal cap 与 status.csv batt_power_w；分别确认高负载掉帧是否供给不足，以及低负载功耗是否由过高频/迁移/守护开销造成。不得跨设备/ROM/SoC横比，缺字段先补取证，不用 cpu_dyn_w 作为物理下界，不新增 A/B。
 ### 待办（配置 / 文档 / 杂项）
 
 - **批量适配机型的未验证面**：34 个新机型 + `msm8998` 的 `soc.yaml` 与前沿表由 `devimpbin/{batch_ingest,gen_soc_config}.py` 从 `freqbench_tensor` 实测折算生成，**未做真机调优、参数继承根 `feature.yaml` 默认**；生成口径见 `02-convention.md` 的 `soc.yaml` 条。**待办**：真机确认各机型 `[topology]` 与 `cpu_capacity` 实测值是否与折算一致（尤其 legacy 高通 4+4 与 6+2 两类）、确认无机型被误接管（回退 = 从 `CHIRI_SOC_HINTS` 删掉对应片段：不接管 CPU 仅监控，与 `msm8998` 曾经的「暂时下线」同法）。
@@ -32,11 +34,6 @@
       （big 顶档单核 3.819 W、prime 6.196 W），绝对量级未经真机核对。**相对向量使机内决策不受影响**
       （形状正确即可），但**跨簇比较依赖簇间相对比例**，故 prime/big 的比值若失真会改变跨簇落点。
       待有条件时用 PMIC 实测复核（`devimpbin/batch_ingest.py` 链路已就绪）。
-- [x] **8650 适配 EEM 已完成（2026-10-23）**：`scripts/curve_anchor.py --soc sm8650` 生成受控块到
-      `module/config/sm8650/soc.yaml`，`feature.yaml` 开 `eem_placement: true`。数据源 = 8 Gen 3 实测
-      能效曲线（A520/A720/X4 + N4P），口径与甜点见 `06-kernel.md`「8650 的 EEM 已适配」条。
-      结构回归 = `src/common.rs` 的 `frontier_config_tests::sm8650_frontier_usable`（断言甜点三档，
-      改锚点数据会立刻失败）。
 - [ ] **8650 甜点真机校准**：当前 little 1843200 / big 2323200 / prime 2246400 kHz，来自**读图**
       （逐点约读 + `α=0.7` 反解频率轴），误差可漂 ±2 档，**按体质误差接受**（用户 2026-10-23 定）。
       真机若发现单线程性能不足，同 8750 口径：先看 `eem_press_streak` 触发率，再考虑 `sweet_bias`，
@@ -73,17 +70,9 @@
 - [ ] **`com.tencent.mobileqq/.activity.SplashActivity` 的 boost 是否回收**：该键实测覆盖整个 QQ 会话
       （40262 tick ≈ 长驻，非启动页），PHB110 上 5.372 Wh（22.7%）。但 boost 段 2.39 W（8283 样本）
       < default 段 2.95 W（1817 样本），样本量差 4.6 倍且负载相位不同，**无法判定回收是否省电**。
-- [ ] **内核 sched 通道全线失效（2026-10-24 A02-14 实测，5 台机型全部）**：
-      `/proc/sys/kernel/sched_migration_cost_ns` 与 `/proc/sys/kernel/sched_nr_migrate` **节点不存在**
-      （9 个启动点各报「节点不存在 ×2」）→ `module/config/normal/fas/{sgame,dfm}.yaml` 的
-      `migration_cost_ns: 400000` 与 `tuned.rs` 同名通道**从未生效**，yaml 里「实机复核 400000」的 TODO
-      因此一直没有结论。已加告警：`fas_manager.rs` 改为逐分支 `log::warn!`（读不到 / 写失败分别报），
-      旋钮失效不再静默。**修法仍需先取证**：真机 `ls /proc/sys/kernel/ | grep sched` + `/sys/kernel/debug/sched/`，
-      按实际存在的节点改名或换通道；**不猜节点名**。这是 ChiRi 侧唯一能直接压内核搬迁次数的旋钮。
+- [ ] **内核 sched 迁移旋钮按设备核验**：30216 / SM8550 的 `devimpbin/1121-001327/x_1120-032533/daemon.log:14-15` 明确报告 `/proc/sys/kernel/sched_nr_migrate` 与 `/proc/sys/kernel/sched_migration_cost_ns` 不存在，因此配置的 `migration_cost_ns: 400000` 对该内核未生效；40000 / SM8475 包没有同类告警，但不能据此认定节点存在或旋钮生效。旧 A02-14 五机也曾报告同节点缺失；`fas_manager.rs` 已逐分支告警。下次按设备/内核版本采集 `/proc/sys/kernel/` 与 `/sys/kernel/debug/sched/` 的实际节点，并对照 `module/config/normal/fas/{sgame,dfm}.yaml`、`tuned.rs` 写入和恢复路径；只适配确实存在的接口，不猜节点名。
 - [ ] **i18n 文案与行为不符（顺手可改）**：`governor-residue-cleanup` 写「已恢复 schedutil」，实际恢复目标是
       `common::cpu_governor_for_policy(pid)`（walt / uag / sched_pixel…）。只改文案，不动行为。
-- [ ] **FAS 残留 performance 泄漏已闭环（证据已到，可销那条「待真机验证」）**：真机 9 条
-      「检测到残留 performance 调速器」，启动自检已捕获并写回默认调速器。
 - [ ] **EEM 同轮承诺账（已实现，待验证）**：`placement::Ledger` 让同轮后续决策看到已承诺的负载，
       取代原「`EEM_MAX_MOVES_PER_ROUND` 硬截断」的齐涌应付（详见
       `devimpbin/a0214/REPORT-A02-14.md` §8.3）。验证途径只有离线重放
@@ -102,15 +91,6 @@
 
 ### 亲和写失败治理（2026-10-26 落地，待真机复核）
 
-- [x] 已落地：失败退避（pin `REPIN_DEBOUNCE×2^(n-1)` 封顶 60s / place `FAIL_BACKOFF_BASE×2^(n-1)` 封顶 30s）、
-      进程级窄域备忘（同 pid 同簇 15s，只对 EINVAL 记账）、`Engine::applied` 回滚锚点 +
-      `note_applied`/`abort`、`@A place` 追加 `eff=` 回读掩码。
-      取证与数字：`.cursor/docs/2026-10-26-亲和写失败取证与窄域修复.md`。
-- [x] **首轮复核（2026-10-30，29 批 / 52.8M 行）**：① `pin fg_pin e22` **63,856 → 60**（1,064×，超额）；
-      ② `place` **62,531 → 6,353**（9.8×，合计 19.6×，未达 30×，缺口几乎全在 place）；
-      ③ `eff`/`dst` 差集 **94.0% 落在核 0-2**，但 `t` 行统计小核各承担 11-12% 驻留、285 个含小核的 pid 里
-      93 个确实拿到过 ⇒ **不是 cpuset 收窄、也不是核离线，是「间歇可用」** —— 故 cpuset 感知放置
-      （下条）暂不立项，改做「静默裁剪记账」（见下）。簇级震荡 0、@A 峰值 656/s < 基线 734。
 - [ ] **cpuset 感知放置（根治项，待判别后动）**：写前读一次该线程的 cgroup cpuset 并缓存
       （`affinity_cpuset::check_group_cpuset` 已有实现，当前只服务组绑定、单核/放置路径刻意未用），
       把目标区间夹到允许域内。判据：下轮失败若集中在特定 pid 而非特定核号 → cpuset 侧。
@@ -125,13 +105,6 @@
 
 报告：`.cursor/docs/2026-10-30-EEM能效模型审计与调度改进.md`；审计明细 `devimpbin/_x1030/model-audit.md`。
 
-- [x] **逐核供给下限** `energy_model::demand_with_core_floor`（+ `[per_core_floor]` 调用点）：不均载荷下
-      `demand = max(Σ, busiest×k)`；均匀载荷逐位不变（两条回归锁死）。
-- [x] **抗饥饿改挂起** `eem_cap_suspended`：原「10 封 1 放」占空比 91% ≈ 长期欠供；并订正「10 tick = 1.6s 不是 10s」。
-- [x] **`[k_symmetric]`+`[supply_gate]`**：`best_placement` 增 `cores` 参数（单线程传 1、簇级传 k），
-      `cheaper_elsewhere` 传本簇 k 并要求候选 `supply ≥ demand`、在线核数 ≥ cores（修 k 核 vs 1 核的口径错配）。
-- [x] **换前台重置负载画像** `[fg_reset]`（`refresh_fg_change`/`reset_load_state`，不动 current_perf）。
-- [x] **静默裁剪记账** `note_stripped`：写返回 0 但回读整簇被摘 → 与 EINVAL 共用 15s 窄域备忘（只记整簇）。
 - [ ] **下轮核对**：① 同 pid 同簇「写 ok 但整簇被摘」是否不再重复出现；② `settled=true` 占比是否从 19.0% 上升；
       ③ 不均载荷场景（`max_util≈0.85` 且本簇其余核有小负载）下 `cur_freq/sweet` 是否抬升；④ fg 切换后首帧
       `up_wait` 是否不再继承旧方向（`deb_up` 首行应为 1）。
@@ -151,19 +124,11 @@
 
 报告：`.cursor/docs/2026-10-31-日志ERROR取证与负载源兜底.md`。
 
-- [x] **procfs 负载源兜底** `[load_source]`：eBPF `RING_BUF` 需内核 ≥5.8，sm8250/4.19 上 `Ebpf::load` 必失败，
-      旧实现只打一条 `monitor-cpu-crashed` 就结束线程（daemon 活着但永不发 SystemLoadUpdate，CLG/tuned
-      看门狗 68 分钟 release 26 次）。现 Err 分支起 `start_proc_stat_fallback`：逐核 /proc/stat 差分、
-      节拍与主路径一致、不发假 BpfStats、连续失败 >50 拍交回看门狗。
-- [x] **FAS 开环通知门控** `[open_loop_notify]`：实测 417 次开环/178 次恢复/207 条通知，中位 1 s、p90 7 s，
-      全是退游瞬态。改为持续 10 s 才通知一次；PID 替换与去激活清计时。
 - [ ] **sm8250 真机复核**：确认 `monitor-cpu-ebpf-unavailable` 出现、CLG 看门狗不再 release、status.csv CPU 列有值。
 - [ ] **sched 迁移参数缺失降级**：`sched_migration_cost_ns`/`sched_nr_migrate` 在零售 GKI 不存在
       （CONFIG_SCHED_DEBUG=n，节点只在 debugfs），每次 boot 刷 38 条 WARN。应探测一次、缺失即静默并标不可用。
 - [ ] **3 条 FAS 单测需桩**：`activate_*`/`repeated_activate_*`/`same_package_pid_*` 依赖编译期白名单里的
       `game`（实际不存在）+ 真机 sysfs，宿主机恒红；应注入白名单/policy loader 或 `#[ignore]`。
-- [ ] **`[selfcost] @S` 22,397 条**（devimp 开时，50ms 阈值）：下一步给 @S 分块计时，定位是 `/proc/<pid>/task/*`
-      扫描还是 uclamp/掩码回读，再决定优化点。
 
 ### 清理与回退（2026-10-31 三条改动后遗留）
 
@@ -183,33 +148,6 @@
 
 取证包：`devimpbin/SYSTEM_LAST_KMSG@c6cca54b…@16_40_59`、`…@cf831898…@23_40_47`、`…@f6f7b34f…@2026_11_01_08_53_37`；报告 `devimpbin/1031-kmsg/FINDINGS.md`、`devimpbin/1031-2340/FINDINGS_2340.md`、`devimpbin/1101-0853/FINDINGS_1101.md`。
 
-- [x] **两份 minidump 同型定位**：`QCOM Apps Watchdog bark` → `qcom_wdt_bark_handler` ← GIC ← `cpuidle_enter_s2idle`；
-      vWdog 206 tick ÷ 6.365202 s = 30.899 ms/tick（32.36 Hz，32.768 kHz/1024）⇒ 客侧 bark 20000 ms 未生效，
-      **实际窗口 ≈200 tick ≈6.18 s**；挂起路径 6.225553 s + s2idle 空转 139.612 ms 即撞线。两份是不同构建
-      （`phantom-oki cc067c49…` / `abogki537459655-4k`）⇒ 不是单版本回归。
-- [x] **第三份 dump 同型确认（2026-11-01 08:53:37）+ 6.226 s 拆分订正**：第三次崩溃仍是
-      `bark Now=4597.287886 / last pet 4590.939412`（Δ **6.348474 s**）、`vWdog-time since last pet: 206`
-      （30.82 ms/tick ⇒ 32.45 Hz）、栈 `cpuidle_enter_s2idle+0x98/0xb0 ← do_idle ← cpu_startup_entry`
-      逐帧相同，内核与 10-31 23:40 同构建 `cc067c49…` ⇒ **三次崩溃、两个构建、同一失败链**。
-      **订正**：上文与 `FINDINGS_2340.md` §2.4 把 `last pet → s2idle 首条打印` 的 6.225553 s 判成
-      "挂起路径耗时"不成立——printk ring 文本区仅 ~2.0 MB 而该 debug 打印 ~129 B/轮，16231–16236 条正好填满，
-      **ring 里永远只留最后 ~106–140 ms**（10-31 实测跨度 139.612 ms = 16236×8.5 µs、本次 105.871 ms =
-      16231×6.458 µs，均与 ring 深度吻合）。现状只可断言"pet 后 ≥6.24 s 无 printk 留存"，其中 CPU 做什么
-      只能强推断（≈98 万轮 s2idle 空转 × 24 IRQ/轮 ≈ `Top10 irqs Total 23624040/6.348 s`）⇒ 见下方
-      "6.24 s 不可观测窗口"条目。
-- [x] **息屏静默档（L1）** `[screen_off_quiet]`：`TELEMETRY_LOG_INTERVAL_SCREEN_OFF=5s` /
-      `MODE_FILE_REWRITE_INTERVAL_SCREEN_OFF=30s` / `EVENT_POLL_MS_SCREEN_OFF=2s`（thermal 2s 不动）；
-      推送事件即时打断，`CLG_STALE_MAX=5s` 断投判定不受影响。
-- [x] **亮屏时延打点**：`screen_detect::mark_detect()/detect_latency_ms()` + screen 事件分支
-      `scheduler-screen-latency` INFO（判定→落地，预期 <250 ms）。
-- [x] **F4 息屏保活锁（wake_guard，2026-11-01 落地）** `[wake_guard]`：息屏向 `/sys/power/wake_lock` 写
-      `chiri_screen_off`（**不写内核超时**：该 sysfs 的超时单位在分支间是秒还是毫秒无保证，写错只会静默提前释放；
-      改为「启动盲释放清上一实例遗留 + 屏幕事件/DOWN 停摆/配置热重载三处对齐 + 重启清除」兜底），
-      PowerManager 的挂起尝试因 `pm_wakeup_pending()` 直接吃 -EBUSY ⇒ 根本不进 s2idle，绕开 ~6.2 s 撞线窗口。
-      `meta.yaml wake_guard_enabled` **缺键按机型**（`common::default_wake_guard_enabled`）：仅 sm8750 默认 true
-      （老安装 meta.yaml 不含该键也生效，因为 `sync_meta_snapshot` 对合法文件原样不动、不会补写新键），其余机型 false；
-      模板 `config/sm8750/meta.yaml` 写 true、根 `config/meta.yaml` 写 false；WebUI 开关在 **SceneMode 下方**；
-      节点缺失（内核无 `CONFIG_PM_WAKELOCKS`）静默停用并打一条 info。**代价**：息屏不进 s2idle，待机功耗上升。
 - [ ] **真机复核 wake_lock**：`grep -c scheduler-wake-guard-hold logs/daemon.log` 应≈息屏次数；
       息屏时 `cat /sys/power/wake_lock` 应含 `chiri_screen_off`、亮屏后消失；同时量待机电流（兜底代价）。
       注意这是**唯一**能挡住"干净挂起撞线"的应用侧手段——10-31 23:40 那份只有 2 次 freeze abort、WLAN 故障面≈0，
@@ -236,42 +174,26 @@
       9 次 device-fail。期望行为：`cnss_pci_suspend` 遇 TX 超时或 vdev NULL 立即 abort + 重载固件，
       `hdd_restart_tsf_sync_post_wlan_resume` 在 resume 前重同步而非只报错。
 
-
-
 ### 1107 包分析产出（2026-11-07 落地，待真机复核）
 
 > 证据与机制见 `.cursor/docs/2026-11-07-EEM的k口径缺陷与快速切应用延迟治理.md`；数据底盘 = `devimpbin/1107-011543`（sm8550，8 批，20,556,921 行，46.77h）。
 
-- [ ] **复核 C1 `[eem_k_busy]`（EEM k = 忙核数）**：`clg-eem-tick-log` 的 `cores` 应为「util>0.02 的核数」而非 `ceil(Σutil)`；重点看两类场景是否恢复升频：① 6 核各 50%（旧口径 k=3 永远欠供、封在甜点）② 两核各 0.7。判据 = 这两类场景 `eem_khz` 回到甜点以上、且同一时段 `batt_power_w` 不升。回退 = 恢复 `let k = (occupied.ceil() as usize).max(1)`（`cpu_load_governor.rs`）。
-- [ ] **复核 C2 `[up_fast]`（升频速率闸判据前置）**：1107 基线 default 档 `up_wait` 占 tick **30.6%**、`up_wait→up` 中位 **478ms**、len3 run 42,723、白等 run 37.9k。目标 = `up_wait` 占比 **<18%**、len3 占比 **<5%**、`up` 总次数增幅 ≤30%（防升频次数爆炸）。另看 `decision=up` 的相邻频差是否变大（跳变一次给足的直接后果）。
-- [ ] **复核 C3 `[eem_allowed_cpus]`（规划池可行域）**：1107 基线 `place` ok 里 `clipped=true` **38.3%**、被摘核 **86.1% 落在核 0-2**、65 个 (pid,簇) 对 60s 内被摘 ≥3 次。目标 = `clipped` 降到 <5%、被摘小核占比降到 <20%。注意 `affinity-eem-allowed` 若在部分机型上频繁变化（cpuset 抖动），说明读 cpuset 本身成了热路径，需加缓存（TTL 1s）——**2026-11-07 自审已做**：`EEM_ALLOWED_TTL=1s` 的 `eem_allowed_cache`，且写掩码与可行域**求交**（簇内被排除的核既不写也不计 `clipped`），空集直接 `eem.abort` 不发 syscall。
+- [ ] **复核 C1 `[eem_k_busy]` 真机效果**：`src/chiri/cpu_load_governor.rs:42-43,967-985` 已按 `util > 0.02` 统计忙核数，并以 `k = busy_cores.clamp(1, curve.cores().max(1))` 计算 EEM k；不再把它列为待实现算法。30216/40000 未含 `clg-eem-tick-log`/`eem_khz`，无法核对六核各 50%、双核各 0.7 等负载下 EEM 目标是否落在曲线甜点，也缺同设备 `batt_power_w` 轨迹；保留为真机验证项，不做新 A/B。
+- [ ] **复核 C2 `[up_fast]` 与升频确认**：实现见 `src/chiri/cpu_load_governor.rs:691-715`。1107 验收线为 `up_wait <18%`、len3 run <5%、`up` 总次数增幅≤30%；本次 30216 rate=3 固定输入五批 up_wait 21.02%、up +15.6%，单会话王者 up_wait 15.2%、up +9.6%，但 len3 和真实 FPS/功耗未验证。下轮同版本、同场景观察帧间隔与 `batt_power_w`，不得做并行/交错 A/B；实机功耗或帧表现回退时恢复 rate=4。
+
+- [ ] **SM8550 高区门控与单核突发验收**：配置 `high_zone_gate=0.85`、`high_zone_count=2`、`high_zone_util=0.90`（reduce/default/boost）；`devimpbin/1116-003204/x_devimp_1114-010906/main_com.ss.android.ugc.aweme_1113-223222.log:2437` 记录 little `hz_hold`（`over=1, under=1, cur/tgt=.94/.94`），但这是抖音窗口，仅单个门控命中，无逐帧掉帧或 `high_zone_wait` 计数。SM8550 当前 `up_jump_threshold` ≥0.25，而高区内 `target_perf≤1.0` 且 `current_perf≥0.85`，所以高区剩余跃升最多0.15，不能据“挡住显著跳变”判故障。设备验收需同一时间轴记录每核 util、`high_zone_wait/hz_hold`、真实目标/写入频率与逐帧间隔；只有门控等待与长帧重合且确认核数条件错配，才调整高区策略。现有固定输入回放是单核适配，不能作为多核门控验证。
+- [ ] **EEM cpuset 可行域真机复核**：验证 `eem_allowed_cache` 的 1s TTL 与 `dst_mask = a.mask ∩ allowed` 在 cpuset 变化时的实际效果；观察换包前后 `aff_action` 的 `clipped`，以及 `result=skip reason=dst_empty`、同一 tid 重试间隔（`FAIL_BACKOFF_BASE` 4s→30s）。确认无无效亲和写、缓存滞后可接受且空集不逐拍重试；旧 1107 比例不作为新版本验收线。
 - [ ] **腾讯视频下轮取证（判定线）**：本仓只命中 1030 包的 81.1s **详情页**（触摸 28.1%、无 fps），因此本轮只加 `activity-first` + 三条拉回规则，**未验证播放页**。下轮判据 = 连续 ≥10min、`mode=playback`、touch <1%、big util 不贴顶、`gpu_busy` 10–40%、fps 无长尾；同时确认详情页/启动页落在 `default`。不满足就撤 `special_tuned.yaml` 的 qqlive 条目（回退 = 删一行 + 三条 app_modes）。
-- [ ] **接管种子 `perf_init`（未做，P1 流畅度）**：换模式时 `apply_mode_takeover → reload_config/init_policies` 把 `current_perf` 重置为 `perf_init`（default 0.35）并立即写频 ⇒ 切换瞬间上限从 0.35 重新爬坡（1107 实测切换自身 0.9J/次、开应用爬坡 15.3J/次）。建议种子改为「读 `scaling_max_freq` 或当前 `scaling_cur_freq` ÷ 本簇 hw_max，夹在 `[perf_floor, perf_ceil]`」，无读数才回落 `perf_init`。**注意这是既有契约的取舍点**：`03-chiri.md` 的「热切换配置重放 perf_init」条明确写着「重置并立即写频，避免接管间隙 current_perf 掉到 0 后从地板缓慢爬升」——那条解决的是「掉到 0」，本条要解决的是「从运行值掉到 0.35」。两者不冲突，但**不要直接删掉重放**；改动需与 reduce 档省电口径一起评估（reduce 的 perf_init 0.20 本身就是省电取向）。
-- [ ] **`@S` 快照预算闸（未做，P1 流畅度）**：`selfcost` 8 会话 88,987 帧、成本 **68.9% 在 `tid_stat`**（443 次/帧 × 0.06ms），`mean_build_ms ≈ 13.1ms + 61.8µs×tids` ⇒ 1500 tid ≈ 106ms，最长 10.29s（/proc 被 D 状态拖住）。两条一起做：① `meta.yaml devimp_aff_secs` 1→2（零代码，先降频次）② `build_aff_snapshot` 的 tid 循环加 20ms 墙钟预算，超时即截断并在帧头记 `full=0`（口径变更要同步 `05-maint.md` 判读说明）。
-- [x] **`status.csv` 加 `daemon_rss_kb`（可观测性缺口，2026-11-07 自审轮完成）**：`STATUS_HEADER` 末尾追加第 28 列；`logger::self_rss_kb()` 读 `/proc/self/status` 的 `VmRSS`（kB，与页大小无关，失败返 0），`status_log_snapshot` 加参。旧 27 列归档按缺列读（WebUI 解析同时接受 27/28，`STATUS_COLUMN_COUNT=28`，mock 与单测同步）。**用法**：只看跨会话趋势（同包两批的 p50/p95 斜率），不看单点；下轮 `dvstatus` 若需按包统计再补列名。
-- [ ] **FAS 帧源静默 58 次（王者细微卡顿的候选根因）**：1107 包 `[ERROR] [FAS] 帧反馈静默，进入开环` 58 次、`[FPS Monitor] 帧源静默` 123 次，全部落在 `com.levelinfinite.sgameGlobal`；FAS 转开环后「档位不再调整」，只能靠负载控制。待查：探针 attach 后为何 Ns 无帧事件（SurfaceFlinger 层名/进程重启/choreographer 失效），以及开环期间是否应改用「负载 + 掉帧估计」的降级闭环。
+- [ ] **接管种子 `perf_init`（未做，P1 流畅度）**：换模式时 `apply_mode_takeover → reload_config/init_policies` 把 `current_perf` 重置为 `perf_init`（default 0.35）并立即写频 ⇒ 切换瞬间上限从 0.35 重新爬坡（旧记录曾报 1107 切换自身 0.9J/次、开应用爬坡 15.3J/次，但本轮未找到原始量测报告，待同机复测确认）。建议种子改为「读 `scaling_max_freq` 或当前 `scaling_cur_freq` ÷ 本簇 hw_max，夹在 `[perf_floor, perf_ceil]`」，无读数才回落 `perf_init`。**注意这是既有契约的取舍点**：`03-chiri.md` 的「热切换配置重放 perf_init」条明确写着「重置并立即写频，避免接管间隙 current_perf 掉到 0 后从地板缓慢爬升」——那条解决的是「掉到 0」，本条要解决的是「从运行值掉到 0.35」。两者不冲突，但**不要直接删掉重放**；改动需与 reduce 档省电口径一起评估（reduce 的 perf_init 0.20 本身就是省电取向）。
+- [ ] **@S 全量快照主线程长尾（修复已落地，待设备验收）**：九包 daemon 的 build >50ms 告警 54,706 条、>100ms 4,546 条、最大 7.8008s（1116-003204；每包14–16,219条，仅为阈值日志计数）。在 devimpbin/1116-003204/x_1114-010906 的同一窗口，@S build 2.5350s/4.0228s/7.8008s/3.4191s 与 main tick 间隔 8.161s/6.046s/9.867s/8.429s 重叠。源码确认 build_aff_snapshot 在线程内同步执行（src/chiri/mod.rs:3132-3178），D1 仅异步 render/write（DIAG_WORKER_ENABLED=false，src/chiri/mod.rs:1170）；每16个候选 yield 一次也是该同步路径上的额外调度点（src/chiri/diag_slice.rs）。已改为每256个候选 yield；513候选的让出次数由32降为2，候选、线程/帧语义、1s刷新频率及日志字段均不删减。另将 /proc/<tid>/stat 读取改为复用4线程池、每批16个TID并行采样，按输入顺序串行应用差分；刷新补采也使用同一批次读取，逐TID读取一次，保留所有候选和anchor。selfcost 的 tid_stat 现以批次统计非重叠wall/caller CPU，worker CPU另列，schema升级至 selfcost-build/2。离线实现与回归不等于真机收益。selfcost Residual 含循环外、锁、差分及让出等未拆分成本，不能单独归因；设备验收需确认完整候选/字段数不减、采样频率不变，且 @S build 与 main tick 无长尾。待目标设备单版本高负载与低负载日志验收：完整快照样本/字段数不减，@S build 与 scheduler tick 间隔均无 >1s 长尾；记录 worker_cpu、daemon CPU 和 batt_power_w，确认低负载下没有新增的持续采样开销或功耗上扬，并核对高负载收益。不得用降采样或20ms截断换取表面改善，不做并行/交错A/B。
+- [ ] **王者国际服微掉帧：对齐 FAS 帧反馈与逐帧证据**：1107 曾有 sgame 帧源静默（FAS 58 次、FPS Monitor 123 次）；30216 的 `devimpbin/1121-001327/x_devimp_1120-032533/main_com.levelinfinite.sgameGlobal_1120-013050.log:6-45` 为 `mode=default`，相邻 `devimpbin/1121-001327/x_1120-032533/daemon.log:2370` 记 PID 10159 在 01:30:49 `default -> fas`，main 从 01:30:50 起，模式/PID 对齐未证。九包中 30216 的 `status.csv` 有 FPS 每秒样本：1112-020657 n=13,321（p10/p50 121.38/123.25）、1113-165328 n=5,050（67.91/123.08）、1117-215156 n=14,872（119.16/123.60）、1119-230718 n=7,111（121.06/124.26）；这些是约 1s 聚合样本，不是逐帧间隔，不能据低分位判定微掉帧。1119 SM8550 会话 daemon.log:2083-2119 有 native 120→60、约3秒后60→120并同秒再 native降档；原因与 native直降没有upgrade cooldown、低perf升档确认后可回摆相符。src/scheduler/fas/gear_state.rs 已让 native 与普通降档共用同档指数退避，首次冷却按配置90帧×2并按目标FPS缩放，重复同档降档递增；显著超帧快速升档仍不受冷却阻挡。controller 回归覆盖首次/重复native降档、冷却期低perf hold、真实超帧快速升档及冷却后再升档。该修复针对源码可证的回摆机制，不等于证明用户感知微卡顿全部由它造成；设备验收需确认档位不再约3秒反复翻转、真实高刷输出可快速升档且逐帧长尾改善，并与CPU/GPU负载、thermal及batt_power_w对齐；未有上述证据前不得宣称主观体验/功耗已验证。40000 小米包 devimpbin/1116-003204 的国服 sgame 有 36,926 个 FAS snap 但 FPS 全空；daemon 日志计数有帧源静默 160、反馈静默 498、恢复 25、uprobe 挂载 236、PID 切换失败 6、持续开环 21（包级文本计数，不等于掉帧数）。国际服唯一性能不足候选在 devimpbin/1119-230718/activity-fit.txt:333（n=6,092、big over=2.5、util=.63、f/max=.81、P_avg=4.20W），未与掉帧时间关联，不足以增加频率下限/最高频锁或新特调。单会话默认档固定输入回放 25,355 tick（screen_on 全未知）：rate=4/jump=0.55 模拟 up_wait 5,194（记录 5,345）；仅 rate 改 3 后 up_wait 3,851（20.5%→15.2%）、up +9.6%，该会话理想频率 sink P95/P99 不变。五批 rate3 合计 up_wait 占比 27.17%→21.02%，一批 P95 +57.6MHz。输入 util 固定、无频率反馈/FPS/功耗，不代表实机效果；SM8550 default 已改 rate=3，待同版本同场景核验逐帧间隔与 `batt_power_w`；jump 0.45/0.35 未见目标会话收益，维持 0.55。开环仍执行负载调频（`load_only = !locked && self.uses_load_control()`），不能称为频率冻结。下轮按 PID/generation/时间戳对齐 raw_foreground_package、snapshot package/PID/generation/starttime、窗口可见性、FAS enabled/ready、cooldown/halted、fallback 激活结果、probe attach/首帧及真实帧间隔，再核对 CPU/GPU 负载和档位；先判定静默属于无帧、进程/Surface 映射或探针事件路径，这部分帧源/身份问题独立于本次已修复的 native 档位回摆；仅在确认探针或状态链路有缺陷后再修闭环，不删身份 guard、不改阈值/gear，也不凭现有包改 `perf_lock`。
 - [ ] **bili 两条 activity 规则裁决**：`rules.yaml` 给 `tv.danmaku.bili/.MainActivityV2`、`/BiliMainSearchActivity` 配了 `default`，但 bili 是特调白名单包（无 `activity-first`）⇒ 两条规则**写而不生效**，1107 实测这两个 activity 共 63,587 tick 全走 `playback`。要么给 bili 也加 `activity-first`（搜索页/详情页回 default，有触摸升频），要么删掉这两条规则（承认整包 playback）。**不要只改优先级顺序**——那会一次性改掉所有白名单包的行为。判据 = 这两个 activity 的触摸密度与 fps 长尾，对照 1107 的 `playback` 段。
-- [x] **`energy_model::best_placement` 文档与实现不符（2026-11-07 自审轮完成）**：`(false,false)` 改为取**供给更大**者（`cand.supply > b.supply + f32::EPSILON`），供给并列才保留先到者；`(true,true)` 仍按 cost+`hysteresis`。回归 `placement_prefers_max_supply_when_none_can_supply`（demand=2.0 / cores=1，断言取各簇 top 档最大单核供给）。生产侧 `cheaper_elsewhere` 已有 `p.supply >= demand` 闸，无行为变化。
-- [x] **`narrow_skip` 多槽（2026-11-07 自审轮完成）**：按簇分键 `narrow_pid: HashMap<(i32, CoreGroup), Instant>`，`narrow_skip` 查 `(pid, cluster)`；新增 `remember_narrow` 统一 insert + 超 512 条按到期清理；`note_narrow`（仅 EINVAL）与 `note_stripped`（回读缺簇）共用。跨簇并集掩码不再能绕过另一簇的禁令。
-
-### 2026-11-07 自审轮修复（C1–C4 落地后自查发现，均已改 + 回归）
-
-> 审查对象 = 上一条 1107 包的 C1–C4；判据 = 不改变已验证行为的前提下补齐机制缺口。回归全绿：`cargo fmt` / `cargo check -p chiri`（exit 0，13 条既有告警）/ `cargo test -- special_tuned_tests activity_tests` 30 passed / 离线 energy_model 40、affinity_cpuset 19、app_mode_activity 10、clg_tuning 5、diag_slice 6。
-
-- [x] **activity-first 漏 `dynamic_enabled` 闸**（`src/monitor/app_detect.rs`）：原判据只看 `activity_first && has_activity_rule`，而 activity 规则只在 `config.dynamic_enabled` 时生效 → 关闭动态模式后白名单应用**先让位、再落到 global_mode**，特调整包丢失。改为 `special_yields_to_activity(activity_first, dynamic_enabled, has_activity_rule)`，测试五断言含「动态关时让位即掉出特调」。
-- [x] **`eem_allowed_cpus` 每拍读 cgroup**（`src/chiri/affinity.rs`）：`apply` 160ms 一拍、每次 2 个 seq_file；加 `eem_allowed_cache: Option<(Instant, Option<Vec<usize>>)>` + `EEM_ALLOWED_TTL=1s`。
-- [x] **写掩码未与可行域求交**（同文件）：C3 只按簇剔除，簇内部分核被 cpuset 排除时仍照写并被静默摘。新增 `dst_mask`（`a.mask ∩ allowed`），空集 `eem.abort` 不发 syscall；`mask_write_allowed`/`set_tid_affinity`/`clipped`/日志 dst 全用 `dst_mask`，`clipped` 以「实际写下」为基准。
-- [x] **`status.csv` 的 28 列契约同步到 WebUI**（`webui/src/data/status-csv.ts`、`tests/data-parse.test.ts`、`src/dev/mock-shell.ts`、`README.md`）：解析器原先按「字段数 == 27」过滤，加列后会**整文件丢行**；现同时接受 27/28（旧归档 `daemonRssKb=null`），mock 与单测同步。
-- [ ] **待真机复核（自审轮不写结论）**：① 1s TTL 是否让 cpuset 变化在 1s 内滞后（切换应用瞬间允许集变宽/变窄）——看 `aff_action` 的 `clipped` 是否在换包 ±1s 出现尖峰；② `dst_mask` 求交后空集路径：已加 `result=skip reason=dst_empty` 留痕，且 `abort` 的 `fail_streak` 会走 `FAIL_BACKOFF_BASE` 退避（4s→30s），理论上不会每拍重试——下轮看 `skip` 计数与同一 tid 的重复频率即可定论。
 
 ### 终末地性能优先档 `[perf_lock]`（2026-11-07 落地，待真机复核）
 
 > 用户 2026-11-07 指令：为终末地提供性能增强，忽略功耗开销，以「绝对流畅、绝对不卡不掉帧、尤其没有小卡顿」为唯一目标。机制与取舍见 `agentsdocs/03-chiri.md` 的 `[perf_lock]` 条；配置 = `module/config/normal/fas/endfield.yaml`；回归 = `scripts/tests/fas_perf_tier_regression.rs`。
 
-- [x] **`perf_lock` 落代码**：`src/fas_types.rs` 新增 `perf_lock: bool`（`#[serde(default)]`，缺省 false）；`policy_mgmt.rs::apply_freqs` 在 util 软封顶之后、`thermal_cap` 之前 `self.perf_index = ceiling; effective_perf = ceiling;`，且 `let load_only = !locked && self.uses_load_control();`（开环分支按 util 下探，与锁频互斥）；`controller.rs::adjust_target_for_util` 与 `frame_pipeline.rs::apply_steady_decay` 在锁频档直接 return（`apply_steady_decay` 顺带由私有改 `pub(super)` 供单测）；`load_policies` 打 i18n `fas-perf-lock`，`reload_rules` 支持热重载。
-- [x] **终末地改性能档**：`perf_lock: true` + `fps_gears: [60.0]`（单档 ⇒ `next_gear/prev_gear` 恒 None，齿轮机整段不执行，掐掉「降档加速压到 0.90」与「原生档 60↔120 翻面」）+ per-app `target_fps: [60]`；`core_temp_threshold: 0.0` 保留（FAS 侧不降频，热量交内核 thermal）。
-- [x] **验证基线**：`cargo fmt` 干净；`cargo check -p chiri` exit 0（13 条既有告警）；新增 4 条单测全过（`perf_lock_keeps_max_freq_under_util_cap_and_jank` / `_bypasses_load_only_demand` / `_freezes_target_fps_offset` / `_skips_steady_decay`）；离线 `fas_perf_tier_regression` 4 passed；全量 `cargo test -p chiri --bin chiri` = **278 passed / 3 failed**（既有 `fas_manager::tests` 三条环境依赖）。
 - [ ] **真机复核**：① `daemon.log` 出现 `fas-perf-lock`；② `[FAS] ... | P:` 全程 1.00、`snap` 里三簇 `cur/max` 恒 100%；③ `fas-gear-switch` / `fas-downgrade-boost` / `fas-native-gear-detected` 零条；④ `fas-loop-open` 期间频率不掉（这是本档的核心收益）；⑤ 观察 `qos_clamped`——若内核 thermal 把 `scaling_max_freq` 压到目标以下会告警但不重写，持续钳制说明得降温（或回退到保留 `core_temp_threshold`）。
 - [ ] **GPU 锁频评估（未做，需证据）**：FAS 现在完全不碰 GPU（`src/chiri/gpu.rs` 的 `GpuGuard` 只给 lab contingency 用）。开锁的判据 = 真机日志 `gpu_busy` 长期 ≥95% 且 CPU 已锁最高频仍有掉帧。**风险**：8550 实测读 GPU 节点会把 GPU 拉起（+47% 功耗），锁最高频显著抬 SoC 温度，可能诱发内核 thermal 压 CPU → 更卡。故无证据不开。
-- [ ] **是否套用到 sgame/lolm/speedmobile（待裁决）**：1107 包 sgame 的三条掉频来源（开环锯齿 58 次、降档加速 P→0.90 三十条、原生档 60↔120 翻面）都被 `perf_lock` 一并解决，但电竞长时场景热负载更高，「忽略功耗」需用户定。套用 = 该应用 yaml 加 `perf_lock: true`，`fps_gears` 是否收成单档按机型刷新率决定（单档会让齿轮机失效，但 `perf_lock` 仍把频率钉在最高）。
+- [ ] **sgame/lolm/speedmobile 是否启用 `perf_lock`（按应用分别裁决）**：本次 1119 sgame 120↔60 原生档回摆已由 native 降档共用既有指数退避修复；不能再称该问题只有 `perf_lock` 能解决。1107 的开环、降档 boost 和长时高热负载仍是不同机制，且用户确认帧源静默时开环属预期；不要为消除合法开环而锁频。是否忽略功耗并锁最高频仍需按应用目标与设备热表现单独决定，不能把 sgame 结论外推到 lolm/speedmobile。若启用，`fps_gears` 是否收成单档须按机型刷新率评估；单档会停用齿轮切换，但 `perf_lock` 仍把频率保持在最高档。
 - [ ] **`effective_perf_floor()` 的 0.45 硬顶（未改）**：`controller.rs` 的 `(base + fps_bonus).min(0.45)` 让任何 `perf_floor > 0.45` 失效。`perf_lock` 绕过它（写频只认 `perf_ceil`），本轮不动；将来若要做「半锁」（floor 0.8 保底 + PID 微调），需改成可配字段并同步 `normalize()` 的交叉约束段。

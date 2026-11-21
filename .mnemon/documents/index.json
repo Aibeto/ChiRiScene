@@ -24,7 +24,7 @@
       ],
       "createdAt": "2026-10-11T06:17:42.798Z",
       "updatedAt": "2026-10-11T06:17:42.798Z",
-      "lastAccessedAt": "2026-10-17T19:49:36.923Z",
+      "lastAccessedAt": "2026-11-20T21:34:27.136Z",
       "revision": 1,
       "contentHash": "fed27c85ae4666f5939c4d9c1a53a8ce14b16a8f40741a23f88fa07b62283309",
       "sizeBytes": 8229,
@@ -148,7 +148,7 @@
       ],
       "createdAt": "2026-10-12T14:31:42.672Z",
       "updatedAt": "2026-10-12T19:48:58.602Z",
-      "lastAccessedAt": "2026-10-15T04:41:16.348Z",
+      "lastAccessedAt": "2026-11-20T16:38:29.306Z",
       "revision": 2,
       "contentHash": "c395522cc593e80ad6cbfcb47c91858e7b613628f100c3dc062a2ba771178cd8",
       "sizeBytes": 5798,
@@ -280,7 +280,7 @@
       ],
       "createdAt": "2026-10-17T19:49:58.334Z",
       "updatedAt": "2026-10-17T21:19:09.960Z",
-      "lastAccessedAt": "2026-10-17T21:19:09.960Z",
+      "lastAccessedAt": "2026-11-21T07:05:40.063Z",
       "revision": 3,
       "contentHash": "ed45e49162196d1341371a31c746665f6c47b72940abe94f7e9a9e6e71c9e7e3",
       "sizeBytes": 7076,
@@ -310,7 +310,7 @@
       ],
       "createdAt": "2026-10-21T21:14:07.078Z",
       "updatedAt": "2026-10-21T21:14:07.078Z",
-      "lastAccessedAt": "2026-10-21T21:14:07.078Z",
+      "lastAccessedAt": "2026-11-20T21:34:27.136Z",
       "revision": 1,
       "contentHash": "d1d1ace12866a82b482c92029d35aa5ae78dd407c87b4a4f445e084ce1990799",
       "sizeBytes": 10167,
@@ -331,7 +331,7 @@
       ],
       "createdAt": "2026-11-20T15:49:38.752Z",
       "updatedAt": "2026-11-20T15:49:38.752Z",
-      "lastAccessedAt": "2026-11-20T15:49:38.752Z",
+      "lastAccessedAt": "2026-11-21T06:54:03.830Z",
       "revision": 1,
       "contentHash": "21d37b9b7839882d88473bc3d3ff8894f00c06d942bc184432cc7cc0251a227f",
       "sizeBytes": 7260,
@@ -350,14 +350,41 @@
         ".archive/.cursor/memory/MEMORY.md"
       ],
       "sessionIds": [
-        "session-c3195d85-1409-4552-a706-f4834a248c60"
+        "session-c3195d85-1409-4552-a706-f4834a248c60",
+        "session-547e8bd8-29af-40f5-9e93-9b6eb70405c7"
       ],
       "createdAt": "2026-11-20T15:49:57.147Z",
-      "updatedAt": "2026-11-20T15:49:57.147Z",
-      "lastAccessedAt": "2026-11-20T15:49:57.147Z",
+      "updatedAt": "2026-11-21T03:25:08.893Z",
+      "lastAccessedAt": "2026-11-21T07:05:40.063Z",
+      "revision": 2,
+      "contentHash": "f4dc9dfcc74d3754932ddc751cb8088a82be6e694850bb862d1537ba4a15f792",
+      "sizeBytes": 20867,
+      "memoryBodyIds": []
+    },
+    {
+      "id": "1ff2d619-195a-4bcd-810e-9667e574a8ba",
+      "title": "ChiRi @S TID 有界采样与 selfcost-build/2 契约（2026-11-21）",
+      "description": "@S 同步快照的有界并行 TID stat 读取、顺序差分和 selfcost-build/2 成本口径；用于后续维护与真机验收。",
+      "status": "active",
+      "filename": "chiri-s-tid-selfcost-build-2-2026-11-21-1ff2d619.md",
+      "relativePath": "documents/active/chiri-s-tid-selfcost-build-2-2026-11-21-1ff2d619.md",
+      "sourcePaths": [
+        "src/chiri/mod.rs",
+        "src/chiri/diag_build_cost.rs",
+        "src/chiri/diag_slice.rs",
+        "agentsdocs/02-convention.md",
+        "agentsdocs/05-maint.md",
+        "agentsdocs/07-todos.md"
+      ],
+      "sessionIds": [
+        "session-547e8bd8-29af-40f5-9e93-9b6eb70405c7"
+      ],
+      "createdAt": "2026-11-21T07:09:33.927Z",
+      "updatedAt": "2026-11-21T07:09:33.927Z",
+      "lastAccessedAt": "2026-11-21T07:09:33.927Z",
       "revision": 1,
-      "contentHash": "8c13b481e91968e2e1474de55db3507ac15c306f2485769ef8588f2e75230d3a",
-      "sizeBytes": 19483,
+      "contentHash": "6563547b297b5afd184d6944abe4229bfbf0e8ae12b323e6eb8320b1e66250a3",
+      "sizeBytes": 3676,
       "memoryBodyIds": []
     }
   ]
