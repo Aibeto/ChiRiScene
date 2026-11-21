@@ -511,19 +511,10 @@ pub(crate) mod tests {
     use crate::scheduler::fas::gear_state::GearDecision;
     use crate::utils::FastWriter;
 
-    /// 可写临时文件：FastWriter 必须在真实可写句柄上才返回 true。
-    /// /nonexistent 的写失败语义改由 policy_controller 单测显式注入，避免沿用假成功。
-    fn writable_test_path(tag: &str) -> String {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        static SEQ: AtomicUsize = AtomicUsize::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "chiri-fas-controller-{}-{}-{}",
-            std::process::id(),
-            tag,
-            SEQ.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::write(&path, b"").expect("create fas test sysfs file");
-        path.display().to_string()
+    /// /dev/null：写入成功且不产生临时文件；测试只关心写入结果/状态推进。
+    /// /nonexistent 的写失败语义由 policy_controller 单测显式注入，避免沿用假成功。
+    fn writable_test_path(_tag: &str) -> String {
+        "/dev/null".to_string()
     }
 
     pub(crate) fn controller_with_policy() -> FasController {
