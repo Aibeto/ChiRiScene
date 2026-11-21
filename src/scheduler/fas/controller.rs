@@ -508,6 +508,7 @@ impl FasController {
 pub(crate) mod tests {
     use super::*;
     use crate::fas_types::ClusterProfile;
+    use crate::scheduler::fas::gear_state::GearDecision;
     use crate::utils::FastWriter;
 
     pub(crate) fn controller_with_policy() -> FasController {
@@ -525,6 +526,94 @@ pub(crate) mod tests {
         controller.policies[0].cpu_ids = vec![0];
         controller.reset_frame_feedback();
         controller
+    }
+
+    #[test]
+    fn native_downgrade_cooldown_blocks_stable_low_perf_reupgrade() {
+        let mut controller = controller_with_policy();
+        controller.fps_gears = vec![60.0, 120.0];
+        controller.current_target_fps = 120.0;
+        controller.perf_index = 0.55;
+        controller.stable_gear_frames = 899;
+        for _ in 0..20 {
+            controller.fps_window.push(60.0);
+        }
+
+        let GearDecision::Downgrade {
+            target,
+            perf,
+            dampen,
+        } = controller.evaluate_gear(60.0, 60.0)
+        else {
+            panic!("stable 60 fps should trigger native-gear downgrade");
+        };
+        controller.do_gear_switch(target, perf, dampen);
+        assert_eq!(controller.stable_gear_frames, 0);
+
+        let expected_cooldown = crate::scheduler::fas::pid::scale_frames(
+            controller.cfg.upgrade_cooldown_after_downgrade * 2,
+            60.0,
+        );
+        assert_eq!(controller.upgrade_cooldown, expected_cooldown);
+
+        let mut fast = controller_with_policy();
+        fast.fps_gears = vec![60.0, 120.0];
+        fast.current_target_fps = 60.0;
+        fast.perf_index = 0.40;
+        fast.upgrade_cooldown = expected_cooldown;
+        for _ in 0..20 {
+            fast.fps_window.push(100.0);
+        }
+        assert!(matches!(
+            fast.evaluate_gear(100.0, 100.0),
+            GearDecision::Upgrade { target: 120.0, .. }
+        ));
+
+        controller.perf_index = 0.45;
+        for _ in 0..90 {
+            controller.upgrade_cooldown = controller.upgrade_cooldown.saturating_sub(1);
+            controller.fps_window.push(60.0);
+        }
+        assert_eq!(controller.upgrade_cooldown, expected_cooldown - 90);
+        assert!(matches!(
+            controller.evaluate_gear(60.0, 60.0),
+            GearDecision::Hold
+        ));
+
+        controller.upgrade_cooldown = 0;
+        let mut upgraded = false;
+        for _ in 0..180 {
+            if matches!(
+                controller.evaluate_gear(60.0, 60.0),
+                GearDecision::Upgrade { target: 120.0, .. }
+            ) {
+                upgraded = true;
+                break;
+            }
+        }
+        assert!(
+            upgraded,
+            "a sustained low-perf opportunity must still permit upgrade after cooldown"
+        );
+
+        controller.current_target_fps = 120.0;
+        controller.perf_index = 0.55;
+        controller.fps_window.clear();
+        controller.upgrade_confirm_frames = 0;
+        controller.downgrade_confirm_frames = 0;
+        for _ in 0..20 {
+            controller.fps_window.push(60.0);
+        }
+        let GearDecision::Downgrade {
+            target,
+            perf,
+            dampen,
+        } = controller.evaluate_gear(60.0, 60.0)
+        else {
+            panic!("a repeated stable native gear should downgrade again");
+        };
+        controller.do_gear_switch(target, perf, dampen);
+        assert_eq!(controller.upgrade_cooldown, expected_cooldown * 2);
     }
 
     #[test]

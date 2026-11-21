@@ -93,6 +93,26 @@ impl FasController {
         }
     }
 
+    fn record_downgrade_backoff(&mut self, from_fps: f32, to_fps: f32) {
+        let same_gear = (from_fps - self.last_downgrade_from_fps).abs() < 1.0;
+        let fresh_round = self
+            .last_downgrade_at
+            .map(|t| t.elapsed() >= DOWNGRADE_BACKOFF_RESET)
+            .unwrap_or(true);
+        if same_gear && !fresh_round {
+            self.consecutive_downgrade_count += 1;
+        } else {
+            self.consecutive_downgrade_count = 1;
+        }
+        self.last_downgrade_from_fps = from_fps;
+        self.last_downgrade_at = Some(Instant::now());
+        self.stable_gear_frames = 0;
+        let backoff = 1u32 << self.consecutive_downgrade_count.min(4);
+        // Scale in the destination gear so cooldown wall time stays consistent across FPS targets.
+        self.upgrade_cooldown =
+            scale_frames(self.cfg.upgrade_cooldown_after_downgrade * backoff, to_fps);
+    }
+
     pub(super) fn do_gear_switch(&mut self, new_fps: f32, perf: f32, dampen: u32) {
         let old = self.current_target_fps;
         self.current_target_fps = new_fps;
@@ -263,6 +283,7 @@ impl FasController {
                             )
                         )
                     );
+                    self.record_downgrade_backoff(tfps, native);
                     return GearDecision::Downgrade {
                         target: native,
                         perf: 0.55,
@@ -364,26 +385,8 @@ impl FasController {
                 let confirm = scale_frames(self.cfg.downgrade_confirm_frames, tfps);
                 if self.downgrade_confirm_frames >= confirm {
                     let old_fps = tfps;
-                    // 退避计数只由降档维护，升档不再清零，否则每次降档后紧跟的升档都把 backoff 打回 `1 << 1`
-                    // 计数增长条件：同一档位且距上次降档在 DOWNGRADE_BACKOFF_RESET 内（时间衰减）
-                    let same_gear = (old_fps - self.last_downgrade_from_fps).abs() < 1.0;
-                    let fresh_round = self
-                        .last_downgrade_at
-                        .map(|t| t.elapsed() >= DOWNGRADE_BACKOFF_RESET)
-                        .unwrap_or(true);
-                    if same_gear && !fresh_round {
-                        self.consecutive_downgrade_count += 1;
-                    } else {
-                        self.consecutive_downgrade_count = 1;
-                    }
-                    self.last_downgrade_from_fps = old_fps;
-                    self.last_downgrade_at = Some(Instant::now());
-                    let backoff = 1u32 << self.consecutive_downgrade_count.min(4);
-                    // 计数器按帧递减（frame_pipeline 每帧 -1），各档帧预算不同，与同族 confirm/dampen/boost
-                    // 一致过 scale_frames，冷却墙钟时长才不随档位漂移
-                    self.upgrade_cooldown =
-                        scale_frames(self.cfg.upgrade_cooldown_after_downgrade * backoff, prev);
-                    self.stable_gear_frames = 0;
+                    // 退避计数只由降档维护，升档不再清零；native 与普通确认降档共享同档退避。
+                    self.record_downgrade_backoff(old_fps, prev);
                     return GearDecision::Downgrade {
                         target: prev,
                         perf: self.perf_index,
