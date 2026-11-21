@@ -324,16 +324,8 @@ impl FasController {
             self.reset_frame_feedback();
         }
         if self.warmup_remaining > 0 {
-            // 预热期明确 app 切换超时：基线会在此永久丢弃，永远到不了 handle_early_exit；
-            // 仅对 >app_switch_gap_ms 且已过冷启动的帧提前执行 app-switch，保持原有 reset_runtime 语义。
-            if actual_ms > self.cfg.app_switch_gap_ms
-                && self.init_time.elapsed().as_millis() >= self.cfg.cold_boot_ms as u128
-            {
-                self.handle_app_switch(actual_ms);
-                return;
-            }
             if frame_delta_ns > max_ns || actual_ms > self.cfg.app_switch_gap_ms {
-                // [静默失效排查] 预热期超长帧：整帧丢弃并回到 12 帧预热，表现为「预热迟迟不结束」
+                // [静默失效排查] 预热期超长帧：整帧丢弃且不递减预热计数，表现为「预热迟迟不结束」
                 if log::log_enabled!(log::Level::Debug) {
                     let reason = if frame_delta_ns > max_ns {
                         "预热期超长帧（>fixed_max_frame_ms）"
@@ -552,20 +544,17 @@ mod tests {
     }
 
     #[test]
-    fn warmup_timeout_app_switch_unblocks_without_touching_warmup() {
+    fn warmup_timeout_above_app_switch_gap_is_dropped_without_app_switch() {
         let mut controller = controller_with_policy();
-        controller.perf_index = 0.45;
+        let initial_perf = controller.perf_index;
 
         controller.update_frame(3_100_000_000);
 
-        assert_eq!(controller.perf_index, controller.cfg.app_switch_resume_perf);
+        assert_eq!(controller.perf_index, initial_perf);
         assert_eq!(controller.warmup_remaining, FRAME_FEEDBACK_WARMUP_FRAMES);
         assert!(controller.last_frame_at.is_none());
-        assert!(controller.gear_dampen_frames > 0);
-        assert_eq!(
-            controller.post_loading_downgrade_guard,
-            controller.cfg.post_loading_downgrade_guard
-        );
+        assert_eq!(controller.gear_dampen_frames, 0);
+        assert_eq!(controller.post_loading_downgrade_guard, 0);
 
         for _ in 0..FRAME_FEEDBACK_WARMUP_FRAMES {
             controller.update_frame(16_666_667);
@@ -576,10 +565,13 @@ mod tests {
     #[test]
     fn warmup_timeout_frames_do_not_block_recovery() {
         let mut controller = controller_with_policy();
+        let initial_perf = controller.perf_index;
         for _ in 0..60 {
             controller.update_frame(600_000_000);
         }
+        assert_eq!(controller.perf_index, initial_perf);
         assert_eq!(controller.warmup_remaining, FRAME_FEEDBACK_WARMUP_FRAMES);
+        assert!(controller.last_frame_at.is_none());
 
         for _ in 0..FRAME_FEEDBACK_WARMUP_FRAMES {
             controller.update_frame(16_666_667);
@@ -592,7 +584,7 @@ mod tests {
     fn normal_app_switch_keeps_baseline_reset_trace() {
         let mut controller = controller_with_policy();
         controller.warmup_remaining = 0;
-        controller.last_frame_at = Some(Instant::now() - Duration::from_millis(600));
+        controller.last_frame_at = Some(Instant::now());
         controller.ema_actual_ms = 33.0;
         controller.jank_streak = 4;
         controller.fps_window.push(120.0);
@@ -600,8 +592,12 @@ mod tests {
         controller.update_frame(3_100_000_000);
 
         assert_eq!(controller.perf_index, controller.cfg.app_switch_resume_perf);
-        assert_eq!(controller.warmup_remaining, FRAME_FEEDBACK_WARMUP_FRAMES);
-        assert!(controller.last_frame_at.is_none());
+        assert_eq!(controller.warmup_remaining, 0);
+        assert!(
+            controller
+                .last_frame_at
+                .is_some_and(|timestamp| timestamp.elapsed() < Duration::from_millis(100))
+        );
         assert!(controller.gear_dampen_frames > 0);
         assert_eq!(
             controller.post_loading_downgrade_guard,
