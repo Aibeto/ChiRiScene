@@ -666,6 +666,33 @@
       "importance": 4,
       "createdAt": "2026-11-06T21:37:37.743Z",
       "updatedAt": "2026-11-06T21:37:37.743Z"
+    },
+    {
+      "id": "holo-ede2cf83-261c-4039-bea2-70767ab5bbdc",
+      "content": "ChiRi 当前工作会话的平台工具链是 DSH；AI 计划、评估和工作文档必须写入项目内 .dsh/docs/，当前产出不得放入弃用的 .cursor/ 或 .codebuddy/ 目录。长期事实与流程继续写入 Mnemon，不新建环境 memory；平台改变时按 AGENTS.md 的环境映射选择对应目录。",
+      "category": "decision",
+      "tags": [
+        "ChiRi",
+        "DSH",
+        "AGENTS",
+        "workflow",
+        "output-directory"
+      ],
+      "entities": [
+        "ChiRi",
+        "DSH",
+        "AGENTS.md",
+        ".dsh/docs",
+        ".cursor",
+        ".codebuddy",
+        "AI",
+        "Mnemon",
+        "AGENTS"
+      ],
+      "trustScore": 1,
+      "importance": 5,
+      "createdAt": "2026-11-21T11:56:59.843Z",
+      "updatedAt": "2026-11-21T11:56:59.843Z"
     }
   ]
 }

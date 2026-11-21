@@ -1,22 +1,22 @@
 # AGENTS.md
 
-> 上次更新时间：2026-10-07
+> 上次更新时间：2026-11-21
 
-本文档为 AI 编程助手（Cursor / Claude Code / Trae 等）在本仓库工作时的指导文件。
+本文档为 AI 编程助手（DSH / Cursor / Claude Code / Trae 等）在本仓库工作时的指导文件。
 2026-09-20 起按块拆分：本文件只作**索引引导**，正文位于 `agentsdocs/` 子块文件。
 
 > ** 协作文件按环境分文件夹写入**
 >
 > - `agentsdocs/*.md`：本文件拆分出的**指导正文**（原 AGENTS.md 各区块，Grep `\[tag\]` 定位，勿通读全文）。
-> - **哪个环境的助手，就写入哪个环境的文件夹**：Cursor → `.cursor/`、CodeBuddy → `.codebuddy/`、Trae → `.trae/`；
+> - **哪个环境的平台工具链，就写入哪个环境的文件夹**：当前 DSH → `.dsh/`；Cursor → `.cursor/`、CodeBuddy → `.codebuddy/`、Trae → `.trae/`；
 >   只写自己环境的，勿写别人的。每个环境文件夹内结构一致：
 >   - **记忆主库 = Mnemon（2026-11-20 起）**：长期事实与流程指导写 Mnemon（Documents + runtime memory），不再新建环境
 >     `memory/` 目录。`.cursor/memory/` 已按此迁移并删除——原件镜像在 `.archive/.cursor/memory/`，蒸馏稿在
 >     `.cursor/docs/2026-11-20-记忆蒸馏-Cursor到Mnemon.md`（已导入 Mnemon，Document `37bd8d91`；流程与注意点为 `21b38ad9`）。`.codebuddy/memory/`、
 >     `.trae/memory/` 是历史长期事实，只读。
->   - `docs/`：计划、评估等 AI 产出文档（`mdocs/` 只放项目原有文档，勿把 AI 产出放进去）。
+>   - `docs/`：计划、评估等 AI 产出文档（`mdocs/` 只放项目原有文档，勿把 AI 产出放进去）；当前 DSH 平台统一写入 `.dsh/docs/`，不写入 `.cursor/`、`.codebuddy/` 或 `.trae/`。
 > - **任何文件都不离开项目文件夹**（否则后期整理找不到）；工具自动写到项目外的副本
->   （如 Cursor plans 目录）复制回项目对应环境文件夹后删除原件。
+>   （如 DSH 的临时计划目录）复制回项目对应环境文件夹后删除原件。
 > - 各环境 `memory/` 互读不互写：`.codebuddy/memory/MEMORY.md` 存有 2026-09-13–09-23 统一口径时期
 >   积累的长期事实（工具链口径、守护进程契约），各环境开工都读、只读。
 > - 旧的 `.workbuddy/` 已废弃合并，其下只剩重定向说明文件，不再写入任何内容。
