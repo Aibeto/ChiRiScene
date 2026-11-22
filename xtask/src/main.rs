@@ -268,6 +268,11 @@ fn build(sh: &Shell, no_pack: bool, lto: Option<&str>) -> Result<()> {
     }
     // normal/fas/ 目录（每应用 FAS 调优）整体只进二进制
     let _ = fs::remove_dir_all(temp_dir.join("config/normal/fas"));
+    // i18n/*.ftl 同理：编译期由 include_dir!("module/config") 嵌入，运行期只读嵌入内容
+    // （src/i18n.rs 明确「不读磁盘 i18n 目录」），装完在模块目录里没有读取方。
+    // 只从包内剔除，仓库里的源文件必须保留：build.rs 的 assert_required_configs 要求它存在，
+    // webui/scripts/fetch-fonts.mjs 也要读 zh.ftl 收集 CJK 字表做字体子集。
+    let _ = fs::remove_dir_all(temp_dir.join("config/i18n"));
     // 每 SoC 目录的 feature.yaml 与 soc.yaml（硬件基线，仅作 sysfs 兜底基准）同样只进二进制
     // 遍历到的 normal/i18n 子目录下无这两个文件，remove_file 失败忽略即可
     if let Ok(rd) = fs::read_dir(temp_dir.join("config")) {

@@ -35,6 +35,8 @@
 
 - **沙箱新增 Cargo 依赖必须改用临时工作区缓存（2026-10-18）**：`~/.cargo` 在 workspace-write 沙箱内只读；先执行 `CARGO_HOME=$PWD/.cargohome cargo fetch`，后续 cargo 命令沿用同一前缀。`.cargohome/` 用完删除、不得提交；正常可写的用户环境不需要此绕行。
 
+- **编译侧体积优化已到顶（2026-11-22 实测，勿重评）**：`strip=true` / `opt-level="z"` / `lto="fat"` / `codegen-units=1` / `-Z build-std`（std 以 bitcode 参与 fat LTO）全部已在位；**段级 GC 实测 0 B**（加 `-Z function-sections=yes` 与同链对照构建，二进制 6,125,792 B、`.text` 0x264ac8、`.rodata` 0x1fdb68 逐段相同——rustc 本就默认传 `-Wl,--gc-sections`，fat LTO 已在 IR 层删除死代码）；**zstd `default-features = false` 实测 0 B**（`cc` 的 `-ffunction-sections` + `--gc-sections` 早已丢弃 legacy 解码器与 zdict 训练器）。ICF 因函数地址相等性风险、`--no-eh-frame-hdr` 因削弱崩溃栈、panic=abort 因摧毁 `catch_unwind` 自愈，均不做；`-march` 受 28 个 SoC 限制不可抬。**体积杠杆只在打包侧**（本地 zip 走 XZ preset 6，−19.5%），完整数据见 `.dsh/docs/2026-11-22-构建打包体积优化.md`。踩坑：`RUSTFLAGS` 会下发给 build.rs 的 eBPF 子构建，带 `-C link-arg` 会被 bpf-linker 以 `unexpected argument '-W'` 拒收。
+
 - **已定案不做（勿重评，2026-10-01 / 2026-10-20 归档）**：① `app_detect.rs` 刻意不做「内容未变则复用 cmdline」的短路——冷启动期间 pid 先入组、exec 后 cmdline 才可读，缓存会漏检这类前台切换（源码内已注明）；② U3 cpu_monitor 侧、A5b、panic=abort、换 hasher/parking_lot、热路径值缓存、事件化否决四项（cgroup.events poll / PSI / thermal uevent / timerfd 全量合并）、换语言与双进程拆分。以上均在评估后否决，只有新证据推翻理由时才重开，**不要当漏项重复提出**。
 
 ## [lessons] 经验教训

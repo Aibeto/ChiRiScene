@@ -98,6 +98,13 @@
       "updated_at": "2026-11-20T15:50:29.418Z",
       "target": "memory",
       "importance": "normal"
+    },
+    {
+      "content": "ChiRi 体积/性能优化口径（2026-11-22 用户定）：任何瘦身或优化都必须满足「不影响任何效果、不影响任何业务」两条硬约束，违反即否决——已据此排除 panic=abort、删字体、删 zip 内 webroot、生产树摇 mock-shell、替换 fluent/regex、删 remote_push。真正落地的体积杠杆是打包侧（本地 zip 走 XZ preset 6，-20.1%），编译侧实测已到顶。",
+      "created_at": "2026-11-22T06:47:01.899Z",
+      "updated_at": "2026-11-22T06:47:01.899Z",
+      "target": "memory",
+      "importance": "critical"
     }
   ]
 }

@@ -25,3 +25,5 @@ ChiRi EEM（相对能效模型）已落地 commit 6b1cff4，**取代 CLG-PF 与 
 构建 LTO 档位由 xtask 下发：`cargo xtask build --lto full|thin|off|auto` 或环境变量 `CHIRI_LTO`。本地固定档（build-arch.sh 先问一次，全部模块共用、失败不回退）；CI 用 auto（每个模块先 full，失败按模块回退 thin→off）。模块 = chiri 主程序 + build.rs 单独构建的 yumi-ebpf（WebUI 不参与）。用户口径 full 在 Cargo/rustc 侧必须写 fat。契约见 agentsdocs/02-convention.md。
 §
 调度优化前先读 Mnemon 文档「ChiRi 调度优化标准流程与注意点（2026-11-20）」（七步流程/九条注意点/三条决策指导）；四条红线：失败态是一等状态、优先修结构性重犯、预算打满说明是限流器、先量谁在迁再改。
+§
+ChiRi 体积/性能优化口径（2026-11-22 用户定）：任何瘦身或优化都必须满足「不影响任何效果、不影响任何业务」两条硬约束，违反即否决——已据此排除 panic=abort、删字体、删 zip 内 webroot、生产树摇 mock-shell、替换 fluent/regex、删 remote_push。真正落地的体积杠杆是打包侧（本地 zip 走 XZ preset 6，-20.1%），编译侧实测已到顶。

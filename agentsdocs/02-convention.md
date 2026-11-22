@@ -183,6 +183,7 @@
   - **不能用 LZMA(14)**：`zip` 8.6.0 的 `CompressionMethod::Lzma` 写入分支直接返回 `UnsupportedArchive("LZMA isn't supported for compression")`（`src/write.rs:2199`），只有 `Xz` 分支落到 `lzma_rust2::XzOptions::with_preset(level)`（`src/write.rs:2202-2211`，level 0..=9）。
   - **体积实测**：同一模块目录 XZ preset 6 = **2,841,480 B**（2.71 MiB），Deflate(8, level 9) = 3,530,873 B，约 **−19.5%**；其中 `core/bin/chiri` 单文件 6,129,888 B → 2,306,856 B。
   - **兼容性已验证**：三家管理器均可解——Magisk 的 busybox 1.36.1 编了 `FEATURE_UNZIP_XZ`、KernelSU 的 ksud 用 zip 8 且开 `xz`、APatch 的 apd 用 zip 8.6 且开 `xz`。本机用 bsdtar/libarchive 解包与真机用 `/data/adb/ksu/bin/busybox unzip` 解包，68 个文件 sha256 与权限位与原目录**完全一致**；解压耗时 228~315 ms（Deflate 包 80 ms），差别在安装阶段一次性开销。
+  - **只进二进制的配置**：`xtask` 在组装 `output/.temp` 时删除 `config/feature.yaml`、`config/normal/{tuned_profiles,scenemode,fas}.yaml`、`config/rhine-init.yaml`、`config/normal/fas/`、各 SoC 目录的 `feature.yaml`/`soc.yaml`，以及 **`config/i18n/`**——它们全部由 `include_dir!("module/config")` 编译期嵌入，磁盘副本无读取方（`src/i18n.rs` 明确不读磁盘 i18n）。**仓库里这些源文件必须保留**：`build.rs` 的 `assert_required_configs()` 要求 `i18n/zh.ftl`、`i18n/en.ftl` 存在，`webui/scripts/fetch-fonts.mjs` 还要读 `zh.ftl` 收集 CJK 字表做字体子集化；剔除只发生在打包副本上。
   - **CI 不受影响**：CI 走 `cargo xtask build --no-pack`，不打包 zip。
 
 ### WebUI

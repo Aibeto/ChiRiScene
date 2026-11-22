@@ -209,3 +209,8 @@
 - [ ] **`pgo` / `profile` 构建档（未做）**：`pgo` = release 参数 + `-Cprofile-sample-use`；`profile` = `debug=1, strip=false, force-frame-pointers=yes`（仅本地 QA，用于产出可与地址对应的符号二进制）。跨版本对比口径：同 SoC + 同 kernel + 同 `exe` 指纹（`manifest.txt` 已有字段）才复用旧 profile，否则重新采样。
 - [ ] **真机验收采样开销（未做）**：本轮只测过 `simpleperf record -e cpu-cycles -p <chiri> -f 200 --duration 60` = 682 samples / 0 lost / 588,817 B（≈3.41 CPU 秒 ≈5.7% 单核），未测 daemon 在采样时段的调度行为与功耗差异。验收点：`logs/pgo/manifest.txt` 每会话有行、`logd/<ts>.tar.zst` 能带出样本、采样时段 `batt_power_w` 与 main tick 间隔无异常长尾；关闭开关（WebUI 保存）后 3 s 内采样进程退出且半截 `perf.data` 被删除。
 
+### 构建 / 打包（2026-11-22 审计，遗留验证）
+
+> 体积评估与已落地结论见 `.dsh/docs/2026-11-22-构建打包体积优化.md`；打包约定见 `02-convention.md:179`（XZ preset 6）与 `:186`（只进二进制的配置）。已完成项（XZ 打包 / 权限位 / i18n 剔除）与实测 0 收益项（段级 GC、zstd 裁剪）已移出台账，结论归入 `04-hard-lessons.md` 的「编译侧体积优化已到顶」。
+
+- [ ] **Magisk / APatch 实机装机验证（未验）**：XZ 包（method 95）只核过两家 `unzip` 实现支持 xz，未做真机安装回归；KernelSU 侧已验（解包后 `core/bin/chiri` 的 sha256 与 0755 权限一致）。

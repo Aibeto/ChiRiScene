@@ -148,7 +148,7 @@
       ],
       "createdAt": "2026-10-12T14:31:42.672Z",
       "updatedAt": "2026-10-12T19:48:58.602Z",
-      "lastAccessedAt": "2026-11-22T02:42:03.806Z",
+      "lastAccessedAt": "2026-11-22T06:36:31.889Z",
       "revision": 2,
       "contentHash": "c395522cc593e80ad6cbfcb47c91858e7b613628f100c3dc062a2ba771178cd8",
       "sizeBytes": 5798,
@@ -171,7 +171,7 @@
       ],
       "createdAt": "2026-10-12T17:32:23.656Z",
       "updatedAt": "2026-10-12T17:32:23.656Z",
-      "lastAccessedAt": "2026-10-14T06:41:02.986Z",
+      "lastAccessedAt": "2026-11-22T06:36:31.889Z",
       "revision": 1,
       "contentHash": "b123eed90a8bc14937a894cadfd53a12dde0d93ee34c66aff21d7b0464a0586a",
       "sizeBytes": 3534,
@@ -226,7 +226,7 @@
       ],
       "createdAt": "2026-10-14T06:23:48.212Z",
       "updatedAt": "2026-10-14T06:23:48.212Z",
-      "lastAccessedAt": "2026-10-17T19:49:36.923Z",
+      "lastAccessedAt": "2026-11-22T06:36:31.889Z",
       "revision": 1,
       "contentHash": "8cc4fc6f64ba880571b98e7e9d06d8859da10a526fedee4bbf81bfdbeb262435",
       "sizeBytes": 4284,
@@ -331,7 +331,7 @@
       ],
       "createdAt": "2026-11-20T15:49:38.752Z",
       "updatedAt": "2026-11-20T15:49:38.752Z",
-      "lastAccessedAt": "2026-11-22T02:42:03.806Z",
+      "lastAccessedAt": "2026-11-22T06:36:31.889Z",
       "revision": 1,
       "contentHash": "21d37b9b7839882d88473bc3d3ff8894f00c06d942bc184432cc7cc0251a227f",
       "sizeBytes": 7260,
@@ -411,6 +411,36 @@
       "revision": 1,
       "contentHash": "da93d526fbcd1e1a58f2b13eac941708fca802fce69250a2361f937d23e61fbe",
       "sizeBytes": 1694,
+      "memoryBodyIds": []
+    },
+    {
+      "id": "f0eaea8d-5cbe-4530-88f6-f4747b0fb580",
+      "title": "ChiRi 构建/打包体积优化：XZ 打包与编译侧到顶（2026-11-22）",
+      "description": "本地 zip 改 XZ(95) preset 6、xtask pack 入口、权限位与 config/i18n 剔除；段级 GC 与 zstd 裁剪实测 0 B 的结论与证据",
+      "status": "active",
+      "filename": "chiri-xz-2026-11-22-f0eaea8d.md",
+      "relativePath": "documents/active/chiri-xz-2026-11-22-f0eaea8d.md",
+      "sourcePaths": [
+        "xtask/src/main.rs",
+        "xtask/src/zip_ext.rs",
+        "scripts/build-arch/build-arch.sh",
+        "agentsdocs/02-convention.md",
+        "agentsdocs/04-hard-lessons.md",
+        "agentsdocs/07-todos.md",
+        ".dsh/docs/2026-11-22-构建打包体积优化.md",
+        "build.rs",
+        "module/customize.sh",
+        "webui/scripts/fetch-fonts.mjs"
+      ],
+      "sessionIds": [
+        "session-51131e41-7158-4821-a2c5-1a95fd2678be"
+      ],
+      "createdAt": "2026-11-22T06:46:17.345Z",
+      "updatedAt": "2026-11-22T06:46:17.345Z",
+      "lastAccessedAt": "2026-11-22T06:46:17.345Z",
+      "revision": 1,
+      "contentHash": "4eac327aedba6b0f3e45f0d6cff1e29c5cf799db38d0e403387f84a8787e9768",
+      "sizeBytes": 4879,
       "memoryBodyIds": []
     }
   ]
