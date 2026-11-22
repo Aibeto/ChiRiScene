@@ -102,7 +102,7 @@ export default {
     'Holds a system wake lock while the screen is off',
 
   'config.pgoSampling': 'PGO sampling',
-  'config.pgoSampling.hint': 'Deprecate PGO sampling',
+  'config.pgoSampling.hint': 'Enable PGO sampling',
 
   'battery.title': 'Battery readings',
   'battery.action.back': 'Back to config',

@@ -203,7 +203,7 @@
 
 ### PGO 采样（2026-11-22 落地，待真机复核）
 
-> 代码 `src/pgo.rs`（事件驱动、零轮询）；配置 `pgo_sampling`（WebUI「PGO 采样」，默认开，保存即热插拔，无需重启）；报告 `.dsh/docs/2026-11-22-PGO采样落地与离线换算.md`。
+> 代码 `src/pgo.rs`（事件驱动、零轮询）；配置 `pgo_sampling`（WebUI「PGO 采样」，描述「启用 PGO 采样」；默认开，保存即热插拔，无需重启）；报告 `.dsh/docs/2026-11-22-PGO采样落地与离线换算.md`。
 
 - [ ] **离线换算链（未做）**：采样产物 `logs/pgo/perf_*.data` 目前只落盘 + 记 `manifest.txt`，daemon 不解 profile。下一块要做：① `llvm-objcopy --only-keep-debug` 出 `chiri.debug`；② 无 ETM 走 `simpleperf report --sort dso,symbol` → LLVM 文本采样格式（`llvm-profgen --perfdata` 依赖 Linux `perf -b` 分支栈，ARM64 无 LBR，需先冒烟）；有 ETM 走 `simpleperf inject --output autofdo`；③ 构建侧用 `CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS` 注入 `-Cprofile-sample-use=<abs>`（勿用 `RUSTFLAGS`，否则 Android flag 会污染 host build script）。
 - [ ] **`pgo` / `profile` 构建档（未做）**：`pgo` = release 参数 + `-Cprofile-sample-use`；`profile` = `debug=1, strip=false, force-frame-pointers=yes`（仅本地 QA，用于产出可与地址对应的符号二进制）。跨版本对比口径：同 SoC + 同 kernel + 同 `exe` 指纹（`manifest.txt` 已有字段）才复用旧 profile，否则重新采样。
