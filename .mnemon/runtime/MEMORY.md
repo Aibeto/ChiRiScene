@@ -2,8 +2,6 @@
 §
 ChiRi 协作铁律：① 任何文件不得落在项目文件夹之外（2026-09-26 用户严令，零容忍）；AI 产出按环境分目录（Cursor：计划类→.cursor/plans/、报告类→.cursor/docs/；.codebuddy/.trae 同构），其他环境目录（.codebuddy/ .trae/ .workbuddy/ agentsdocs/）只读不写，跨环境只做对账。② 未经用户明确授权禁止创建 git 提交/推送（2026-10-07 铁律，曾因越权提交 a2ce07a 被撤销）。③ 永不再新增 A/B 对照实验（判据=逻辑必然+模型折算+功能回归观察；同版本同场景观察可以，并行/交错对照一律不做）。④ 性能优化不降采样质量红线：凡让数据变少/变粗的改动一律不做，行为延迟不算。⑤ 用户明确提出的目标不得用 AI 自选评估口径否决（2026-10-11 教训：误删「取消二段式息屏」被纠正）；评估负面时保留条目附意见，决定权交回用户。
 §
-ChiRi 收口与汇报要求（2026-10-11 用户定）：收口/汇报前必做三重核查 list_agents + job_list + ps -eo pid,etimes,args，确认无活跃子代理与未收后台任务；派子代理的 prompt 必须写明终端调用上限、scratch 单文件路径、收尾清理要求与互斥写范围（曾有子代理覆盖主线程文档：.cursor/rules/parallel-agent-file-ownership.mdc）。汇报结构最低要求：问题→原因（含源码路径）→后果→影响（量化）→快速判定方法（用哪个 dv*.py 看哪一段）+改哪一行，缺一不可；结论数字必须标注口径与可复现脚本（例：main tick 行 screen_on 恒为 '-' 无法按屏筛选；fas 无 tick 行；同一指标多口径必须并列）。
-§
 ChiRi P1 落地状态翻转（critical）：P1 取消二段式息屏已落地（2026-10-12 c48a06c）：doze 段 4 行专用覆盖已删（src/chiri/mod.rs 原 :3725/:3728/:3729/:3730 及 :3321-3329、:4222-4233 同口径），息屏后 CLG 即 reduce 同参；五机型 feature.yaml scene_mode_delay_secs 300→3000，config.rs 缺省同步 3000（含 2026-10-05 7e14783 的预活）。回退 = 恢复 doze 覆盖构造 + YAML 改回 300。净收益口径沿用 logd_1011 定稿（保守 +0.36 / 中枢 +1.59 / 乐观 +3.08 Wh）。
 §
 ChiRi 温控安全关闭（2026-10-16 用户要求，勿当回归）：全部软件温控已关闭并标注「安全关闭」，共三处需同关才叫温控全关——① module/config/{8475,8550,8650,8998,zumapro}/feature.yaml 的 Thermal.enabled=false；② 同段 tuned_resp_enabled=false（tuned 通道）；③ module/config/normal/fas/{dfm,endfield,lolm,sgame,speedmobile}.yaml 的 core_temp_threshold=0.0（FAS 通道，0=禁用是 d_temp_thresh() 既有缺省）。安全依据：内核 thermal 独立于 ChiRi（~95°C 起控 + LMh/DCVS），ChiRi 只做提前轻压，关掉不新增过热风险。恢复 = 三处改回 true/45.0，阈值与回滞参数原样保留。FAS 活跃时 src/chiri/mod.rs:3651 会整体跳过 ChiRi 热保护，故漏关第三处则游戏场景仍有温控。
@@ -16,14 +14,4 @@ ChiRi 2026-10-18 用户口径三条：① 启动完成通知 tag `ChiRi-Status`�
 §
 【铁律】ChiRi 工具链单一真相 = 仓库根 rust-toolchain.toml（2026-10-22 起，channel 钉 nightly-2026-10-12，components rust-src/clippy/rustfmt，targets aarch64-linux-android）。本机与 CI 同源，不再有「本机 stable / CI nightly」双跑问题，改动后只需一套。关键机制：`cargo +<spec>` 与 `--toolchain <name>` 的优先级**高于**该文件，任何一处残留（xtask 的 `+spec`、脚本的 `--toolchain nightly`、CI 的 CHIRI_RUSTUP_TOOLCHAIN）都会解析到浮动 nightly，与钉住的日期版共用 target/ → 整片 E0514。已全部清除，勿再加回。
 §
-DSH 沙箱（workspace-write）里 ~/.rustup 与 ~/.cargo **整个只读**：无法 `rustup toolchain install` / `component add`，也无法删除 `~/.cargo/bin/rustup-init`。该残留文件会让**所有** rustup/cargo 调用报 `error: could not remove 'setup' file`。绕过办法：直接把 `~/.rustup/toolchains/<tc>/bin` 前置到 PATH（真 cargo 不读 rust-toolchain.toml），并把 CARGO_HOME 指到仓内 `.cargo-home`（135M registry 缓存）——否则默认 ~/.cargo 只读会导致 "failed to load source for dependency"。
-§
-订正旧记忆「host target 因缺 libc 符号失败」：已给 src/monitor/screen_detect.rs 的 libc::__system_property_get 加 #[cfg(not(target_os="android"))] 桩，故 **`YUMI_SKIP_EBPF=1 cargo check` 在 host 上全仓 0 error 可用**，是最快的全量验证手段。aarch64-linux-android 交叉 check 仍需 NDK 环境变量（CC/CXX/AR/RANLIB/CFLAGS_aarch64_linux_android 指向 NDK r29 的 bin/clang，CFLAGS 带 --target=aarch64-linux-android26），否则 cc-rs 找不到 clang，zstd-sys/ring 构建失败。
-§
-ChiRi EEM（相对能效模型）已落地 commit 6b1cff4，**取代 CLG-PF 与 FDP**。数据面：soc.yaml 的 `frontier_policy.per_cluster` 只保留 capacity/freq_khz/power_w(簇级溯源)/single_core_power_w(单核，运行期唯一消费项)，`demand_buckets`/`modes`/`anticipate`/`frontier`/`anchors` 已全部移除。口径铁律：跨簇比较**绝不能扣首档基线**（首档功耗就是该簇静态开销，扣掉等于「开一颗核」免费，prime 会永远胜出）。EEM 开启时 FDP 自动让位。
-§
-构建 LTO 档位由 xtask 下发：`cargo xtask build --lto full|thin|off|auto` 或环境变量 `CHIRI_LTO`。本地固定档（build-arch.sh 先问一次，全部模块共用、失败不回退）；CI 用 auto（每个模块先 full，失败按模块回退 thin→off）。模块 = chiri 主程序 + build.rs 单独构建的 yumi-ebpf（WebUI 不参与）。用户口径 full 在 Cargo/rustc 侧必须写 fat。契约见 agentsdocs/02-convention.md。
-§
-调度优化前先读 Mnemon 文档「ChiRi 调度优化标准流程与注意点（2026-11-20）」（七步流程/九条注意点/三条决策指导）；四条红线：失败态是一等状态、优先修结构性重犯、预算打满说明是限流器、先量谁在迁再改。
-§
-ChiRi 体积/性能优化口径（2026-11-22 用户定）：任何瘦身或优化都必须满足「不影响任何效果、不影响任何业务」两条硬约束，违反即否决——已据此排除 panic=abort、删字体、删 zip 内 webroot、生产树摇 mock-shell、替换 fluent/regex、删 remote_push。真正落地的体积杠杆是打包侧（本地 zip 走 XZ preset 6，-20.1%），编译侧实测已到顶。
+ChiRi 时延/抖动优化口径（2026-11-22 用户定）：目标是降低决策时延与抖动，不是省电（chiri 自身约 9% 单核，省电论据弱）。做法=先取证再改：本版只加零行为影响埋点（src/chiri/diag_latency.rs，schema=latency/1 五轨道 wake/work/scan_fg/scan_procs/probe，与 selfcost 同文件同门控），语义改动一律列入 agentsdocs/07-todos.md「调度时延 / 抖动」留到下个版本；禁同版本并行/交错 A/B，只做跨版本同场景（同 SoC+kernel+exe 指纹）对比。

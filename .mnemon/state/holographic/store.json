@@ -693,6 +693,139 @@
       "importance": 5,
       "createdAt": "2026-11-21T11:56:59.843Z",
       "updatedAt": "2026-11-21T11:56:59.843Z"
+    },
+    {
+      "id": "holo-71cd3785-5ee4-4991-ac0e-218816b4834c",
+      "content": "【铁律】ChiRi 仓库开工前必先读其他人留下的工作记录：AGENTS.md（索引，勿通读正文）→ agentsdocs/ 对应子块（Grep [tag] 定位）→ Mnemon 检索（mnemon_document_search / mnemon_recall，长期契约与教训都在这里）→ .codebuddy/memory/MEMORY.md（2026-09-13~09-23 历史长期事实，只读）。2026-11-20 起记忆主库迁 Mnemon，.cursor/memory/ 已删除（原件镜像 .archive/.cursor/memory/，蒸馏稿 .cursor/docs/2026-11-20-记忆蒸馏-Cursor到Mnemon.md）。用户 2026-10-11 明确要求永久记住开工必读这一习惯。",
+      "category": "context",
+      "tags": [],
+      "entities": [
+        "ChiRi",
+        "AGENTS",
+        "Grep",
+        "Mnemon",
+        "MEMORY",
+        "Cursor到Mnemon"
+      ],
+      "trustScore": 1,
+      "importance": 5,
+      "createdAt": "2026-11-22T09:37:08.786Z",
+      "updatedAt": "2026-11-22T09:37:08.786Z"
+    },
+    {
+      "id": "holo-71dbb2a1-24ff-47a4-96d7-99f2abc7249a",
+      "content": "【铁律】ChiRi 工具链单一真相 = 仓库根 rust-toolchain.toml（2026-10-22 起，channel 钉 nightly-2026-10-12，components rust-src/clippy/rustfmt，targets aarch64-linux-android）。本机与 CI 同源，不再有「本机 stable / CI nightly」双跑问题，改动后只需一套。关键机制：`cargo +<spec>` 与 `--toolchain <name>` 的优先级**高于**该文件，任何一处残留（xtask 的 `+spec`、脚本的 `--toolchain nightly`、CI 的 CHIRI_RUSTUP_TOOLCHAIN）都会解析到浮动 nightly，与钉住的日期版共用 target/ → 整片 E0514。已全部清除，勿再加回。",
+      "category": "context",
+      "tags": [],
+      "entities": [
+        "ChiRi",
+        "CI",
+        "CHIRI_RUSTUP_TOOLCHAIN",
+        "E0514"
+      ],
+      "trustScore": 1,
+      "importance": 5,
+      "createdAt": "2026-11-22T09:37:08.797Z",
+      "updatedAt": "2026-11-22T09:37:08.797Z"
+    },
+    {
+      "id": "holo-a1a2a4af-523d-4a6e-b1dd-d8f377ca5e1a",
+      "content": "DSH 沙箱（workspace-write）里 ~/.rustup 与 ~/.cargo **整个只读**：无法 `rustup toolchain install` / `component add`，也无法删除 `~/.cargo/bin/rustup-init`。该残留文件会让**所有** rustup/cargo 调用报 `error: could not remove 'setup' file`。绕过办法：直接把 `~/.rustup/toolchains/<tc>/bin` 前置到 PATH（真 cargo 不读 rust-toolchain.toml），并把 CARGO_HOME 指到仓内 `.cargo-home`（135M registry 缓存）——否则默认 ~/.cargo 只读会导致 \"failed to load source for dependency\"。",
+      "category": "context",
+      "tags": [],
+      "entities": [
+        "setup",
+        "failed to load source for dependency",
+        "DSH",
+        "PATH",
+        "CARGO_HOME"
+      ],
+      "trustScore": 0.6,
+      "importance": 3,
+      "createdAt": "2026-11-22T09:37:08.800Z",
+      "updatedAt": "2026-11-22T09:37:08.800Z"
+    },
+    {
+      "id": "holo-ef4b9ff3-1866-4f9f-be18-50d84889392c",
+      "content": "订正旧记忆「host target 因缺 libc 符号失败」：已给 src/monitor/screen_detect.rs 的 libc::__system_property_get 加 #[cfg(not(target_os=\"android\"))] 桩，故 **`YUMI_SKIP_EBPF=1 cargo check` 在 host 上全仓 0 error 可用**，是最快的全量验证手段。aarch64-linux-android 交叉 check 仍需 NDK 环境变量（CC/CXX/AR/RANLIB/CFLAGS_aarch64_linux_android 指向 NDK r29 的 bin/clang，CFLAGS 带 --target=aarch64-linux-android26），否则 cc-rs 找不到 clang，zstd-sys/ring 构建失败。",
+      "category": "context",
+      "tags": [],
+      "entities": [
+        "android",
+        "YUMI_SKIP_EBPF",
+        "NDK",
+        "CC",
+        "CXX",
+        "AR",
+        "RANLIB",
+        "CFLAGS_aarch64_linux_android",
+        "CFLAGS"
+      ],
+      "trustScore": 0.6,
+      "importance": 3,
+      "createdAt": "2026-11-22T09:37:08.802Z",
+      "updatedAt": "2026-11-22T09:37:08.802Z"
+    },
+    {
+      "id": "holo-265e3a33-4a25-4e8a-94b2-0489f3efb37b",
+      "content": "ChiRi EEM（相对能效模型）已落地 commit 6b1cff4，**取代 CLG-PF 与 FDP**。数据面：soc.yaml 的 `frontier_policy.per_cluster` 只保留 capacity/freq_khz/power_w(簇级溯源)/single_core_power_w(单核，运行期唯一消费项)，`demand_buckets`/`modes`/`anticipate`/`frontier`/`anchors` 已全部移除。口径铁律：跨簇比较**绝不能扣首档基线**（首档功耗就是该簇静态开销，扣掉等于「开一颗核」免费，prime 会永远胜出）。EEM 开启时 FDP 自动让位。",
+      "category": "context",
+      "tags": [],
+      "entities": [
+        "ChiRi EEM",
+        "CLG-PF",
+        "FDP",
+        "EEM"
+      ],
+      "trustScore": 0.6,
+      "importance": 3,
+      "createdAt": "2026-11-22T09:37:08.804Z",
+      "updatedAt": "2026-11-22T09:37:08.804Z"
+    },
+    {
+      "id": "holo-b85d79e9-aa90-4f60-83b1-9bc3a53b51f8",
+      "content": "构建 LTO 档位由 xtask 下发：`cargo xtask build --lto full|thin|off|auto` 或环境变量 `CHIRI_LTO`。本地固定档（build-arch.sh 先问一次，全部模块共用、失败不回退）；CI 用 auto（每个模块先 full，失败按模块回退 thin→off）。模块 = chiri 主程序 + build.rs 单独构建的 yumi-ebpf（WebUI 不参与）。用户口径 full 在 Cargo/rustc 侧必须写 fat。契约见 agentsdocs/02-convention.md。",
+      "category": "context",
+      "tags": [],
+      "entities": [
+        "LTO",
+        "CHIRI_LTO",
+        "CI",
+        "WebUI",
+        "Cargo"
+      ],
+      "trustScore": 0.6,
+      "importance": 3,
+      "createdAt": "2026-11-22T09:37:08.806Z",
+      "updatedAt": "2026-11-22T09:37:08.806Z"
+    },
+    {
+      "id": "holo-08a618b4-1f93-477a-a0bb-35f3901216bc",
+      "content": "调度优化前先读 Mnemon 文档「ChiRi 调度优化标准流程与注意点（2026-11-20）」（七步流程/九条注意点/三条决策指导）；四条红线：失败态是一等状态、优先修结构性重犯、预算打满说明是限流器、先量谁在迁再改。",
+      "category": "context",
+      "tags": [],
+      "entities": [
+        "Mnemon",
+        "ChiRi"
+      ],
+      "trustScore": 0.6,
+      "importance": 3,
+      "createdAt": "2026-11-22T09:37:08.808Z",
+      "updatedAt": "2026-11-22T09:37:08.808Z"
+    },
+    {
+      "id": "holo-4d76301a-cfd6-46b9-90cf-0b5837477692",
+      "content": "ChiRi 体积/性能优化口径（2026-11-22 用户定）：任何瘦身或优化都必须满足「不影响任何效果、不影响任何业务」两条硬约束，违反即否决——已据此排除 panic=abort、删字体、删 zip 内 webroot、生产树摇 mock-shell、替换 fluent/regex、删 remote_push。真正落地的体积杠杆是打包侧（本地 zip 走 XZ preset 6，-20.1%），编译侧实测已到顶。",
+      "category": "context",
+      "tags": [],
+      "entities": [
+        "ChiRi",
+        "XZ"
+      ],
+      "trustScore": 1,
+      "importance": 5,
+      "createdAt": "2026-11-22T09:37:08.810Z",
+      "updatedAt": "2026-11-22T09:37:08.810Z"
     }
   ]
 }
