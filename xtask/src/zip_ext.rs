@@ -6,6 +6,9 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 use zip::{
     ZipWriter,
     result::ZipResult,
@@ -48,8 +51,11 @@ where
 
         for entry in directory_entry_iterator {
             let entry_path = entry?.path();
-            let file_options = cb_file_options(&entry_path);
             let entry_metadata = std::fs::metadata(entry_path.clone())?;
+            // 权限位照抄磁盘（与 Info-ZIP 的 `zip -r` 一致）；zip crate 默认会给所有文件写 0644，
+            // 那样 0755 的可执行脚本/二进制会丢执行位，只能靠安装脚本事后 chmod 兜底。
+            let file_options =
+                cb_file_options(&entry_path).unix_permissions(unix_mode(&entry_metadata));
             if entry_metadata.is_file() {
                 let mut f = File::open(&entry_path)?;
                 f.read_to_end(&mut buffer)?;
@@ -70,6 +76,18 @@ where
 }
 
 // [path-helpers]
+
+/// 取磁盘权限位（仅低 9 位）；非 unix 平台退回文件 0644 / 目录 0755
+fn unix_mode(metadata: &std::fs::Metadata) -> u32 {
+    #[cfg(unix)]
+    {
+        metadata.permissions().mode() & 0o777
+    }
+    #[cfg(not(unix))]
+    {
+        if metadata.is_dir() { 0o755 } else { 0o644 }
+    }
+}
 
 fn make_relative_path(root: &Path, current: &Path) -> PathBuf {
     let mut result = PathBuf::new();

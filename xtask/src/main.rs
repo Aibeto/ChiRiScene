@@ -38,6 +38,13 @@ enum Commands {
         #[arg(long, value_name = "LEVEL")]
         lto: Option<String>,
     },
+    /// 把 output/ 下最新的模块目录打成 zip（本地构建脚本用；命名 `<目录名>-b<分秒>`）
+    #[command(alias = "p")]
+    Pack {
+        /// 指定要打包的模块目录（缺省取 output/ 下最新修改的那个）
+        #[arg(long, value_name = "DIR")]
+        dir: Option<PathBuf>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -46,6 +53,7 @@ fn main() -> Result<()> {
 
     match cli.command {
         Commands::Build { no_pack, lto } => build(&sh, no_pack, lto.as_deref())?,
+        Commands::Pack { dir } => pack(dir)?,
     }
 
     Ok(())
@@ -300,9 +308,10 @@ fn build(sh: &Shell, no_pack: bool, lto: Option<&str>) -> Result<()> {
         let zip_path = output_dir.join(format!("{base_name}.zip"));
         println!("开始打包: {}", zip_path.display());
 
+        let method = zip_method()?;
         let options: FileOptions<'_, ()> = FileOptions::default()
-            .compression_method(zip_method()?)
-            .compression_level(Some(9));
+            .compression_method(method)
+            .compression_level(Some(zip_level(method)));
 
         zip_create_from_directory_with_options(&zip_path, &temp_dir, |_| options)?;
     }
@@ -311,11 +320,78 @@ fn build(sh: &Shell, no_pack: bool, lto: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+// [pack-flow]
+
+/// 把已组装好的模块目录打成 zip。
+///
+/// 命名沿用本地构建脚本的 `<目录名>-b<分秒>` 约定，压缩算法与 `build` 共用
+/// [`zip_method`]（默认 XZ）。末行输出 `zip=<路径>` 供脚本抓取。
+fn pack(dir: Option<PathBuf>) -> Result<()> {
+    let source = match dir {
+        Some(p) => p,
+        None => latest_output_dir()?,
+    };
+    if !source.is_dir() {
+        anyhow::bail!("待打包目录不存在: {}", source.display());
+    }
+    let name = source
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| anyhow::anyhow!("目录名不是合法 UTF-8: {}", source.display()))?;
+    let stamp = chrono::Local::now().format("%M%S");
+    let zip_path = Path::new("output").join(format!("{name}-b{stamp}.zip"));
+
+    let method = zip_method()?;
+    let options: FileOptions<'_, ()> = FileOptions::default()
+        .compression_method(method)
+        .compression_level(Some(zip_level(method)));
+    zip_create_from_directory_with_options(&zip_path, &source, |_| options)?;
+
+    let bytes = fs::metadata(&zip_path)?.len();
+    println!(
+        "打包完成: {} ({:.2} MiB, {}, level {})",
+        zip_path.display(),
+        bytes as f64 / (1024.0 * 1024.0),
+        method_name(method),
+        zip_level(method)
+    );
+    println!("zip={}", zip_path.display());
+    Ok(())
+}
+
+/// output/ 下最近修改的模块目录（`build --no-pack` 的产物）
+fn latest_output_dir() -> Result<PathBuf> {
+    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
+    for entry in fs::read_dir("output")? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        // 跳过工作用目录（build 的 .temp、校验解包目录等一律以 . 开头）
+        if path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with('.'))
+        {
+            continue;
+        }
+        let modified = entry.metadata()?.modified()?;
+        if best.as_ref().is_none_or(|(t, _)| modified > *t) {
+            best = Some((modified, path));
+        }
+    }
+    match best {
+        Some((_, path)) => Ok(path),
+        None => anyhow::bail!("output/ 下没有模块目录，先跑 cargo xtask build --no-pack"),
+    }
+}
+
 // [sub-builders]
 
-/// 打包压缩算法：本地默认 XZ（zip method 95、preset 9 = 最大档）。
+/// 打包压缩算法：本地默认 XZ（zip method 95，级别见 `zip_level`）。
 ///
-/// 体积比 Deflate（method 8、level 9）小约 19%（实测 3.48MB → 2.81MB）；三家管理器都能解：
+/// 体积比 Deflate（method 8、level 9）小约 20%（实测同目录 3,530,873 → 2,841,480 B，−19.5%）；三家管理器都能解：
 /// Magisk 的 busybox 1.36.1 编了 `FEATURE_UNZIP_XZ`、KernelSU 的 ksud 用 zip 8 且开 `xz`、
 /// APatch 的 apd 用 zip 8.6 且开 `xz`。CI 只组装目录（`--no-pack`），不走本分支，故 CI 不受影响；
 /// 需要 Deflate 兼容包时设 `CHIRI_ZIP_METHOD=deflate`。
@@ -324,6 +400,27 @@ fn zip_method() -> Result<CompressionMethod> {
         Ok("deflate") => Ok(CompressionMethod::Deflated),
         Ok("xz") | Err(_) => Ok(CompressionMethod::Xz),
         Ok(other) => anyhow::bail!("未知的 CHIRI_ZIP_METHOD `{other}`：只接受 xz / deflate"),
+    }
+}
+
+/// 压缩级别：Deflate 用 9（最大），XZ 用 6。
+///
+/// XZ 的 preset 决定 LZMA2 字典：preset 6 = 8 MiB、preset 9 = 64 MiB。本包最大成员是
+/// `core/bin/chiri`（约 6 MiB），装得进 8 MiB 字典就用不满更大的，实测 preset 6/7/8/9
+/// 输出**逐字节相同**；而设备端解压时字典越大占用越多内存，故取 6。
+fn zip_level(m: CompressionMethod) -> i64 {
+    match m {
+        CompressionMethod::Xz => 6,
+        _ => 9,
+    }
+}
+
+/// 压缩算法在日志里的短名
+fn method_name(m: CompressionMethod) -> &'static str {
+    match m {
+        CompressionMethod::Xz => "xz",
+        CompressionMethod::Deflated => "deflate",
+        _ => "other",
     }
 }
 

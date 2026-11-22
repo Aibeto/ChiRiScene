@@ -260,7 +260,6 @@ check_deps() {
     have git    || { pkg_hint "git" "拉取/版本查询基础"; die "git 缺失者请先装"; }
     have node   || dep_missing node    "Node.js(WebUI 编译)"          fetch_node
     have npm    || dep_missing npm     "npm(WebUI 依赖安装)"           fetch_node
-    have zip    || dep_missing zip     "zip(最后打包必需)"              fetch_zip
     have unzip  || dep_missing unzip   "unzip(仅拉取 NDK 时需要,纯本地构建可忽略)" fetch_unzip
     have zstd   || dep_missing zstd    "zstd(解 bpf-linker 预编译包)" fetch_zstd
     have curl   || { pkg_hint "curl" "下载预构建"; die "curl 缺失者请先装"; }
@@ -351,7 +350,6 @@ pkg_hint() {
 fetch_node()  { pkg_hint "nodejs npm" "Node.js 24 + npm(WebUI 编译;Arch 仓库版本已够)"; }
 fetch_unzip() { pkg_hint "unzip"      "解 NDK 的 zip"; }
 fetch_zstd()  { pkg_hint "zstd"       "解 bpf-linker 的 .tar.zst"; }
-fetch_zip()   { pkg_hint "zip"        "最后打包产物"; }
 
 # [toolchain] 工具链由仓库根的 rust-toolchain.toml 统一决定（本机与 CI 同一份）
 #
@@ -402,15 +400,15 @@ run_xtask() {
     cargo xtask build --no-pack   # 已是 nightly(见 setup_toolchain)
 }
 
-# [pack] CI 仿名 + 分秒四位
+# [pack] 交给 xtask：XZ（method 95）压缩 + 权限位照抄磁盘；不再依赖系统 Info-ZIP 的 zip
+#   命名仍为 CI 仿名 `<目录名>-b<分秒>`，由 xtask pack 生成并回吐 `zip=<路径>`
 pack_zip() {
-    local dir name ts zipname
-    dir=$(ls -dt output/*/ | head -n1) || die "output/ 下无模块目录,xtask 失败?"
-    dir="${dir%/}"
-    name=$(basename "$dir")
-    ts=$(date +%M%S)
-    zipname="output/${name}-b${ts}.zip"
-    (cd "$dir" && zip -q -9 -r "$ROOT/$zipname" .)
+    local out zipname
+    out=$(cargo xtask pack) || die "xtask pack 失败"
+    printf '%s\n' "$out" | sed 's/^/  /'
+    zipname=$(printf '%s\n' "$out" | sed -n 's/^zip=//p' | tail -1)
+    [[ -n "$zipname" ]] || die "没能从 xtask 输出里解析出 zip 路径"
+    [[ -f "$zipname" ]] || die "xtask 报告了路径但文件不存在: $zipname"
     c_grn "产物: $zipname"
     c_grn "sha256: $(sha256sum "$zipname" | cut -d' ' -f1)"
 }
@@ -424,7 +422,7 @@ main() {
     ask DO_LINT "跑 fmt+check+clippy?(CI 前置,几分钟)" "跑" "不跑"
     [[ "$DO_LINT" == 跑 ]] && steps+=(lint)
     steps+=(xtask)
-    have zip && steps+=(pack)  # zip 缺失此时已被 check_deps 菜单兜底
+    steps+=(pack)  # 打包改走 `cargo xtask pack`（XZ），不依赖系统 zip
 
     for s in "${steps[@]}"; do
         case "$s" in

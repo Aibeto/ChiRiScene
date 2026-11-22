@@ -176,7 +176,14 @@
 
 - 产物命名以 `module/module.prop` 为准：xtask 读取 `name + version`（配合 git 提交数与日期）生成 zip/目录名（如 `ChiRi-Alpha01-42-20260829-1200`）。CI 用 `cargo xtask build --no-pack` 只组装目录、不预打包，目录名即 GitHub artifact 名，由 GitHub 下载时压缩成同名 `.zip`（避免 `.zip.zip`）。
 
-- **打包压缩算法（2026-11-22）**：本地 `cargo xtask build` 打 zip 默认走 **XZ（zip method 95、preset 9）**，由 `xtask/src/main.rs` 的 `zip_method()` 决定，`CHIRI_ZIP_METHOD=deflate` 可退回 Deflate。只能用 XZ 不能用 LZMA(14)：`zip` 8.6.0 的 `CompressionMethod::Lzma` 写入分支直接返回 `UnsupportedArchive("LZMA isn't supported for compression")`（`src/write.rs:2199`），`Xz` 分支才落到 `lzma_rust2::XzOptions::with_preset(level)`（`src/write.rs:2202-2211`，level 0..=9）。实测同一旧包逐条压缩：XZ preset 6 = preset 9 = 2,814,048 B、preset 9e = 2,809,528 B，对比 Deflate(8, level 9) 的 3,475,202 B 约 −19%（包内最大文件 6.06MB < preset 6 的 8MiB 字典，preset 9 的 64MiB 字典只换来 0~4.5KB，却让设备解压多占 56MiB）。三家管理器均可解：Magisk 的 busybox 1.36.1 编了 `FEATURE_UNZIP_XZ`、KernelSU 的 ksud 用 zip 8 且开 `xz`、APatch 的 apd 用 zip 8.6 且开 `xz`。CI 走 `--no-pack` 不打包，算法不影响 CI。
+- **打包压缩算法（2026-11-22）**：本地打 zip 默认走 **XZ（zip method 95、preset 6）**，由 `xtask/src/main.rs` 的 `zip_method()` / `zip_level()` 决定，`CHIRI_ZIP_METHOD=deflate` 可退回 Deflate（level 9）。
+  - **级别按算法取**：XZ = 6、Deflate = 9。XZ 的 preset 决定 LZMA2 字典（6→8 MiB、9→64 MiB），本包最大成员 `core/bin/chiri` 约 6 MiB 撑不满 8 MiB 字典，实测 preset 6/7/8/9 对同一模块目录输出体积**完全相同**（2,841,480 B，且 md5 只差 zip 时间戳），而设备端解压内存随字典线性增长，故固定 6。
+  - **两个打包入口共用同一份代码**：`cargo xtask build`（内置打包）与 `cargo xtask pack`（只打包 `output/` 下最新的模块目录，命名 `<目录名>-b<分秒>`，末行回吐 `zip=<路径>`，`--dir` 可指定目录）。`scripts/build-arch/build-arch.sh` 的 `pack_zip()` 已改为调用 `cargo xtask pack`，不再依赖系统 Info-ZIP 的 `zip`（Info-ZIP 3.0 无 xz 支持，走它只会产出 Deflate；`-b<分秒>` 后缀原本正是该脚本加的）。
+  - **权限位照抄磁盘**：`xtask/src/zip_ext.rs` 的 `unix_mode()` 把每个条目的 `st_mode & 0o777` 写进 zip 外部属性——zip crate 默认给所有文件写 0644，会丢掉 `core/bin/chiri`、`scripts/pack.sh` 等 0755 的执行位（旧包里靠安装脚本事后 chmod 兜底）。
+  - **不能用 LZMA(14)**：`zip` 8.6.0 的 `CompressionMethod::Lzma` 写入分支直接返回 `UnsupportedArchive("LZMA isn't supported for compression")`（`src/write.rs:2199`），只有 `Xz` 分支落到 `lzma_rust2::XzOptions::with_preset(level)`（`src/write.rs:2202-2211`，level 0..=9）。
+  - **体积实测**：同一模块目录 XZ preset 6 = **2,841,480 B**（2.71 MiB），Deflate(8, level 9) = 3,530,873 B，约 **−19.5%**；其中 `core/bin/chiri` 单文件 6,129,888 B → 2,306,856 B。
+  - **兼容性已验证**：三家管理器均可解——Magisk 的 busybox 1.36.1 编了 `FEATURE_UNZIP_XZ`、KernelSU 的 ksud 用 zip 8 且开 `xz`、APatch 的 apd 用 zip 8.6 且开 `xz`。本机用 bsdtar/libarchive 解包与真机用 `/data/adb/ksu/bin/busybox unzip` 解包，68 个文件 sha256 与权限位与原目录**完全一致**；解压耗时 228~315 ms（Deflate 包 80 ms），差别在安装阶段一次性开销。
+  - **CI 不受影响**：CI 走 `cargo xtask build --no-pack`，不打包 zip。
 
 ### WebUI
 
