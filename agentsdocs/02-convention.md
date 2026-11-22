@@ -176,6 +176,8 @@
 
 - 产物命名以 `module/module.prop` 为准：xtask 读取 `name + version`（配合 git 提交数与日期）生成 zip/目录名（如 `ChiRi-Alpha01-42-20260829-1200`）。CI 用 `cargo xtask build --no-pack` 只组装目录、不预打包，目录名即 GitHub artifact 名，由 GitHub 下载时压缩成同名 `.zip`（避免 `.zip.zip`）。
 
+- **打包压缩算法（2026-11-22）**：本地 `cargo xtask build` 打 zip 默认走 **XZ（zip method 95、preset 9）**，由 `xtask/src/main.rs` 的 `zip_method()` 决定，`CHIRI_ZIP_METHOD=deflate` 可退回 Deflate。只能用 XZ 不能用 LZMA(14)：`zip` 8.6.0 的 `CompressionMethod::Lzma` 写入分支直接返回 `UnsupportedArchive("LZMA isn't supported for compression")`（`src/write.rs:2199`），`Xz` 分支才落到 `lzma_rust2::XzOptions::with_preset(level)`（`src/write.rs:2202-2211`，level 0..=9）。实测同一旧包逐条压缩：XZ preset 6 = preset 9 = 2,814,048 B、preset 9e = 2,809,528 B，对比 Deflate(8, level 9) 的 3,475,202 B 约 −19%（包内最大文件 6.06MB < preset 6 的 8MiB 字典，preset 9 的 64MiB 字典只换来 0~4.5KB，却让设备解压多占 56MiB）。三家管理器均可解：Magisk 的 busybox 1.36.1 编了 `FEATURE_UNZIP_XZ`、KernelSU 的 ksud 用 zip 8 且开 `xz`、APatch 的 apd 用 zip 8.6 且开 `xz`。CI 走 `--no-pack` 不打包，算法不影响 CI。
+
 ### WebUI
 
 - 分层（上层只依赖下层接口）：`kernel/ksu.ts`（原生注入的 ksu.\* 桥，逐 API 能力探测、缺失时降级）→ `kernel/shell.ts`（可注入 `ShellRunner`，dev 预览与单测注入 `dev/mock-shell.ts`）→ `contract/`（paths 路径安全校验 / read 三分类读取 / meta 读写 / **lab 实验室读写** / daemon 心跳（LiveTime.chr）存活探测与关闭调度 / sources 设备形态与只读源）→ `data/`（纯解析：status-csv 22 列、daemon-log、mode、whitelists、rules、apps、**lab**）→ `views/` 四屏 + 二级页。不硬编码路径；读配置前先读 `active_config.chr` 确定实际生效文件（`contract/sources.ts`）。

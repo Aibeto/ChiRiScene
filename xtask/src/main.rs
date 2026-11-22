@@ -301,7 +301,7 @@ fn build(sh: &Shell, no_pack: bool, lto: Option<&str>) -> Result<()> {
         println!("开始打包: {}", zip_path.display());
 
         let options: FileOptions<'_, ()> = FileOptions::default()
-            .compression_method(CompressionMethod::Deflated)
+            .compression_method(zip_method()?)
             .compression_level(Some(9));
 
         zip_create_from_directory_with_options(&zip_path, &temp_dir, |_| options)?;
@@ -312,6 +312,20 @@ fn build(sh: &Shell, no_pack: bool, lto: Option<&str>) -> Result<()> {
 }
 
 // [sub-builders]
+
+/// 打包压缩算法：本地默认 XZ（zip method 95、preset 9 = 最大档）。
+///
+/// 体积比 Deflate（method 8、level 9）小约 19%（实测 3.48MB → 2.81MB）；三家管理器都能解：
+/// Magisk 的 busybox 1.36.1 编了 `FEATURE_UNZIP_XZ`、KernelSU 的 ksud 用 zip 8 且开 `xz`、
+/// APatch 的 apd 用 zip 8.6 且开 `xz`。CI 只组装目录（`--no-pack`），不走本分支，故 CI 不受影响；
+/// 需要 Deflate 兼容包时设 `CHIRI_ZIP_METHOD=deflate`。
+fn zip_method() -> Result<CompressionMethod> {
+    match env::var("CHIRI_ZIP_METHOD").as_deref() {
+        Ok("deflate") => Ok(CompressionMethod::Deflated),
+        Ok("xz") | Err(_) => Ok(CompressionMethod::Xz),
+        Ok(other) => anyhow::bail!("未知的 CHIRI_ZIP_METHOD `{other}`：只接受 xz / deflate"),
+    }
+}
 
 fn temp_dir() -> PathBuf {
     Path::new("output").join(".temp")
