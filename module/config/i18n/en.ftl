@@ -448,7 +448,7 @@ pgo-probe-failed = [PGO] probe recording failed event={ $event }: { $error }
 pgo-off = [PGO] neither ETM nor cpu-cycles is available, sampling off, re-probing in 30 min
 pgo-start-failed = [PGO] failed to start sampling tier={ $tier }: { $error }
 pgo-reaper-failed = [PGO] reaper thread failed to start, session abandoned: { $error }
-pgo-session-start = [PGO] sampling started tier={ $tier } pid={ $pid }
+pgo-session-start = [PGO] sampling started tier={ $tier } pid={ $pid } sampler={ $sampler }
 pgo-session-done = [PGO] sampling done file={ $file } size={ $size }, recorded in manifest and archived with logs
 pgo-session-empty = [PGO] too few samples, discarded file={ $file } size={ $size }
 pgo-manifest-failed = [PGO] failed to write manifest, samples stay in logs/pgo/: { $error }

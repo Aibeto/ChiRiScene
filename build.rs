@@ -272,6 +272,10 @@ fn add_path(add: &std::path::Path) -> Result<String, std::env::VarError> {
 }
 
 fn main() {
+    // 给最终二进制加 GNU build-id：PGO 采样产物（simpleperf perf.data）靠 DSO 的 build-id 认二进制，
+    // 没有它离线换算只能拿同源重建版按地址近似（真机实测 .text 漂移 1,024 B）。只多一个约 48 B 的 note 段，不影响运行
+    println!("cargo:rustc-link-arg-bins=-Wl,--build-id=sha1");
+
     // module/config 整体 include_dir! 嵌入：目录内新增/删除 yaml 需触发本包重编译
     println!("cargo:rerun-if-changed=module/config");
     assert_required_configs();

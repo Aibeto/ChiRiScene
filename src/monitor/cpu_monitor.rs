@@ -197,6 +197,8 @@ fn fg_thread_max_util(
     if secs <= 0.0 {
         return 0.0;
     }
+    // [latency] 为这一段逐线程 /proc 读取计时（纯计时，守卫出作用域即落样本）
+    let _scan = crate::chiri::diag_latency::scan_fg();
     let mut next = std::collections::HashMap::with_capacity(prev.len());
     let mut best = 0.0_f32;
     for tid in get_thread_tids(pid) {
@@ -831,6 +833,8 @@ fn append_proc_snapshot(
 /// 每秒进程快照供数（aff `@S` 帧）：遍历 TGID_RUN_TIME 全 map（差分基线滚动重建）产出全系统每进程 util
 /// util = 窗口（≈1s）运行时间增量 / 墙钟，**百分比**、多核并行可 >100（仅 9999 上限），首帧/新进程只建基线；仅 `diag_active()` 开启时被每秒调用，调用方自行排序取 top-N
 pub fn snapshot_procs() -> Vec<ProcSnap> {
+    // [latency] 全系统进程快照的墙钟（仅诊断会话中会被调用）
+    let _scan = crate::chiri::diag_latency::scan_procs();
     let ptr = SNAP_TGID_MAP.load(Ordering::Acquire);
     if ptr.is_null() {
         // start_cpu_loop 尚未注册句柄 / map 缺失：无数据可采

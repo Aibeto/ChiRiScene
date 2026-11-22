@@ -45,7 +45,10 @@ MAGIC_ZSTD = 0xFD2FB528
 
 
 def sniff(data):
-    """按内容判定：'lz4' | 'gzip' | 'zstd' | 'tar' | 'unknown'。前 4 字节优先。"""
+    """按内容判定：'lz4' | 'gzip' | 'zstd' | 'perf' | 'tar' | 'unknown'。前 4 字节优先。"""
+    # simpleperf 的 perf.data 头是 `PERFILE2`；它的第 100~108 字节常被 looks_like_tar 的名字/mode 启发式误判成 tar
+    if data[:8] == b"PERFILE2":
+        return "perf"
     if len(data) >= 4:
         m = int.from_bytes(data[:4], "little")
         if m in (MAGIC_LZ4_FRAME, MAGIC_LZ4_LEGACY) or (m & 0xFFFFFFF0) == MAGIC_LZ4_SKIP:
@@ -141,7 +144,12 @@ def decode_archive_bytes(raw, label):
 
 
 def extract_tar_bytes(raw, dest):
-    """把 tar 字节解到 dest，返回解出的常规文件名列表。"""
+    """把 tar 字节解到 dest，返回解出的常规文件**相对路径**列表（保留子目录结构）。
+
+    早期版本只返回 basename，遇到 `pgo/manifest.txt` 这类带目录的成员就会拼出
+    `x_<stem>/manifest.txt` 这个不存在的路径，`os.path.getsize` 直接抛
+    FileNotFoundError（2026-11-22 含 PGO 的日志包就是这样崩的）。
+    """
     os.makedirs(dest, exist_ok=True)
     names = []
     with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as tf:
@@ -150,9 +158,26 @@ def extract_tar_bytes(raw, dest):
         except TypeError:  # 老 python 无 filter 参数
             tf.extractall(dest)
         for m in tf.getmembers():
-            if m.isfile():
-                names.append(os.path.basename(m.name))
+            if not m.isfile():
+                continue
+            rel = os.path.normpath(m.name)
+            if os.path.isabs(rel) or rel == ".." or rel.startswith(".." + os.sep):
+                rel = os.path.basename(rel)
+            names.append(rel)
     return names
+
+
+def _size(path):
+    """取文件大小；成员是符号链接等未落地的情况返回 None（调用方跳过记录）。"""
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return None
+
+
+def _posix(path):
+    """inventory 里统一用 / 分隔，避免同一份包在 Windows/Linux 出两种清单。"""
+    return path.replace(os.sep, "/")
 
 
 def stem_of(name):
@@ -199,7 +224,12 @@ def run(inp, tag, out_root, records):
             outer_kind = "tar"
     names = extract_tar_bytes(outer_tar, outdir)
     for n in names:
-        records.append((n, os.path.getsize(os.path.join(outdir, n)), "0 outer", outer_kind))
+        p = os.path.join(outdir, n)
+        size = _size(p)
+        if size is None:
+            print(f"[!] 外层成员未落地（符号链接？）: {n}")
+            continue
+        records.append((_posix(n), size, "0 outer", outer_kind))
 
     # 递归：把每个「本身是归档」的成员解到 x_<stem>/
     queue = [(os.path.join(outdir, n), 1, "outer") for n in names]
@@ -232,7 +262,13 @@ def run(inp, tag, out_root, records):
         layer = f"{level} {os.path.basename(dest)}"
         for n in got:
             p = os.path.join(dest, n)
-            records.append((os.path.relpath(p, outdir), os.path.getsize(p), layer, sniff(open(p, "rb").read(8))))
+            size = _size(p)
+            if size is None:
+                print(f"[!] {os.path.basename(dest)}/{_posix(n)}: 未落地，跳过清点")
+                continue
+            with open(p, "rb") as fh:
+                head = fh.read(8)
+            records.append((_posix(os.path.relpath(p, outdir)), size, layer, sniff(head)))
             queue.append((p, level + 1, os.path.basename(dest)))
     return outdir, False
 
@@ -249,6 +285,29 @@ def _inventory(outdir, records, _unused):
             except OSError:
                 head = b""
             records.append((rel, os.path.getsize(p), layer, sniff(head)))
+
+
+def pgo_summary(outdir):
+    """PGO 采样产物清点：列出 perf_*.data 个数与总字节（含 manifest），没有则返回 None。
+
+    采样产物放在 `logs/pgo/`（`src/pgo.rs` 的 `DIR_REL`），归档后落在 `x_<ts>/pgo/`，
+    以前只当成普通文件清点，看不出这份包里到底有没有可用样本。
+    """
+    files = []
+    manifests = []
+    for dirpath, _dirs, names in os.walk(outdir):
+        for fn in names:
+            if fn == "manifest.txt" and os.path.basename(dirpath) == "pgo":
+                manifests.append(os.path.join(dirpath, fn))
+            elif fn.startswith("perf_") and fn.endswith(".data"):
+                files.append(os.path.join(dirpath, fn))
+    if not files and not manifests:
+        return None
+    total = sum(_size(p) or 0 for p in files)
+    text = f"# pgo: {len(files)} 个 perf_*.data，共 {total} bytes"
+    if manifests:
+        text += f"；manifest.txt {len(manifests)} 份"
+    return text
 
 
 def verify(outdir):
@@ -298,6 +357,9 @@ def main(argv=None):
         inv.append(f"{size:12d}  {comp:<9s} {layer:<38s} {rel}")
     warns, nd, nl = verify(outdir)
     inv.append("#")
+    pgo_line = pgo_summary(outdir)
+    if pgo_line:
+        inv.append(pgo_line)
     inv.append(f"# devimp 侧批次: {nd}   logd 侧批次: {nl}")
     inv.extend(warns)
     path = dc.write_report(outdir, "inventory.txt", inv)

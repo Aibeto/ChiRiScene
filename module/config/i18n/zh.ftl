@@ -448,7 +448,7 @@ pgo-probe-failed = [PGO] 探测试录失败 event={ $event }: { $error }
 pgo-off = [PGO] ETM 与 cpu-cycles 均不可用，已关闭采样，30 分钟后重探
 pgo-start-failed = [PGO] 采样启动失败 tier={ $tier }: { $error }
 pgo-reaper-failed = [PGO] 回收线程启动失败，本轮采样放弃: { $error }
-pgo-session-start = [PGO] 开始采样 tier={ $tier } pid={ $pid }
+pgo-session-start = [PGO] 开始采样 tier={ $tier } pid={ $pid } sampler={ $sampler }
 pgo-session-done = [PGO] 采样完成 file={ $file } size={ $size }，已写入 manifest 并随日志归档
 pgo-session-empty = [PGO] 样本不足，已丢弃 file={ $file } size={ $size }
 pgo-manifest-failed = [PGO] 写 manifest 失败，样本仍在 logs/pgo/: { $error }

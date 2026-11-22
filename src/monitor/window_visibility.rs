@@ -550,6 +550,8 @@ const SEGMENT_MARKER: &[u8] = b"\n== CHIRI-DUMPSYS-SEGMENT ==\n";
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn collect_one(args: &[&str], cancelled: &dyn Fn() -> bool) -> io::Result<Vec<u8>> {
+    // [latency] dumpsys 单次查询墙钟（含子进程启动/读取/回收，纯计时）
+    let _probe = crate::chiri::diag_latency::probe();
     // 本段自己的预算：不与其他段共享，避免第一段耗时挤掉第二段
     let deadline = Instant::now() + QUERY_TIMEOUT;
     let mut child = Command::new("/system/bin/dumpsys")

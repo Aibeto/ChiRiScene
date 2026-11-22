@@ -182,6 +182,7 @@ pub mod core_ctl;
 pub mod cpu_load_governor;
 mod diag_build_cost;
 pub mod diag_cost;
+pub mod diag_latency;
 mod diag_slice;
 pub mod diag_worker;
 pub mod energy_cost;
@@ -2913,6 +2914,8 @@ pub fn start_scheduler_thread(
 
             // 事件循环包在 catch_unwind 中：panic 被捕获并记录，不会让调度线程静默挂掉；最近一次 SystemLoadUpdate 到达时间供 CLG 看门狗判定负载源是否失效
             let mut last_load_event = Instant::now();
+            // [latency] 上一次收到事件的时刻：下一轮循环开头据此记录「处理一段」的墙钟（无人接管时为 None）
+            let mut last_recv_at: Option<Instant> = None;
             // FAS 延迟退出期间记住的目标模式（fas → X 的 ModeChange 被延迟时记录），超时退出完成后按它重新接管（1s tick 巡检消费）
             let mut pending_mode_after_fas: Option<String> = None;
             let window_probe = crate::monitor::window_visibility::WindowVisibilityProbe::new();
@@ -2937,6 +2940,10 @@ pub fn start_scheduler_thread(
             loop {
             let loop_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             loop {
+                // [latency] 上一轮收到事件到此刻的忙碌时长（纯计时，不参与任何判定）
+                if let Some(recv_at) = last_recv_at.take() {
+                    diag_latency::record_work(recv_at.elapsed());
+                }
                 // ── DOWN 停摆状态机：进入时释放全部接管并把 current_mode.chr 写成 down，退出时删掉那个文件，让下一次 ModeChange 或 5s 自愈把真实模式写回去
                 let down = crate::down::is_down();
                 if down != halted {
@@ -3261,6 +3268,8 @@ pub fn start_scheduler_thread(
                     let (daemon_utime_ms, daemon_stime_ms) = crate::logger::self_cpu_ms();
                     // [selfcost] 会话开闭结算（每秒一次，与诊断是否开启无关）：诊断 假→真起新会话/启 worker、真→假输出不足 60s 尾窗并关闭 selfcost/worker
                     aff_cost_session_tick(crate::logger::diag_active());
+                    // [latency] 决策时延窗口结算（同样每秒一次、同样只看诊断会话）
+                    diag_latency::tick(crate::logger::diag_active());
                     let cpu_snapshot = crate::logger::diag_active()
                         .then(crate::chiri::cpu_freq_snapshot);
                     // 功耗分解：CPU 动态项估计（无功耗表的 SoC 恒 None）+ 残差（外围 / 静态 / GPU）
@@ -3823,8 +3832,12 @@ pub fn start_scheduler_thread(
                 if let Some(d) = fast_next {
                     wait = wait.min(d);
                 }
+                let wait_started = Instant::now();
                 let msg = match rx.recv_timeout(wait) {
-                    Ok(msg) => msg,
+                    Ok(msg) => {
+                        last_recv_at = Some(Instant::now());
+                        msg
+                    }
                     Err(mpsc::RecvTimeoutError::Timeout) => {
                         // eBPF 负载源超时自愈：超过 CLG_STALE_MAX 无负载事件 → 释放当前接管（CLG/akmode/fast_lock）回系统原生调频，下次 ModeChange/配置事件会重新接管
                         if last_load_event.elapsed() >= CLG_STALE_MAX {
@@ -3868,6 +3881,9 @@ pub fn start_scheduler_thread(
                                 crate::chiri::max_freq_pin::pin_all_max("clg-watchdog-release");
                             }
                         }
+                        // [latency] 定时唤醒迟到量（实际等待 - 请求等待）；超时轮次没有「处理一段」可计
+                        diag_latency::record_wake(wait, wait_started.elapsed());
+                        last_recv_at = None;
                         continue;
                     }
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -4698,6 +4714,8 @@ pub fn start_scheduler_thread(
                     break;
                 }
                 log::error!("{}", t("scheduler-ipc-panic"));
+                // [latency] 崩溃恢复不计入「处理一段」：否则退避 1s 与重建会被记成超长 work 样本
+                last_recv_at = None;
                 // 清理到安全态（release 幂等；收尾包 catch_unwind，release 再 panic 不击穿重启循环）
                 let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     cpu_governor.release();
@@ -4775,6 +4793,7 @@ pub fn start_scheduler_thread(
             log::warn!("{}", t("scheduler-channel-closed"));
             // [selfcost] 停机收尾：若诊断会话仍开着，输出本线程 @S 自耗的不足 60s 尾窗并关闭 selfcost/worker（幂等）
             aff_cost_session_tick(false);
+            diag_latency::tick(false);
             // 收尾：无论 channel 关闭还是 panic，都恢复 CPU 控制状态，避免频率/governor 残留
             cpu_governor.release();
             ak_governor.release();

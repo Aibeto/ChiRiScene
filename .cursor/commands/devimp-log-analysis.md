@@ -45,11 +45,12 @@ python scripts\devimp\dvenergy.py  devimpbin\<tag>
 zstd/lz4 落盘失败一律回落保留 `.tar`）。所以外层包里的内层成员可能是 `<ts>.tar.zst` / `<ts>.tar.lz4` /
 `devimp_<ts>.tar.zst` / `devimp_<ts>.tar.lz4` / 老包 `.tar`，**扩展名还可能骗人**（实测出现过 LZ4 负载
 却叫 `.tar`）。`dvextract.py` 一律按**前 4 字节内容嗅探**（`0x184D2204` lz4 帧 / `0x184C2102` lz4 遗留 /
-`0xFD2FB528` zstd / 否则当 raw tar），lz4/zstd 解出后校验结果确实像 tar；**不要按文件名判断，手写解压
-脚本时同理**。zstd 解码走 `compression.zstd`（py3.14+）→ `zstandard` 库 → 系统 `zstd` CLI 三级兜底；
+`0xFD2FB528` zstd / `PERFILE2` simpleperf perf.data / 否则当 raw tar），lz4/zstd 解出后校验结果确实像 tar；
+**不要按文件名判断，手写解压脚本时同理**。perf.data 必须显式认（它的第 100~108 字节会被 tar 的名字/mode
+启发式误判成 tar，2026-11-22 前每个 perf.data 都会刷一条「不是合法 tar / bad checksum」）。zstd 解码走 `compression.zstd`（py3.14+）→ `zstandard` 库 → 系统 `zstd` CLI 三级兜底；
 本机未装 `lz4` python 模块，lz4 走 `scripts/devimp/dvlz4.py` 的纯 python 解码器。
 
-解压与校验都交给 `dvextract.py`：它会写 `inventory.txt`（每个文件 + 大小 + 嵌套层 + 检出压缩），并核对每个 devimp 批次至少解出 `main_*`/`aff_*`、对缺 logd 侧的批次告警（老包降级口径见「五、已知坑」12）。
+解压与校验都交给 `dvextract.py`：它会写 `inventory.txt`（每个文件 + 大小 + 嵌套层 + 检出压缩），并核对每个 devimp 批次至少解出 `main_*`/`aff_*`、对缺 logd 侧的批次告警（老包降级口径见「五、已知坑」12）。含 PGO 的包会多一行 `# pgo: N 个 perf_*.data，共 X bytes；manifest.txt M 份`（2026-11-22 新增），先看这行判断有没有可用采样。
 
 ### 2. 现场判定（**目录名不可信**；先定版再比数据）
 
@@ -110,7 +111,7 @@ python scripts\devimp-analyze.py <解压目录> [--since MMDD-HHMMSS] [--min-n 3
 | 脚本           | 作用                                                                                                                             | 命令                                                                                  |
 | -------------- | -------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
 | `dvrun.py`     | **单命令全流程**：解压 → 聚合表 → 四探针（main/aff/status/power）→ `report.md`                                                   | `python scripts\devimp\dvrun.py <logd_*.tar.gz 或已解压目录>`                         |
-| `dvextract.py` | 解压（递归容忍 + 内容嗅探 + 完整性闸门 + `inventory.txt`）                                                                       | `python scripts\devimp\dvextract.py <logd_*.tar.gz> [--tag T] [--out-root devimpbin]` |
+| `dvextract.py` | 解压（递归容忍 + 内容嗅探 + 完整性闸门 + `inventory.txt`；保留子目录结构、认 `PERFILE2` perf.data、含 PGO 的包追加 `# pgo:` 汇总行）                                                                       | `python scripts\devimp\dvextract.py <logd_*.tar.gz> [--tag T] [--out-root devimpbin]` |
 | `dvmain.py`    | `main_*.log`：定版 / mode×package / decide-vs-actual / 热压制带 / snap 侧 / **播放态帧间隔直方图（`[7]`，活跃窗口 + 长尾率）** | `python scripts\devimp\dvmain.py <解压目录> [--since MMDD-HHMMSS] [--min-n 30]`       |
 | `dvaff.py`     | `aff_*.log`：`@A` 动作与 bulk、`@S` 差分帧累积（按 `full=1` 收敛存活集合、tid 复用作废）、绑定轨迹、`t` 行核分布与存活集合合并态（`--groups` 按机型分簇） | `python scripts\devimp\dvaff.py <解压目录> [--since MMDD-HHMMSS] [--groups "0-2,3-6,7"] [--core-top 8]` |
 | `dvstatus.py`  | `status.csv` + `daemon.log`：charge / 放电功率 / fps / FAS 证据 / 重启界标；按解析身份去重，FPS 空不等于未接管 | `python scripts\devimp\dvstatus.py <目录或 status.csv> [--since MMDD-HHMMSS] [--out 路径]` |

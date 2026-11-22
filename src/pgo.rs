@@ -20,8 +20,8 @@ const SIMPLEPERF: &str = "/system/bin/simpleperf";
 const DIR_REL: &str = "logs/pgo";
 /// 产物清单文件名
 const MANIFEST: &str = "manifest.txt";
-/// 单轮采样时长（秒）
-const SESSION_SECS: u64 = 60;
+/// 单轮采样时长（秒）：2026-11-22 由 60 提到 120（真机 9 轮实测每轮约 1,100 样本，样本量不足）
+const SESSION_SECS: u64 = 120;
 /// 启动后首次采样延迟（秒）：错开开机高峰
 const FIRST_DELAY_SECS: u64 = 60;
 /// 两轮采样之间的空闲间隔（秒）
@@ -32,12 +32,13 @@ const REPROBE_SECS: u64 = 1800;
 const RETRY_SECS: u64 = 300;
 /// 探测试录时长（秒）：ETM 是否真的可用只能靠实录判定（sysfs 有节点也可能报 not available）
 const PROBE_SECS: u64 = 1;
-/// cpu-cycles 回退档的采样频率（Hz）
-const SAMPLE_FREQ: u32 = 200;
-/// 产物份数上限
-const MAX_FILES: usize = 16;
-/// 产物体积上限（字节）
-const MAX_FILES_BYTES: u64 = 24 * 1024 * 1024;
+/// cpu-cycles 回退档的采样频率（Hz）：真机实测 200 Hz × 61 s 只有约 1,100 样本、98% 函数零样本，
+/// 2026-11-22 提到 1000（每 CPU 秒 1000 样本，单轮约 1.1 万样本、单文件约 9 MB）
+const SAMPLE_FREQ: u32 = 1000;
+/// 产物份数上限（提到 1000 Hz 后单文件约 9 MB，份数按字节上限更早触顶）
+const MAX_FILES: usize = 24;
+/// 产物体积上限（字节）：64 MiB 约 7 轮（≈3.5 小时历史），归档时由 zstd 压到约 1/8
+const MAX_FILES_BYTES: u64 = 64 * 1024 * 1024;
 /// 产物最小有效体积（字节）：低于此值视为空采样，直接丢弃
 const MIN_SAMPLES_BYTES: u64 = 1024;
 /// 连续启动失败次数上限，超过后重新探测档位
@@ -387,11 +388,17 @@ fn start(dir: &Path, tier: u8) -> Option<Session> {
         );
         return None;
     }
+    // pid 必须是被采样进程（daemon 自己）：真机日志此前打的是 simpleperf 子进程 pid，
+    // 与 perf.data cmdline 里的 -p 对不上，离线判读要先反推一次
     log::info!(
         "{}",
         t_with_args(
             "pgo-session-start",
-            &fluent_args!("tier" => tier.to_string(), "pid" => pid.to_string())
+            &fluent_args!(
+                "tier" => tier.to_string(),
+                "pid" => std::process::id().to_string(),
+                "sampler" => pid.to_string()
+            )
         )
     );
     Some(Session {
@@ -449,7 +456,9 @@ fn append_manifest(dir: &Path, name: &str, s: &Session, size: u64) {
         .map(|v| v.trim().to_string())
         .unwrap_or_else(|_| "unknown".to_string());
     let soc = crate::common::matched_soc_config_name().unwrap_or("unknown");
-    let exe = std::fs::symlink_metadata("/proc/self/exe")
+    // 必须用 metadata 跟随符号链接：symlink_metadata 取到的是 /proc 的链接本身（size 恒 0、mtime 随读取变化），
+    // 真机实测会让同一进程内的多轮 manifest 写出不同的 exe 指纹
+    let exe = std::fs::metadata("/proc/self/exe")
         .ok()
         .map(|m| {
             let mtime = m
