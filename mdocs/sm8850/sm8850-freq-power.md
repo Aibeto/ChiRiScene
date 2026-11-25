@@ -33,6 +33,8 @@
    - **算力（相对）** = `capacity × f / f_max`（f_max = 簇最高档：big 3628.8 / prime 4608）
    - 相对口径（同一把尺子比较），不是 CoreMark/DMIPS 绝对值；DT dmips 不参与计算
 
+7. **本文件与配置的范围**：本文件（soc.yaml/EEM）是 **sm8850 实测**；`feature.yaml`/`meta.yaml` 中的**调参参数（thermal/affinity/CLG/IO 等）全部沿用 sm8750 原值**，本次**未做** sm8850 专属实测调优——属"能跑起来"的沿用配置。
+
 ## 3. [efi] 单核功耗与簇功耗（逐档）
 
 > 簇功耗 = idle + n×单核增量；单核功耗 = 簇功耗÷核数（见 §2.4）。算力 = capacity×f/f_max（相对）。
