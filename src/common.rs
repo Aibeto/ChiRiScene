@@ -109,6 +109,8 @@ const CHIRI_SOC_HINTS: &[&str] = &[
     // SM8750（骁龙 8 Elite / OnePlus 13 PJZ110）：标准 SoC 名，命中 ro.soc.model /
     // soc0/machine 等来源；配置目录同名 config/sm8750/。
     "sm8750",
+    "sm8850",
+    "canoe",
     "msm8998",
     "zumapro",
     "exynos5250",
@@ -237,6 +239,7 @@ pub(crate) fn matched_soc_hint() -> Option<&'static str> {
 pub(crate) fn soc_hint_config_name(hint: &str) -> &str {
     match hint {
         "sun" => "sm8750",
+        "sm8850" | "canoe" => "sm8850",
         other => other,
     }
 }

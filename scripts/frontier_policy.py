@@ -56,6 +56,23 @@ ANCHOR_TOL = 0.03
 #            anchors（文档公布值，容差 ANCHOR_TOL）、compute_unit（块注释里的算力单位名）、
 #            power_comment（块注释里的功耗口径说明，两行）。
 SOC_PROFILES = {
+    # sm8850（Xiaomi 17 Pro Max / 骁龙 8 Elite Gen 5）：**实测 §3 表**（qpt PMIC 逐轨，57 点）；
+    # 无公布值可对账 → anchors 留空，不编造期望。
+    "sm8850": {
+        "doc": ROOT / "mdocs" / "sm8850" / "sm8850-freq-power.md",
+        "soc": ROOT / "module" / "config" / "sm8850" / "soc.yaml",
+        "out_new": ROOT / "module" / "config" / "sm8850" / "frontier_policy.yaml",
+        # prime 冲顶段边界：本机型无 §5 参照（无公布值）→ None（不做边沿校验）
+        "prime_top_from_khz": None,
+        # 无公布值可对账（实测折算表）→ anchors 留空
+        "anchors": {},
+        "compute_unit": "capacity×f/f_max（参考口径）",
+        "power_comment": [
+            "  # 各簇频表 + 逐档 **簇功耗**(W)：功耗列直接取能效模型文档 §3 簇级表，供放置成本模型做边际比较；",
+            "  # 两列等长且逐档对齐（同下标 = 同一档）。功耗只含动态项、不含漏电，**只能用于相对排序**。",
+        ],
+    },
+
     "sm8550": {
         "doc": ROOT / "mdocs" / "sm8550" / "sm8550-freq-power.md",
         "soc": ROOT / "module" / "config" / "sm8550" / "soc.yaml",
